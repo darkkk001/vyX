@@ -9,6 +9,10 @@ import fs from "node:fs";
 import { assertLoadDb } from "./env";
 
 const MAX_PASSES = 5;
+// Stage 6 split harness (scripts/load/run.sh --split): the web runs NEXT TO the engine on the shared database, so it keeps
+// polling until the runner creates this file, then ends after one more pass that closes nothing. evaluateAccountRisk skips every
+// account the engine owns (lib/risk-owner.ts), so what this loop closes is exactly the web's share.
+const STOP_FILE = process.env.LOAD_WEB_STOP_FILE;
 
 async function main() {
   const { prisma } = await import("@/lib/prisma");
@@ -22,7 +26,7 @@ async function main() {
 
   const passes: { accounts: number; closed: number; ms: number; perAccountMs: number[] }[] = [];
   try {
-    for (let pass = 0; pass < MAX_PASSES; pass++) {
+    for (let pass = 0; pass < (STOP_FILE ? 100000 : MAX_PASSES); pass++) {
       const t0 = performance.now();
       const ids = (await prisma.position.findMany({ where: { status: "OPEN" }, select: { accountId: true }, distinct: ["accountId"] })).map((r) => r.accountId).sort();
       let closed = 0;
@@ -33,9 +37,14 @@ async function main() {
         perAccountMs.push(performance.now() - a0);
         closed += r.slTpClosed.length + r.stopOutClosed.length;
       }
-      passes.push({ accounts: ids.length, closed, ms: performance.now() - t0, perAccountMs });
-      console.log(`[load:web] pass ${pass + 1}: ${ids.length} accounts, ${closed} closed, ${(performance.now() - t0).toFixed(0)} ms`);
-      if (closed === 0) break;
+      if (!STOP_FILE || closed > 0 || passes.length === 0) {
+        passes.push({ accounts: ids.length, closed, ms: performance.now() - t0, perAccountMs });
+        console.log(`[load:web] pass ${pass + 1}: ${ids.length} accounts, ${closed} closed, ${(performance.now() - t0).toFixed(0)} ms`);
+      }
+      if (closed === 0) {
+        if (!STOP_FILE || fs.existsSync(STOP_FILE)) break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
     }
   } finally {
     clearInterval(timer);

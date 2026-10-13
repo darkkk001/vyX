@@ -9,7 +9,7 @@
 # BUFFERS) for one account holding a mirror target, and the mean time over 2000 executions across real account ids.
 # The extra rows are removed at the end.
 set -euo pipefail
-PSQL="/d/pg-scratch/pgsql/bin/psql.exe -h 127.0.0.1 -p 5499 -U postgres -d vyx_load_engine -X -q"
+PSQL="/c/pg-scratch/pgsql/bin/psql.exe -h 127.0.0.1 -p 5499 -U postgres -d vyx_load_engine -X -q"
 [ "$($PSQL -Atc "select current_database()")" = "vyx_load_engine" ] || { echo "refusing: not vyx_load_engine"; exit 2; }
 
 # the query exactly as book.rs sends it ($1 account, $2 window seconds), as a plain SQL string for EXECUTE ... USING

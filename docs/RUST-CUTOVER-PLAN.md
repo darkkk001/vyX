@@ -1427,8 +1427,42 @@ Per-broker `riskAuthority = WEB | SHADOW | RUST`, read by both sides so exactly 
 first; in RUST mode every web evaluator (cron, hook, backstop, price-feed) skips that broker. Drill:
 flip back to WEB and watch the web take the next stop-out. The Vercel cron stays until then.
 
+**BUILT 2026-10-06 on branch `engine/stage6` (not merged, not deployed, migration not applied): see `docs/STAGE6-PLAN.md`** (the per-account rule
+`riskOwnerOf`, the engine's risk mode, the web skip with an in-transaction handoff check, the split and drill harnesses, the runbook, the gates split into
+blockers for RISK authority vs ORDERS-only). Per-broker values are `WEB | RUST` plus `riskAuthorityDemoOnly` (the SHADOW value became the engine's shadow mode).
+
 #### 6.1 Cutover gates (must hold before a broker goes RUST)
 
+- **CUTOVER GATE (owner, 2026-10-12): close fields. MET (owner, 2026-10-13):** the engine writes the same close fields and running totals
+  as `lib/position-close.ts`, parity 31/31, and migration `20261012130000_close_fields` is on production. **Post-flip check** (after every
+  flip, and in the section 6 watch of `docs/STAGE6-RUNBOOK-FUTURIX-DEMO.md`): engine-closed TRADE_PNL rows with a null close field = 0:
+
+  ```sql
+  SELECT count(*) AS engine_closes_missing_close_fields
+  FROM "Transaction" t
+  JOIN "PostCloseEffect" e ON e."positionId" = t."referenceId" AND e.kind = 'POSITION_CLOSED'
+  WHERE t.type = 'TRADE_PNL'
+    AND (t."closeVolume" IS NULL OR t."closePrice" IS NULL OR t."closeSwap" IS NULL);
+  ```
+
+  (An engine close always queues a `POSITION_CLOSED` follow-up in the same transaction and a web close never does, as in runbook 5.5;
+  `closeByPositionId` is null by design on a close that has no close-by partner.) The original gate text follows. The engine's close path must write exactly the
+  fields and running totals `lib/position-close.ts closePositionInTx` writes (migration `20261012130000_close_fields`,
+  `docs/POSITION-DEAL-MODEL.md` section 0): on the TRADE_PNL row `closeVolume`, `closePrice`, `closeSwap` (pro rata by closed volume,
+  the final close takes the remainder) and `closeByPositionId` (the close-by partner, on every path that closes by an opposite leg); on the
+  Position `realizedPnl`, `closedVolume` and `closedSwap` as running totals. Status of the code (branch `engine/stage6`): the one engine close
+  path, `book::close_position_as` (SL / TP and stop-out; margin call closes nothing), writes all of it, and `book::close_position_full` takes
+  the close-by partner. The engine has no partial close, no close-by and no queued or staff close, so those stay on the web; if the engine
+  ever performs one, this gate covers it too. Parity evidence: `scripts/parity/run-db.sh` compares every position's totals and every
+  TRADE_PNL row's close fields (scenarios 28 to 31 seed swap and a web partial-close history); the previous engine fails 20 of 31, the
+  current one matches 31 of 31; `engine/order-management/tests/book_db.rs` pins the values.
+- **CUTOVER GATE (owner, 2026-10-12): position / deal model. UNMET (the owner decides when it is met).** Scope (owner, 2026-10-13):
+  **NOT required for the demo-only flip** (`riskAuthorityDemoOnly = true`); **REQUIRED before any live-account flip**
+  (`riskAuthorityDemoOnly = false`, runbook section 9), with the checks of `docs/POSITION-DEAL-MODEL.md` section 4. Whatever the position / deal
+  model of `docs/POSITION-DEAL-MODEL.md` becomes (today: sections 0 and 3.2 shipped as the close-fields hotfix; the Deal table and
+  `Position.initialVolume` are proposals), the engine must conform to it: every engine write that opens, reduces, closes or reverses a
+  position produces the same rows and fields as the web's twin, and the model's own conformance tests run against the engine. Nothing
+  beyond the close fields above is built on the engine side. UNMET until the owner signs it off.
 - **CUTOVER GATE (owner, 2026-10-07): hedging allowed.** `Broker.hedgingAllowed` (default true). When false, the web refuses
   an OPEN that would put one account on both sides of one symbol (`lib/hedging.ts checkHedgingAllowed`, code
   `HEDGING_NOT_ALLOWED`) at every open path: client order and pending order, requote accept, dealer accept, desk flush,
@@ -1457,15 +1491,14 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
   swap-free account would be charged. Today the web's nightly `lib/swap-rollover.ts` resolves swap-free (account >
   group, only when `Broker.pricingEngineEnabled`; after the next backoffice batch: the group alone, owner S1). Either the
   engine resolves swap-free exactly like the web, or swap rollover stays on the web for RUST brokers. Gate test: a
-  swap-free group's position pays 0 at rollover in RUST mode; a non-swap-free one pays the symbol rate. NOT BUILT.
+  swap-free group's position pays 0 at rollover in RUST mode; a non-swap-free one pays the symbol rate. NOT BUILT. **Stage 6 risk mode does not start the swap roller, so this gate applies only when the engine handles ORDERS (STAGE6-PLAN section 10).**
 - **CUTOVER GATE (owner, 2026-10-05): group volume limits.** The engine checks only the symbol's volume range
   (`engine/order-management/src/lib.rs` -> `engine/risk/src/lib.rs`); it does not check `Group.maxLotSize`, nor the new
   group minimum volume (next backoffice batch, owner S3: effective min = max(symbol min, group min), on the symbol's
   lot-step grid). The web checks the max at 6 places (client order, requote accept, pending trigger, dealer accept, desk
   flush, staff open: `lib/risk.ts checkGroupMaxLot`). Either the engine enforces both at every open path, or those paths
   stay on the web for RUST brokers. Gate test: an order above the group max / below the group min is refused by the
-  engine with the same code as the web. NOT BUILT.
-  Update 2026-10-06 (web side BUILT, branch `batch/s1-bookpnl-minvol`): `Group.minLotSize` exists; the web refuses below
+  engine with the same code as the web. NOT BUILT. **Stage 6 risk mode places and fills no order (the resting-order fill stays the web's routine), so this gate applies only when the engine handles ORDERS (STAGE6-PLAN section 10).**
   the effective minimum next to each of the 6 max-lot checks (`lib/risk.ts checkGroupMinLot`, code `GROUP_MIN_VOLUME`)
   and refuses an off-grid group minimum at save (`MIN_VOLUME_STEP`). The engine must match: same rule, same code.
 - **CUTOVER GATE (owner, 2026-10-06): Position.groupCategoryAtOpen on every engine open.** Book P/L
@@ -1485,10 +1518,11 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
   margin-call notice (and the stop-out) would wait for the engine's next 4 s pass. In RUST mode every fire must route to
   the engine's own `evaluate_account` in Mode::Live, UNPINNED (live read, the `marginCallNotifiedAt` edge and
   `apply_margin_call_edge` -> outbox), so the notice goes out on the tick. Gate test: an S3-shaped ramp in RUST mode
-  sends the margin-call notice from the fire (not the pass) and stops out on the crossing tick. NOT BUILT.
+  sends the margin-call notice from the fire (not the pass) and stops out on the crossing tick. **BUILT on `engine/stage6`:** `risk_split_db::an_s3_ramp_sends_the_margin_call_notice_from_the_fire_and_stops_out_on_the_crossing_tick`; SL / TP touches and resting-order crossings take the same route (`LiveFire`).
 - Open question before cutover (owner, 2026-09-29): the hook's 1 s per-symbol limit on web calls (after_flush
   `last_fired`). A margin-call fire and a stop-out fire on the same symbol less than 1 s apart make ONE web call; the
   shadow is unaffected (the fire is sent before the limit). What it means in RUST mode depends on the route above.
+  **Answered on `engine/stage6`:** engine-owned accounts never go through that web call. Margin fires (stop-out and margin-call edge) go to the engine's channel with their own damping (stop-out backoff, 5 s edge window) and no 1 s limit; SL / TP touches are limited per (account, symbol) to one a second, the same granularity the web call had per symbol.
 - **CUTOVER GATE (owner, 2026-10-01; was a non-blocking follow-up since 2026-09-29): evaluate an account on its own
   fill event / put the new position in the trigger's book immediately.** Evidence 2026-10-01: S2 07:00 UTC, 49990004 (a4)
   BUY 1.99 vIDX opened 07:00:04.129, stopped out by the web at 07:00:10.871 at 19680 (level 45.48 %) on the jump tick;

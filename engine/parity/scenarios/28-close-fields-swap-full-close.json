@@ -1,0 +1,53 @@
+{
+  "name": "28-close-fields-swap-full-close",
+  "why": "SL hit on a position with accrued swap 12.3456: the close books closeVolume = the whole lot, closeSwap = round2(swap) = 12.35, and the running totals realizedPnl / closedVolume / closedSwap on the position (lib/position-close.ts).",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "10000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": "1990",
+      "tpPrice": null,
+      "swap": "12.3456"
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1989.5",
+      "ask": "1990",
+      "ageSeconds": 0
+    }
+  ]
+}

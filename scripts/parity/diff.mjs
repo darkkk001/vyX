@@ -109,9 +109,28 @@ for (const file of fs.readdirSync(scenarioDir).filter((f) => f.endsWith(".json")
         unexpected.push(`position ${id} missing in ${!a ? "ts" : "rust"}`);
         continue;
       }
-      if (a.status !== b.status || !same(a.volume, b.volume) || !same(a.closePrice, b.closePrice) || !same(a.realizedPnl, b.realizedPnl)) {
-        unexpected.push(`position ${id} ts=${a.status}@${a.closePrice ?? "-"}/${a.realizedPnl ?? "-"} rust=${b.status}@${b.closePrice ?? "-"}/${b.realizedPnl ?? "-"}`);
+      if (a.status !== b.status || !same(a.volume, b.volume) || !same(a.closePrice, b.closePrice) || !same(a.realizedPnl, b.realizedPnl)
+        || !same(a.closedVolume, b.closedVolume) || !same(a.closedSwap, b.closedSwap)) {
+        unexpected.push(`position ${id} ts=${a.status}@${a.closePrice ?? "-"}/${a.realizedPnl ?? "-"}/vol ${a.closedVolume ?? "-"}/swap ${a.closedSwap ?? "-"} rust=${b.status}@${b.closePrice ?? "-"}/${b.realizedPnl ?? "-"}/vol ${b.closedVolume ?? "-"}/swap ${b.closedSwap ?? "-"}`);
       }
+    }
+  }
+  // Close-fields gate (docs/RUST-CUTOVER-PLAN.md 6.1): the structured fields of every TRADE_PNL row must match too
+  if (ts.closeRows && rust.closeRows) {
+    const same = (x, y) => (x == null || y == null ? x === y : Math.abs(Number(x) - Number(y)) <= MONEY_TOL);
+    for (const id of [...new Set([...Object.keys(ts.closeRows), ...Object.keys(rust.closeRows)])].sort()) {
+      const xs = ts.closeRows[id] ?? [];
+      const ys = rust.closeRows[id] ?? [];
+      if (xs.length !== ys.length) {
+        unexpected.push(`closeRows ${id}: ts has ${xs.length} TRADE_PNL row(s), rust ${ys.length}`);
+        continue;
+      }
+      xs.forEach((x, i) => {
+        const y = ys[i];
+        if (!same(x.amount, y.amount) || !same(x.closeVolume, y.closeVolume) || !same(x.closePrice, y.closePrice) || !same(x.closeSwap, y.closeSwap) || (x.closeByPositionId ?? null) !== (y.closeByPositionId ?? null)) {
+          unexpected.push(`closeRows ${id}[${i}] ts=${JSON.stringify(x)} rust=${JSON.stringify(y)}`);
+        }
+      });
     }
   }
   let status;

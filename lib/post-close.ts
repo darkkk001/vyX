@@ -158,6 +158,31 @@ function marginCallSteps(row: Row): { name: string; work: (tx: Prisma.Transactio
         const body = `Account ${account.accountNumber}'s margin level is ${p.marginLevel}%, at or below the ${D(p.marginCallLevel).toString()}% margin-call level. Deposit funds or close positions to avoid stop-out.`;
         await createNotification(tx, { brokerId: row.brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: row.accountId, accountId: row.accountId });
         await createNotification(tx, { brokerId: row.brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: row.accountId });
+        // Stage 6: the real-time event lib/risk-monitor.ts publishes when ITS pass starts an episode (the trader's terminal and
+        // the broker's backoffice learn at once). Buffered with the step and published once, after every write has committed.
+        await publishTradingEvent("MarginCall", { account_id: row.accountId, broker_id: row.brokerId, level: p.marginLevel, state: "margin_call" });
+      },
+    },
+  ];
+}
+
+// Stage 6: the END of a margin-call episode of an engine-owned account (the web's clearMarginCall): the trader's "Margin call
+// over" notification and, when the account recovered by price (a level in the payload), the real-time "cleared" event. An episode
+// that ended because nothing is left open carries no level: the notification only, as on the web.
+type MarginCallClearedPayload = { marginLevel?: string; marginCallLevel: string };
+function marginCallClearedSteps(row: Row): { name: string; work: (tx: Prisma.TransactionClient) => Promise<void> }[] {
+  const p = row.payload as MarginCallClearedPayload;
+  return [
+    {
+      name: "notify_margin_call_cleared",
+      work: async (tx) => {
+        const account = await tx.account.findUniqueOrThrow({ where: { id: row.accountId }, select: { accountNumber: true } });
+        const body =
+          p.marginLevel != null
+            ? `Account ${account.accountNumber}'s margin level is ${p.marginLevel}%, back above the ${D(p.marginCallLevel).toString()}% margin-call level.`
+            : `Account ${account.accountNumber} has no open position left; the margin call is over.`;
+        await createNotification(tx, { brokerId: row.brokerId, type: "MARGIN_CALL_CLEARED", title: "Margin call over", body, entityType: "Account", entityId: row.accountId, accountId: row.accountId });
+        if (p.marginLevel != null) await publishTradingEvent("MarginCall", { account_id: row.accountId, broker_id: row.brokerId, level: p.marginLevel, state: "cleared" });
       },
     },
   ];
@@ -202,7 +227,7 @@ export async function runPostClose(id: string, opts?: { fault?: PostCloseFault; 
   lap("lease");
 
   try {
-    const steps = row.kind === "MARGIN_CALL" ? marginCallSteps(row) : row.kind === "POSITION_CLOSED" ? closeSteps(row) : null;
+    const steps = row.kind === "MARGIN_CALL" ? marginCallSteps(row) : row.kind === "MARGIN_CALL_CLEARED" ? marginCallClearedSteps(row) : row.kind === "POSITION_CLOSED" ? closeSteps(row) : null;
     if (!steps) throw new Error(`unknown PostCloseEffect kind ${row.kind}`);
     for (const step of steps) {
       fault(`before:${step.name}`);
@@ -276,7 +301,7 @@ export async function recordPostCloseFailure(id: string, error: string): Promise
 }
 
 export function outboxDeadNotification(r: { id: string; brokerId: string; accountId: string; positionId: string | null; kind: string; attempts: number; doneSteps: string[]; error: string }) {
-  const what = r.kind === "MARGIN_CALL" ? `the margin-call notice for account ${r.accountId}` : `the follow-up of automatic close ${r.positionId}`;
+  const what = r.kind === "MARGIN_CALL" ? `the margin-call notice for account ${r.accountId}` : r.kind === "MARGIN_CALL_CLEARED" ? `the margin-call-over notice for account ${r.accountId}` : `the follow-up of automatic close ${r.positionId}`;
   return {
     brokerId: r.brokerId,
     type: "OUTBOX_DEAD",

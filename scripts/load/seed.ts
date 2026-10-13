@@ -9,8 +9,11 @@ import "./env";
 import fs from "node:fs";
 import { assertLoadDb, LOAD_DB_NAME } from "./env";
 import type { World } from "./generate";
+import { accountMode, brokerFlags, isSplitVariant } from "./split";
 
-export async function seedWorld(world: World) {
+export async function seedWorld(world: World, split?: string) {
+  const variant = isSplitVariant(split) ? split : undefined;
+  const brokerIndex = new Map(world.brokers.map((b, i) => [b.id, i] as const));
   const { Prisma } = await import("@prisma/client");
   const { prisma } = await import("@/lib/prisma");
   const D = (v: string | number) => new Prisma.Decimal(v);
@@ -19,9 +22,14 @@ export async function seedWorld(world: World) {
   const tables = await prisma.$queryRaw<{ tablename: string }[]>`
     SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`;
   await prisma.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t.tablename}"`).join(", ")} CASCADE`);
+  // the engine-down watchdog (Stage 6): the truncate removed the heartbeat row, and no row = a dead engine = every account WEB-owned. The split harness
+  // stands for a healthy engine: fresh for a year (scripts/load/run-split.sh --stall replaces this with a short window and a beater of its own).
+  await prisma.$executeRaw`INSERT INTO "RiskEngineHeartbeat" (name, "beatAt", "staleAfterSecs") VALUES ('risk', clock_timestamp(), 31536000) ON CONFLICT (name) DO UPDATE SET "beatAt" = clock_timestamp(), "staleAfterSecs" = 31536000`;
 
   for (const b of world.brokers) {
-    await prisma.broker.create({ data: { id: b.id, name: `Load ${b.id}`, subdomain: b.id.toLowerCase().slice(0, 60), negativeBalanceProtection: b.nbp } });
+    await prisma.broker.create({
+      data: { id: b.id, name: `Load ${b.id}`, subdomain: b.id.toLowerCase().slice(0, 60), negativeBalanceProtection: b.nbp, ...(variant ? brokerFlags(variant, brokerIndex.get(b.id)!) : {}) },
+    });
   }
   await prisma.group.createMany({
     data: world.groups.map((g, i) => ({ id: g.id, brokerId: g.broker, name: g.id, isDefault: i === 0, marginCallLevel: D(g.marginCallLevel), stopOutLevel: D(g.stopOutLevel) })),
@@ -29,7 +37,7 @@ export async function seedWorld(world: World) {
   await prisma.account.createMany({
     data: world.accounts.map((a, i) => ({
       id: a.id, brokerId: a.broker, groupId: a.group, accountNumber: `8${String(i + 1).padStart(7, "0")}`, email: `${a.id}@load.local`, passwordHash: "x", fullName: `Load ${a.role}`,
-      accountMode: "LIVE" as const, leverage: a.leverage, balance: D(a.balance), credit: D(a.credit), currency: a.currency,
+      accountMode: (variant ? accountMode(variant, a) : "LIVE") as "DEMO" | "LIVE", leverage: a.leverage, balance: D(a.balance), credit: D(a.credit), currency: a.currency,
     })),
   });
   for (const b of world.brokers) {
@@ -104,7 +112,7 @@ export async function seedWorld(world: World) {
 
 if (process.argv[1]?.endsWith("seed.ts")) {
   const world: World = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-  seedWorld(world)
+  seedWorld(world, process.env.LOAD_SPLIT)
     .then(async () => (await import("@/lib/prisma")).prisma.$disconnect())
     .catch((err) => {
       console.error(err);

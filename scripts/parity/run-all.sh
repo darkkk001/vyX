@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 URL=postgresql://postgres@127.0.0.1:5499/vyx_rust_harness
 echo "[parity] database: $URL"
 case "$URL" in postgresql://postgres@127.0.0.1:5499/*) ;; *) echo "refusing: not the scratch DB"; exit 2 ;; esac
-/d/pg-scratch/pgsql/bin/psql.exe -h 127.0.0.1 -p 5499 -U postgres -d vyx_rust_harness -Atc "select 1" >/dev/null \
+/c/pg-scratch/pgsql/bin/psql.exe -h 127.0.0.1 -p 5499 -U postgres -d vyx_rust_harness -Atc "select 1" >/dev/null \
   || { echo "[parity] scratch DB not reachable -- start it / create vyx_rust_harness first (README)"; exit 2; }
 
 cd "$ROOT"

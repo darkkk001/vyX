@@ -7,7 +7,7 @@
 import http from "node:http";
 
 // the parity harness DB, or the Stage 4 load harness's engine DB (scripts/load/run.sh) -- nothing else
-const ALLOWED = ["postgresql://postgres@127.0.0.1:5499/vyx_rust_harness", "postgresql://postgres@127.0.0.1:5499/vyx_load_engine"];
+const ALLOWED = ["postgresql://postgres@127.0.0.1:5499/vyx_rust_harness", "postgresql://postgres@127.0.0.1:5499/vyx_load_engine", "postgresql://postgres@127.0.0.1:5499/vyx_load_split"];
 const DB_URL = process.env.DATABASE_URL ?? "";
 if (!ALLOWED.includes(DB_URL) || process.env.DIRECT_URL !== DB_URL) {
   console.error(`[post-close-server] refusing to run: DATABASE_URL and DIRECT_URL must both be one of ${ALLOWED.join(", ")}.`);

@@ -55,14 +55,15 @@ type Scenario = {
   symbols: { name: string; contractSize: Dec; digits: number; quoteCurrency: string; category?: string; sessionClosedNow?: boolean; hedgedMarginPct?: Dec; spreadMarkup?: Dec }[];
   // coverageLeg: this (client) position is hedged by that leg (covered + coveragePositionId); autoHedged: this
   // leg was opened by auto-hedge, so the platform closes it when the client closes (lib/coverage.ts onClose)
-  positions: { key: string; account: string; symbol: string; side: "BUY" | "SELL"; volume: Dec; openPrice: Dec; slPrice?: Dec | null; tpPrice?: Dec | null; coverageLeg?: string; autoHedged?: boolean }[];
+  positions: { key: string; account: string; symbol: string; side: "BUY" | "SELL"; volume: Dec; openPrice: Dec; slPrice?: Dec | null; tpPrice?: Dec | null; coverageLeg?: string; autoHedged?: boolean; swap?: Dec; closedVolume?: Dec; closedSwap?: Dec; realizedPnl?: Dec }[];
   prices: { symbol: string; bid: Dec; ask: Dec; ageSeconds: number; updatedAgeSeconds?: number }[];
   // Stage 4.5: mirror rules onto a master account, with their source -> target position links
   mirrors?: { key: string; master: string; fillPriceMode?: "SOURCE_PRICE" | "MARKET"; links: { source: string; target: string }[] }[];
   dbOnly?: boolean;
 };
 
-type PositionState = { status: string; volume: string; closePrice: string | null; realizedPnl: string | null };
+type PositionState = { status: string; volume: string; closePrice: string | null; realizedPnl: string | null; closedVolume: string | null; closedSwap: string | null };
+type CloseRow = { amount: string; closeVolume: string | null; closePrice: string | null; closeSwap: string | null; closeByPositionId: string | null };
 
 type AccountOutcome = {
   marginLevelBefore: string | null;
@@ -152,6 +153,11 @@ async function main() {
         data: {
           id: p.key, brokerId: broker.id, accountId: p.account, symbolId: symbolIds.get(p.symbol)!, originOrderId: order.id, side: p.side, volume: D(p.volume), openPrice: D(p.openPrice),
           slPrice: p.slPrice ? D(p.slPrice) : null, tpPrice: p.tpPrice ? D(p.tpPrice) : null,
+          // close-fields gate: accrued swap and the state a web partial close leaves behind (docs/POSITION-DEAL-MODEL.md section 0)
+          ...(p.swap != null ? { swap: D(p.swap) } : {}),
+          ...(p.closedVolume != null ? { closedVolume: D(p.closedVolume) } : {}),
+          ...(p.closedSwap != null ? { closedSwap: D(p.closedSwap) } : {}),
+          ...(p.realizedPnl != null ? { realizedPnl: D(p.realizedPnl) } : {}),
         },
       });
     }
@@ -229,9 +235,20 @@ async function main() {
     for (const r of [...effectRows].sort((x, y) => (x.k < y.k ? -1 : 1))) sideEffects[r.k] = Number(r.n);
     const positions: Record<string, PositionState> = {};
     for (const p of await prisma.position.findMany({ orderBy: { id: "asc" } })) {
-      positions[p.id] = { status: p.status, volume: p.volume.toString(), closePrice: p.closePrice?.toString() ?? null, realizedPnl: p.realizedPnl?.toString() ?? null };
+      positions[p.id] = {
+        status: p.status, volume: p.volume.toString(), closePrice: p.closePrice?.toString() ?? null, realizedPnl: p.realizedPnl?.toString() ?? null,
+        closedVolume: p.closedVolume?.toString() ?? null, closedSwap: p.closedSwap?.toString() ?? null,
+      };
     }
-    const out = { scenario: sc.name, engine: "ts", accounts, sideEffects, positions };
+    // close-fields gate: the structured fields of every TRADE_PNL row, per position, in write order (db_mode.rs close_rows)
+    const closeRows: Record<string, CloseRow[]> = {};
+    for (const t of await prisma.transaction.findMany({ where: { type: "TRADE_PNL", referenceId: { not: null } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] })) {
+      (closeRows[t.referenceId!] ??= []).push({
+        amount: t.amount.toString(), closeVolume: t.closeVolume?.toString() ?? null, closePrice: t.closePrice?.toString() ?? null,
+        closeSwap: t.closeSwap?.toString() ?? null, closeByPositionId: t.closeByPositionId,
+      });
+    }
+    const out = { scenario: sc.name, engine: "ts", accounts, sideEffects, positions, closeRows };
     fs.writeFileSync(path.join(outDir, `${sc.name}.json`), JSON.stringify(out, null, 2) + "\n");
     console.log(`[parity:ts] ${sc.name}: ${Object.entries(accounts).map(([k, v]) => `${k} closed=[${v.closedPositionIds.join(",")}] balance=${v.finalBalance} mc=${v.marginCallNotified}`).join("; ")}`);
   }

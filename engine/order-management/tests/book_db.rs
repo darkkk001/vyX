@@ -351,3 +351,100 @@ async fn cleanup(pool: &PgPool, broker: &str) {
         sqlx::query(sql).bind(broker).execute(pool).await.unwrap();
     }
 }
+
+// ---- close-fields gate (docs/POSITION-DEAL-MODEL.md section 0): the structured fields lib/position-close.ts writes ----
+
+type CloseFields = (Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<String>);
+
+async fn txn_close_fields(db: &mut sqlx::PgConnection, position: &str) -> CloseFields {
+    sqlx::query_as(r#"SELECT "closeVolume", "closePrice", "closeSwap", "closeByPositionId" FROM "Transaction" WHERE "referenceId" = $1 AND type = 'TRADE_PNL'"#)
+        .bind(position)
+        .fetch_one(&mut *db)
+        .await
+        .unwrap()
+}
+
+async fn totals(db: &mut sqlx::PgConnection, position: &str) -> (Option<Decimal>, Option<Decimal>, Option<Decimal>) {
+    sqlx::query_as(r#"SELECT "realizedPnl", "closedVolume", "closedSwap" FROM "Position" WHERE id = $1"#).bind(position).fetch_one(&mut *db).await.unwrap()
+}
+
+#[tokio::test]
+async fn full_close_writes_close_fields_running_totals_and_the_swap_share() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut *tx, dec!(100000), true).await;
+    let pos = open_position(&mut *tx, &fx, "BUY", dec!(1.5), dec!(4000)).await;
+    sqlx::query(r#"UPDATE "Position" SET swap = 12.3456 WHERE id = $1"#).bind(&pos).execute(&mut *tx).await.unwrap();
+
+    book::close_position_in_tx(&mut tx, &pos, dec!(1.5), dec!(4010), dec!(1500), "Stop loss hit (automatic)").await.unwrap().expect("closed");
+    // never partial: closeVolume is the whole lot, closeSwap = round2(swap - closedSwap) = 12.35, no close-by partner
+    assert_eq!(txn_close_fields(&mut *tx, &pos).await, (Some(dec!(1.5)), Some(dec!(4010)), Some(dec!(12.35)), None));
+    assert_eq!(totals(&mut *tx, &pos).await, (Some(dec!(1500)), Some(dec!(1.5)), Some(dec!(12.35))));
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn close_after_a_web_partial_adds_to_the_running_totals_and_takes_the_swap_remainder() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut *tx, dec!(100000), true).await;
+    let pos = open_position(&mut *tx, &fx, "SELL", dec!(1), dec!(4000)).await;
+    // what lib/position-close.ts leaves after closing 0.5 of 1.5 lots: realizedPnl, closedVolume, closedSwap are running totals
+    sqlx::query(r#"UPDATE "Position" SET swap = 12.3456, "realizedPnl" = 80, "closedVolume" = 0.5, "closedSwap" = 4.11 WHERE id = $1"#)
+        .bind(&pos).execute(&mut *tx).await.unwrap();
+
+    book::close_position_in_tx(&mut tx, &pos, dec!(1), dec!(3995), dec!(500), "Take profit hit (automatic)").await.unwrap().expect("closed");
+    assert_eq!(txn_close_fields(&mut *tx, &pos).await, (Some(dec!(1)), Some(dec!(3995)), Some(dec!(8.24)), None));
+    // 4.11 + round2(12.3456 - 4.11) = 12.35, the shares add up to the swap
+    assert_eq!(totals(&mut *tx, &pos).await, (Some(dec!(580)), Some(dec!(1.5)), Some(dec!(12.35))));
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn swap_share_rounds_half_away_from_zero_like_the_web() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut *tx, dec!(100000), true).await;
+    let (neg, pos_half) = (open_position(&mut *tx, &fx, "BUY", dec!(1), dec!(4000)).await, open_position(&mut *tx, &fx, "BUY", dec!(1), dec!(4000)).await);
+    sqlx::query(r#"UPDATE "Position" SET swap = -3.2250 WHERE id = $1"#).bind(&neg).execute(&mut *tx).await.unwrap();
+    sqlx::query(r#"UPDATE "Position" SET swap = 0.0050 WHERE id = $1"#).bind(&pos_half).execute(&mut *tx).await.unwrap();
+
+    book::close_position_in_tx(&mut tx, &neg, dec!(1), dec!(4000), dec!(0), "x").await.unwrap().expect("closed");
+    book::close_position_in_tx(&mut tx, &pos_half, dec!(1), dec!(4000), dec!(0), "x").await.unwrap().expect("closed");
+    assert_eq!(txn_close_fields(&mut *tx, &neg).await.2, Some(dec!(-3.23)));
+    assert_eq!(txn_close_fields(&mut *tx, &pos_half).await.2, Some(dec!(0.01)));
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn close_by_partner_link_is_stored_on_the_ledger_row() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut *tx, dec!(100000), true).await;
+    let (a, b) = (open_position(&mut *tx, &fx, "BUY", dec!(1), dec!(4000)).await, open_position(&mut *tx, &fx, "SELL", dec!(1), dec!(4000)).await);
+
+    // the two legs of a close-by name each other (lib/close-by.ts passes closeByPositionId on both closePositionInTx calls)
+    for (me, other, pnl) in [(&a, &b, dec!(-50)), (&b, &a, dec!(50))] {
+        let r = book::close_position_full(&mut tx, None, me, dec!(1), dec!(3995), pnl, &format!("Close by {other}"), Some(other.as_str())).await.unwrap();
+        assert!(matches!(r, book::CloseResult::Closed(_)));
+    }
+    assert_eq!(txn_close_fields(&mut *tx, &a).await, (Some(dec!(1)), Some(dec!(3995)), Some(dec!(0)), Some(b.clone())));
+    assert_eq!(txn_close_fields(&mut *tx, &b).await, (Some(dec!(1)), Some(dec!(3995)), Some(dec!(0)), Some(a.clone())));
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_lost_close_leaves_the_close_fields_and_totals_untouched() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut *tx, dec!(100000), true).await;
+    let pos = open_position(&mut *tx, &fx, "BUY", dec!(1), dec!(4000)).await;
+    sqlx::query(r#"UPDATE "Position" SET swap = 5 WHERE id = $1"#).bind(&pos).execute(&mut *tx).await.unwrap();
+
+    // the caller read a stale volume: nothing is written, no ledger row, totals still unset
+    assert!(book::close_position_in_tx(&mut tx, &pos, dec!(2), dec!(4010), dec!(2000), "x").await.unwrap().is_none());
+    assert_eq!(totals(&mut *tx, &pos).await, (None, None, None));
+    let (n,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Transaction" WHERE "referenceId" = $1"#).bind(&pos).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(n, 0);
+    tx.rollback().await.unwrap();
+}

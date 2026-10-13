@@ -1,0 +1,56 @@
+{
+  "name": "29-close-fields-after-web-partial",
+  "why": "A position the web already partially closed (0.5 of 1.5 lots; realizedPnl 80, closedVolume 0.5, closedSwap 4.11, swap 12.3456) is then TP-closed in full: running totals add to the earlier ones (realizedPnl 80 + this close, closedVolume 1.5) and the final close takes exactly the swap remainder (closeSwap = round2(12.3456 - 4.11) = 8.24, closedSwap 12.35).",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "10000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "EURUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "1.10000",
+      "slPrice": null,
+      "tpPrice": "1.09500",
+      "swap": "12.3456",
+      "closedVolume": "0.5",
+      "closedSwap": "4.11",
+      "realizedPnl": "80"
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "EURUSD",
+      "bid": "1.09490",
+      "ask": "1.09500",
+      "ageSeconds": 0
+    }
+  ]
+}

@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Stage 6 mutation check: the split proofs must FAIL when the safeguard they prove is broken. Each mutation edits one source file, runs
+# the tests that must notice, expects a non-zero exit, and puts the file back (git checkout). A mutation the tests do not notice is
+# reported MISSED and the script exits 1.
+#
+#   bash scripts/stage6/mutation-check.sh [M1 M2 ...]       (default: all)
+#
+#   M1  a web path that does not skip RUST-owned accounts (both prefilters removed; the in-transaction guard still holds)
+#   M2  the web's in-transaction owner check removed (a stale prefilter then lets the web act on an engine-owned account)
+#   M3  M1 + M2: the web acts on engine-owned accounts at all -> detected as a double action
+#   M4  the engine acts on a WEB-owned account (the rule hands everything to the engine)
+#   M5  the engine's in-transaction owner check removed (the flip no longer stops its next close)
+#   M6  the demo-only scope ignored, engine rule
+#   M7  the demo-only scope ignored, web rule
+#   M8  the live fire still PINNED (it evaluates the account as it stood at the fire, not its current positions)
+#   M9  the announced reload no longer evaluates the engine-owned accounts at once (a position opened just before a gap waits for the 5 s pass)
+#   M10 the engine-down watchdog: the engine's IN-TRANSACTION heartbeat check removed (a stalled engine that wakes up inside what it started acts)
+#   M11 the watchdog, every engine heartbeat check removed (in-transaction and prefilter): a stalled engine acts, the web's takeover is doubled
+#   M12 the watchdog: the web's IN-TRANSACTION heartbeat check removed (the web refuses a stale engine's accounts: nothing handles them)
+#   M13 the watchdog: the web's prefilter ignores the heartbeat (the web skips a dead engine's accounts)
+#   M14 the watchdog: the engine's heartbeat row is read without the share lock (a beat can land between the reading and the action)
+#   M15 the watchdog: same on the web side
+#   M16 the startup WARNING for a live mode without a flip marker is never produced
+#   M17 (a) the engine's fire worker no longer beats before it evaluates (the first fire after an idle gap is refused as stale)
+#   M18 (a) the engine's pass no longer beats before it lists its accounts (the first pass after an idle gap sees none)
+#   M19 (b) the 1-minute fallback runs its pass although the engine's heartbeat is fresh
+#   M20 (b) the fallback ignores the idle gate (reads the database while the market is quiet)
+#   M21 (b) the "any broker RUST" answer is never cached (a database read every minute)
+#   M22 (c) the stale-heartbeat alert fires on the first stale check (no debounce)
+#   M23 (c) the alert counts an idle market (a weekend's stale heartbeat alerts)
+#   M24 (c) the recovery notice needs no continuous fresh minute (flapping spams)
+#   M25 (c) the alert is sent on every stale check, not once per incident
+#
+# Needs a clean working tree for the files it touches; restores them on exit. Scratch database only (vyx_test).
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT"
+export ENGINE_TEST_DATABASE_URL="${ENGINE_TEST_DATABASE_URL:-postgresql://postgres@127.0.0.1:5499/vyx_test}"
+export VYX_REQUIRE_DB_TESTS=1
+WEBENV="DATABASE_URL=postgresql://postgres@127.0.0.1:5499/vyx_test DIRECT_URL=postgresql://postgres@127.0.0.1:5499/vyx_test REDIS_URL=redis://localhost:6379"
+MUT="node scripts/stage6/mutate.mjs"
+FILES="lib/risk-fallback.ts lib/risk-engine-alert.ts app/api/internal/risk-fallback/route.ts lib/risk-monitor.ts lib/risk-owner.ts lib/position-close.ts lib/risk-authority.ts engine/order-management/src/authority.rs engine/order-management/src/book.rs engine/order-management/src/monitor.rs engine/order-management/src/margin_watch.rs"
+git diff --quiet -- $FILES || { echo "[mutation] refusing: uncommitted changes in $FILES"; exit 2; }
+restore() { git checkout -q -- $FILES; }
+# a mutated engine test panics before its own cleanup: remove the rows the engine split tests leave (a leftover RUST broker would be acted on
+# by the next engine test's pass, a leftover symbol shows up in other suites' checks of the shared database)
+db_cleanup() {
+  local P="/c/pg-scratch/pgsql/bin/psql.exe -h 127.0.0.1 -p 5499 -U postgres -d vyx_test -Atq -c"
+  for t in PostCloseEffect Notification AuditLog Transaction Position Order Account BrokerSymbol Group; do $P "delete from \"$t\" where \"brokerId\" like 'split-%'" >/dev/null 2>&1; done
+  $P "delete from \"Broker\" where id like 'split-%'" >/dev/null 2>&1
+  $P "delete from \"Symbol\" where id like 'split-s-%'" >/dev/null 2>&1
+}
+finish() { restore; db_cleanup; }
+trap finish EXIT
+
+WANT="${*:-M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12 M13 M14 M15 M16 M17 M18 M19 M20 M21 M22 M23 M24 M25}"
+MISSED=0
+web_tests() { env $WEBENV npx vitest run "$@" > /tmp/mutation-web.log 2>&1; }
+engine_tests() { (cd engine && cargo test -q -p order-management "$@" -- --test-threads=1) >> /tmp/mutation-engine.log 2>&1; }
+report() { # name, exit code of the tests (non-zero = the mutation was detected)
+  # a mutation that merely breaks the BUILD is not a detection: the tests never ran
+  if [ "$2" -ne 0 ] && grep -qE 'could not compile|error\[E[0-9]+\]|SyntaxError|Transform failed|Failed to resolve' /tmp/mutation-engine.log /tmp/mutation-web.log 2>/dev/null; then
+    echo "BROKEN    $1  (the mutated code does not build: fix the mutation)"; MISSED=1
+  elif [ "$2" -ne 0 ]; then
+    echo "DETECTED  $1"
+    grep -hE -- '--- FAILED| FAIL  ' /tmp/mutation-engine.log /tmp/mutation-web.log 2>/dev/null | sort -u | head -3 | sed 's/^/            by: /'
+  else
+    echo "MISSED    $1"; MISSED=1
+  fi
+  : > /tmp/mutation-engine.log; : > /tmp/mutation-web.log
+}
+want() { case " $WANT " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+M_NO_WEB_PREFILTER() {
+  $MUT lib/risk-monitor.ts 'if (!preloaded?.ownerChecked && (await loadRiskOwners(prisma, [accountId])).get(accountId) === "RUST") {' 'if (false) {' || return 2
+  $MUT lib/risk-monitor.ts 'const accountIds = await webOwnedAccountIds(prisma, accountIdsAll);' 'const accountIds = accountIdsAll;' || return 2
+}
+M_NO_WEB_GUARD() {
+  $MUT lib/risk-owner.ts 'export async function assertRiskActorInTx(tx: Prisma.TransactionClient, accountId: string, actor: RiskOwner): Promise<void> {' 'export async function assertRiskActorInTx(tx: Prisma.TransactionClient, accountId: string, actor: RiskOwner): Promise<void> {
+  if (actor) return;' || return 2
+}
+
+if want M1; then M_NO_WEB_PREFILTER && web_tests lib/risk-split.test.ts; report "M1 web path does not skip RUST-owned accounts (prefilters removed)" $?; restore; fi
+if want M2; then M_NO_WEB_GUARD && web_tests lib/risk-split-stale.test.ts lib/risk-split-flip.test.ts; report "M2 web in-transaction owner check removed (stale prefilter, flip mid-pass)" $?; restore; fi
+if want M3; then M_NO_WEB_PREFILTER && M_NO_WEB_GUARD && web_tests lib/risk-split.test.ts; report "M3 web acts on engine-owned accounts at all: detected as a double action" $?; restore; fi
+if want M4; then
+  $MUT engine/order-management/src/authority.rs 'pub fn risk_owner_of(authority: Option<&str>, demo_only: Option<bool>, account_mode: Option<&str>) -> RiskOwner {' 'pub fn risk_owner_of(authority: Option<&str>, demo_only: Option<bool>, account_mode: Option<&str>) -> RiskOwner {
+    let _ = (authority, demo_only, account_mode);
+    return RiskOwner::Rust;' \
+  && $MUT engine/order-management/src/authority.rs "(b.\"riskAuthority\"::text = 'RUST' AND (b.\"riskAuthorityDemoOnly\" = false OR a.\"accountMode\"::text = 'DEMO'))" "(true)" \
+  && engine_tests --test risk_split_db
+  report "M4 engine acts on a WEB-owned account (rule and SQL hand it everything)" $?; restore
+fi
+if want M5; then
+  $MUT engine/order-management/src/book.rs 'if let Some(actor) = actor {
+        let owner = crate::authority::lock_owner_in_tx(tx, &account_id).await?.unwrap_or(crate::authority::RiskOwner::Web);' 'if let Some(actor) = None::<crate::authority::RiskOwner> {
+        let owner = crate::authority::lock_owner_in_tx(tx, &account_id).await?.unwrap_or(crate::authority::RiskOwner::Web);
+        let _ = actor;' \
+  && engine_tests --test risk_split_db
+  report "M5 engine in-transaction owner check removed (the flip no longer stops its next close)" $?; restore
+fi
+if want M6; then
+  $MUT engine/order-management/src/authority.rs 'let demo_only = demo_only != Some(false);' 'let demo_only = false;' \
+  && engine_tests --lib authority && engine_tests --test risk_split_db
+  R=$?; report "M6 demo-only scope ignored (engine rule)" $R; restore
+fi
+if want M7; then
+  $MUT lib/risk-authority.ts 'const demoOnly = broker?.riskAuthorityDemoOnly !== false;' 'const demoOnly = false;' \
+  && web_tests lib/risk-authority.test.ts lib/risk-split.test.ts lib/risk-owner.test.ts
+  report "M7 demo-only scope ignored (web rule)" $?; restore
+fi
+if want M8; then
+  $MUT engine/order-management/src/monitor.rs '    let hint = book::TickHint { ticks: fire.ticks };
+    book::with_tick_hint(hint, evaluate_account_checked(pool, nats, &fire.account_id, true, &Mode::Live, None, false)).await' '    let hint = book::TickHint { ticks: fire.ticks };
+    // MUTATION: the fire is PINNED to the moment it is evaluated at (positions opened after it are invisible)
+    let pin = book::Pin { at: chrono::Utc::now(), ticks: hint.ticks.clone(), measured: Vec::new() };
+    book::with_pin(pin, book::with_tick_hint(hint, evaluate_account_checked(pool, nats, &fire.account_id, true, &Mode::Live, None, false))).await' \
+  && engine_tests --test risk_split_db
+  report "M8 the live fire is still pinned" $?; restore
+fi
+if want M9; then
+  $MUT engine/order-management/src/margin_watch.rs '                    if asked {
+                        watch.decide_engine_now(&cache, Instant::now());
+                    }' '                    if false {
+                        watch.decide_engine_now(&cache, Instant::now());
+                    }' \
+  && engine_tests --test risk_split_db
+  report "M9 the announced reload does not evaluate the engine-owned accounts at once" $?; restore
+fi
+ALIVE_IN_TX='alive.is_some_and(|(a,)| a)'
+ALIVE_SQL_ENGINE="EXISTS (SELECT 1 FROM \"RiskEngineHeartbeat\" h WHERE h.name = 'risk' AND clock_timestamp() - h.\"beatAt\" <= make_interval(secs => h.\"staleAfterSecs\"))"
+if want M10; then
+  $MUT engine/order-management/src/authority.rs "$ALIVE_IN_TX" '{ let _ = &alive; true }' \
+  && engine_tests --test risk_split_db
+  report "M10 engine in-transaction heartbeat check removed" $?; restore
+fi
+if want M11; then
+  $MUT engine/order-management/src/authority.rs "$ALIVE_IN_TX" '{ let _ = &alive; true }' \
+  && $MUT engine/order-management/src/authority.rs "$ALIVE_SQL_ENGINE" 'true' \
+  && engine_tests --test risk_split_db
+  report "M11 every engine heartbeat check removed (a stalled engine acts; the takeover would be doubled)" $?; restore
+fi
+if want M12; then
+  $MUT lib/risk-owner.ts 'beat[0]?.alive === true' 'true' \
+  && web_tests lib/risk-watchdog.test.ts
+  report "M12 web in-transaction heartbeat check removed" $?; restore
+fi
+if want M13; then
+  $MUT lib/risk-owner.ts 'COALESCE((SELECT clock_timestamp() - h."beatAt" <= make_interval(secs => h."staleAfterSecs") FROM "RiskEngineHeartbeat" h WHERE h.name = '"'"'risk'"'"'), false) AS alive' 'true AS alive' \
+  && web_tests lib/risk-watchdog.test.ts
+  report "M13 web prefilter ignores the heartbeat" $?; restore
+fi
+if want M14; then
+  $MUT engine/order-management/src/authority.rs "FROM \"RiskEngineHeartbeat\" WHERE name = 'risk' FOR SHARE\"#," "FROM \"RiskEngineHeartbeat\" WHERE name = 'risk'\"#," \
+  && engine_tests --test risk_split_db
+  report "M14 engine reads the heartbeat without the share lock" $?; restore
+fi
+if want M15; then
+  $MUT lib/risk-owner.ts "FROM \"RiskEngineHeartbeat\" WHERE name = 'risk' FOR SHARE" "FROM \"RiskEngineHeartbeat\" WHERE name = 'risk'" \
+  && web_tests lib/risk-watchdog.test.ts
+  report "M15 web reads the heartbeat without the share lock" $?; restore
+fi
+if want M16; then
+  $MUT engine/order-management/src/authority.rs '    let intent = intent.map(str::trim).unwrap_or("");' '    let intent = intent.map(str::trim).unwrap_or("");
+    if intent.len() < 1000 {
+        return None;
+    }' \
+  && engine_tests --lib authority
+  report "M16 the startup warning is never produced" $?; restore
+fi
+if want M17; then
+  $MUT engine/order-management/src/monitor.rs "            // the engine is alive and about to act: assert it (the idle gate may have stopped the timer's beats)
+            crate::authority::touch(&pool, std::time::Duration::from_secs(1)).await;" "            // MUTATION: no beat before the fire batch"   && engine_tests --test risk_split_db
+  report "M17 the fire worker does not beat before it evaluates" $?; restore
+fi
+if want M18; then
+  $MUT engine/order-management/src/monitor.rs "            crate::authority::touch(&pool, std::time::Duration::from_secs(1)).await;
+            run_pass_guarded(&pool, None, &guard).await;" "            run_pass_guarded(&pool, None, &guard).await;"   && engine_tests --test risk_split_db
+  report "M18 the pass does not beat before it lists the engine's accounts" $?; restore
+fi
+if want M19; then
+  $MUT app/api/internal/risk-fallback/route.ts 'if (heartbeat.alive) return' 'if (false) return'   && web_tests lib/risk-fallback.test.ts
+  report "M19 the fallback runs its pass although the heartbeat is fresh" $?; restore
+fi
+if want M20; then
+  $MUT app/api/internal/risk-fallback/route.ts 'if (gate.run === false) return' 'if (false) return'   && web_tests lib/risk-fallback.test.ts
+  report "M20 the fallback ignores the idle gate" $?; restore
+fi
+if want M21; then
+  $MUT lib/risk-fallback.ts 'if (cache && now - cache.at' 'if (false && cache && now - cache.at'   && web_tests lib/risk-fallback.test.ts
+  report "M21 the RUST-broker answer is not cached" $?; restore
+fi
+if want M22; then
+  $MUT lib/risk-engine-alert.ts 'export const STALE_CHECKS_TO_ALERT = 2;' 'export const STALE_CHECKS_TO_ALERT = 1;'   && web_tests lib/risk-engine-alert.test.ts
+  report "M22 the alert fires on the first stale check" $?; restore
+fi
+if want M23; then
+  $MUT lib/risk-engine-alert.ts 'if (!input.active) {' 'if (false) {'   && web_tests lib/risk-engine-alert.test.ts
+  report "M23 the alert counts an idle market" $?; restore
+fi
+if want M24; then
+  $MUT lib/risk-engine-alert.ts 'export const RECOVER_AFTER_SECS = 60;' 'export const RECOVER_AFTER_SECS = 0;'   && web_tests lib/risk-engine-alert.test.ts
+  report "M24 the recovery notice needs no continuous fresh minute" $?; restore
+fi
+if want M25; then
+  $MUT lib/risk-engine-alert.ts 'if ((await redis.set(K.open, "1", "NX")) !== "OK") return { action: null, emailed: false };' ''   && web_tests lib/risk-engine-alert.test.ts
+  report "M25 the alert is sent on every stale check" $?; restore
+fi
+echo
+[ $MISSED -eq 0 ] && echo "every mutation was detected" || echo "AT LEAST ONE MUTATION WAS MISSED"
+exit $MISSED

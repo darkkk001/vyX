@@ -18,20 +18,28 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 pub const LOAD_URL: &str = "postgresql://postgres@127.0.0.1:5499/vyx_load_engine";
+/// Stage 6 split harness: the engine side runs on the shared split database (LOAD_ENGINE_DB=vyx_load_split) with ownership
+/// enforced (LOAD_ENFORCE=1: the pass lists only the engine's accounts and every write re-checks the owner), next to the web.
+pub const SPLIT_URL: &str = "postgresql://postgres@127.0.0.1:5499/vyx_load_split";
 const MAX_ROUNDS: usize = 40;
 
 pub async fn connect() -> Result<PgPool, String> {
+    let (url, expected) = match std::env::var("LOAD_ENGINE_DB").as_deref() {
+        Ok("vyx_load_split") => (SPLIT_URL, "vyx_load_split"),
+        Ok("vyx_load_engine") | Err(_) => (LOAD_URL, "vyx_load_engine"),
+        Ok(other) => return Err(format!("LOAD_ENGINE_DB={other}: only vyx_load_engine or vyx_load_split")),
+    };
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(32)
-        .connect(LOAD_URL)
+        .connect(url)
         .await
-        .map_err(|e| format!("connect {LOAD_URL}: {e}"))?;
+        .map_err(|e| format!("connect {url}: {e}"))?;
     let (db, port): (String, i32) = sqlx::query_as("SELECT current_database()::text, inet_server_port()")
         .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
-    if db != "vyx_load_engine" || port != 5499 {
-        return Err(format!("connected to {db}:{port}, expected vyx_load_engine:5499 -- refusing"));
+    if db != expected || port != 5499 {
+        return Err(format!("connected to {db}:{port}, expected {expected}:5499 -- refusing"));
     }
     Ok(pool)
 }
@@ -76,6 +84,10 @@ async fn pg_counters(pool: &PgPool) -> Result<(i64, i64), String> {
 }
 
 pub async fn run(walkers: usize) -> Result<LoadReport, String> {
+    if std::env::var("LOAD_ENFORCE").as_deref() == Ok("1") {
+        order_management::authority::enforce();
+        println!("[load:engine] ownership ENFORCED (Stage 6): the pass lists and acts on RUST-owned accounts only");
+    }
     let pool = connect().await?;
     let cfg = outbox::DispatcherConfig::from_env().ok_or("VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET must point at the load post-close server")?;
     // LOAD_DISPATCHERS=2: two dispatchers on the same outbox (exactly-once must hold: the route's per-row lease)

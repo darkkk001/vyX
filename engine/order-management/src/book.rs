@@ -140,6 +140,31 @@ pub fn edges_recordable() -> bool {
     PIN.try_with(|p| !p.measured.is_empty()).unwrap_or(true)
 }
 
+/// Stage 6 (2026-10-06): the tick prices a LIVE, unpinned evaluation was fired with (market_data::risk_hook::LiveFire).
+/// While a hint is in scope the book prices the symbols it names at THAT tick -- the one that crossed the SL / TP or put
+/// the account under its stop-out -- as long as the tick is fresh (the web's 15 s rule, judged against NOW), and every
+/// other symbol from the engine's ticks as usual. The positions themselves are NOT in the hint: the evaluation reads the
+/// account's CURRENT positions, funds and ledger in one snapshot (calc::load_book_state). That is the difference from a
+/// Pin (the shadow's), which reads the account as it stood at a past moment.
+#[derive(Clone, Debug, Default)]
+pub struct TickHint {
+    /// symbol -> (bid, ask, tick time)
+    pub ticks: std::collections::HashMap<String, (Decimal, Decimal, chrono::DateTime<chrono::Utc>)>,
+}
+
+tokio::task_local! {
+    static TICK_HINT: TickHint;
+}
+
+/// Runs `f` with the book's prices hinted by `hint` (see TickHint).
+pub async fn with_tick_hint<F: std::future::Future>(hint: TickHint, f: F) -> F::Output {
+    TICK_HINT.scope(hint, f).await
+}
+
+fn current_tick_hint() -> Option<TickHint> {
+    TICK_HINT.try_with(|h| h.clone()).ok()
+}
+
 fn current_price_source() -> Result<PriceSource, sqlx::Error> {
     match PRICE_SOURCE.try_with(|s| s.clone()) {
         Ok(s) => Ok(s),
@@ -385,6 +410,7 @@ async fn load_db_prices(conn: &mut sqlx::PgConnection, symbols: &[String], fx: &
 fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, pin: Option<&Pin>, now: chrono::DateTime<chrono::Utc>, db: &DbPrices) -> Vec<OpenPositionWithMarket> {
     let Some(first) = rows.first() else { return Vec::new() };
     let broker_id = first.broker_id.clone();
+    let hint = current_tick_hint();
     let fx_quotes: std::collections::HashMap<String, crate::fx::Quote> = match source {
         // same age limit as lib/fx.ts FX_RATE_MAX_AGE_MS: older = no rate = the position is unpriced
         PriceSource::Ticks(cache) => fx_symbols_of(rows).into_iter().filter_map(|s| fx_quote_from_ticks(cache, &s, now).map(|q| (s, q))).collect(),
@@ -393,10 +419,13 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
     rows.iter()
         .map(|r| {
             // the SOURCE of bid / ask: the database's LivePrice or the engine's ticks
+            // Stage 6: a live fire's own tick for this symbol, while it is still fresh (judged against `now`)
+            let hinted = hint.as_ref().and_then(|h| h.ticks.get(&r.symbol)).filter(|(_, _, at)| now - *at < chrono::Duration::seconds(15));
             let (bid, ask) = match (source, pin.and_then(|p| p.ticks.get(&r.symbol))) {
                 // pinned: the risk hook's own tick for a touched symbol, under the web's 15 s rule at the pin's moment
                 (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => (Some(b), Some(a)),
                 (_, Some(_)) => (None, None),
+                (_, None) if hinted.is_some() => hinted.map_or((None, None), |&(b, a, _)| (Some(b), Some(a))),
                 (PriceSource::Db, None) => db.fresh.get(&r.symbol).map_or((None, None), |&(b, a)| (Some(b), Some(a))),
                 (PriceSource::Ticks(cache), None) => fresh_from_ticks(cache, &r.symbol, now),
             };
@@ -707,6 +736,17 @@ pub struct CloseOutcome {
     pub trade_txn_id: String,
 }
 
+/// What a close attempt came to (close_position_as).
+#[derive(Debug)]
+pub enum CloseResult {
+    Closed(CloseOutcome),
+    /// no longer OPEN with the volume the caller read: a concurrent close got there first (benign)
+    Lost,
+    /// Stage 6: the acting side does not own this account's risk (any more). NOTHING is committed unless the caller
+    /// commits anyway: the caller must roll the transaction back.
+    NotOwner(crate::authority::RiskOwner),
+}
+
 /// Closes one position in full at `close_price`, crediting `realized_pnl` (account currency), inside the
 /// caller's transaction. `expected_volume` is the volume the caller read the position with; if the row is
 /// no longer OPEN with exactly that volume, nothing is written and `None` comes back (a benign race).
@@ -718,11 +758,66 @@ pub async fn close_position_in_tx(
     realized_pnl: Decimal,
     note: &str,
 ) -> Result<Option<CloseOutcome>, sqlx::Error> {
-    let claimed: Option<(String, String)> = sqlx::query_as(
-        r#"UPDATE "Position"
-           SET status = 'CLOSED', "closePrice" = $1, "realizedPnl" = $2, "closedAt" = now()
-           WHERE id = $3 AND status = 'OPEN' AND volume = $4
-           RETURNING "accountId", "brokerId""#,
+    Ok(match close_position_as(tx, None, position_id, expected_volume, close_price, realized_pnl, note).await? {
+        CloseResult::Closed(outcome) => Some(outcome),
+        CloseResult::Lost | CloseResult::NotOwner(_) => None,
+    })
+}
+
+/// close_position_in_tx for the RISK path under the Stage 6 split: `actor` = Some(side) re-checks, inside this
+/// transaction and after the account row is locked, that `side` owns the account's risk (authority::lock_owner_in_tx),
+/// and answers `NotOwner` (the caller rolls back) when it does not. `None` = no check (every non-risk caller, and the
+/// engine before the server enforces ownership).
+#[allow(clippy::too_many_arguments)]
+pub async fn close_position_as(
+    tx: &mut sqlx::PgTransaction<'_>,
+    actor: Option<crate::authority::RiskOwner>,
+    position_id: &str,
+    expected_volume: Decimal,
+    close_price: Decimal,
+    realized_pnl: Decimal,
+    note: &str,
+) -> Result<CloseResult, sqlx::Error> {
+    close_position_full(tx, actor, position_id, expected_volume, close_price, realized_pnl, note, None).await
+}
+
+/// close_position_as plus the close-by partner link: `close_by_position_id` is stored on the TRADE_PNL row's
+/// "closeByPositionId" exactly as lib/position-close.ts does (never parsed from the note). Every engine close path
+/// today (SL / TP, stop-out) passes `None`: the engine has no close-by, no partial close and no queued close.
+///
+/// Structured close fields (docs/POSITION-DEAL-MODEL.md section 0), identical to lib/position-close.ts closePositionInTx
+/// for a FULL close (closeVolume = the whole open remainder):
+/// - Position: "realizedPnl" and "closedVolume" are running totals (+ this close), "closedSwap" takes the unattributed
+///   swap remainder: closeSwap = round2(swap - closedSwap), "closePrice" = this close's price, volume untouched;
+/// - the TRADE_PNL row carries closeVolume, closePrice, closeSwap and closeByPositionId.
+/// The old row values are read in the same statement that closes the row (a CTE with FOR UPDATE), so a concurrent
+/// close sees either all or none of it. Postgres ROUND (half away from zero) is Decimal.js ROUND_HALF_UP.
+#[allow(clippy::too_many_arguments)]
+pub async fn close_position_full(
+    tx: &mut sqlx::PgTransaction<'_>,
+    actor: Option<crate::authority::RiskOwner>,
+    position_id: &str,
+    expected_volume: Decimal,
+    close_price: Decimal,
+    realized_pnl: Decimal,
+    note: &str,
+    close_by_position_id: Option<&str>,
+) -> Result<CloseResult, sqlx::Error> {
+    let claimed: Option<(String, String, Decimal)> = sqlx::query_as(
+        r#"WITH old AS (
+             SELECT id, swap, "closedSwap" FROM "Position"
+             WHERE id = $3 AND status = 'OPEN' AND volume = $4
+             FOR UPDATE
+           )
+           UPDATE "Position" p
+           SET status = 'CLOSED', "closePrice" = $1,
+               "realizedPnl" = COALESCE(p."realizedPnl", 0) + $2,
+               "closedVolume" = COALESCE(p."closedVolume", 0) + p.volume,
+               "closedSwap" = COALESCE(old."closedSwap", 0) + ROUND(old.swap - COALESCE(old."closedSwap", 0), 2),
+               "closedAt" = now()
+           FROM old
+           WHERE p.id = old.id
+           RETURNING p."accountId", p."brokerId", ROUND(old.swap - COALESCE(old."closedSwap", 0), 2)"#,
     )
     .bind(close_price)
     .bind(realized_pnl)
@@ -730,14 +825,22 @@ pub async fn close_position_in_tx(
     .bind(expected_volume)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((account_id, broker_id)) = claimed else {
-        return Ok(None);
+    let Some((account_id, broker_id, close_swap)) = claimed else {
+        return Ok(CloseResult::Lost);
     };
 
     let (balance_before, credit_before): (Decimal, Decimal) = sqlx::query_as(r#"SELECT balance, credit FROM "Account" WHERE id = $1 FOR UPDATE"#)
         .bind(&account_id)
         .fetch_one(&mut **tx)
         .await?;
+    // Stage 6 handoff: the owner is read HERE, inside the transaction, with the account row locked and the broker row
+    // locked FOR SHARE -- a flip waits for this transaction, a later one is seen by the next (authority.rs module doc)
+    if let Some(actor) = actor {
+        let owner = crate::authority::lock_owner_in_tx(tx, &account_id).await?.unwrap_or(crate::authority::RiskOwner::Web);
+        if owner != actor {
+            return Ok(CloseResult::NotOwner(owner));
+        }
+    }
     // the money rules live in close_money (shared with the Stage 5 shadow's simulated close); the broker's
     // negative-balance protection flag is read only when the result would go below zero, as before
     let unprotected = close_money(balance_before, credit_before, realized_pnl, false);
@@ -763,8 +866,9 @@ pub async fn close_position_in_tx(
     let trade_txn_id = Uuid::new_v4().to_string();
     sqlx::query(
         r#"INSERT INTO "Transaction"
-             (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt")
-           VALUES ($1, $2, $3, 'TRADE_PNL', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now())"#,
+             (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt",
+              "closeVolume", "closePrice", "closeSwap", "closeByPositionId")
+           VALUES ($1, $2, $3, 'TRADE_PNL', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now(), $9, $10, $11, $12)"#,
     )
     .bind(&trade_txn_id)
     .bind(&broker_id)
@@ -774,6 +878,10 @@ pub async fn close_position_in_tx(
     .bind(raw_balance_after)
     .bind(position_id)
     .bind(note)
+    .bind(expected_volume)
+    .bind(close_price)
+    .bind(close_swap)
+    .bind(close_by_position_id)
     .execute(&mut **tx)
     .await?;
 
@@ -844,7 +952,7 @@ pub async fn close_position_in_tx(
         .await?;
     }
 
-    Ok(Some(CloseOutcome {
+    Ok(CloseResult::Closed(CloseOutcome {
         realized_pnl,
         raw_balance_after,
         final_balance,
@@ -1025,16 +1133,92 @@ pub async fn margin_call_notified(pool: &PgPool, account_id: &str) -> Result<boo
 /// trader's and the staff's notification), in one transaction; staying in does nothing; leaving clears the column
 /// so the next episode notifies again. Returns true when this call queued a notice.
 pub async fn apply_margin_call_edge(pool: &PgPool, account_id: &str, edge: MarginCallEdge) -> Result<bool, sqlx::Error> {
+    apply_margin_call_edge_as(pool, None, account_id, edge).await
+}
+
+/// apply_margin_call_edge for the RISK path under the Stage 6 split: `actor` = Some(side) re-checks inside the
+/// transaction (account row locked, broker row `FOR SHARE`) that `side` owns the account, and writes nothing when it does
+/// not (returns false). `None` = no check.
+pub async fn apply_margin_call_edge_as(
+    pool: &PgPool,
+    actor: Option<crate::authority::RiskOwner>,
+    account_id: &str,
+    edge: MarginCallEdge,
+) -> Result<bool, sqlx::Error> {
+    apply_margin_call_edge_with(pool, actor, account_id, edge, None).await
+}
+
+/// What the end of a margin-call episode says (Stage 6): the account's level now (None = nothing left open, or no used margin)
+/// and the group's margin-call level. The web writes a trader notification "Margin call over" and, when the account
+/// recovered by price (a level), a real-time `MarginCall` "cleared" event; RUST mode has to deliver the same.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarginCallEnd {
+    pub margin_level: Option<Decimal>,
+    pub call_level: Decimal,
+}
+
+/// apply_margin_call_edge_as, plus (Stage 6) the END of an episode as an outbox row: with `end` set, an `Out` edge that really
+/// cleared the flag queues ONE "MARGIN_CALL_CLEARED" row in the same transaction (the web's route writes the notification and
+/// publishes the event), and the call returns true like an `In` that queued a notice. `end = None` = the flag only (legacy / tests).
+pub async fn apply_margin_call_edge_with(
+    pool: &PgPool,
+    actor: Option<crate::authority::RiskOwner>,
+    account_id: &str,
+    edge: MarginCallEdge,
+    end: Option<MarginCallEnd>,
+) -> Result<bool, sqlx::Error> {
     match edge {
         MarginCallEdge::Out => {
-            sqlx::query(r#"UPDATE "Account" SET "marginCallNotifiedAt" = NULL WHERE id = $1 AND "marginCallNotifiedAt" IS NOT NULL"#)
+            let mut tx = pool.begin().await?;
+            if let Some(actor) = actor {
+                if crate::authority::lock_owner_in_tx(&mut tx, account_id).await? != Some(actor) {
+                    tx.rollback().await?;
+                    return Ok(false);
+                }
+            }
+            // the episode's start (its identity: one CLEARED row per episode) is read WITH the clear, in one statement
+            let cleared: Option<(String, i64)> = sqlx::query_as(
+                r#"WITH old AS (SELECT id, "brokerId", "marginCallNotifiedAt" AS at FROM "Account" WHERE id = $1 AND "marginCallNotifiedAt" IS NOT NULL FOR UPDATE)
+                   UPDATE "Account" a SET "marginCallNotifiedAt" = NULL FROM old WHERE a.id = old.id
+                   RETURNING old."brokerId", (extract(epoch from old.at) * 1000)::bigint"#,
+            )
+            .bind(account_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let mut queued = false;
+            if let (Some((broker_id, started_ms)), Some(end)) = (&cleared, end) {
+                let mut payload = serde_json::json!({ "marginCallLevel": end.call_level.normalize().to_string() });
+                if let Some(level) = end.margin_level {
+                    payload["marginLevel"] = serde_json::Value::String(fixed2(level));
+                }
+                sqlx::query(
+                    r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", payload)
+                       VALUES ($1, 'MARGIN_CALL_CLEARED', $2, $3, $4, $5::jsonb)
+                       ON CONFLICT ("dedupeKey") DO NOTHING"#,
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(format!("mcc:{}:{}", account_id, started_ms))
+                .bind(broker_id)
                 .bind(account_id)
-                .execute(pool)
+                .bind(payload.to_string())
+                .execute(&mut *tx)
                 .await?;
-            Ok(false)
+                queued = true;
+            }
+            tx.commit().await?;
+            if cleared.is_some() {
+                crate::authority::trace_action(actor.unwrap_or(crate::authority::RiskOwner::Rust), "margin_call_out", account_id, "");
+            }
+            Ok(queued)
         }
         MarginCallEdge::In { margin_level, call_level } => {
             let mut tx = pool.begin().await?;
+            if let Some(actor) = actor {
+                if crate::authority::lock_owner_in_tx(&mut tx, account_id).await? != Some(actor) {
+                    tx.rollback().await?;
+                    return Ok(false);
+                }
+            }
             let entered: Option<(String, i64)> = sqlx::query_as(
                 r#"UPDATE "Account" SET "marginCallNotifiedAt" = now()
                    WHERE id = $1 AND "marginCallNotifiedAt" IS NULL
@@ -1064,6 +1248,7 @@ pub async fn apply_margin_call_edge(pool: &PgPool, account_id: &str, edge: Margi
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
+            crate::authority::trace_action(actor.unwrap_or(crate::authority::RiskOwner::Rust), "margin_call_in", account_id, "");
             Ok(true)
         }
     }
