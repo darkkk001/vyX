@@ -38,7 +38,7 @@ Verification of the 1-minute fallback cron and of the stale-heartbeat alert is p
 * Nothing below prints a secret. URLs are read into variables; only host names, lengths and counts are shown.
 * `nssm` is not on the VPS PATH. Always `C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe`.
 * `prisma migrate` uses **`DIRECT_URL`**: set BOTH `DATABASE_URL` and `DIRECT_URL`, or it migrates whatever `.env` points at (a dead production). **Never `migrate dev`** on this database.
-* The live database is `ep-morning-glade`, credentials in `D:\VyXTrader-Tauri\vyX\.env.live`. `ep-flat-boat` is dead; `ep-old-night` is dev. Every step that touches the live database starts with the host check of 2.1.
+* The live database is `ep-morning-glade`, credentials in `C:\vyx-secrets\env\D-vyX\.env.live`. `ep-flat-boat` is dead; `ep-old-night` is dev. Every step that touches the live database starts with the host check of 2.1.
 * Run SQL in this document against the live database through `$Live` (defined in 2.1).
 * Times are UTC. The earliest flip is **after the 2nd weekend reopen, Sun 2026-10-11 21:00-22:00 UTC** (Sunday 17:00 New York; until 1 Nov US daylight time is in force), on a weekday with the market open and the owner present: **Mon 2026-10-12 or later**.
 
@@ -71,12 +71,12 @@ The last item, the final sweep, is section 10 (local first, then the live one in
 
 ### 1.2 `prisma migrate status` on production
 
-On the owner PC (the live checkout, `D:\VyXTrader-Tauri\vyX`):
+On the owner PC (the live checkout, `C:\vyx\web`):
 
 ```powershell
-cd D:\VyXTrader-Tauri\vyX
+cd C:\vyx\web
 # load the live connection into THIS process only (nothing is printed except host names)
-foreach ($l in Get-Content .env.live) { if ($l -match '^\s*(DATABASE_URL|DIRECT_URL)\s*=\s*"?([^"]+?)"?\s*$') { Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2] } }
+foreach ($l in Get-Content C:\vyx-secrets\env\D-vyX\.env.live) { if ($l -match '^\s*(DATABASE_URL|DIRECT_URL)\s*=\s*"?([^"]+?)"?\s*$') { Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2] } }
 foreach ($n in 'DATABASE_URL','DIRECT_URL') { $v = (Get-Item "Env:$n").Value; "$n host: $((([uri]($v -replace '^postgres(ql)?://','http://')).Host))" }
 if ($env:DATABASE_URL -notmatch 'ep-morning-glade' -or $env:DIRECT_URL -notmatch 'ep-morning-glade') { throw "not the live database (ep-morning-glade): stop" }
 $Live = $env:DIRECT_URL
@@ -130,7 +130,7 @@ The running (old) web and the running engine ignore the new columns and the new 
 ### 2.1 Same shell as 1.2 (so `DATABASE_URL`, `DIRECT_URL` and `$Live` are the live ones; re-run the host check if you opened a new shell)
 
 ```powershell
-cd D:\VyXTrader-Tauri\vyX
+cd C:\vyx\web
 if ($env:DATABASE_URL -notmatch 'ep-morning-glade' -or $env:DIRECT_URL -notmatch 'ep-morning-glade') { throw "not the live database: stop" }
 "BOTH set, both ep-morning-glade: $([bool]$env:DATABASE_URL) $([bool]$env:DIRECT_URL)"
 ```
@@ -140,12 +140,14 @@ if ($env:DATABASE_URL -notmatch 'ep-morning-glade' -or $env:DIRECT_URL -notmatch
 `migrate status` BEFORE `migrate deploy`, every time: it must list exactly the pending migrations you expect (the two above, plus `20261006120000_credit_and_trading_rights` only if main's release has not reached this database yet) and report nothing "not found locally" or failed.
 If it lists anything else, STOP.
 
-The checkout must contain the two migration folders (they come with the merge of step 3 if you merge first; for the migration alone, check out `engine/stage6` in a separate worktree, **never** in a checkout with uncommitted work):
+The checkout must contain the two migration folders (they come with the merge of step 3 if you merge first; for the migration alone, use the existing `engine/stage6` worktree `C:\vyx\wt-stage6`, **never** a checkout with uncommitted work, and do not add a third worktree):
 
 ```powershell
+cd C:\vyx\wt-stage6
+git status --short                      # must be clean
 git fetch newrepo
-git worktree add D:\vyx-stage6-migrate newrepo/engine/stage6 --detach
-cd D:\vyx-stage6-migrate
+git merge --ff-only newrepo/engine/stage6
+"HEAD: $(git rev-parse HEAD)"           # must be the pinned engine/stage6 commit
 npm ci
 npx prisma migrate status      # first: the pending list must be what 2 says
 npx prisma migrate deploy
@@ -192,6 +194,31 @@ FROM (VALUES ('$EngineRole'), ('$WebRole')) v(r);
 
 **Verify:** `sel`, `ins`, `upd` all `t` for both roles. If not, as the database owner: `GRANT SELECT, INSERT, UPDATE ON "RiskEngineHeartbeat" TO <role>;` and re-run. (The engine also refuses risk mode at startup with a clear message when this is missing: `RISK MODE REFUSED`.)
 
+### 2.5 The shadow role may read the demo sandbox columns
+
+Since main's QoreTrader demo (migration `20261013100000_broker_demo_sandbox`) the engine skips every sandbox broker by reading `Broker.isDemoSandbox`, and the reconciler joins it through
+`Transaction.brokerId` and `Notification.brokerId`. The read-only shadow role `vyx_shadow_ro` (`deploy/neon-shadow-readonly.sql`) must be able to read these three columns, or the shadow
+fails with `permission denied for table Transaction` and dies. Run this **before any engine built from this branch (or from main since `bbbabcc`) is deployed**, as the database owner
+(`$Live` is the owner connection of 2.1). Only these three statements: do not re-run the whole grant file, which resets the role's password.
+
+```powershell
+if ($Live -notmatch 'ep-morning-glade') { throw "not the live database: stop" }
+@'
+GRANT SELECT ("isDemoSandbox") ON "Broker" TO vyx_shadow_ro;
+GRANT SELECT ("brokerId") ON "Transaction" TO vyx_shadow_ro;
+GRANT SELECT ("brokerId") ON "Notification" TO vyx_shadow_ro;
+'@ | psql -X -q -v ON_ERROR_STOP=1 -d $Live
+@'
+SELECT has_column_privilege('vyx_shadow_ro', '"Broker"', 'isDemoSandbox', 'SELECT') AS broker_sandbox,
+       has_column_privilege('vyx_shadow_ro', '"Transaction"', 'brokerId', 'SELECT') AS tx_broker,
+       has_column_privilege('vyx_shadow_ro', '"Notification"', 'brokerId', 'SELECT') AS notif_broker,
+       has_column_privilege('vyx_shadow_ro', '"Account"', 'email', 'SELECT') AS account_email,
+       has_table_privilege('vyx_shadow_ro', '"Transaction"', 'INSERT') AS tx_insert;
+'@ | psql -X -q -d $Live
+```
+
+**Verify:** `broker_sandbox`, `tx_broker`, `notif_broker` are `t`; `account_email` and `tx_insert` stay `f` (still least privilege). The grants are additive: the running engine is unaffected.
+
 ## 3. Web deploy (merge order, Vercel Ready check)
 
 Nothing here changes behaviour yet: every broker is WEB, so the web acts on every account exactly as before. The new code is the skip and the in-transaction check, both inert for WEB brokers.
@@ -201,7 +228,7 @@ Nothing here changes behaviour yet: every broker is WEB, so the web acts on ever
 An engine close queues a follow-up row that the engine hands to the web's `/api/internal/post-close`; that route authenticates with `POST_CLOSE_SECRET`. The VPS gets the same value in 5.2.
 
 ```powershell
-cd D:\VyXTrader-Tauri\vyX
+cd C:\vyx\web
 npx vercel env ls production | Select-String 'POST_CLOSE_SECRET'
 ```
 
@@ -221,7 +248,7 @@ If `POST_CLOSE_SECRET` already exists, you must be able to give the VPS the same
 ### 3.2 Merge
 
 ```powershell
-cd D:\VyXTrader-Tauri\vyX
+cd C:\vyx\web
 git status --short                      # must be clean
 git fetch newrepo
 git checkout main; git merge --ff-only newrepo/main
