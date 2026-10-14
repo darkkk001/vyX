@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { brokerServers } from "@/lib/broker-servers";
 
 // Public, unauthenticated by design -- the exact same branding data
 // app/(broker)/trade/page.tsx and trade/login/page.tsx already inject
@@ -22,5 +23,7 @@ export async function GET(request: NextRequest) {
     brokerLogoUrl: request.headers.get("x-broker-logo-url") ?? "",
     supportEmail: broker?.supportEmail ?? null,
     primaryColor: broker?.primaryColor ?? null,
+    // the sign-in card's Server selector (lib/broker-servers.ts): from the server, never from the build
+    servers: brokerServers(broker?.name ?? "VyXTrader"),
   });
 }
