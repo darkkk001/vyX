@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { tradeApi } from "@/lib/trade-api";
 import DesktopTitleBar from "@/components/webtrader/DesktopTitleBar";
+import PasswordField from "@/components/PasswordField";
 import "../webtrader.css";
 import styles from "./TradeLoginForm.module.css";
 import { plainError } from "@/lib/plain-error";
+import { brokerServers, kindFromRefusal, mismatchText, serverForKind, serverMatches, type BrokerServer } from "@/lib/broker-servers";
 
 type ServerOption = { name: string; type: "LIVE" | "DEMO" };
 
@@ -29,6 +31,7 @@ export default function TradeLoginForm({
   initialError = null,
   initialPendingToken = null,
   initialRemember = true,
+  servers: serverList,
   onAuthenticated,
 }: {
   brokerName: string;
@@ -38,6 +41,9 @@ export default function TradeLoginForm({
   initialError?: string | null;
   initialPendingToken?: string | null;
   initialRemember?: boolean;
+  // The Server selector's list (GET /api/trade/broker-branding `servers`): from the server, never from the build. Absent =
+  // derived from the broker's name (lib/broker-servers.ts), the same names the server sends.
+  servers?: readonly BrokerServer[];
   // Called instead of navigating to /trade after a successful login or
   // 2FA verification -- `remember` mirrors the "save account and connect
   // automatically" checkbox so a caller can decide what that means in its
@@ -51,10 +57,7 @@ export default function TradeLoginForm({
   // one broker, so "server" here means this broker's Live vs. Demo
   // trading environment, not a choice between different brokers -- that
   // broker-picker already exists separately at app/launch/page.tsx.
-  const servers: ServerOption[] = [
-    { name: `${brokerName}-Live`, type: "LIVE" },
-    { name: `${brokerName}-Demo`, type: "DEMO" },
-  ];
+  const servers: ServerOption[] = (serverList ?? brokerServers(brokerName)).map((s) => ({ name: s.name, type: s.kind }));
 
   const [selectedServer, setSelectedServer] = useState<ServerOption>(servers[0]);
   const [serverOpen, setServerOpen] = useState(false);
@@ -98,7 +101,6 @@ export default function TradeLoginForm({
   // password, so it hands off here for the actual credential entry.
   const [accountNumber, setAccountNumber] = useState(initialAccountNumber);
   const [password, setPassword] = useState("");
-  const [passwordVisible, setPasswordVisible] = useState(false);
   const [error, setError] = useState<string | null>(initialError);
   const [submitting, setSubmitting] = useState(false);
   const [connStatus, setConnStatus] = useState("Not connected");
@@ -157,14 +159,38 @@ export default function TradeLoginForm({
         setConnStatus("Not connected");
         return;
       }
+      // The server refuses a Live / Demo mismatch itself (400); an answer that names the account's mode and disagrees with the chosen
+      // server is refused here too (and the session just opened is closed again), so a Demo account never lands in the Live server.
+      if (!serverMatches(selectedServer.type, result.accountMode)) {
+        await tradeApi.logout().catch(() => {});
+        refuseMismatch(result.accountMode === "LIVE" ? "LIVE" : "DEMO");
+        return;
+      }
       setConnStatus(`Connected · ${selectedServer.name}`);
       onAuthenticated(remember);
     } catch (err) {
-      setError(plainError(err, "Sign-in failed. Try again."));
-      setConnStatus("Not connected");
+      const actual = kindFromRefusal(err instanceof Error ? err.message : typeof err === "string" ? err : "");
+      if (actual) {
+        refuseMismatch(actual);
+      } else {
+        setError(plainError(err, "Sign-in failed. Try again."));
+        setConnStatus("Not connected");
+      }
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // The chosen server is not the account's: one line, the selector moves to the right server, the account number stays, the password goes.
+  function refuseMismatch(actual: "LIVE" | "DEMO") {
+    const to = serverForKind(serverListOf(), actual, selectedServer.name);
+    if (to) pickServer({ name: to.name, type: to.kind });
+    setPassword("");
+    setError(mismatchText(actual));
+    setConnStatus("Not connected");
+  }
+  function serverListOf(): BrokerServer[] {
+    return servers.map((s) => ({ name: s.name, kind: s.type }));
   }
 
   async function handleVerifyTwoFactor(event: React.FormEvent) {
@@ -381,30 +407,14 @@ export default function TradeLoginForm({
 
           <div className={styles.field}>
             <label className={styles.fieldLabel}>Password</label>
-            <div className={styles.passwordWrap}>
-              <input
-                name="password"
-                type={passwordVisible ? "text" : "password"}
-                autoComplete="current-password"
-                placeholder="••••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className={styles.input}
-              />
-              <button
-                type="button"
-                className={styles.eyeBtn}
-                onClick={() => setPasswordVisible((v) => !v)}
-                title={passwordVisible ? "Hide password" : "Show password"}
-                aria-label={passwordVisible ? "Hide password" : "Show password"}
-              >
-                {passwordVisible ? (
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
-                ) : (
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
-                )}
-              </button>
-            </div>
+            <PasswordField
+              name="password"
+              autoComplete="current-password"
+              placeholder="••••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={styles.input}
+            />
           </div>
 
           <div className={styles.rememberRow}>

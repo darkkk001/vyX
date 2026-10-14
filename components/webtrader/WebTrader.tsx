@@ -1,5 +1,6 @@
 "use client";
 
+import PasswordField from "@/components/PasswordField";
 import { kycWord } from "@/lib/kyc-words";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
@@ -5354,9 +5355,8 @@ export default function WebTrader({
             <button className="modal-close" aria-label="Close" onClick={() => setChangePasswordOpen(false)}>✕</button>
             <form className="generic-modal-card" onSubmit={handleChangePassword}>
               <div className="generic-modal-title">Change password</div>
-              <input
+              <PasswordField
                 className="generic-modal-input mono"
-                type="password"
                 placeholder="Current password"
                 autoFocus
                 value={cpCurrent}
@@ -5364,18 +5364,16 @@ export default function WebTrader({
                 required
                 style={{ marginBottom: 8 }}
               />
-              <input
+              <PasswordField
                 className="generic-modal-input mono"
-                type="password"
                 placeholder="New password (min. 8 characters)"
                 value={cpNew}
                 onChange={(e) => setCpNew(e.target.value)}
                 required
                 style={{ marginBottom: 8 }}
               />
-              <input
+              <PasswordField
                 className="generic-modal-input mono"
-                type="password"
                 placeholder="Confirm new password"
                 value={cpConfirm}
                 onChange={(e) => setCpConfirm(e.target.value)}
@@ -5407,9 +5405,8 @@ export default function WebTrader({
                   <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 8px" }}>
                     Enabled. Enter your password to turn it off.
                   </p>
-                  <input
+                  <PasswordField
                     className="generic-modal-input mono"
-                    type="password"
                     placeholder="Password"
                     value={tfaDisablePassword}
                     onChange={(e) => setTfaDisablePassword(e.target.value)}
@@ -5539,9 +5536,8 @@ export default function WebTrader({
                 <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 10px" }}>
                   Confirm the password for this account, switching replaces your current session.
                 </p>
-                <input
+                <PasswordField
                   className="generic-modal-input mono"
-                  type="password"
                   placeholder="Password"
                   autoFocus
                   value={switchPassword}

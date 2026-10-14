@@ -19,3 +19,31 @@ export function brokerServers(brokerName: string): BrokerServer[] {
     { name: `${base}Demo`, kind: "DEMO" },
   ];
 }
+
+/** "This account belongs to the Demo server" / "...Live server": the one-line refusal when the chosen server's kind is not the account's. */
+export function mismatchText(actual: ServerKind): string {
+  return `This account belongs to the ${actual === "LIVE" ? "Live" : "Demo"} server`;
+}
+
+/** The kind the server's own refusal names ("this is a Demo account, select the Demo server and try again", POST /api/trade/login
+ *  with a wrong accountMode); null when the text is not that refusal. */
+export function kindFromRefusal(error: string | null | undefined): ServerKind | null {
+  const e = (error ?? "").toLowerCase();
+  if (e.includes("this is a demo account")) return "DEMO";
+  if (e.includes("this is a live account")) return "LIVE";
+  return null;
+}
+
+/** True when the chosen server can sign this account in. `accountMode` is the account's own flag from the login answer; a flag the
+ *  server did not send (an older server) is not a mismatch. */
+export function serverMatches(chosen: ServerKind, accountMode: string | null | undefined): boolean {
+  const a = (accountMode ?? "").trim().toUpperCase();
+  if (a !== "LIVE" && a !== "DEMO") return true;
+  return chosen === a;
+}
+
+/** The entry of the account's real kind (for the automatic switch after a refusal): the preferred name when it has that kind, else the first. */
+export function serverForKind(servers: readonly BrokerServer[], kind: ServerKind, preferName?: string): BrokerServer | null {
+  const ofKind = servers.filter((s) => s.kind === kind);
+  return ofKind.find((s) => s.name === preferName) ?? ofKind[0] ?? null;
+}
