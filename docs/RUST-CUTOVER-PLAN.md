@@ -1463,6 +1463,13 @@ blockers for RISK authority vs ORDERS-only). Per-broker values are `WEB | RUST` 
   `Position.initialVolume` are proposals), the engine must conform to it: every engine write that opens, reduces, closes or reverses a
   position produces the same rows and fields as the web's twin, and the model's own conformance tests run against the engine. Nothing
   beyond the close fields above is built on the engine side. UNMET until the owner signs it off.
+- **CUTOVER GATE (owner, 2026-10-14): measured touch-to-write delay and slippage. UNMET.** Scope: **NOT required for the demo-only flip**;
+  **REQUIRED before any live-account flip** (`riskAuthorityDemoOnly = false`, runbook section 9). Input: the `POSITION_CLOSED` follow-up
+  payload records the tick that triggered the close (`triggerBid`, `triggerAsk`, `triggerTickAt`; `docs/BACKEND-NEEDED.md`, built after the
+  demo week). Met when at least one full demo week of engine SL / TP / stop-out closes has been measured from it: the delay from
+  `triggerTickAt` to the close write, and the slippage from the SL / TP level to the fill, both reviewed and signed off by the owner.
+  Today neither can be measured: the fill is the touching tick's bid / ask, but that tick's time is not stored
+  (2026-10-14: 4143.00 SL filled at 4142.73 on 50005711, the touch time unknown).
 - **CUTOVER GATE (owner, 2026-10-07): hedging allowed.** `Broker.hedgingAllowed` (default true). When false, the web refuses
   an OPEN that would put one account on both sides of one symbol (`lib/hedging.ts checkHedgingAllowed`, code
   `HEDGING_NOT_ALLOWED`) at every open path: client order and pending order, requote accept, dealer accept, desk flush,
