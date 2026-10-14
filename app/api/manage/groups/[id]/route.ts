@@ -3,6 +3,7 @@ import { isDemoBrokerId } from "@/lib/demo";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { groupHasAccountsMessage, isSystemGroup } from "@/lib/system-group";
 import { checkAccountStructure } from "@/lib/account-structure";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
@@ -261,11 +262,16 @@ async function deleteHandler(_request: NextRequest, { params }: { params: Promis
     );
   }
 
+  // a group the platform created (the hedge group, the starter Dealing group) is editable but never deletable (owner 2026-10)
+  if (isSystemGroup(existing)) {
+    return NextResponse.json({ error: "System groups cannot be deleted.", code: "SYSTEM_GROUP" }, { status: 400 });
+  }
+
   const accountCount = await prisma.account.count({ where: { groupId: id } });
   if (accountCount > 0) {
     return NextResponse.json(
       {
-        error: `Cannot delete: ${accountCount} account${accountCount === 1 ? " is" : "s are"} still in this group. Move its accounts first.`,
+        error: groupHasAccountsMessage(accountCount),
         code: "GROUP_IN_USE",
       },
       { status: 409 }
@@ -304,7 +310,7 @@ async function deleteHandler(_request: NextRequest, { params }: { params: Promis
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2003" || error.code === "P2014")) {
       return NextResponse.json(
-        { error: "Cannot delete: an account was assigned to this group while it was being deleted. Reassign it first.", code: "GROUP_IN_USE" },
+        { error: "This group has an account now. Move it first.", code: "GROUP_IN_USE" },
         { status: 409 }
       );
     }

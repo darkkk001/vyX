@@ -120,7 +120,8 @@ export const MANIFEST: Row[] = [
   { mod: "client-kyc-requests/[id]/route", method: "PATCH", perm: "KYC_REVIEW", needsId: true, body: {} },
   { mod: "client-kyc-requests/route", method: "GET", perm: "KYC_REVIEW", supportRead: true },
   { mod: "dashboard/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "dealing-desk-toggle/route", method: "GET", perm: "RISK_SETTINGS" },
+  // 1.0.72: reading the desk switch is any manager (the Dealing screen shows the mode read-only); the PATCH keeps RISK_SETTINGS
+  { mod: "dealing-desk-toggle/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "dealing-desk/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "dealing-queue/[id]/route", method: "PATCH", perm: "DEALING", needsId: true, body: {} },
   { mod: "dealing-queue/route", method: "GET", perm: "ANY_MANAGER" },

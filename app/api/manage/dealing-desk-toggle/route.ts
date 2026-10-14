@@ -3,7 +3,7 @@ import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession } from "@/lib/auth";
+import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getPermissionContext, PERMISSION_LABELS } from "@/lib/permissions";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
@@ -49,9 +49,10 @@ import {
 // behavior toggles (Group.dealingMode, Broker.dealingModeAt) already use.
 export async function GET() {
   const session = await getAdminSession();
-  const permissions = await getPermissionContext(session, "manage/dealing-desk-toggle");
-  if (permissions.forbidUnless("RISK_SETTINGS")) {
-    return NextResponse.json({ error: "forbidden", permission: "RISK_SETTINGS", permissionLabel: PERMISSION_LABELS.RISK_SETTINGS }, { status: 403 });
+  // Backoffice 1.0.72 (owner): READING the desk switch is open to every manager (the Dealing screen shows the mode read-only);
+  // CHANGING it (PATCH below) still needs RISK_SETTINGS. SUPPORT stays refused.
+  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! } });
   return NextResponse.json({

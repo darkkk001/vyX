@@ -170,3 +170,45 @@ describe("PATCH /api/manage/symbols -- hedgedMarginPct floor", () => {
     expect((await patch(fx, { ...baseBody(fx.symbolId), hedgedMarginPct: "25" })).status).toBe(400);
   });
 });
+
+// Backoffice 1.0.72 round 2 (Symbols screen truth): a platform symbol this broker has no BrokerSymbol row for is NOT enabled
+// (trading and the group counts only count real enabled rows), says it is not added, and says whether it could ever be enabled.
+describe("GET /api/manage/symbols -- row-less symbols", () => {
+  async function get(fx: Fixture) {
+    const { getAdminSession } = await import("@/lib/auth");
+    vi.mocked(getAdminSession).mockResolvedValue({ adminId: fx.adminId, role: "BROKER_ADMIN", brokerId: fx.brokerId });
+    const { GET } = await import("./route");
+    const res = await GET();
+    return (await res.json()) as Array<{ symbolId: string; enabled: boolean; added: boolean; supported: boolean; brokerSymbolId: string | null }>;
+  }
+
+  it("a USD-quoted symbol with no row: enabled=false, added=false, supported=true; switching it on adds it", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const before = (await get(fx)).find((r) => r.symbolId === fx.symbolId)!;
+    expect(before).toMatchObject({ enabled: false, added: false, supported: true, brokerSymbolId: null });
+    const on = await patch(fx, baseBody(fx.symbolId));
+    expect(on.status).toBe(200);
+    const after = (await get(fx)).find((r) => r.symbolId === fx.symbolId)!;
+    expect(after).toMatchObject({ enabled: true, added: true, supported: true });
+  });
+
+  it("a non-USD symbol with no row: enabled=false, added=false, supported=false, and PATCH refuses to enable it", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    await prisma.symbol.update({ where: { id: fx.symbolId }, data: { quoteCurrency: "JPY" } });
+    const row = (await get(fx)).find((r) => r.symbolId === fx.symbolId)!;
+    expect(row).toMatchObject({ enabled: false, added: false, supported: false });
+    const refused = await patch(fx, baseBody(fx.symbolId));
+    expect(refused.status).toBe(400);
+    expect(String(refused.json.error)).toContain("cannot be enabled");
+    expect((await get(fx)).find((r) => r.symbolId === fx.symbolId)!.added).toBe(false);
+  });
+
+  it("a symbol with a disabled row is added=true, enabled=false", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    await prisma.brokerSymbol.create({ data: { brokerId: fx.brokerId, symbolId: fx.symbolId, enabled: false } });
+    expect((await get(fx)).find((r) => r.symbolId === fx.symbolId)).toMatchObject({ enabled: false, added: true, supported: true });
+  });
+});

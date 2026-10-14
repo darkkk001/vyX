@@ -28,7 +28,8 @@ const DEFAULTS = {
   lotStep: "0.01",
   swapLong: "0",
   swapShort: "0",
-  enabled: true,
+  // a symbol with no BrokerSymbol row is NOT enabled: trading (app/api/trade/symbols) and the group counts only count real enabled rows
+  enabled: false,
   commissionPerLot: "0",
   maxExposure: null as string | null,
   tradingMode: "BOTH" as TradingMode,
@@ -77,6 +78,10 @@ export async function GET() {
       swapLong: cfg ? cfg.swapLong.toString() : DEFAULTS.swapLong,
       swapShort: cfg ? cfg.swapShort.toString() : DEFAULTS.swapShort,
       enabled: cfg ? cfg.enabled : DEFAULTS.enabled,
+      // 1.0.72 round 2: the screen's truth. added = this broker has a BrokerSymbol row (switching ON creates it through PATCH);
+      // supported = PATCH would let it be enabled (P/L is USD only until currency conversion exists, see the guard in PATCH).
+      added: !!cfg,
+      supported: symbol.quoteCurrency === "USD",
       commissionPerLot: cfg ? cfg.commissionPerLot.toString() : DEFAULTS.commissionPerLot,
       maxExposure: cfg ? (cfg.maxExposure ? cfg.maxExposure.toString() : null) : DEFAULTS.maxExposure,
       tradingMode: cfg ? cfg.tradingMode : DEFAULTS.tradingMode,
