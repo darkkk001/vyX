@@ -50,113 +50,12 @@ Not blocking any screen (each works today with an extra read); ship them with th
 |---|---|---|---|
 | Move the update feed off the repo | Serve `public/native-terminal-updates` and `public/native-backoffice-updates` from a separate host (R2, Vercel Blob or GitHub Releases), point the apps and `tools/publish-*.ps1 -FeedRoot` at it, then `git filter-repo` the feed binaries (~4.2 GB) out of history | Every checkout carries 4.2 GB of installers; CLAUDE.md allows the feed under `public/` only until this is done. Not started | 2026-10-12, owner |
 | Update channels (beta / stable) per install, HIGH PRIORITY after the demo week | A channel per installation: the owner's installs on beta get every pack automatically; stable installs get a build only when it is explicitly published to stable. Needs a channel per feed (Velopack channels or a separate feed folder per channel), a way to set an install's channel (installer flag or backoffice/Super Admin setting), and the pack scripts publishing to beta by default | Today every pack goes to every broker's installs at once (CLAUDE.md, Feed publishing); a bad build reaches real clients with no staging step. After the demo week (ends 2026-10-21) | 2026-10-14, owner |
-| Shadow bot credentials | Give `SHADOWBOT_PASSWORD` (the zzshadowbot test accounts' trader password) a known home in `C:\vyx-secrets` | SHADOWBOT_PASSWORD not recorded anywhere reachable (C:\vyx-secrets, Vercel env, this PC's env / Credential Manager, C:\shadow-bot; VPS not checked), so nobody but the owner can run a test-tenant smoke test | 2026-10-12, owner |
-| Engine: Candle write deadlock | Find and fix the deadlock between concurrent `"Candle"` upserts (`engine/market-data/src/db.rs` inserts at :147, :193, :260): one fixed write order per batch, or a retry on `40P01` | Seen in the engine.log review of 2026-10-14 (step 0); every ERROR line, 37k in all, is older than 2026-10-02 12:21 UTC (the shadow period) and none since, so not urgent. After the demo week (2026-10-21) | 2026-10-14, owner |
-| Engine: startup `DISTINCT ON` on `"Candle"` | Give `fetch_last_buckets` (`engine/market-data/src/db.rs:383`) an index it actually uses, or rewrite it as one indexed lookup per (symbol, timeframe), and check it with `EXPLAIN` on the live table | The gap-fill tracker's boot read; it runs once per engine start and is slow on the full candle table. After the demo week | 2026-10-14, owner |
-| Engine: record the trigger tick on every engine close | Add `triggerBid`, `triggerAsk`, `triggerTickAt` (the tick that crossed the SL / TP or the stop-out, `LiveFire.ticks` / `book::TickHint`) to the `POSITION_CLOSED` follow-up payload, written in the same transaction as the close; the web reads the payload by a plain cast (`lib/post-close.ts:83`), so extra keys are already ignored | Without it neither the touch-to-write delay nor the slippage past the level can be measured (2026-10-14: 4143.00 SL filled at 4142.73 on 50005711, the touch time unknown). **Input to the 6.1 gate "measured touch-to-write delay and slippage" (`docs/RUST-CUTOVER-PLAN.md`): the live flip needs at least one full demo week measured with it.** After the demo week | 2026-10-14, owner |
-| Engine: quieter log level (proposal B) | Enable `tracing-subscriber`'s `env-filter` feature, init with `EnvFilter::try_from_default_env()`, default `info,async_nats=warn,sqlx=warn,hyper=warn`, and set `RUST_LOG` in `start-engine.cmd`. Keep the engine's own crates at `info` (the runbook verifies startup by its INFO lines) | `tracing_subscriber::fmt::init()` (`engine/server/src/main.rs:1433`) has no filter, so `RUST_LOG` is ignored and every dependency logs at INFO (async-nats logs every slow-consumer event). Rotation is already on: nssm daily or 200 MB, set 2026-10-14 with the engine restarted at 09:45 UTC. After the demo week; needs an engine rebuild and deploy | 2026-10-14, owner |
-
-## D4 (Account types removal): open item
-
-- **Next item after the D4 + slippage batch (owner 2026-10-01):** portal Standard / Pro / ECN -> client-selectable groups.
-  Today the client portal still lets a client pick an account TYPE for a demo account and for a live application
-  (`app/(broker)/portal/(shell)/accounts/AccountsView.tsx`, `GET /api/portal/account-types`), and since D4 that pick
-  does nothing. Needs: the portal UI to offer the broker's client-selectable groups (`GET /api/portal/groups`) with a
-  client-facing label, and a `groupId` field on live-account applications (migration) that the approver sees
-  pre-selected.
-- Since 2026-10-01 (branch `d4-slippage`): no creation path assigns an account type (staff create, portal demo,
-  application approve); a sent `accountTypeId` is ignored and kept as `requestedAccountTypeId` in the audit row.
-
-- 2026-09-30, owner: the backoffice approve form for a live account application no longer has an Account type field (the group is the tier). The web route still applies the type the client asked for (`accountTypeId: chosenTypeId ?? existing.accountTypeId` in `app/api/manage/live-account-requests/[id]/route.ts`).
-- DONE 2026-09-30 (owner-approved live write on ep-morning-glade, one transaction, 15 audit rows with newValue.source "owner-approved direct write 2026-09-30…"): Futurix Standard / Pro / Zero `AccountType.swapFree` true -> NULL (inherit); groups Dealing and Reverse Trading `swapFree` true -> false; their 10 accounts' own `swapFree` false -> NULL. The group is now the swap-free source. Effective swap-free changed for one account only (50005708, true -> false, no open positions); the other 15 touched accounts were and stay not swap-free.
-
-## Shipped in the step 2 web deploy (2026-09-30, web `88752c2`, migration `20261001090000_lead_assignee_and_partner_suspend` applied to ep-morning-glade)
-
-The server side is live; the backoffice still shows these disabled until backoffice 1.0.57 switches them on (owner: screenshots first).
-
-| Screen | Action | Route |
-|---|---|---|
-| CLI | Force sign-out | `POST /api/manage/accounts/{id}/sign-out` |
-| CLI | Reset client 2FA | `POST /api/manage/accounts/{id}/reset-2fa` |
-| EMG | Sign out all clients | `POST /api/manage/emergency/sign-out-clients {confirm: host}` |
-| MIR | Delete copy rule… | `DELETE /api/manage/mirror-rules/{id} (disabled rules with no open copied positions)` |
-| CRM | Assign to staff… | `PATCH /api/manage/leads/{id} {assignedAdminId}` |
-| IB | Suspend partner… | `POST /api/manage/ib-partners/{ibAccountId}/suspend | resume | release-owed` |
-| LP | Delete provider… | `DELETE /api/manage/liquidity-providers/{id} (refused while routing rules point at it)` |
-| USR | Reset two-step sign-in (2FA)… | `POST /api/manage/admins/{id}/reset-2fa` |
-| USR | Sign out everywhere… | `POST /api/manage/admins/{id}/sign-out` |
-
-Also shipped: IB payouts refused (409) when the partner account is not ACTIVE or the partner is suspended, on every payout path (single, pay-all, release-owed, and approval of a queued request): issues.md line 34 (money).
-
-Queued web changes shipped in the same deploy (additive read fields; the backoffice can drop its second reads in 1.0.57):
-- `GET /api/manage/accounts`
-- `GET /api/manage/dashboard`
-- `/manager/login`, `/manage/login`
-- `GET /api/manage/audit` (entity labels)
-- `GET /api/manage/audit`
-- `GET /api/manage/symbols`
-- `GET /api/manage/ib-relationships`
-- funds view KPIs (DEP)
-- `GET /api/manage/transfers`
-- `GET /api/manage/balance-adjustment-requests`
-- `GET /api/manage/funds-requests`
-- `GET /api/manage/mirror-rules`
-# Backend needed
-
-The backoffice Phase 3 rollout shows these actions **disabled, marked "backend needed"**, because no server endpoint
-does them yet. Each row is what the screen needs from the web API before the action can be switched on. Labels follow
-`docs/audit/2026-09-24/naming.md`. Owner decisions are dated.
-
-## Actions shown disabled
-
-| Screen | Action | Needs | Since |
-|---|---|---|---|
-| CLI | Credit add / remove | Credit endpoint (built on `be/credit-rights`, held with the credit / trading-rights batch until after the Rust cutover) | 2026-09-28 |
-| CLI | Trading rights (Full / Close-only / Read-only) | Same held batch (migration `20260928150000`, not applied) | 2026-09-28 |
-| DLS | Void trade… | An endpoint that voids a closed trade (the old void was removed in Phase 2 batch 1) | 2026-09-29 |
-| EMG | Incident log | An incident record / timeline | 2026-09-29 |
-| IB | Per-partner stats: active clients, volume this month, net deposits this month, partner pay this month | Per-partner aggregates on `GET /api/manage/ib-relationships` (the columns are not drawn until then) | 2026-09-30, owner |
-| IB | Sub-partners, referral link, pay schedule, referral funnel | Partner hierarchy, referral links, a payout schedule and funnel counts | 2026-09-30, owner |
-| KYC | Sanctions / PEP and duplicate-identity screening ("not available yet") | A screening provider or an internal duplicate check on the ID check | 2026-09-30, owner |
-| LP | Connect (FIX session)… | The LP bridge: a real session to a provider (status, heartbeat) | 2026-09-30, owner |
-| LP | Status "Connected" | Set by the LP bridge when a session is live, not by hand | 2026-09-30, owner |
-| LP | Routing rules (add / delete / priority; hidden) | The LP bridge reading `lp-routing`; until then rules are saved but never read | 2026-09-30, owner |
-| FEED | Restart price feed | An audited endpoint that restarts the MT5 price-feed program on the server (will later live in VyX Connect's Feed Manager) | 2026-09-30, owner |
-
-## Web changes queued for the next web deploy
-
-Not blocking any screen (each works today with an extra read); ship them with the next web deploy.
-
-| Route | Change | Why | Decided |
-|---|---|---|---|
-| `GET /api/trade/audit` (`lib/order-audit.ts` describeOrderAuditEvent) | Name the position / order by its TICKET (`#100002513`) instead of `orderNumber.slice(-8)` (`#xq50yzjq`) | The terminal LOG shows one line per trade by ticket and strips the internal tag; server-only lines (another device, dealer) then carry no ticket at all | 2026-10-01, owner |
-| `GET /api/manage/deals` | Add `currency` per deal (the account's) | DLS loads the accounts list a second time to fill its CCY column | 2026-09-30, owner: web5 |
-| `lib/chart-settings.ts` (GET / PUT /api/trade/chart-settings) | Add `positionLabels` ("Grouped" / "All" / "Off", default "Grouped") to the stored keys | The terminal's chart position labels (Phase 5 batch B) are kept on each computer until the server stores the key | 2026-09-30, owner |
-| `GET /api/manage/shell-info` | Add the broker's canonical address (the host `emergency/sign-out-clients` expects) | EMG typed confirms use it for every role, no fallback (today a manager can't ask sign-out-clients, so the app falls back to its own server host) | 2026-09-30, owner |
-| New read route (e.g. `GET /api/manage/leads/assignees`) | A staff list managers can read, for CRM Assign to staff: name + e-mail only (no role, permissions, 2FA or status fields), same broker, ACTIVE assignable staff only | Only a broker admin can read `GET /api/manage/admins` today, so a manager cannot pick anyone (the item says "staff list: broker admin only") | 2026-09-30, owner |
-| `GET /api/manage/accounts` | Add `twoFactorEnabled` per account | CLI Reset two-step sign-in (2FA) can then be disabled "2FA not set up" up front instead of the server's 409 after the click | 2026-09-30, owner |
-| symbol disable | Gate disabling one symbol behind the emergency-controls permission | issues.md 117/198 | 2026-09-30, owner: web deploy after step 2 |
-| notifications read | Mark read per staff member (not for everyone) + an audit row | issues.md 324 | 2026-09-30, owner |
-| trading sessions | Sessions that cross midnight | issues.md 335/343 | 2026-09-30, owner |
-| live refresh | Halt, copy-rule kill and symbol-limit changes publish a live event | issues.md 347/348/349 | 2026-09-30, owner |
-| risk radar | Compute the news-trader flag | issues.md 151 | 2026-09-30, owner |
-| `lib/chart-settings.ts` | Accept `slTpTagPnlAlways` (terminal: P/L on SL/TP tags) | Terminal stores it locally until then | proposed 2026-09-30 (terminal batch A) |
-| `PATCH /api/manage/mirror-rules/{id}` | Accept `direction` (REVERSE / SAME) | issues.md 191: a copy rule's direction cannot be changed after it is created (the caps already can); today the only way is delete + recreate | 2026-09-30, owner |
-| `GET /api/manage/feed-health` | Return the upstream status code and an error kind (timeout / 401 / 404 / network) with PRICE ALERTS | issues.md 124 / 216 / 308: every failure shows the same "NOT REACHABLE"; the route drops the status | 2026-09-30, owner |
-| admin event stream | Publish `KycSubmitted` and `LiveAccountRequested` | issues.md 314 / 318: the KYC and LAR queues (and their badges) only update on the 30 s poll | 2026-09-30, owner |
-| `GET /api/manage/risk-radar` | Add `computedAt` (the time of the 5-minute server cache) | issues.md 328: RDR shows no "as of" time | 2026-09-30, owner |
-| balance / position requests (`lib/balance-adjustment.ts`, approve routes) | Never self- or peer-approve: when no eligible approver exists (e.g. a manager-only broker) the request is refused with "needs a broker admin" | issues.md 71: a manager-only tenant files requests nobody can approve | 2026-09-30, owner |
-
-## Infrastructure: tracked items
-
-| Item | Needs | Why | Decided |
-|---|---|---|---|
-| Move the update feed off the repo | Serve `public/native-terminal-updates` and `public/native-backoffice-updates` from a separate host (R2, Vercel Blob or GitHub Releases), point the apps and `tools/publish-*.ps1 -FeedRoot` at it, then `git filter-repo` the feed binaries (~4.2 GB) out of history | Every checkout carries 4.2 GB of installers; CLAUDE.md allows the feed under `public/` only until this is done. Not started | 2026-10-12, owner |
 | Non-USD quote currency P/L (JPY / CHF / GBP / EUR / CAD crosses) | Cross-rate conversion of P/L, margin, swap and commission into the account currency for symbols not quoted in USD (EURJPY, USDJPY, GBPJPY, AUDJPY, CADJPY, CHFJPY, EURCHF, EURGBP, USDCAD, USDCHF, XAUEUR, GER40, JPN225, UK100), in the web and the Rust engine alike, plus prices for them on the feed. Until then `PATCH /api/manage/symbols` refuses to enable them and the Symbols screen shows them "OFF · not supported" | Brokers will expect EURJPY / USDJPY / GER40; today only USD-quoted symbols can trade. After the demo week (ends 2026-10-21) | 2026-10-14, owner |
 | Shadow bot credentials | Give `SHADOWBOT_PASSWORD` (the zzshadowbot test accounts' trader password) a known home in `C:\vyx-secrets` | SHADOWBOT_PASSWORD not recorded anywhere reachable (C:\vyx-secrets, Vercel env, this PC's env / Credential Manager, C:\shadow-bot; VPS not checked), so nobody but the owner can run a test-tenant smoke test | 2026-10-12, owner |
 | Engine: Candle write deadlock | Find and fix the deadlock between concurrent `"Candle"` upserts (`engine/market-data/src/db.rs` inserts at :147, :193, :260): one fixed write order per batch, or a retry on `40P01` | Seen in the engine.log review of 2026-10-14 (step 0); every ERROR line, 37k in all, is older than 2026-10-02 12:21 UTC (the shadow period) and none since, so not urgent. After the demo week (2026-10-21) | 2026-10-14, owner |
 | Engine: startup `DISTINCT ON` on `"Candle"` | Give `fetch_last_buckets` (`engine/market-data/src/db.rs:383`) an index it actually uses, or rewrite it as one indexed lookup per (symbol, timeframe), and check it with `EXPLAIN` on the live table | The gap-fill tracker's boot read; it runs once per engine start and is slow on the full candle table. After the demo week | 2026-10-14, owner |
 | Engine: record the trigger tick on every engine close | Add `triggerBid`, `triggerAsk`, `triggerTickAt` (the tick that crossed the SL / TP or the stop-out, `LiveFire.ticks` / `book::TickHint`) to the `POSITION_CLOSED` follow-up payload, written in the same transaction as the close; the web reads the payload by a plain cast (`lib/post-close.ts:83`), so extra keys are already ignored | Without it neither the touch-to-write delay nor the slippage past the level can be measured (2026-10-14: 4143.00 SL filled at 4142.73 on 50005711, the touch time unknown). **Input to the 6.1 gate "measured touch-to-write delay and slippage" (`docs/RUST-CUTOVER-PLAN.md`): the live flip needs at least one full demo week measured with it.** After the demo week | 2026-10-14, owner |
+| Engine: margin-call event once per episode | `engine/order-management/src/monitor.rs:582` publishes `TradingEvent::MarginCall` on every monitor pass (about every 5 s) while an account stays in margin call. Publish once per episode instead, on entry and on recovery, with the web's payload `{account_id, broker_id, level, state: "margin_call" \| "cleared"}`, ideally sharing the web's `Account.marginCallNotifiedAt` edge (`lib/risk-monitor.ts:357-429`, setMarginCall / clearMarginCall) so the web and the engine cannot both notify. The engine's `MARGIN_CALL` / `MARGIN_CALL_CLEARED` follow-ups (`margin_call_edge`) are already per episode; only this live event repeats | The event has no `state` today, so no sound plays, but the terminal journals "Margin call level reached" on every pass and every admin and trading stream gets an event every 5 s per account in margin call; with a `state` added both apps would chime every 5 s. After the demo week | 2026-10-15, owner |
 | Engine: quieter log level (proposal B) | Enable `tracing-subscriber`'s `env-filter` feature, init with `EnvFilter::try_from_default_env()`, default `info,async_nats=warn,sqlx=warn,hyper=warn`, and set `RUST_LOG` in `start-engine.cmd`. Keep the engine's own crates at `info` (the runbook verifies startup by its INFO lines) | `tracing_subscriber::fmt::init()` (`engine/server/src/main.rs:1433`) has no filter, so `RUST_LOG` is ignored and every dependency logs at INFO (async-nats logs every slow-consumer event). Rotation is already on: nssm daily or 200 MB, set 2026-10-14 with the engine restarted at 09:45 UTC. After the demo week; needs an engine rebuild and deploy | 2026-10-14, owner |
 
 ## D4 (Account types removal): open item
