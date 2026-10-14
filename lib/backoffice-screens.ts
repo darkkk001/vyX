@@ -41,7 +41,7 @@ export const BACKOFFICE_SCREENS: readonly BackofficeScreen[] = [
   { code: "NTF", rule: { kind: "manager" }, support: true, routes: ["notifications/route GET"] },
   // TRADING
   { code: "EXP", rule: { kind: "manager" }, support: false, routes: ["positions/route GET", "groups/route GET", "symbols/route GET"] },
-  { code: "DEAL", rule: { kind: "manager" }, support: false, routes: ["dealing-queue/route GET", "dealing-desk/route GET"] },
+  { code: "DEAL", rule: { kind: "manager" }, support: false, routes: ["dealing-queue/route GET", "dealing-desk/route GET", "dealing-desk-toggle/route GET"] },
   { code: "DLS", rule: { kind: "manager" }, support: true, routes: ["deals/route GET"] },
   { code: "SYM", rule: { kind: "manager" }, support: false, routes: ["symbols/route GET"] },
   { code: "GRP", rule: { kind: "manager" }, support: false, routes: ["groups/route GET"] },
