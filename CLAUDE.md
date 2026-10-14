@@ -66,6 +66,10 @@ These apply to this repo and to darkkk001/VyxTrader:
 - Never commit installers, update packages or screenshots. One exception: the update feed under
   `public/native-*-updates/` stays in git until the feed moves to a separate host (tracked in
   `docs/BACKEND-NEEDED.md`, Infrastructure). Nothing else of that kind, anywhere.
+- Feed publishing (owner 2026-10-14): for the `qoretrader` tenant (our own showcase, no real clients) publish the
+  update feed on EVERY terminal and backoffice pack, in the same job. For `futurixglobal` (and any real broker) the
+  feed stays unpublished until the owner has tested the build and says to publish. Either way, merge
+  `releases.win.json` and `RELEASES` into the live feed; never overwrite them.
 - Clean dist/bin/obj/.next after every release and report C: free space at the end of every job.
 - After every native build (owner 2026-10-13): clean `%LOCALAPPDATA%\Temp\claude` scratch output you no longer need and
   any Visual Studio Installer extracts in `%LOCALAPPDATA%\Temp` (random-named folders containing vswhere.exe /
