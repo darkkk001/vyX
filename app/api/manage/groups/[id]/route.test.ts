@@ -82,3 +82,36 @@ describe("PATCH /api/manage/groups/[id]", () => {
     expect((await patchGroup(fx, { leverage: 100, modeRestriction: "DEMO_ONLY" })).status).toBe(200);
   });
 });
+
+// Backoffice 1.0.72 (owner): a platform-created group is editable but never deletable; a user-made group with accounts is refused with the count.
+describe("group delete", () => {
+  async function del(fx: Awaited<ReturnType<typeof fixture>>, groupId: string) {
+    const { getAdminSession } = await import("@/lib/auth");
+    vi.mocked(getAdminSession).mockResolvedValue({ adminId: fx.adminId, brokerId: fx.brokerId, role: "BROKER_ADMIN" } as never);
+    const { DELETE } = await import("@/app/api/manage/groups/[id]/route");
+    const res = await DELETE(new NextRequest(`https://test.local/api/manage/groups/${groupId}`, { method: "DELETE" }), { params: Promise.resolve({ id: groupId }) });
+    return { status: res.status, json: await res.json() };
+  }
+
+  it("refuses the hedge group and the starter Dealing group, and still lets a broker's own Dealing-desk group go", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const hedge = await prisma.group.create({ data: { brokerId: fx.brokerId, name: `Dealer Coverage (system) ${fx.s}`, leverage: 500, category: "COVERAGE", modeRestriction: "LIVE_ONLY" } });
+    const starter = await prisma.group.create({ data: { brokerId: fx.brokerId, name: "Dealing", leverage: 100, category: "DEALING", modeRestriction: "ANY" } });
+    const own = await prisma.group.create({ data: { brokerId: fx.brokerId, name: `VIP desk ${fx.s}`, leverage: 100, category: "DEALING", modeRestriction: "ANY" } });
+    for (const g of [hedge, starter]) {
+      const r = await del(fx, g.id);
+      expect(r.status).toBe(400); expect(r.json.code).toBe("SYSTEM_GROUP"); expect(r.json.error).toBe("System groups cannot be deleted.");
+      expect(await prisma.group.findUnique({ where: { id: g.id } })).not.toBeNull();
+    }
+    expect((await del(fx, own.id)).status).toBe(200);
+  });
+
+  it("refuses a group that still has accounts, with the count", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    await prisma.account.create({ data: { groupId: fx.groupId, brokerId: fx.brokerId, accountNumber: `8${fx.s.slice(0, 7)}`, email: `a-${fx.s}@test.local`, passwordHash: "x", fullName: "One", accountMode: "LIVE" } });
+    const r = await del(fx, fx.groupId);
+    expect(r.status).toBe(409); expect(r.json.code).toBe("GROUP_IN_USE"); expect(r.json.error).toBe("This group has 1 account. Move it first.");
+  });
+});
