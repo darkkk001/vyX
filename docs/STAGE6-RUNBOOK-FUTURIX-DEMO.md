@@ -388,6 +388,8 @@ Heartbeat check (owner PC): run `Q 'SELECT now() - "beatAt" AS age, "staleAfterS
 Before Futurix, flip the bot's tenant (its accounts are demo or are checked to be) and run the live 7-path sweep on this exact build in RUST mode. Same statement as 5.4 with `zzshadowbot` instead of `futurixglobal`
 (verify first that the bot accounts are DEMO: the 5.4 ownership query with `WHERE b.subdomain = 'zzshadowbot'`). When 10.2 PASSES, continue; when it fails, set `zzshadowbot` back to WEB (8) and stop.
 
+**Exception (owner, 2026-10-14):** `zzshadowbot` runs RUST with `riskAuthorityDemoOnly = false` on purpose. It is the internal bot tenant with no real clients, and its accounts are LIVE-mode, so the engine owns all of them. Engine closes on zzshadowbot LIVE accounts are expected; do not set its flag back to `true`. Every other broker stays demo-only until step 9.
+
 ### 5.4 The flip (Futurix, RUST + demo-only), audited
 
 One statement, one transaction, with its audit row (`action = RISK_AUTHORITY_CHANGE`, the old and new values). Only the broker's DEMO accounts move to the engine; LIVE accounts stay with the web.
