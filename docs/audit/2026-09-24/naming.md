@@ -45,6 +45,20 @@ Every dialog, toast and confirm in every app (backoffice, terminal, WebTrader, p
 where possible. Say what happened or what will happen, nothing else. Longer text only when something went wrong and
 the user must act, and then say exactly what to do.
 
+## Order ticket buttons (terminal 1.0.72)
+
+The terminal's SELL / BUY buttons carry a light tint like the WebTrader (`--sell-bg` / `--buy-bg`): a faint red / green fill, the price in the full red / green. Colours are theme tokens in the terminal's Tokens.axaml (`#AARRGGBB`), never literals in views. The same two tints mark the History S/L cell of a stopped-out trade (red) and the T/P cell of a take-profit (green).
+
+| Token | Dark | Light | Used for |
+|---|---|---|---|
+| `BrushDownTint` | `#26FF4C5B` (15% of the loss red) | `#1AD93641` (10%) | SELL button fill, History S/L cell of an SL close |
+| `BrushDownTintHover` | `#3DFF4C5B` (24%) | `#2BD93641` (17%) | SELL button on hover |
+| `BrushUpTint` | `#263DCC7E` (15% of the profit green) | `#1A12A150` (10%) | BUY button fill, History T/P cell of a TP close |
+| `BrushUpTintHover` | `#3D3DCC7E` (24%) | `#2B12A150` (17%) | BUY button on hover |
+| price text | `BrushDown` / `BrushUp` | `BrushDown` / `BrushUp` | the SELL / BUY price (unchanged) |
+
+One more token with it: `BrushWarn` (dark `#F5A623`, light `#B36B00`), the warning amber as text. The Account panel's margin LEVEL uses it at or below the margin call level (red `BrushDown` at or below the stop-out level, neutral `BrushDim` otherwise).
+
 ## Owner decisions D1 to D6 (2026-10-05)
 
 These override every row below that still shows the older wording.
