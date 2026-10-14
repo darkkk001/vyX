@@ -84,6 +84,10 @@ follow-on QA-broker leak (`acctest-*` rows found live in production,
 traced to `route.test.ts`'s fixture helper running against a production
 `DATABASE_URL`):
 
+- **Demo week (owner 2026-10-14, until 2026-10-21):** the Rust engine now runs the Futurix demo accounts and
+  zzshadowbot against the LIVE database (Stage 6 cutover, demo only; live traders stay on the web path). Until
+  the demo week ends: no Prisma schema migration on web main, and no change to Broker / Account / Position /
+  Order / Deal-related columns, without checking with the Stage 6 session first — the engine reads those tables.
 - After any schema migration, verify the column/table physically exists
   in the **target** database before deploying code that references it —
   a migration recorded as applied in one environment's `_prisma_migrations`
