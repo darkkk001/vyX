@@ -7,6 +7,7 @@ import PasswordField from "@/components/PasswordField";
 import "../webtrader.css";
 import styles from "./TradeLoginForm.module.css";
 import { plainError } from "@/lib/plain-error";
+import { brokerServers, kindFromRefusal, mismatchText, serverForKind, serverMatches, type BrokerServer } from "@/lib/broker-servers";
 
 type ServerOption = { name: string; type: "LIVE" | "DEMO" };
 
@@ -30,6 +31,7 @@ export default function TradeLoginForm({
   initialError = null,
   initialPendingToken = null,
   initialRemember = true,
+  servers: serverList,
   onAuthenticated,
 }: {
   brokerName: string;
@@ -39,6 +41,9 @@ export default function TradeLoginForm({
   initialError?: string | null;
   initialPendingToken?: string | null;
   initialRemember?: boolean;
+  // The Server selector's list (GET /api/trade/broker-branding `servers`): from the server, never from the build. Absent =
+  // derived from the broker's name (lib/broker-servers.ts), the same names the server sends.
+  servers?: readonly BrokerServer[];
   // Called instead of navigating to /trade after a successful login or
   // 2FA verification -- `remember` mirrors the "save account and connect
   // automatically" checkbox so a caller can decide what that means in its
@@ -52,10 +57,7 @@ export default function TradeLoginForm({
   // one broker, so "server" here means this broker's Live vs. Demo
   // trading environment, not a choice between different brokers -- that
   // broker-picker already exists separately at app/launch/page.tsx.
-  const servers: ServerOption[] = [
-    { name: `${brokerName}-Live`, type: "LIVE" },
-    { name: `${brokerName}-Demo`, type: "DEMO" },
-  ];
+  const servers: ServerOption[] = (serverList ?? brokerServers(brokerName)).map((s) => ({ name: s.name, type: s.kind }));
 
   const [selectedServer, setSelectedServer] = useState<ServerOption>(servers[0]);
   const [serverOpen, setServerOpen] = useState(false);
@@ -157,14 +159,38 @@ export default function TradeLoginForm({
         setConnStatus("Not connected");
         return;
       }
+      // The server refuses a Live / Demo mismatch itself (400); an answer that names the account's mode and disagrees with the chosen
+      // server is refused here too (and the session just opened is closed again), so a Demo account never lands in the Live server.
+      if (!serverMatches(selectedServer.type, result.accountMode)) {
+        await tradeApi.logout().catch(() => {});
+        refuseMismatch(result.accountMode === "LIVE" ? "LIVE" : "DEMO");
+        return;
+      }
       setConnStatus(`Connected · ${selectedServer.name}`);
       onAuthenticated(remember);
     } catch (err) {
-      setError(plainError(err, "Sign-in failed. Try again."));
-      setConnStatus("Not connected");
+      const actual = kindFromRefusal(err instanceof Error ? err.message : typeof err === "string" ? err : "");
+      if (actual) {
+        refuseMismatch(actual);
+      } else {
+        setError(plainError(err, "Sign-in failed. Try again."));
+        setConnStatus("Not connected");
+      }
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // The chosen server is not the account's: one line, the selector moves to the right server, the account number stays, the password goes.
+  function refuseMismatch(actual: "LIVE" | "DEMO") {
+    const to = serverForKind(serverListOf(), actual, selectedServer.name);
+    if (to) pickServer({ name: to.name, type: to.kind });
+    setPassword("");
+    setError(mismatchText(actual));
+    setConnStatus("Not connected");
+  }
+  function serverListOf(): BrokerServer[] {
+    return servers.map((s) => ({ name: s.name, kind: s.type }));
   }
 
   async function handleVerifyTwoFactor(event: React.FormEvent) {
