@@ -70,8 +70,10 @@ These apply to this repo and to darkkk001/VyxTrader:
   brokers in the same job (`futurixglobal` included); there is no "unpublished until owner test" step any more. The
   owner checks releases on `qoretrader`, which runs the same build. Merge `releases.win.json` and `RELEASES` into the
   live feed (never overwrite them), byte-check the live files after the deploy, and only then revoke the builds the
-  new pack replaced. A version that is already in a published feed is never packed again; the next pack takes the
-  next version. Per-install beta/stable channels are tracked in `docs/BACKEND-NEEDED.md`.
+  new pack replaced.
+- Version numbers (owner 2026-10-14): a version is never reused once ANY build of it was installed anywhere (an owner
+  test install counts), published or not. Every repack bumps the version, for every brand, so an installed copy can
+  always update to the next build. Never revoke a build the owner may have installed without asking first. Per-install beta/stable channels are tracked in `docs/BACKEND-NEEDED.md`.
 - Clean dist/bin/obj/.next after every release and report C: free space at the end of every job.
 - After every native build (owner 2026-10-13): clean `%LOCALAPPDATA%\Temp\claude` scratch output you no longer need and
   any Visual Studio Installer extracts in `%LOCALAPPDATA%\Temp` (random-named folders containing vswhere.exe /
