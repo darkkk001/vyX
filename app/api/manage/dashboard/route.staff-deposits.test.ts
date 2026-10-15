@@ -80,7 +80,7 @@ async function record(p: Persona, accountId: string, amount: string) {
 async function dashboard(p: Persona) {
   await as(p);
   const { GET } = await import("./route");
-  const r = await GET();
+  const r = await GET(new Request("https://t.local/api/manage/dashboard"));
   expect(r.status).toBe(200);
   const j = await r.json();
   const usd = (j.clients.byCurrency as Array<{ currency: string; deposits30d: { count: number; amount: string }; net7d: { count: number; amount: string } }>).find((c) => c.currency === "USD");

@@ -23,14 +23,15 @@ import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
 export const BOOK_CATEGORIES = ["B_BOOK", "DEALING"] as const;
 
 type Db = PrismaClient | Prisma.TransactionClient;
-export type BookScope = { brokerId: string; coverageAccountId: string | null };
+/** includeDemo (dashboard scope "all" only): demo accounts count as well; absent/false = live accounts only, as always. */
+export type BookScope = { brokerId: string; coverageAccountId: string | null; includeDemo?: boolean };
 export type CurrencyAmount = { currency: string; amount: Prisma.Decimal; count: number };
 
 // The WHERE part every Book P/L query shares (aliases: p = Position, a = Account, g = the account's Group).
 function heldSql(s: BookScope) {
   return Prisma.sql`p."brokerId" = ${s.brokerId} AND p."deletedAt" IS NULL
     AND NOT EXISTS (SELECT 1 FROM "Broker" sb WHERE sb.id = p."brokerId" AND sb."isDemoSandbox")
-    AND a."accountMode" = 'LIVE' AND a."isInternal" = false
+    AND (a."accountMode" = 'LIVE' OR ${s.includeDemo === true}::boolean) AND a."isInternal" = false
     AND (${s.coverageAccountId}::text IS NULL OR a.id <> ${s.coverageAccountId})
     AND (g.category IS NULL OR g.category <> 'COVERAGE')
     AND COALESCE(p."groupCategoryAtOpen"::text, g.category::text) IN ('B_BOOK', 'DEALING')
