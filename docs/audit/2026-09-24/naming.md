@@ -45,6 +45,17 @@ Every dialog, toast and confirm in every app (backoffice, terminal, WebTrader, p
 where possible. Say what happened or what will happen, nothing else. Longer text only when something went wrong and
 the user must act, and then say exactly what to do.
 
+## Status bar and toast messages (owner 2026-10-15)
+
+Applies to the terminal and the backoffice (the action/result bar, inline toasts, the bottom strip):
+
+- One short line, always. Details (reasons, per-row errors, the full server text) go in a tooltip on hover or a
+  **why?** expander, never as a long sentence in the bar.
+- Bulk operations report counts: `<Action>: N set · M skipped` (or `N closed · M failed`, `N done · M failed`), for
+  example "Break-even: 3 set · 18 skipped", "Close all: 5 closed · 2 failed". All succeeded: "Break-even: 21 set".
+  The reasons, grouped with their counts, are behind hover / why?.
+- The short form must fit the bar at 1366 x 768 without truncation (checked by NoClip1366Tests).
+
 ## Owner decisions D1 to D6 (2026-10-05)
 
 These override every row below that still shows the older wording.
