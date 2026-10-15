@@ -85,6 +85,31 @@ Applies to the terminal and the backoffice (the action/result bar, inline toasts
   The reasons, grouped with their counts, are behind hover / why?.
 - The short form must fit the bar at 1366 x 768 without truncation (checked by NoClip1366Tests).
 
+## Order ticket buttons (terminal 1.0.72)
+
+The terminal's SELL / BUY buttons carry a light tint like the WebTrader (`--sell-bg` / `--buy-bg`): a faint red / green fill, the price in the full red / green. Colours are theme tokens in the terminal's Tokens.axaml (`#AARRGGBB`), never literals in views. The same two tints mark the History S/L cell of a stopped-out trade (red) and the T/P cell of a take-profit (green).
+
+| Token | Dark | Light | Used for |
+|---|---|---|---|
+| `BrushDownTint` | `#26FF4C5B` (15% of the loss red) | `#1AD93641` (10%) | SELL button fill, History S/L cell of an SL close |
+| `BrushDownTintHover` | `#3DFF4C5B` (24%) | `#2BD93641` (17%) | SELL button on hover |
+| `BrushUpTint` | `#263DCC7E` (15% of the profit green) | `#1A12A150` (10%) | BUY button fill, History T/P cell of a TP close |
+| `BrushUpTintHover` | `#3D3DCC7E` (24%) | `#2B12A150` (17%) | BUY button on hover |
+| price text | `BrushDown` / `BrushUp` | `BrushDown` / `BrushUp` | the SELL / BUY price (unchanged) |
+
+Two tiers: the order ticket's SELL / BUY buttons are the SUBTLE tier (the rows above); the chart's 1-click SELL / BUY (top-left of the chart, also the backoffice dealing chart) are the STRONG tier, one step stronger, same red / green text.
+
+| Token | Dark | Light | Used for |
+|---|---|---|---|
+| `BrushDownTintStrong` | `#52FF4C5B` (32%) | `#33D93641` (20%) | chart 1-click SELL fill |
+| `BrushDownTintStrongHover` | `#6BFF4C5B` (42%) | `#47D93641` (28%) | chart 1-click SELL on hover |
+| `BrushUpTintStrong` | `#523DCC7E` (32%) | `#3312A150` (20%) | chart 1-click BUY fill |
+| `BrushUpTintStrongHover` | `#6B3DCC7E` (42%) | `#4712A150` (28%) | chart 1-click BUY on hover |
+
+(The backoffice's own dark red / green, `#FF5561` / `#39D98A`, carry the same alphas.)
+
+One more token with it: `BrushWarn` (dark `#F5A623`, light `#B36B00`), the warning amber as text. The Account panel's margin LEVEL uses it at or below the margin call level (red `BrushDown` at or below the stop-out level, neutral `BrushDim` otherwise).
+
 ## Owner decisions D1 to D6 (2026-10-05)
 
 These override every row below that still shows the older wording.
