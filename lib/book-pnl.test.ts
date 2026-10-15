@@ -203,7 +203,7 @@ describe("Dashboard today == Reports for the same range", () => {
     await pos(fx, (await account(fx, "B_BOOK")).id, { pnl: 555, at: new Date(Date.now() - 3 * 24 * HOUR) }); // an earlier day
     vi.mocked(getAdminSession).mockResolvedValue({ adminId: fx.adminId, role: "BROKER_ADMIN", brokerId: fx.brokerId } as never);
 
-    const dash = await (await (await import("@/app/api/manage/dashboard/route")).GET()).json();
+    const dash = await (await (await import("@/app/api/manage/dashboard/route")).GET(new Request("https://t.local/api/manage/dashboard"))).json();
     const from = dash.bookPnl.from as string;
     const { GET } = await import("@/app/api/manage/reports/summary/route");
     const sum = await (await GET(new Request(`https://t.local/api/manage/reports/summary?from=${encodeURIComponent(from)}`))).json();

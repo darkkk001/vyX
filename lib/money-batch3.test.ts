@@ -191,7 +191,7 @@ describe("dashboard money tiles", () => {
 
     await as(fx, ba);
     const { GET } = await import("@/app/api/manage/dashboard/route");
-    const res = await GET();
+    const res = await GET(new Request("https://t.local/api/manage/dashboard"));
     const j = await res.json();
     expect(j.netDeposits7d).toBe(700);
     expect(j.pendingWithdrawalSum).toBe(250);

@@ -16,12 +16,17 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // sums are resolved to plain numbers here (RSC serialization never
 // allowed raw Decimal across the boundary either), and audit rows are
 // pre-humanized server-side, same convention as /api/manage/audit.
-export async function GET() {
+export async function GET(request: Request) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
+  // Scope toggle (owner 2026-10-15): live (default, today's exact output), demo or all. Account COUNTS and lists follow it;
+  // MONEY stays live-only under live and demo and covers live + demo only under all. Echoed back as `scope` so an older
+  // client (no echo) knows the server ignored the parameter.
+  const scopeParam = new URL(request.url).searchParams.get("scope")?.toLowerCase();
+  const scopeMode: DashScope = scopeParam === "demo" || scopeParam === "all" ? scopeParam : "live";
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * DAY_MS);
   const fourteenDaysAgo = new Date(now.getTime() - 14 * DAY_MS);
@@ -33,7 +38,7 @@ export async function GET() {
   // Staff-recorded deposits / withdrawals are ordinary DEPOSIT / WITHDRAWAL rows and count the same once COMPLETED.
   const brokerRow = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
   const liveClientTx: Prisma.TransactionWhereInput = {
-    account: { accountMode: "LIVE", isInternal: false, group: { category: { not: "COVERAGE" } } },
+    account: { ...(scopeMode === "all" ? {} : { accountMode: "LIVE" as const }), isInternal: false, group: { category: { not: "COVERAGE" } } },
     ...(brokerRow.coverageAccountId ? { accountId: { not: brokerRow.coverageAccountId } } : {}),
   };
   const [
@@ -47,8 +52,8 @@ export async function GET() {
     activity,
     depositsWithdrawals14d,
   ] = await Promise.all([
-    prisma.account.count({ where: { brokerId } }),
-    prisma.account.count({ where: { brokerId, createdAt: { gte: sevenDaysAgo } } }),
+    prisma.account.count({ where: { brokerId, ...(scopeMode === "demo" ? { accountMode: "DEMO" as const } : {}) } }),
+    prisma.account.count({ where: { brokerId, createdAt: { gte: sevenDaysAgo }, ...(scopeMode === "demo" ? { accountMode: "DEMO" as const } : {}) } }),
     prisma.transaction.aggregate({
       where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, ...liveClientTx },
       _sum: { amount: true },
@@ -63,9 +68,9 @@ export async function GET() {
     // numbers or are operational queues staff still need to act on
     // regardless of account mode. Full demo/live separation across every
     // report is deferred to the Phase 2 Reporting v2 module.
-    prisma.position.count({ where: { brokerId, status: "OPEN", account: { accountMode: "LIVE" } } }),
+    prisma.position.count({ where: { brokerId, status: "OPEN", account: modeWhere(scopeMode) } }),
     prisma.position.findMany({
-      where: { brokerId, status: "OPEN", account: { accountMode: "LIVE" } },
+      where: { brokerId, status: "OPEN", account: modeWhere(scopeMode) },
       select: { accountId: true },
       distinct: ["accountId"],
     }),
@@ -124,15 +129,19 @@ export async function GET() {
   // voided trades; commission and swap are not part of it. The day starts at the charts' D1 boundary (lib/trading-day.ts).
   const tradingDay = await tradingDayStart(now);
   const tradingDayStartAt = tradingDay.start;
-  const scope = { brokerId, coverageAccountId: brokerRow.coverageAccountId };
+  const scope = { brokerId, coverageAccountId: brokerRow.coverageAccountId, includeDemo: scopeMode === "all" };
   const [bookToday, bookFloating] = await Promise.all([bookPnlRealized(prisma, scope, tradingDayStartAt), bookPnlFloating(prisma, scope)]);
   // legacy single numbers for backoffice 1.0.61 and older (summed across currencies; new clients read bookPnl)
   const brokerBookClosedToday = legacySum(bookToday);
   const brokerBookClosedTodayCount = bookToday.reduce((t, r) => t + r.count, 0);
 
   const entityLabels = await resolveEntityLabels(brokerId, activity.map((a) => ({ entityType: a.entityType, entityId: a.entityId })));
-  const clients = await clientTotals(brokerId, brokerRow.coverageAccountId, { sevenDaysAgo, fourteenDaysAgo, thirtyDaysAgo }, bookToday);
+  const clients = await clientTotals(brokerId, brokerRow.coverageAccountId, { sevenDaysAgo, fourteenDaysAgo, thirtyDaysAgo }, bookToday, scopeMode);
+  const newClients = await newClientsSplit(brokerId, brokerRow.coverageAccountId, sevenDaysAgo);
   return NextResponse.json({
+    scope: scopeMode,
+    // NEW CLIENTS counts every registered client (live and demo) whatever the scope; the split is shown beside it
+    newClients,
     // Step 2 (owner 2026-09-30): the same figures for real clients only (live accounts, no broker hedge / coverage
     // account, no COVERAGE-category group), with every money figure split by account currency and never summed across
     // currencies. The older top-level fields above keep their shape for backoffice 1.0.55 and older.
@@ -174,19 +183,35 @@ export async function GET() {
   });
 }
 
+type DashScope = "live" | "demo" | "all";
+const modeWhere = (scope: DashScope): Prisma.AccountWhereInput => (scope === "all" ? {} : { accountMode: scope === "demo" ? "DEMO" : "LIVE" });
+const modeSql = (scope: DashScope) => (scope === "all" ? Prisma.sql`TRUE` : scope === "demo" ? Prisma.sql`a."accountMode" = 'DEMO'` : Prisma.sql`a."accountMode" = 'LIVE'`);
+
+// Clients opened in the last 7 days, live and demo together, with the split (same client definition as clientAccountSql
+// minus the mode: no internal account, no hedge account, no COVERAGE group).
+async function newClientsSplit(brokerId: string, coverageAccountId: string | null, since: Date) {
+  const [r] = await prisma.$queryRaw<{ live: bigint; demo: bigint }[]>`
+    SELECT COUNT(*) FILTER (WHERE a."accountMode" = 'LIVE')::bigint AS live, COUNT(*) FILTER (WHERE a."accountMode" = 'DEMO')::bigint AS demo
+    FROM "Account" a WHERE ${clientAccountSql(brokerId, coverageAccountId, "all")} AND a."createdAt" >= ${since}`;
+  const live = Number(r?.live ?? 0), demo = Number(r?.demo ?? 0);
+  return { total: live + demo, live, demo };
+}
+
 type Windows = { sevenDaysAgo: Date; fourteenDaysAgo: Date; thirtyDaysAgo: Date };
 type MoneyRow = { currency: string; bucket: string; n: bigint; total: Prisma.Decimal | null };
 
 // Step 2: "a client" = a LIVE account that is not the broker's hedge (coverage) account and whose group, if any, is not
 // in the COVERAGE category. Demo accounts are left out of every count and sum here.
-function clientAccountSql(brokerId: string, coverageAccountId: string | null) {
-  return Prisma.sql`a."brokerId" = ${brokerId} AND a."accountMode" = 'LIVE' AND a."isInternal" = false
+function clientAccountSql(brokerId: string, coverageAccountId: string | null, scope: DashScope = "live") {
+  return Prisma.sql`a."brokerId" = ${brokerId} AND ${modeSql(scope)} AND a."isInternal" = false
     AND (${coverageAccountId}::text IS NULL OR a.id <> ${coverageAccountId})
     AND NOT EXISTS (SELECT 1 FROM "Group" g WHERE g.id = a."groupId" AND g.category = 'COVERAGE')`;
 }
 
-async function clientTotals(brokerId: string, coverageAccountId: string | null, w: Windows, bookToday: CurrencyAmount[]) {
-  const who = clientAccountSql(brokerId, coverageAccountId);
+async function clientTotals(brokerId: string, coverageAccountId: string | null, w: Windows, bookToday: CurrencyAmount[], scope: DashScope = "live") {
+  const who = clientAccountSql(brokerId, coverageAccountId, scope);
+  // money: live-only under live and demo; live + demo only under all
+  const moneyWho = clientAccountSql(brokerId, coverageAccountId, scope === "all" ? "all" : "live");
   const [counts] = await prisma.$queryRaw<{ total: bigint; new7d: bigint; activeAccounts: bigint; openPositions: bigint }[]>`
     SELECT COUNT(*)::bigint AS total,
            COUNT(*) FILTER (WHERE a."createdAt" >= ${w.sevenDaysAgo})::bigint AS "new7d",
@@ -207,7 +232,7 @@ async function clientTotals(brokerId: string, coverageAccountId: string | null, 
       SELECT t."accountId", t.amount, 'deposits30d' FROM "Transaction" t
       WHERE t."brokerId" = ${brokerId} AND t.type = 'DEPOSIT' AND t.status = 'COMPLETED' AND t."createdAt" >= ${w.thirtyDaysAgo}
     ) x JOIN "Account" a ON a.id = x."accountId"
-    WHERE x.bucket IS NOT NULL AND ${who}
+    WHERE x.bucket IS NOT NULL AND ${moneyWho}
     GROUP BY 1, 2`;
   const byCcy = new Map<string, Record<string, { count: number; amount: string }>>();
   for (const r of money) {
