@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession, requireAdminRole, staffTwoFactorRequired } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 // Mirrors app/api/trade/two-factor/disable -- requires re-entering the
@@ -20,11 +20,17 @@ export async function POST(request: NextRequest) {
   // replaced device is handled by re-enrolling (POST .../setup with the
   // password, then .../confirm) or, without the device, by the platform
   // super admin's reset (POST /api/admin/admins/[id]/reset-two-factor).
+  // Per-broker policy: a broker whose Super Admin set staff 2FA to Optional lets its staff turn it off.
   if (session!.role !== "SUPER_ADMIN") {
-    return NextResponse.json(
-      { error: "2FA is mandatory for backoffice staff; re-enrol a new device instead of turning it off", code: "TWO_FACTOR_MANDATORY" },
-      { status: 409 }
-    );
+    const broker = session!.brokerId
+      ? await prisma.broker.findUnique({ where: { id: session!.brokerId }, select: { requireAdmin2fa: true } })
+      : null;
+    if (staffTwoFactorRequired(broker)) {
+      return NextResponse.json(
+        { error: "2FA is mandatory for backoffice staff; re-enrol a new device instead of turning it off", code: "TWO_FACTOR_MANDATORY" },
+        { status: 409 }
+      );
+    }
   }
 
   const { allowed } = await checkRateLimit(`admin-2fa-disable:${session!.adminId}`, 10, 300);

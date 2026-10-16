@@ -374,7 +374,7 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   // traffic is low enough for this to be cheap.
   const liveAdmin = await prisma.adminUser.findUnique({
     where: { id: session.adminId },
-    select: { status: true, role: true, twoFactorEnabled: true, passwordChangedAt: true, createdAt: true, broker: { select: { sessionTimeoutMinutes: true, staffIpAllowlist: true, passwordMaxAgeDays: true } } },
+    select: { status: true, role: true, twoFactorEnabled: true, passwordChangedAt: true, createdAt: true, broker: { select: { requireAdmin2fa: true, sessionTimeoutMinutes: true, staffIpAllowlist: true, passwordMaxAgeDays: true } } },
   });
   if (!liveAdmin || liveAdmin.status !== "ACTIVE" || liveAdmin.role !== session.role) {
     if (liveAdmin && liveAdmin.status !== "ACTIVE") {
@@ -407,14 +407,15 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
     }
   }
 
-  // Broker staff must have 2FA enrolled too (Phase 2 batch 4, mandatory for
-  // every staff member at every broker -- Broker.requireAdmin2fa no longer
-  // matters). An enrolment-only session reaching any other API path is sent to
+  // Broker staff 2FA follows the broker's policy (Broker.requireAdmin2fa, set by the Super Admin): Required (the
+  // default, and the value of anything but an explicit false) confines a staff member without 2FA to an
+  // enrolment-only session; Optional lets them in with a full session. An enrolled staff member always enters a
+  // code at sign-in either way. An enrolment-only session reaching any other API path is sent to
   // TWO_FACTOR_SETUP_REQUIRED_PATH, which answers 403 { error, code } -- a
   // redirect (thrown, so the calling route never continues) is the one way a
   // shared helper can dictate the response body of every route that calls it.
   // No x-pathname at all (a request that skipped middleware.ts) fails closed.
-  if (liveAdmin.role !== "SUPER_ADMIN" && !liveAdmin.twoFactorEnabled) {
+  if (liveAdmin.role !== "SUPER_ADMIN" && !liveAdmin.twoFactorEnabled && staffTwoFactorRequired(liveAdmin.broker)) {
     const path = (await headers()).get("x-pathname") ?? "";
     if (path.length === 0) return null;
     if (path.startsWith("/api/") && !STAFF_ENROLLMENT_API_ALLOWLIST.has(path)) {
@@ -458,9 +459,17 @@ export function requireAdminRole(session: AdminSessionPayload | null, roles: Adm
 // broker's requireAdmin2fa flag no longer decides anything -- an admin without
 // 2FA is always sent to enrol. A failed admin lookup never forces anything
 // (the session check itself already failed closed in that case).
-export function shouldForceAdminTwoFactorSetup(admin: { twoFactorEnabled: boolean } | null): boolean {
+export function shouldForceAdminTwoFactorSetup(
+  admin: { twoFactorEnabled: boolean } | null,
+  broker: { requireAdmin2fa: boolean } | null = null,
+): boolean {
   if (!admin) return false;
-  return !admin.twoFactorEnabled;
+  return !admin.twoFactorEnabled && staffTwoFactorRequired(broker);
+}
+
+// The broker's staff two-step sign-in policy. Fails closed: Optional only when the flag is explicitly false.
+export function staffTwoFactorRequired(broker: { requireAdmin2fa: boolean } | null | undefined): boolean {
+  return broker?.requireAdmin2fa !== false;
 }
 
 export async function sessionCookieOptions(remember: boolean = false) {

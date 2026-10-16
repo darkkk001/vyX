@@ -12,6 +12,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { PLAN_PRICING, formatUsd } from "@/lib/billing";
 import EngineSwitch from "./EngineSwitch";
 import PricingEngineSwitch from "./PricingEngineSwitch";
+import StaffTwoFactorPolicy from "./StaffTwoFactorPolicy";
 
 export type BrokerRow = {
   id: string;
@@ -24,6 +25,7 @@ export type BrokerRow = {
   status: "TRIAL" | "ACTIVE" | "SUSPENDED" | "DISABLED";
   executionEngine: "LEGACY" | "RUST";
   pricingEngineEnabled: boolean;
+  staffTwoFactorRequired: boolean;
   trialEndsAt: string | null;
   createdAt: string;
   hasSsoSecret: boolean;
@@ -817,6 +819,20 @@ export default function BrokersManager() {
                   Disable
                 </Button>
               </div>
+            </ModalSection>
+
+            <ModalSection label="Staff two-step sign-in">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                Required: every staff member of this broker must set up two-step sign-in. Optional: they may sign in without it; staff who
+                have it still enter a code.
+              </p>
+              <StaffTwoFactorPolicy
+                key={detailTarget.id}
+                brokerId={detailTarget.id}
+                brokerName={detailTarget.name}
+                initialRequired={detailTarget.staffTwoFactorRequired}
+                onSaved={reload}
+              />
             </ModalSection>
 
             <ModalSection label="Pricing engine">

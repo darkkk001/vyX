@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { brokerHosts } from "@/lib/broker-hosts";
 import { unreadStaffNotificationsFor } from "@/lib/notification-read";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole, TWO_FACTOR_SETUP_REQUIRED } from "@/lib/auth";
+import { getAdminSession, requireAdminRole, staffTwoFactorRequired, TWO_FACTOR_SETUP_REQUIRED } from "@/lib/auth";
 import { allowedBackofficeScreens } from "@/lib/backoffice-screens";
 import { PERMISSIONS } from "@/lib/permissions";
 
@@ -33,7 +33,7 @@ export async function GET() {
   const brokerId = session!.brokerId!;
 
   const [broker, admin] = await Promise.all([
-    prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true, primaryColor: true, subdomain: true, customDomain: true } }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true, primaryColor: true, subdomain: true, customDomain: true, requireAdmin2fa: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, theme: true, extraPermissions: true, twoFactorEnabled: true } }),
   ]);
   const identity = {
@@ -53,12 +53,12 @@ export async function GET() {
     // reopens the desktop app back in dark mode.
     theme: admin?.theme === "dark" ? "dark" : "light",
     twoFactorEnabled: admin?.twoFactorEnabled ?? false,
-    // 2FA is mandatory for every backoffice staff member (owner decision 2026-09-26)
-    twoFactorRequired: true,
+    // the broker's staff 2FA policy (Super Admin setting; Required unless explicitly Optional)
+    twoFactorRequired: staffTwoFactorRequired(broker),
     readOnly: session!.role === "SUPPORT",
   };
 
-  if (session!.twoFactorSetupRequired || !admin?.twoFactorEnabled) {
+  if (session!.twoFactorSetupRequired || !admin || (!admin.twoFactorEnabled && identity.twoFactorRequired)) {
     return NextResponse.json({
       ...identity,
       twoFactorSetupRequired: true,

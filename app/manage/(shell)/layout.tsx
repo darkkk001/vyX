@@ -44,7 +44,7 @@ export default async function ManageShellLayout({ children }: { children: React.
   const onSecurityPage = pathname === SECURITY_PATH;
 
   const [broker, admin, unreadNotifications] = await Promise.all([
-    prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, primaryColor: true, logoUrl: true } }),
+    prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, primaryColor: true, logoUrl: true, requireAdmin2fa: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, twoFactorEnabled: true } }),
     // unread FOR THIS staff member, staff rows only (web3, issues.md 324; same rule as shell-info)
     prisma.notification.count({ where: unreadStaffNotificationsFor(session!.brokerId!, session!.adminId) }),
@@ -55,9 +55,9 @@ export default async function ManageShellLayout({ children }: { children: React.
   // needsForcedSetup before the SUPPORT-only redirect (which used to fire
   // first and always win, silently dropping ?setupRequired=1 for every
   // SUPPORT admin whose broker requires 2FA) is what makes that possible.
-  // Phase 2 batch 4: mandatory for every staff member (Broker.requireAdmin2fa
-  // no longer decides it) -- the API side is confined by getAdminSession.
-  const needsForcedSetup = shouldForceAdminTwoFactorSetup(admin);
+  // Follows the broker's staff 2FA policy (Broker.requireAdmin2fa; Required unless explicitly Optional) -- the API
+  // side is confined by getAdminSession.
+  const needsForcedSetup = shouldForceAdminTwoFactorSetup(admin, broker);
   if (!onSecurityPage) {
     if (session!.role === "SUPPORT") {
       redirect(needsForcedSetup ? `${SECURITY_PATH}?setupRequired=1` : SECURITY_PATH);
