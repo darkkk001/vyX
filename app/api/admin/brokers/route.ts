@@ -57,6 +57,7 @@ export async function GET() {
       status: b.status,
       executionEngine: b.executionEngine,
       pricingEngineEnabled: b.pricingEngineEnabled,
+      staffTwoFactorRequired: b.requireAdmin2fa,
       trialEndsAt: b.trialEndsAt ? b.trialEndsAt.toISOString() : null,
       nextInvoiceAt: b.nextInvoiceAt ? b.nextInvoiceAt.toISOString() : null,
       createdAt: b.createdAt.toISOString().slice(0, 10),
@@ -120,6 +121,8 @@ export async function POST(request: NextRequest) {
           logoUrl,
           primaryColor,
           supportEmail,
+          // the schema default is false (Optional); a new broker's staff two-step sign-in starts Required
+          requireAdmin2fa: true,
           status: "TRIAL",
           trialEndsAt: new Date(Date.now() + TRIAL_PERIOD_MS),
         },
