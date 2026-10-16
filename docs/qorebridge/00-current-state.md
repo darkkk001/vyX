@@ -129,10 +129,18 @@ Where an alternate per-broker LP feed could plug in:
 
 Recommendation: 1 + 3 + 2 (web decides, outbox hands off, bridge calls back), leaving the Rust engine untouched until bridged-position risk (SL/TP, stop-out) is specified.
 
+## Decisions (owner, 2026-10-16)
+
+1. **Execution model: fill first, then hedge.** The web fills the client immediately, exactly as today (no pending state waiting for the LP, no LP requote or reject reaching the client). QoreBridge then hedges the same volume to the LP asynchronously, from a durable intent written in the client's fill transaction (integration points 1 + 3 + 2 above, with 2 as the hedge result callback, not a client fill).
+2. **Risk ownership: the engine.** The engine owns SL/TP and stop-out for the client-facing position, unchanged. The LP hedge is managed at book level by QoreBridge: client SL/TP are **not** mirrored to the LP; when the client position closes (by any reason), QoreBridge reduces or closes the matching hedge volume.
+3. **Timing.** Design and documentation only during the demo week (to 2026-10-21): no build, no schema change, no deploy. Implementation is parked until after the demo week.
+
+Follow-ups these decisions create (for the design doc, not this audit): the hedge intent and result tables (schema, after the demo week); hedge failure handling (the client stays filled; retry, alert the dealer, show unhedged exposure on Dealing / Live exposure); netting of hedge volume per symbol at book level; reconciliation of LP positions against the book.
+
 ## Open questions
 
-1. Is the LP execution model A-book pass-through (client order waits for the LP fill and price) or hedge-after-fill (client fills internally, bridge hedges)? The first needs the pending state and rejection/requote semantics; the second only the outbox.
-2. Who owns SL/TP/stop-out for a bridged position: the engine (must know the position is bridged and close through the bridge) or the bridge?
+1. ~~Execution model~~: decided, fill first then hedge (see Decisions).
+2. ~~SL/TP/stop-out ownership~~: decided, the engine; the hedge is book-level (see Decisions).
 3. Does `vyx-mt5-copier` still run in production, how does it connect to MT5, and what is its latency? Its repo (`darkkk001/vyx-mt5-copier`) must be read; it is not on C:.
 4. Which protocols and LPs are in scope (FIX 4.4, MT5 manager/gateway, cTrader), and where are credentials stored (vault, env, encrypted DB)?
 5. One LP per broker, per group, or per symbol with priority and failover (`LpRoutingRule` already models priority)?
