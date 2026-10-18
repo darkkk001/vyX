@@ -1,14 +1,21 @@
 # Incident 2026-10-18: VPS powered off (and the legacy `nats` / `caddy` services removed)
 
-_Written 2026-10-19. All changes below were made on the VPS by the owner. Raw diagnostics: `C:\vyxtrader\diag-nats-poweroff-20261019-0004.txt` on the VPS._
+_Written 2026-10-19. All changes below were made on the VPS by the owner. Raw diagnostics: `C:\vyxtrader\diag-nats-poweroff-20261019-0004.txt` on the VPS
+(copy on the owner PC: `C:\vyx-secrets\vps-diag.txt`)._
 
 ## What happened
 
 * **2026-10-18 17:05:49 UTC** the Contabo VPS (`feed.vyxtrader.com`, 161.97.138.160) shut down.
 * System log event 1074: `winlogon.exe` on behalf of `NT AUTHORITY\SYSTEM`, reason code **0x500ff** (System / Other, unplanned), kernel reason "Kernel API".
   This is the pattern of an ACPI power-off request from outside Windows (power button, i.e. a hypervisor or panel Stop/Restart).
+  The shutdown was clean: the OS stopped at 17:06:14 UTC (Kernel-General 13), and the next boot reported "last shutdown's success status was true".
 * **Not Windows Update:** no update-driven restart in the log, no reboot pending, `AUOptions=3` (download and notify, never auto-install).
   An update restart is logged by TrustedInstaller / the update orchestrator with a planned reason (for example 0x80020010).
+  The only update activity nearby was a Store package (`Microsoft.WindowsAppRuntime`) at 16:44:56 UTC, which needs no reboot.
+  The two earlier 1074 events in the last 60 days (2026-09-16 and 2026-09-23) are WMI-initiated restarts, a different pattern.
+* **2026-10-18 18:37:46 UTC** the VPS came back up (Kernel-General 12). **Downtime about 1 h 32 min**, all on Sunday with the market
+  closed (the weekly reopen is 21:00 UTC), so no trading was affected.
+* **18:37:57 UTC** the engine was running in risk mode again and reconnected to `vyxtrader-nats`, 11 s after the OS started.
 * **Cause: Contabo panel or host side.** The owner is opening a Contabo ticket to get the node's maintenance/activity record for that time.
   Update this note with the answer.
 
