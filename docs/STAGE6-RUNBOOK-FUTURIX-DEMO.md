@@ -627,3 +627,22 @@ foreach ($s in 's1-single-stopout','s2-fan-in','s3-hedge-break','s4-hedged-nbp',
 Each scenario ends with a 90 s settle (so the sweep is about 15 minutes). **PASS** = all seven exit `0` (the journal `logs\run-<UTC>.jsonl` ends `run.end ... PASS`), and, from the database (5.5 with `WHERE b.subdomain = 'zzshadowbot'`):
 every automatic close of a bot account since the sweep started is `ENGINE` (zero `WEB`), no `TRADE_PNL` twice, every `PostCloseEffect` `DONE`, the S3 margin-call notice present and the S5 coverage leg closed once, the S7 EUR account closed at the converted price, the S4 account not written off.
 **FAIL** = anything else: set `zzshadowbot` back to WEB (8) and stop; the Futurix flip does not happen.
+
+## 11. After any VPS reboot (added 2026-10-19, see `docs/INCIDENT-2026-10-18-VPS-POWER-OFF.md`)
+
+Run on the VPS after every reboot or power-off, planned or not, before trusting the engine. Read-only.
+
+```powershell
+Get-Service vyxtrader-* | Format-Table Name, Status, StartType          # all four RUNNING, vyxtrader-caddy included
+$natsPid = (Get-CimInstance Win32_Service -Filter "Name='vyxtrader-nats'").ProcessId
+$natsApp = (Get-CimInstance Win32_Process -Filter "ParentProcessId=$natsPid").ProcessId   # the real nats-server under nssm
+Get-NetTCPConnection -LocalPort 4222 -State Listen | Format-Table LocalAddress, OwningProcess
+"vyxtrader-nats app pid: $natsApp"
+Get-Service nats, caddy -ErrorAction SilentlyContinue                    # must print nothing (legacy services removed)
+```
+
+**PASS** = `vyxtrader-engine`, `vyxtrader-gateway`, `vyxtrader-nats` and `vyxtrader-caddy` all `Running`; the only 4222 listener is
+`127.0.0.1` with `OwningProcess` equal to the `vyxtrader-nats` app pid; no legacy `nats` / `caddy` service; then the heartbeat age query of
+section 6 is under 10 s while the market is open.
+**FAIL** = anything else. If `vyxtrader-caddy` is not running, use `deploy/caddy-service-recovery-runbook.md` (never `nssm restart` for a
+config change). If anything other than `vyxtrader-nats` holds 4222, or it listens on `0.0.0.0`, stop and investigate before trading resumes.
