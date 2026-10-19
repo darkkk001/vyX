@@ -121,7 +121,7 @@ export async function POST(request: NextRequest) {
           logoUrl,
           primaryColor,
           supportEmail,
-          // the schema default is false (Optional); a new broker's staff two-step sign-in starts Required
+          // explicit, though the schema default is Required too (since 20261019150000): a new broker's staff two-step sign-in starts Required
           requireAdmin2fa: true,
           status: "TRIAL",
           trialEndsAt: new Date(Date.now() + TRIAL_PERIOD_MS),

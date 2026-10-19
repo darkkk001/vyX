@@ -99,5 +99,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261007150000_risk_account_marks",
   "20261012130000_close_fields",
   "20261013100000_broker_demo_sandbox",
-  "20261019090000_group_lot_step"
+  "20261019090000_group_lot_step",
+  "20261019150000_broker_staff_2fa_default_required"
 ];

@@ -66,6 +66,7 @@ function totp(secret: string): string {
 let ready = false;
 let brokerId = "";
 let otherBrokerId = "";
+let optionalBrokerId = "";
 const createdBrokerIds: string[] = [];
 const createdAdminIds: string[] = [];
 const PASSWORD = "Correct-Horse-9";
@@ -113,9 +114,11 @@ beforeAll(async () => {
   try { await prisma.$queryRaw`SELECT 1`; await getRedis().ping(); } catch { console.warn("staff-auth-batch4.test.ts: DB or Redis unreachable, skipping"); return; }
   await assertNotProductionDatabase(prisma);
   const s = randomUUID().replace(/-/g, "").slice(0, 10);
-  const b = await prisma.broker.create({ data: { name: `B4 Auth ${s}`, subdomain: `b4auth-${s}` } });
-  const o = await prisma.broker.create({ data: { name: `B4 Other ${s}`, subdomain: `b4other-${s}` } });
-  brokerId = b.id; otherBrokerId = o.id; createdBrokerIds.push(b.id, o.id);
+  // staff 2FA policy is per broker (Broker.requireAdmin2fa): these brokers are Required on purpose; the Optional case has its own broker
+  const b = await prisma.broker.create({ data: { name: `B4 Auth ${s}`, subdomain: `b4auth-${s}`, requireAdmin2fa: true } });
+  const o = await prisma.broker.create({ data: { name: `B4 Other ${s}`, subdomain: `b4other-${s}`, requireAdmin2fa: true } });
+  const opt = await prisma.broker.create({ data: { name: `B4 Optional ${s}`, subdomain: `b4opt-${s}`, requireAdmin2fa: false } });
+  brokerId = b.id; otherBrokerId = o.id; optionalBrokerId = opt.id; createdBrokerIds.push(b.id, o.id, opt.id);
   ready = true;
 }, 30000);
 
@@ -241,6 +244,33 @@ describe("mandatory staff 2FA: enrolment-only sessions", () => {
     expect(await prisma.auditLog.count({ where: { action: "ADMIN_2FA_RESET_BY_SUPER_ADMIN", entityId: staff.id } })).toBe(1);
     // a super admin can't be "reset" through it
     expect((await reset.POST(req("/x", "POST"), P(sa.id))).status).toBe(404);
+  });
+});
+
+describe("staff 2FA policy per broker: Optional, and the Required default", () => {
+  it("an Optional broker: staff without 2FA get a full session, and staff with 2FA may turn it off", async () => {
+    if (!ready) return;
+    const m = await makeAdmin("MANAGER", { broker: optionalBrokerId });
+    as("", "/api/manage/login", optionalBrokerId);
+    const res = await (await import("@/app/api/manage/login/route")).POST(req("/api/manage/login", "POST", { email: m.email, password: PASSWORD }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.twoFactorSetupRequired).toBe(false);
+    expect(body.code).toBeUndefined();
+
+    const staff = await makeAdmin("BROKER_ADMIN", { twoFactor: true, broker: optionalBrokerId });
+    as(await sessionFor(staff), "/api/admin/two-factor/disable", optionalBrokerId);
+    const dis = await (await import("@/app/api/admin/two-factor/disable/route")).POST(req("/api/admin/two-factor/disable", "POST", { password: PASSWORD }));
+    expect(dis.status).toBe(200);
+    expect((await prisma.adminUser.findUniqueOrThrow({ where: { id: staff.id } })).twoFactorEnabled).toBe(false);
+  });
+
+  it("a broker created without the field starts Required (database default)", async () => {
+    if (!ready) return;
+    const s = randomUUID().replace(/-/g, "").slice(0, 10);
+    const d = await prisma.broker.create({ data: { name: `B4 Default ${s}`, subdomain: `b4def-${s}` } });
+    createdBrokerIds.push(d.id);
+    expect(d.requireAdmin2fa).toBe(true);
   });
 });
 

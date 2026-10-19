@@ -358,7 +358,7 @@ model Broker {
   // through 2FA setup on next login before reaching the manage shell
   // (see app/manage/(shell)/layout.tsx's own check). Does not affect
   // Super Admin (brokerId null -- this field is meaningless there).
-  requireAdmin2fa            Boolean         @default(false)
+  requireAdmin2fa            Boolean         @default(true)   // Required unless the Super Admin sets Optional (default true since 20261019150000)
   // Max open positions an account may hold at once, across all symbols.
   // Null = no limit — see docs/risk-engine.md §2.1 step 5.
   maxOpenPositionsPerAccount Int?
