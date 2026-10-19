@@ -14,6 +14,11 @@ export type Snapshot = {
   positions: Record<string, { status: string; volume: string; closePrice: string | null; realizedPnl: string | null; closedBy: string | null }>;
   queuedOrders: Record<string, string>;
   sideEffects: Record<string, number>;
+  // deal model step 2 (docs/POSITION-DEAL-MODEL.md section 4.4): every position's deals, as sorted
+  // "entry|reason|side|volume|price|profit|swap|byPositionId|linked" strings (concurrent runs: no write order), and the
+  // TRADE_PNL rows that have no deal (must be 0)
+  deals: Record<string, string[]>;
+  tradePnlWithoutDeal: number;
 };
 
 // who closed a position, from its TRADE_PNL note (the same notes both engines write)
@@ -30,7 +35,7 @@ function closedBy(note: string | null): string {
 export async function takeSnapshot(): Promise<Snapshot> {
   const { prisma } = await import("@/lib/prisma");
   await assertLoadDb(prisma);
-  const snap: Snapshot = { accounts: {}, positions: {}, queuedOrders: {}, sideEffects: {} };
+  const snap: Snapshot = { accounts: {}, positions: {}, queuedOrders: {}, sideEffects: {}, deals: {}, tradePnlWithoutDeal: 0 };
 
   const txns = await prisma.transaction.findMany({ select: { accountId: true, referenceId: true, type: true, amount: true, note: true } });
   const byAccount = new Map<string, string[]>();
@@ -61,6 +66,17 @@ export async function takeSnapshot(): Promise<Snapshot> {
     UNION ALL
     SELECT 'audit:' || action || ':' || coalesce("entityId", '-') AS k, count(*) AS n FROM "AuditLog" GROUP BY 1`;
   for (const e of [...effects].sort((x, y) => (x.k < y.k ? -1 : 1))) snap.sideEffects[e.k] = Number(e.n);
+  const deals = await prisma.$queryRaw<{ positionId: string; row: string }[]>`
+    SELECT d."positionId",
+           d.entry::text || '|' || d.reason::text || '|' || d.side::text || '|' || d.volume::text || '|' || d.price::text || '|' || d.profit::text || '|' || d.swap::text
+             || '|' || coalesce(d."byPositionId", '-') || '|'
+             || CASE WHEN EXISTS (SELECT 1 FROM "Transaction" t WHERE t.id = d."transactionId" AND t.type = 'TRADE_PNL' AND t."referenceId" = d."positionId") THEN 'linked' ELSE '-' END AS row
+    FROM "Deal" d`;
+  for (const d of deals) (snap.deals[d.positionId] ??= []).push(d.row);
+  for (const list of Object.values(snap.deals)) list.sort();
+  const [gate] = await prisma.$queryRaw<{ n: bigint }[]>`
+    SELECT count(*) AS n FROM "Transaction" t WHERE t.type = 'TRADE_PNL' AND NOT EXISTS (SELECT 1 FROM "Deal" d WHERE d."transactionId" = t.id)`;
+  snap.tradePnlWithoutDeal = Number(gate.n);
   return snap;
 }
 

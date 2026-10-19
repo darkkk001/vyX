@@ -132,7 +132,7 @@ async fn apply_close(
     match mode {
         Mode::Live => {
             let mut tx = pool.begin().await?;
-            let closed = book::close_position_as(&mut tx, crate::authority::live_actor(), &position.id, position.volume, close_price, pnl, note).await?;
+            let closed = book::close_position_as(&mut tx, crate::authority::live_actor(), &position.id, position.volume, close_price, pnl, note, reason.deal_reason()).await?;
             let outcome = match closed {
                 book::CloseResult::Closed(outcome) => {
                     // Stage 3: the web's post-close follow-up, queued in the close's own transaction

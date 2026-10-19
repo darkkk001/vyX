@@ -133,6 +133,28 @@ for (const file of fs.readdirSync(scenarioDir).filter((f) => f.endsWith(".json")
       });
     }
   }
+  // Deal model gate (docs/POSITION-DEAL-MODEL.md section 4): the same deals on both sides, and no TRADE_PNL row without one
+  if (ts.deals && rust.deals) {
+    const same = (x, y) => Math.abs(Number(x) - Number(y)) <= MONEY_TOL;
+    for (const id of [...new Set([...Object.keys(ts.deals), ...Object.keys(rust.deals)])].sort()) {
+      const xs = ts.deals[id] ?? [];
+      const ys = rust.deals[id] ?? [];
+      if (xs.length !== ys.length) {
+        unexpected.push(`deals ${id}: ts has ${xs.length}, rust ${ys.length} (ts=${xs.map((d) => `${d.entry}/${d.reason}`).join(",")} rust=${ys.map((d) => `${d.entry}/${d.reason}`).join(",")})`);
+        continue;
+      }
+      xs.forEach((x, i) => {
+        const y = ys[i];
+        if (x.entry !== y.entry || x.reason !== y.reason || x.side !== y.side || !same(x.volume, y.volume) || !same(x.price, y.price) || !same(x.profit, y.profit)
+          || !same(x.swap, y.swap) || (x.byPositionId ?? null) !== (y.byPositionId ?? null) || x.linked !== y.linked) {
+          unexpected.push(`deals ${id}[${i}] ts=${JSON.stringify(x)} rust=${JSON.stringify(y)}`);
+        }
+      });
+    }
+  }
+  for (const [side, out] of [["ts", ts], ["rust", rust]]) {
+    if (out.dealGate && out.dealGate.tradePnlWithoutDeal !== 0) unexpected.push(`${side}: ${out.dealGate.tradePnlWithoutDeal} TRADE_PNL row(s) without a deal`);
+  }
   let status;
   if (unexpected.length) {
     status = "FAIL";

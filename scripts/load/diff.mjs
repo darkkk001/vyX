@@ -46,6 +46,16 @@ for (const id of new Set([...Object.keys(web.positions), ...Object.keys(eng.posi
 for (const id of new Set([...Object.keys(web.queuedOrders), ...Object.keys(eng.queuedOrders)])) {
   if (web.queuedOrders[id] !== eng.queuedOrders[id]) add(accountOfPosition.get(id.replace(/^q-/, "")) ?? id, `queued order ${id} web=${web.queuedOrders[id]} engine=${eng.queuedOrders[id]}`);
 }
+// deal model step 2 (docs/POSITION-DEAL-MODEL.md section 4.4): the Deal table, position by position, and no TRADE_PNL without a deal
+if (web.deals && eng.deals) {
+  const norm = (xs) => (xs ?? []).map((x) => x.split("|").map((v, i) => (i >= 3 && i <= 6 ? String(Number(v)) : v)).join("|")).sort().join(";");
+  for (const id of new Set([...Object.keys(web.deals), ...Object.keys(eng.deals)])) {
+    if (norm(web.deals[id]) !== norm(eng.deals[id])) add(accountOfPosition.get(id) ?? id, `deals ${id} web=[${(web.deals[id] ?? []).join(",")}] engine=[${(eng.deals[id] ?? []).join(",")}]`);
+  }
+}
+for (const [side, snap] of [["web", web], ["engine", eng]]) {
+  if (snap.tradePnlWithoutDeal) diffs.push({ topo: "deal-gate", anomaly: false, what: `${side}: ${snap.tradePnlWithoutDeal} TRADE_PNL row(s) without a deal` });
+}
 // side effects: entity -> account through positions / accounts, for attribution
 for (const k of new Set([...Object.keys(web.sideEffects), ...Object.keys(eng.sideEffects)])) {
   if ((web.sideEffects[k] ?? 0) === (eng.sideEffects[k] ?? 0)) continue;

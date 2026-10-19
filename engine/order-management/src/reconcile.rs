@@ -1,7 +1,8 @@
 //! Rust cutover Stage 5 reconciler (docs/RUST-CUTOVER-PLAN.md §5.3): pairs what the WEB really did with what the
 //! shadow would have done, once a minute, and classifies every difference.
 //!
-//! Web side (read only, from the book database): the risk closes it booked (TRADE_PNL rows whose note is
+//! Web side (read only, from the book database): the risk closes it booked (TRADE_PNL rows whose deal's reason is SL /
+//! TP / STOP_OUT -- docs/POSITION-DEAL-MODEL.md step 2; a row written before deals existed falls back to its note,
 //! "Stop loss hit (automatic)" / "Take profit hit (automatic)" / "Stop-out (automatic): ...") and its margin-call
 //! notices (trader-facing MARGIN_CALL notifications; the web leaves no record when an account LEAVES a margin
 //! call, so only the "in" edge can be paired). Read on a cursor (createdAt, id); nothing is written to the book.
@@ -179,7 +180,27 @@ impl Class {
     }
 }
 
-/// The web's kind from its TRADE_PNL note (the notes are the web's and the engine's, byte for byte).
+/// The kind of a risk close from its deal's reason ("Deal".reason, written next to the TRADE_PNL row by both sides).
+pub fn kind_from_deal_reason(reason: &str) -> Option<&'static str> {
+    match reason {
+        "SL" => Some("stop_loss"),
+        "TP" => Some("take_profit"),
+        "STOP_OUT" => Some("stop_out"),
+        _ => None,
+    }
+}
+
+/// The kind of a TRADE_PNL row: its deal decides; only a row with no deal (written before the deal model) is read from
+/// its note. A deal with a non-risk reason (CLIENT, DEALER, MIRROR ...) is not a risk close whatever the note says.
+pub fn close_kind(deal_reason: Option<&str>, note: Option<&str>) -> Option<&'static str> {
+    match deal_reason {
+        Some(reason) => kind_from_deal_reason(reason),
+        None => note.and_then(web_kind),
+    }
+}
+
+/// The web's kind from its TRADE_PNL note (the notes are the web's and the engine's, byte for byte). Fallback for rows
+/// written before the deal model; close_kind prefers the deal.
 pub fn web_kind(note: &str) -> Option<&'static str> {
     if note.starts_with("Stop loss hit (automatic)") {
         Some("stop_loss")
@@ -506,18 +527,21 @@ impl Reconciler {
             .unwrap_or_else(|| Utc::now() - ChronoDuration::minutes(2));
         let cursor_id = self.state("web_close_cursor_id").await.unwrap_or_default();
         #[allow(clippy::type_complexity)]
-        let closes: Vec<(String, String, String, String, DateTime<Utc>, Decimal, Option<Decimal>)> = sqlx::query_as(
-            r#"SELECT t.id, t."accountId", t."referenceId", t.note, t."createdAt", t.amount, p."closePrice"
+        let closes: Vec<(String, String, String, Option<String>, DateTime<Utc>, Decimal, Option<Decimal>, Option<String>)> = sqlx::query_as(
+            r#"SELECT t.id, t."accountId", t."referenceId", t.note, t."createdAt", t.amount, p."closePrice", d.reason::text
                FROM "Transaction" t LEFT JOIN "Position" p ON p.id = t."referenceId"
+                    LEFT JOIN "Deal" d ON d."transactionId" = t.id
                     JOIN "Broker" sb ON sb.id = t."brokerId" AND NOT sb."isDemoSandbox"
                WHERE t.type = 'TRADE_PNL' AND t."referenceType" = 'Position'
-                 AND (t.note LIKE 'Stop loss hit (automatic)%' OR t.note LIKE 'Take profit hit (automatic)%' OR t.note LIKE 'Stop-out (automatic)%')
+                 AND (d.reason IN ('SL', 'TP', 'STOP_OUT')
+                      OR (d.id IS NULL AND (t.note LIKE 'Stop loss hit (automatic)%' OR t.note LIKE 'Take profit hit (automatic)%' OR t.note LIKE 'Stop-out (automatic)%')))
                  AND (t."createdAt", t.id) > ($1, $2) AND t."createdAt" < now() - make_interval(secs => $3)
                ORDER BY t."createdAt", t.id LIMIT 500"#,
         )
         .bind(cursor_at).bind(&cursor_id).bind(settle).fetch_all(&self.book).await?;
-        for (txn, account, position, note, at, amount, close_price) in &closes {
-            let Some(kind) = web_kind(note) else { continue };
+        for (txn, account, position, note, at, amount, close_price, deal_reason) in &closes {
+            let Some(kind) = close_kind(deal_reason.as_deref(), note.as_deref()) else { continue };
+            let note = note.as_deref().unwrap_or("");
             let decision: Option<(String, String, DateTime<Utc>, Option<Decimal>, Option<Decimal>)> = sqlx::query_as(
                 "SELECT dedupe_key, kind, first_seen, close_price, pnl FROM shadow_decision WHERE position_id = $1 AND kind IN ('stop_loss','take_profit','stop_out') ORDER BY first_seen LIMIT 1",
             )
@@ -643,21 +667,22 @@ impl Reconciler {
             let fan = self.fan_in(account).await;
             if let Some(pos) = position {
                 // how the position actually ended (or not)
-                let row: Option<(String, Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
-                    r#"SELECT p.status::text, p."closedAt", t.note FROM "Position" p
-                       LEFT JOIN LATERAL (SELECT note FROM "Transaction" WHERE "referenceType" = 'Position' AND "referenceId" = p.id AND type = 'TRADE_PNL' ORDER BY "createdAt" DESC LIMIT 1) t ON true
+                let row: Option<(String, Option<DateTime<Utc>>, Option<String>, Option<String>)> = sqlx::query_as(
+                    r#"SELECT p.status::text, p."closedAt", t.note, d.reason::text FROM "Position" p
+                       LEFT JOIN LATERAL (SELECT id, note FROM "Transaction" WHERE "referenceType" = 'Position' AND "referenceId" = p.id AND type = 'TRADE_PNL' ORDER BY "createdAt" DESC LIMIT 1) t ON true
+                       LEFT JOIN "Deal" d ON d."transactionId" = t.id
                        WHERE p.id = $1"#,
                 )
                 .bind(pos).fetch_optional(&self.book).await?;
                 let (class, detail) = match row {
-                    Some((status, closed_at, note)) if status == "CLOSED" => {
-                        match note.as_deref().and_then(web_kind) {
+                    Some((status, closed_at, note, deal_reason)) if status == "CLOSED" => {
+                        match close_kind(deal_reason.as_deref(), note.as_deref()) {
                             // closed by a web risk action: it was, or will be, paired from the web side
                             Some(_) => continue,
-                            None => (Class::Preempted, serde_json::json!({ "webClosedAt": closed_at, "webNote": note })),
+                            None => (Class::Preempted, serde_json::json!({ "webClosedAt": closed_at, "webNote": note, "webDealReason": deal_reason })),
                         }
                     }
-                    Some((status, _, _)) => {
+                    Some((status, _, _, _)) => {
                         let near = kind == "stop_out" && level.zip(self.recorder.stop_out_level(account)).is_some_and(|(l, so)| at_edge(l, so));
                         (if near { Class::Snapshot } else { Class::EngineOnly }, serde_json::json!({ "positionStatus": status, "shadowLevel": level }))
                     }
@@ -912,6 +937,20 @@ mod tests {
         assert_eq!(web_kind("Take profit hit (automatic)"), Some("take_profit"));
         assert_eq!(web_kind("Manual close by admin @ 4367.43"), None);
         assert_eq!(web_kind("Coverage auto-close: client #100002073 closed 0.01 of 0.01"), None);
+    }
+
+    #[test]
+    fn the_deal_reason_decides_and_the_note_is_only_the_fallback() {
+        assert_eq!(close_kind(Some("SL"), Some("anything")), Some("stop_loss"));
+        assert_eq!(close_kind(Some("TP"), None), Some("take_profit"));
+        assert_eq!(close_kind(Some("STOP_OUT"), Some("Stop loss hit (automatic)")), Some("stop_out"));
+        // a deal with a non-risk reason is not a risk close, whatever its note
+        assert_eq!(close_kind(Some("CLIENT"), Some("Stop-out (automatic): margin level 9% at or below 50%")), None);
+        assert_eq!(close_kind(Some("DEALER"), None), None);
+        // no deal (a row written before the deal model): the note
+        assert_eq!(close_kind(None, Some("Take profit hit (automatic)")), Some("take_profit"));
+        assert_eq!(close_kind(None, Some("Manual close by admin @ 1")), None);
+        assert_eq!(close_kind(None, None), None);
     }
 
     #[test]

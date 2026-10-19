@@ -1,0 +1,69 @@
+{
+  "name": "34-deals-close-by-then-sl",
+  "why": "Deal model (docs/POSITION-DEAL-MODEL.md section 4.3): the client closes a 1.0 lot BUY by a 0.4 lot SELL on the web (two OUT_BY CLOSE_BY deals of 0.4 at the mid, naming each other; the SELL closes, 0.6 of the BUY stays open), then the bid is through the BUY's SL and the risk side closes the remaining 0.6 (OUT SL). Both runs must leave the same deals on both legs.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "10000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "EURUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "1.10000",
+      "slPrice": "1.09000",
+      "tpPrice": null
+    },
+    {
+      "key": "p2",
+      "account": "a1",
+      "symbol": "EURUSD",
+      "side": "SELL",
+      "volume": "0.4",
+      "openPrice": "1.10200",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "EURUSD",
+      "bid": "1.08990",
+      "ask": "1.09000",
+      "ageSeconds": 0
+    }
+  ],
+  "preCloses": [
+    {
+      "position": "p1",
+      "closeBy": "p2"
+    }
+  ],
+  "dbOnly": true
+}

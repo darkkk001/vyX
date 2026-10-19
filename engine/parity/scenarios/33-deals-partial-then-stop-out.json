@@ -1,0 +1,60 @@
+{
+  "name": "33-deals-partial-then-stop-out",
+  "why": "Deal model (docs/POSITION-DEAL-MODEL.md section 4.3): the client closes 0.4 of a 1.0 lot BUY at its open price on the web (OUT CLIENT 0.4, P&L 0), then the price drops to 1.08500: equity 1000 - 900 = 100 against 651 margin (15 %), below the 50 % stop-out, and the remaining 0.6 is stopped out (OUT STOP_OUT 0.6, -906). Both runs must leave the same deals.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "1000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "EURUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "1.10000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "EURUSD",
+      "bid": "1.08490",
+      "ask": "1.08500",
+      "ageSeconds": 0
+    }
+  ],
+  "preCloses": [
+    {
+      "position": "p1",
+      "volume": "0.4",
+      "price": "1.10000"
+    }
+  ],
+  "dbOnly": true
+}

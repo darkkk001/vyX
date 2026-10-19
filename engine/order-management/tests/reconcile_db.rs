@@ -1,6 +1,7 @@
 //! Stage 5 reconciler on the REAL schema (scratch DB as both the book and the local store): every class the soak
-//! gate counts, from rows shaped exactly like the web's (TRADE_PNL notes, MARGIN_CALL notices) and the shadow's
-//! (shadow_decision), plus the soak clock reset on an unexplained one.
+//! gate counts, from rows shaped exactly like the web's (TRADE_PNL notes, their deals, MARGIN_CALL notices) and the
+//! shadow's (shadow_decision), plus the soak clock reset on an unexplained one. A close's kind comes from its deal's
+//! reason; only a ledger row without a deal falls back to the note.
 //!
 //!   ENGINE_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5499/vyx_test VYX_REQUIRE_DB_TESTS=1 \
 //!   cargo test -p order-management --test reconcile_db
@@ -68,6 +69,15 @@ impl Fx {
         }
         pos
     }
+    /// The deal the web writes next to a close booked by `position` (docs/POSITION-DEAL-MODEL.md), with `reason`.
+    async fn deal(&self, name: &str, reason: &str) {
+        let (txn, pos) = (format!("rc-t-{}-{name}", self.tag), format!("rc-p-{}-{name}", self.tag));
+        sqlx::query(r#"INSERT INTO "Deal" (id, "brokerId", "accountId", "positionId", "symbolId", side, entry, reason, volume, price, profit, "transactionId", "executedAt")
+             SELECT $1, t."brokerId", t."accountId", $2, $3, 'SELL', 'OUT', $4::"DealReason", 1, p."closePrice", t.amount, t.id, t."createdAt"
+             FROM "Transaction" t JOIN "Position" p ON p.id = $2 WHERE t.id = $5"#)
+            .bind(format!("rc-d-{}-{name}", self.tag)).bind(&pos).bind(&self.symbol).bind(reason).bind(&txn)
+            .execute(&self.pool).await.unwrap();
+    }
     /// A shadow decision seen `ago` seconds ago.
     async fn decision(&self, kind: &str, account: &str, position: Option<&str>, ago: i64, price: Option<Decimal>, pnl: Option<Decimal>, level: Option<Decimal>) {
         let key = match position { Some(p) => format!("{kind}:{p}"), None => format!("{kind}:{account}:1") };
@@ -79,6 +89,7 @@ impl Fx {
     async fn cleanup(&self) {
         for sql in [
             r#"DELETE FROM "Notification" WHERE "brokerId" = $1"#,
+            r#"DELETE FROM "Deal" WHERE "brokerId" = $1"#,
             r#"DELETE FROM "Transaction" WHERE "brokerId" = $1"#,
             r#"DELETE FROM "Position" WHERE "brokerId" = $1"#,
             r#"DELETE FROM "Order" WHERE "brokerId" = $1"#,
@@ -147,6 +158,16 @@ async fn every_class_the_soak_gate_counts_and_the_clock_reset() {
              VALUES ($1, $2, 'MARGIN_CALL', 'Margin call', 'Account 8x''s margin level is 82.47%, at or below the 100% margin-call level.', 'Account', $3, $3, now() - interval '20 seconds')"#)
             .bind(format!("rc-n-{}", fx.tag)).bind(&fx.broker).bind(&h).execute(&pool).await.unwrap();
         fx.decision("margin_call_in", &h, None, 21, None, None, Some(dec!(82.4))).await;
+        // deal model: the deal's reason decides, not the note. A stop loss whose note no prefix matches still pairs -> MATCH
+        let i = fx.account("sldeal").await;
+        let pi = fx.position(&i, "sldeal", Some(("Closed", 20, dec!(90), dec!(-10)))).await;
+        fx.deal("sldeal", "SL").await;
+        fx.decision("stop_loss", &i, Some(&pi), 22, Some(dec!(90)), Some(dec!(-10)), None).await;
+        // a close whose deal says CLIENT is not a risk close even with a risk-shaped note: the shadow's stop-out -> PREEMPTED
+        let j = fx.account("clientdeal").await;
+        let pj = fx.position(&j, "clientdeal", Some((so, 115, dec!(90), dec!(-10)))).await;
+        fx.deal("clientdeal", "CLIENT").await;
+        fx.decision("stop_out", &j, Some(&pj), 120, Some(dec!(90)), Some(dec!(-10)), Some(dec!(90))).await;
 
         let clock_before = reconciler.clock_started_at().await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -160,15 +181,15 @@ async fn every_class_the_soak_gate_counts_and_the_clock_reset() {
         let (n2,): (i64,) = sqlx::query_as("SELECT count(*) FROM shadow_pair WHERE account_id LIKE $1").bind(format!("rc-a-{}-%", fx.tag)).fetch_one(&pool).await.unwrap();
         let summary = reconciler.summarize(Utc::now().date_naive()).await.unwrap();
         (
-            [class_of(&a), class_of(&b), class_of(&c), class_of(&d), class_of(&e), class_of(&f), class_of(&g), class_of(&h)],
+            [class_of(&a), class_of(&b), class_of(&c), class_of(&d), class_of(&e), class_of(&f), class_of(&g), class_of(&h), class_of(&i), class_of(&j)],
             rows.len() as i64, n2, clock_after > clock_before, summary,
         )
     };
     let (classes, n1, n2, clock_reset, summary) = body.await;
     fx.cleanup().await;
-    assert_eq!(classes, ["MATCH", "TIMING", "VALUE", "SNAPSHOT", "WEB_ONLY", "ENGINE_ONLY", "PREEMPTED", "MATCH"].map(String::from), "{classes:?}");
-    assert_eq!(n1, 8);
-    assert_eq!(n2, 8, "a second run adds nothing");
+    assert_eq!(classes, ["MATCH", "TIMING", "VALUE", "SNAPSHOT", "WEB_ONLY", "ENGINE_ONLY", "PREEMPTED", "MATCH", "MATCH", "PREEMPTED"].map(String::from), "{classes:?}");
+    assert_eq!(n1, 10);
+    assert_eq!(n2, 10, "a second run adds nothing");
     assert!(clock_reset, "an unexplained class resets the soak clock");
     assert!(summary["counts"]["MATCH"].as_i64().unwrap_or(0) >= 2, "{summary}");
     assert_eq!(summary["exitMet"], serde_json::json!(false));

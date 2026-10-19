@@ -1,0 +1,60 @@
+{
+  "name": "32-deals-partial-then-sl",
+  "why": "Deal model (docs/POSITION-DEAL-MODEL.md section 4.3): the client closes 0.4 of a 1.0 lot BUY at 1.10500 on the web (OUT CLIENT 0.4, +200), then the price falls through the SL and the risk side closes the remaining 0.6 (OUT SL 0.6 at the bid 1.08990, -606). Both runs must leave the same two OUT deals, each linked to its TRADE_PNL row, and no ledger row without a deal.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "10000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "EURUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "1.10000",
+      "slPrice": "1.09000",
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "EURUSD",
+      "bid": "1.08990",
+      "ask": "1.09000",
+      "ageSeconds": 0
+    }
+  ],
+  "preCloses": [
+    {
+      "position": "p1",
+      "volume": "0.4",
+      "price": "1.10500"
+    }
+  ],
+  "dbOnly": true
+}

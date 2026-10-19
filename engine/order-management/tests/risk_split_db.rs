@@ -339,7 +339,7 @@ async fn a_flip_waits_for_an_engine_close_in_flight_and_the_next_engine_close_is
     w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
 
     let mut tx = pool.begin().await.unwrap();
-    let first = book::close_position_as(&mut tx, Some(RiskOwner::Rust), &positions[0], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): test").await.unwrap();
+    let first = book::close_position_as(&mut tx, Some(RiskOwner::Rust), &positions[0], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): test", book::DealReason::StopOut).await.unwrap();
     assert!(matches!(first, book::CloseResult::Closed(_)));
 
     // the flip arrives while that transaction is open
@@ -354,7 +354,7 @@ async fn a_flip_waits_for_an_engine_close_in_flight_and_the_next_engine_close_is
     // the first close stands (it was the owner's); the second is refused inside its own transaction
     assert_eq!(status(&pool, &positions[0]).await, "CLOSED");
     let mut tx2 = pool.begin().await.unwrap();
-    let second = book::close_position_as(&mut tx2, Some(RiskOwner::Rust), &positions[1], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): test").await.unwrap();
+    let second = book::close_position_as(&mut tx2, Some(RiskOwner::Rust), &positions[1], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): test", book::DealReason::StopOut).await.unwrap();
     assert!(matches!(second, book::CloseResult::NotOwner(RiskOwner::Web)), "{second:?}");
     tx2.rollback().await.unwrap();
     assert_eq!(status(&pool, &positions[1]).await, "OPEN", "the refused close wrote nothing");
@@ -621,7 +621,7 @@ async fn a_stale_heartbeat_hands_every_account_to_the_web_in_every_form_and_a_be
     // the acting transactions refuse INSIDE themselves (the prefilter is bypassed here on purpose: this is the stalled engine that
     // decided before it stalled and acts after)
     let mut tx = pool.begin().await.unwrap();
-    let refused = book::close_position_as(&mut tx, Some(RiskOwner::Rust), &positions[0], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): test").await.unwrap();
+    let refused = book::close_position_as(&mut tx, Some(RiskOwner::Rust), &positions[0], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): test", book::DealReason::StopOut).await.unwrap();
     assert!(matches!(refused, book::CloseResult::NotOwner(RiskOwner::Web)), "{refused:?}");
     tx.rollback().await.unwrap();
     assert_eq!(status(&pool, &positions[0]).await, "OPEN", "a stale engine's close wrote nothing");
@@ -693,7 +693,7 @@ async fn an_engine_stall_the_web_stops_out_once_and_the_returning_engine_duplica
 
     // the web takes the stop-out (the web actor passes the same in-transaction check: a stale engine's account is WEB-owned)
     let mut tx = pool.begin().await.unwrap();
-    let web = book::close_position_as(&mut tx, Some(RiskOwner::Web), &positions[0], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): web").await.unwrap();
+    let web = book::close_position_as(&mut tx, Some(RiskOwner::Web), &positions[0], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): web", book::DealReason::StopOut).await.unwrap();
     assert!(matches!(web, book::CloseResult::Closed(_)), "{web:?}");
     tx.commit().await.unwrap();
     // the engine returns and evaluates the same account again, in every way it can: an evaluation, a fire, a pass. Position 0 must not be closed twice
@@ -851,7 +851,7 @@ async fn weekend_gap_the_engine_fire_and_a_web_pass_race_and_exactly_one_side_ac
                 let mut acted = 0;
                 for p in &positions {
                     let mut tx = pool.begin().await.unwrap();
-                    match book::close_position_as(&mut tx, Some(RiskOwner::Web), p, dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): web").await.unwrap() {
+                    match book::close_position_as(&mut tx, Some(RiskOwner::Web), p, dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): web", book::DealReason::StopOut).await.unwrap() {
                         book::CloseResult::Closed(_) => {
                             tx.commit().await.unwrap();
                             acted += 1;
