@@ -73,6 +73,34 @@ export type CloseDealInput = {
   adminId?: string | null;
 };
 
+/// Staff reverse in place (side flipped on the same row): an OUT for the old side and an IN for the new side, both on
+/// the same position, so the deal history shows the flip. The flip keeps the entry price and realises nothing (no
+/// ledger row), so both deals are at the open price with profit 0 and no transactionId; INOUT stays reserved for
+/// netting. Call it AFTER the side update. Both deals trade the new side: closing a BUY is a SELL, opening a SELL is one.
+export async function writeFlipDealsInTx(tx: Tx, params: { positionId: string; adminId: string }) {
+  const position = await tx.position.findUniqueOrThrow({
+    where: { id: params.positionId },
+    select: { id: true, brokerId: true, accountId: true, symbolId: true, side: true, volume: true, openPrice: true },
+  });
+  const executedAt = new Date();
+  const common = {
+    brokerId: position.brokerId,
+    accountId: position.accountId,
+    positionId: position.id,
+    symbolId: position.symbolId,
+    side: position.side,
+    reason: "REVERSE" as const,
+    source: "ADMIN" as const,
+    volume: position.volume,
+    price: position.openPrice,
+    adminId: params.adminId,
+    executedAt,
+  };
+  // sequential, so the OUT gets the lower ticket and reads first at the same executedAt
+  await tx.deal.create({ data: { ...common, entry: "OUT" } });
+  await tx.deal.create({ data: { ...common, entry: "IN" } });
+}
+
 /// Void: the position's deals stay, marked voided (the ledger reversal is the ADJUSTMENT row the void writes).
 export async function markDealsVoidedInTx(tx: Tx, positionId: string, at: Date = new Date()) {
   return tx.deal.updateMany({ where: { positionId, voidedAt: null }, data: { voidedAt: at } });

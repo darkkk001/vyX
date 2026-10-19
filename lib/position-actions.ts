@@ -10,7 +10,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
 import { lockAccountBalance, lockAccountFunds } from "@/lib/account-lock";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
-import { markDealsVoidedInTx, writeOpenDealInTx } from "@/lib/deals";
+import { markDealsVoidedInTx, writeFlipDealsInTx, writeOpenDealInTx } from "@/lib/deals";
 
 type Tx = Prisma.TransactionClient;
 
@@ -153,7 +153,9 @@ export async function executeAdminCloseInTx(
 // ---------- Reverse: in-place flip (new default) ----------
 // Same position, same entry price, side inverted -- no close event, no
 // new position row, no realized P/L, no Transaction at all (this is a
-// correction, not a trade). Margin is intentionally left untouched: this
+// correction, not a trade); its deal history gets an OUT + IN pair at the
+// entry price (writeFlipDealsInTx), for it and for every follower it flips.
+// Margin is intentionally left untouched: this
 // app's own margin formula (lib/margin.ts's requiredMarginFor) is
 // side-independent (volume * contractSize * CURRENT price / leverage),
 // so there is nothing stored on Position for a side flip to update --
@@ -203,6 +205,7 @@ export async function executeReverseInPlace(
     : null;
 
   const updated = await tx.position.update({ where: { id: position.id }, data: { side: newSide } });
+  await writeFlipDealsInTx(tx, { positionId: position.id, adminId: params.adminId });
   const mirrorWarning = await isAccountMirrored(tx, position.accountId, position.account.groupId);
 
   // Audit 2026-09-24 (money): the positions that follow this one flip with it, in the same transaction -- an in-place
@@ -215,6 +218,7 @@ export async function executeReverseInPlace(
     if (leg && leg.status === "OPEN") {
       const legSide: OrderSide = leg.side === "BUY" ? "SELL" : "BUY";
       await tx.position.update({ where: { id: leg.id }, data: { side: legSide } });
+      await writeFlipDealsInTx(tx, { positionId: leg.id, adminId: params.adminId });
       followers.push({ positionId: leg.id, accountId: leg.accountId });
       await tx.auditLog.create({
         data: {
@@ -235,6 +239,7 @@ export async function executeReverseInPlace(
     if (copy && copy.status === "OPEN") {
       const copySide: OrderSide = copy.side === "BUY" ? "SELL" : "BUY";
       await tx.position.update({ where: { id: copy.id }, data: { side: copySide } });
+      await writeFlipDealsInTx(tx, { positionId: copy.id, adminId: params.adminId });
       followers.push({ positionId: copy.id, accountId: copy.accountId });
       await tx.auditLog.create({
         data: {

@@ -134,7 +134,7 @@ describe("open paths write one IN deal", () => {
     const commissionRow = await prisma.transaction.findFirstOrThrow({ where: { type: "COMMISSION", referenceId: p.id } });
     expect([d.entry, d.reason, d.side, d.source, d.volume.toString(), d.price.toString(), d.commission.toString(), d.profit.toString()]).toEqual(["IN", "CLIENT", "BUY", "DESKTOP_NATIVE", "0.5", p.openPrice.toString(), "-3.5", "0"]);
     expect([d.transactionId, d.orderId, d.accountId, d.symbolId, d.executedAt.toISOString()]).toEqual([commissionRow.id, p.originOrderId, fx.accountId, fx.symbolId, p.openedAt.toISOString()]);
-    expect(d.ticket).toBeGreaterThan(10000000n);
+    expect(d.ticket).toBeGreaterThan(BigInt(10000000));
     expect((await pos(p.id)).initialVolume?.toString()).toBe("0.5");
   });
 
@@ -538,6 +538,44 @@ describe("reverse close-and-reopen", () => {
     expect(reopened.initialVolume?.toString()).toBe("0.8");
     const [inDeal] = await deals(reopened.id);
     expect([inDeal.entry, inDeal.reason, inDeal.side, inDeal.volume.toString(), inDeal.adminId, inDeal.source]).toEqual(["IN", "REVERSE", "SELL", "0.8", fx.adminId, "ADMIN"]);
+  });
+});
+
+describe("reverse in place", () => {
+  it("writes an OUT for the old side and an IN for the new side on the same position (and on its hedge leg), at the entry price, no P/L", async () => {
+    if (!dbReachable) return;
+    const { executeReverseInPlace } = await import("@/lib/position-actions");
+    const fx = await fixture();
+    asTrader(fx);
+    const { POST } = await import("@/app/api/trade/orders/route");
+    expect((await call(POST, "/api/trade/orders", "POST", { symbol: fx.symbolName, side: "BUY", type: "MARKET", volume: "0.60", price: "100.10", idempotencyKey: `dl:${randomUUID()}` })).status).toBe(201);
+    const p = await prisma.position.findFirstOrThrow({ where: { accountId: fx.accountId } });
+    const leg = await seed(fx, { side: "BUY", volume: "0.60", openPrice: "100.10" });
+    await prisma.position.update({ where: { id: p.id }, data: { covered: true, coveredAt: new Date(), coveragePositionId: leg.id } });
+    const balanceBefore = (await prisma.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance;
+
+    const r = await prisma.$transaction((tx) => executeReverseInPlace(tx, { brokerId: fx.brokerId, positionId: p.id, adminId: fx.adminId }));
+    expect(r.newSide).toBe("SELL");
+    const all = await deals(p.id);
+    expect(all.map((d) => [d.entry, d.reason, d.side, d.volume.toString(), d.price.toString(), d.profit.toString(), d.transactionId])).toEqual([
+      ["IN", "CLIENT", "BUY", "0.6", p.openPrice.toString(), "0", null],
+      ["OUT", "REVERSE", "SELL", "0.6", p.openPrice.toString(), "0", null],
+      ["IN", "REVERSE", "SELL", "0.6", p.openPrice.toString(), "0", null],
+    ]);
+    expect(all.slice(1).every((d) => d.adminId === fx.adminId && d.source === "ADMIN")).toBe(true);
+    expect(all[1].ticket < all[2].ticket).toBe(true);
+    const after = await pos(p.id);
+    expect([after.side, after.initialVolume?.toString()]).toEqual(["SELL", "0.6"]);
+    // a correction, not a trade: no ledger row, balance unchanged
+    expect(await pnlRows(p.id)).toHaveLength(0);
+    expect((await prisma.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString()).toBe(balanceBefore.toString());
+    // the hedge leg flipped with it gets the same pair
+    expect((await deals(leg.id)).map((d) => [d.entry, d.reason, d.side])).toEqual([["OUT", "REVERSE", "SELL"], ["IN", "REVERSE", "SELL"]]);
+
+    // a later close is an OUT of the new side
+    expect((await clientClose(fx, p.id, { closePrice: "100.10", maxSlippagePips: "5" })).status).toBe(200);
+    const last = (await deals(p.id)).at(-1)!;
+    expect([last.entry, last.reason, last.side]).toEqual(["OUT", "CLIENT", "BUY"]);
   });
 });
 
