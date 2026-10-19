@@ -60,7 +60,7 @@ describe("closePositionInTx under real concurrency", () => {
     await Promise.all(
       ids.positions.map((id) =>
         prisma.$transaction((tx) =>
-          closePositionInTx(tx, {
+          closePositionInTx(tx, { deal: { reason: "CLIENT" },
             position: { id, accountId: ids.account, brokerId: ids.broker, side: "BUY", openPrice: D("4000"), volume: D("1"), symbol: { contractSize: D("100") } },
             closePrice: "4010",
           })

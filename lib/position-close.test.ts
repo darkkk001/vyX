@@ -105,7 +105,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const fx = await createFixture(tx);
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
 
-      const outcome = await closePositionInTx(tx, {
+      const outcome = await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
         closePrice: "4010.00",
       });
@@ -133,7 +133,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const fx = await createFixture(tx);
       const pos = await createOpenPosition(tx, fx, { side: "SELL", volume: "0.50", openPrice: "4000.00" });
 
-      const outcome = await closePositionInTx(tx, {
+      const outcome = await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "SELL", openPrice: D("4000.00"), volume: D("0.50"), symbol: contractSizeArg },
         closePrice: "4020.00", // price rose -- a SELL loses
       });
@@ -153,7 +153,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const fx = await createFixture(tx);
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
 
-      const outcome = await closePositionInTx(tx, {
+      const outcome = await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
         closePrice: "4010.00",
         closeVolume: D("0.40"),
@@ -177,7 +177,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const fx = await createFixture(tx);
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
 
-      const first = await closePositionInTx(tx, {
+      const first = await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
         closePrice: "4010.00",
       });
@@ -187,7 +187,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       // stop-out) racing to close the same already-closed position --
       // the guarded UPDATE (status='OPEN' in the WHERE) must find zero
       // rows and report {closed:false}, never re-credit the account.
-      const second = await closePositionInTx(tx, {
+      const second = await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
         closePrice: "4050.00",
       });
@@ -208,7 +208,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const fx = await createFixture(tx, "100");
       await tx.account.update({ where: { id: fx.accountId }, data: { credit: D("50") } });
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
-      const r = await closePositionInTx(tx, {
+      const r = await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
         closePrice: "3998.80", // -1.2 x 100 = -120
       });
@@ -231,7 +231,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const fx = await createFixture(tx, "100");
       await tx.account.update({ where: { id: fx.accountId }, data: { credit: D("10") } });
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
-      await closePositionInTx(tx, {
+      await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
         closePrice: "3998.80",
       });
@@ -253,7 +253,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const fx = await createFixture(tx, "100");
       await tx.account.update({ where: { id: fx.accountId }, data: { credit: D("50") } });
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
-      await closePositionInTx(tx, {
+      await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
         closePrice: "4001.00",
       });
@@ -272,10 +272,10 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
       const stale = { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY" as const, openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg };
 
-      const first = await closePositionInTx(tx, { position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
+      const first = await closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
       expect(first.closed).toBe(true);
       // the second caller read volume 1.00 before the first one landed
-      const second = await closePositionInTx(tx, { position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
+      const second = await closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
       expect(second.closed).toBe(false);
 
       const after = await tx.position.findUniqueOrThrow({ where: { id: pos.id } });
@@ -293,8 +293,8 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
       const stale = { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY" as const, openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg };
 
-      await closePositionInTx(tx, { position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
-      const full = await closePositionInTx(tx, { position: stale, closePrice: "4010.00" }); // would pay 1.00 lot
+      await closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
+      const full = await closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: stale, closePrice: "4010.00" }); // would pay 1.00 lot
       expect(full.closed).toBe(false);
       const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
       expect(acct.balance.toString()).toBe("100400");
@@ -318,7 +318,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const order = await tx.order.create({ data: { brokerId: fx.brokerId, accountId: fx.accountId, symbolId: jpy.id, side: "BUY", type: "MARKET", volume: D("1.00"), status: "FILLED", filledPrice: D("150.000"), filledAt: new Date(), idempotencyKey: `pc-test:${randomUUID()}` } });
       const pos = await tx.position.create({ data: { brokerId: fx.brokerId, accountId: fx.accountId, symbolId: jpy.id, originOrderId: order.id, side: "BUY", volume: D("1.00"), openPrice: D("150.000"), status: "OPEN" } });
 
-      const r = await closePositionInTx(tx, {
+      const r = await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("150.000"), volume: D("1.00"), symbol: { contractSize: D("100000") } },
         closePrice: "150.100", // +10 pips on 1 lot = 10,000 JPY
       });
@@ -340,7 +340,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const order = await tx.order.create({ data: { brokerId: fx.brokerId, accountId: fx.accountId, symbolId: odd.id, side: "BUY", type: "MARKET", volume: D("1.00"), status: "FILLED", filledPrice: D("10"), filledAt: new Date(), idempotencyKey: `pc-test:${randomUUID()}` } });
       const pos = await tx.position.create({ data: { brokerId: fx.brokerId, accountId: fx.accountId, symbolId: odd.id, originOrderId: order.id, side: "BUY", volume: D("1.00"), openPrice: D("10"), status: "OPEN" } });
 
-      await expect(closePositionInTx(tx, {
+      await expect(closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("10"), volume: D("1.00"), symbol: { contractSize: D("1000") } },
         closePrice: "11",
       })).rejects.toThrow(/no XYZ->USD conversion rate/);
@@ -357,7 +357,7 @@ describe("closePositionInTx (live DB, rolled back)", () => {
       const fx = await createFixture(tx);
       const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
 
-      await closePositionInTx(tx, {
+      await closePositionInTx(tx, { deal: { reason: "CLIENT" },
         position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
         closePrice: "4010.00",
         closeVolume: D("0.3"),

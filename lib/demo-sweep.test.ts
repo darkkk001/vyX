@@ -110,7 +110,7 @@ async function oracle(args: { account: SimAccount; positions: SimPos[]; orders: 
       }
       if (!reason) continue;
       positions = positions.filter((x) => x.id !== p.id);
-      const r = await ports.closePosition(p, cp, t, "");
+      const r = await ports.closePosition(p, cp, t, "", "SL");
       if (r.closed) events.push({ kind: "close", atMs: t, positionId: p.id, reason, price: cp.toString() });
     }
     for (;;) {
@@ -119,7 +119,7 @@ async function oracle(args: { account: SimAccount; positions: SimPos[]; orders: 
       const m = measure(open, t);
       if (m.level == null || m.level.gt(acct.stopOutLevel) || !m.worst) break;
       positions = positions.filter((x) => x.id !== m.worst!.p.id);
-      const r = await ports.closePosition(m.worst.p, m.worst.cp, t, "");
+      const r = await ports.closePosition(m.worst.p, m.worst.cp, t, "", "STOP_OUT");
       if (r.closed) events.push({ kind: "close", atMs: t, positionId: m.worst.p.id, reason: "stop_out", price: m.worst.cp.toString() });
     }
     if (positions.length + orders.length === 0) break;

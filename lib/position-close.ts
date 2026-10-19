@@ -5,6 +5,7 @@ import { quoteToAccountRate } from "@/lib/fx";
 import { lockAccountFunds } from "@/lib/account-lock";
 import { assertRiskActorInTx } from "@/lib/risk-owner";
 import type { RiskOwner } from "@/lib/risk-authority";
+import type { CloseDealInput } from "@/lib/deals";
 
 export type ClosePositionInput = {
   id: string;
@@ -54,6 +55,9 @@ export async function closePositionInTx(
     // When the close happened, if not now: the QoreTrader demo's lazy SL/TP sweep (lib/demo-sweep.ts) books a close that
     // the deterministic price path made in the past at that moment. Every live caller omits it (= now, as always).
     at?: Date;
+    // Deal model step 1 (docs/POSITION-DEAL-MODEL.md): every close writes its OUT deal (OUT_BY for a close-by) next to
+    // the TRADE_PNL row, in this transaction. Required, so a new close path cannot forget to say why it closed.
+    deal: CloseDealInput;
   }
 ): Promise<ClosePositionOutcome> {
   const { position, closePrice, note } = params;
@@ -67,6 +71,7 @@ export async function closePositionInTx(
   const ccy = await tx.position.findUniqueOrThrow({
     where: { id: position.id },
     select: {
+      symbolId: true,
       symbol: { select: { quoteCurrency: true } },
       account: { select: { currency: true } },
       swap: true,
@@ -194,6 +199,31 @@ export async function closePositionInTx(
       closeSwap,
       closeByPositionId: params.closeByPositionId ?? null,
       ...(params.at ? { createdAt: params.at } : {}),
+    },
+  });
+
+  // The deal for this close: opposite side to the position, the same lots / price / P/L / swap share as the TRADE_PNL
+  // row, linked to it by the unique transactionId (one deal per ledger row, structurally).
+  const closeByPositionId = params.closeByPositionId ?? null;
+  await tx.deal.create({
+    data: {
+      brokerId: position.brokerId,
+      accountId: position.accountId,
+      positionId: position.id,
+      orderId: params.deal.orderId ?? null,
+      symbolId: ccy.symbolId,
+      side: position.side === "BUY" ? "SELL" : "BUY",
+      entry: closeByPositionId ? "OUT_BY" : "OUT",
+      reason: params.deal.reason,
+      source: params.deal.source ?? null,
+      volume: closeVolume,
+      price: new Prisma.Decimal(closePrice),
+      profit: realizedPnl,
+      swap: closeSwap,
+      byPositionId: closeByPositionId,
+      transactionId: transaction.id,
+      adminId: params.deal.adminId ?? null,
+      executedAt: transaction.createdAt,
     },
   });
 

@@ -1,5 +1,6 @@
-import { Prisma, BookType, OrderSide } from "@prisma/client";
+import { Prisma, BookType, OrderSide, type DealReason } from "@prisma/client";
 import { chargeCommission } from "@/lib/group-pricing";
+import { writeOpenDealInTx } from "@/lib/deals";
 
 type Tx = Prisma.TransactionClient;
 
@@ -29,7 +30,9 @@ export async function openPositionFromOrder(
   },
   fillPrice: Prisma.Decimal,
   bookType: BookType,
-  commissionPerLot: Prisma.Decimal = new Prisma.Decimal(0)
+  commissionPerLot: Prisma.Decimal,
+  // the IN deal's reason (docs/POSITION-DEAL-MODEL.md): DEALER for a dealer-queue fill, MIRROR for a mirror copy
+  deal: { reason: DealReason; adminId?: string | null }
 ) {
   await tx.order.update({
     where: { id: order.id },
@@ -56,5 +59,6 @@ export async function openPositionFromOrder(
     commissionPerLot,
     volume: order.volume,
   });
+  await writeOpenDealInTx(tx, { positionId: position.id, reason: deal.reason, adminId: deal.adminId ?? null });
   return position;
 }

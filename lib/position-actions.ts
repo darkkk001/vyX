@@ -10,6 +10,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
 import { lockAccountBalance, lockAccountFunds } from "@/lib/account-lock";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { markDealsVoidedInTx, writeOpenDealInTx } from "@/lib/deals";
 
 type Tx = Prisma.TransactionClient;
 
@@ -121,6 +122,7 @@ export async function executeAdminCloseInTx(
     closeVolume,
     note: isPartial ? `Manual partial close by admin: ${closeVolume} lots @ ${closePrice}` : `Manual close by admin @ ${closePrice}`,
     closeByPositionId: params.closeByPositionId ?? null,
+    deal: { reason: "ADMIN", source: "ADMIN", adminId },
   });
   if (!outcome.closed) return { closed: false };
 
@@ -330,6 +332,7 @@ export async function executeReverseCloseReopen(
     position: { id: position.id, accountId: position.accountId, brokerId: params.brokerId, side: position.side, openPrice: position.openPrice, volume: position.volume, symbol: { contractSize: position.symbol.contractSize } },
     closePrice,
     note: `Reversed (close & reopen) by admin @ ${closePrice}`,
+    deal: { reason: "REVERSE", source: "ADMIN", adminId: params.adminId },
   });
   if (!closed.closed) throw new PositionActionError("position was closed or changed by another action, refresh and try again");
   const realizedPnl = closed.realizedPnl;
@@ -367,8 +370,10 @@ export async function executeReverseCloseReopen(
       // where the symbol's (now unused) default said. This previously stamped
       // B_BOOK onto a reversal opened on an A_BOOK or COVERAGE account.
       bookType: resolveBookType(account.group.category),
+      reversedFromPositionId: position.id,
     },
   });
+  await writeOpenDealInTx(tx, { positionId: newPosition.id, reason: "REVERSE", adminId: params.adminId });
 
   await tx.auditLog.create({
     data: {
@@ -438,6 +443,7 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
     data: { status: "VOIDED", closedAt: new Date(), closedByAdminId: params.adminId },
   });
   if (claim.count === 0) throw new PositionActionError("position was closed or changed by another action, refresh and try again");
+  await markDealsVoidedInTx(tx, position.id);
 
   const positionTxns = await tx.transaction.aggregate({
     where: { accountId: position.accountId, referenceType: "Position", referenceId: position.id, status: "COMPLETED" },
@@ -513,6 +519,7 @@ async function executeVoidClosed(
   // claim first: a concurrent void stops here instead of reversing twice
   const claim = await tx.position.updateMany({ where: { id: position.id, status: "CLOSED" }, data: { status: "VOIDED" } });
   if (claim.count === 0) throw new PositionActionError("position was changed by another action, refresh and try again");
+  await markDealsVoidedInTx(tx, position.id);
 
   const rows = await tx.transaction.groupBy({
     by: ["type"],

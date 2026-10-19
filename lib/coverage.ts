@@ -14,6 +14,7 @@ import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
 import { isDemoBrokerId } from "@/lib/demo";
+import { writeOpenDealInTx } from "@/lib/deals";
 
 // Dealer coverage (B-book hedging). A broker hedges a client's B-book
 // position by clicking BOOK NOW (app/api/manage/positions/[id]/book),
@@ -363,6 +364,7 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
       closePrice,
       closeVolume,
       note: `Coverage auto-close (auto-hedged leg): client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
+      deal: { reason: "COVERAGE" },
     });
     if (o.closed) {
       await tx.auditLog.create({
@@ -521,6 +523,7 @@ export async function onFillAutoHedge(
           autoHedged: true,
         },
       });
+      await writeOpenDealInTx(tx, { positionId: legPosition.id, reason: "COVERAGE" });
       await tx.position.update({
         where: { id: position.id },
         data: { covered: true, coveredAt: new Date(), coveragePositionId: legPosition.id },

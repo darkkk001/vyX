@@ -67,7 +67,7 @@ async function close(fx: Fx, posId: string, price: number, commission = 0) {
       await tx.account.update({ where: { id: p.accountId }, data: { balance: acc.balance.sub(commission) } });
       await tx.transaction.create({ data: { brokerId: fx.brokerId, accountId: p.accountId, type: "COMMISSION", status: "COMPLETED", amount: D(-commission), balanceBefore: acc.balance, balanceAfter: acc.balance.sub(commission), referenceType: "Position", referenceId: p.id } });
     }
-    await closePositionInTx(tx, { position: p, closePrice: price });
+    await closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: p, closePrice: price });
   });
 }
 const acc = (id: string) => prisma.account.findUniqueOrThrow({ where: { id } });

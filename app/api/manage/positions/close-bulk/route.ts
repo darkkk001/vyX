@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
     const byAccount = new Map<string, string[]>();
     for (const r of rows) byAccount.set(r.accountId, [...(byAccount.get(r.accountId) ?? []), r.id]);
     const results = [];
-    for (const [acc, accIds] of byAccount) results.push(...(await closeBulkForAccount(prisma, { accountId: acc, brokerId, scope: "ALL", positionIds: accIds })));
+    for (const [acc, accIds] of byAccount) results.push(...(await closeBulkForAccount(prisma, { accountId: acc, brokerId, scope: "ALL", positionIds: accIds, dealSource: "ADMIN", adminId: session.adminId })));
     await prisma.auditLog.create({
       data: {
         brokerId,
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
 
-  const results = await closeBulkForAccount(prisma, { accountId, brokerId, scope, symbol });
+  const results = await closeBulkForAccount(prisma, { accountId, brokerId, scope, symbol, dealSource: "ADMIN", adminId: session.adminId });
 
   await prisma.auditLog.create({
     data: {

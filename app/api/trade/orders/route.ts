@@ -24,6 +24,7 @@ import * as coverage from "@/lib/coverage";
 import { deskIsOn, orderRoute, LP_NOT_CONNECTED, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
 import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
+import { writeOpenDealInTx } from "@/lib/deals";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -493,7 +494,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
           const marginError = marginGate(fillPrice);
           if (!marginError) {
             const position = await withDeadlockRetry(() => prisma.$transaction(async (tx) => {
-              const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot);
+              const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER" });
               await tx.auditLog.create({
                 data: {
                   brokerId: session.brokerId,
@@ -687,6 +688,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
           },
         });
         const balanceAfter = await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: fillPricing.commissionPerLot, volume });
+        await writeOpenDealInTx(tx, { positionId: position.id, reason: "CLIENT" });
         // Broker feedback items 14+15 -- the highest-volume fill path in
         // the app (immediate MARKET fill, no dealing queue involved) had
         // no audit row at all; "requested vs filled" is exactly what a

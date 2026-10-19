@@ -1,5 +1,5 @@
 import "server-only";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient, type OrderSource } from "@prisma/client";
 import { classifyMissingPrice, getFreshPrices } from "@/lib/live-price";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
@@ -105,7 +105,7 @@ export async function resolveCloseByPair(
 
 export async function closePositionsByEachOther(
   db: Db,
-  params: { accountId: string; brokerId: string; positionId: string; againstPositionId: string }
+  params: { accountId: string; brokerId: string; positionId: string; againstPositionId: string; dealSource?: OrderSource | null }
 ): Promise<CloseByResult> {
   const pair = await resolveCloseByPair(db, params);
   if (!pair.ok) return pair;
@@ -118,6 +118,7 @@ export async function closePositionsByEachOther(
       closeVolume,
       note: `Close by ${b.id}`,
       closeByPositionId: b.id,
+      deal: { reason: "CLOSE_BY", source: params.dealSource ?? null },
     });
     if (!outcomeA.closed) return null;
     const outcomeB = await closePositionInTx(tx, {
@@ -126,6 +127,7 @@ export async function closePositionsByEachOther(
       closeVolume,
       note: `Close by ${a.id}`,
       closeByPositionId: a.id,
+      deal: { reason: "CLOSE_BY", source: params.dealSource ?? null },
     });
     if (!outcomeB.closed) return null;
     return { outcomeA, outcomeB };

@@ -6,6 +6,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { ensureCoverageAccount } from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
+import { writeOpenDealInTx } from "@/lib/deals";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -109,6 +110,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         bookType: "A_BOOK",
       },
     });
+    await writeOpenDealInTx(tx, { positionId: coveragePosition.id, reason: "COVERAGE", adminId: session.adminId });
     const updated = await tx.position.update({
       where: { id },
       data: { covered: true, coveredAt: new Date(), coveragePositionId: coveragePosition.id },

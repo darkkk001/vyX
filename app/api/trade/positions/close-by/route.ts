@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { closePositionsByEachOther, resolveCloseByPair } from "@/lib/close-by";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
+import { clientDealSource } from "@/lib/deals";
 
 // "Close By" -- nets the smaller of two opposite-side
 // positions on the same symbol against the larger one at a single fair
@@ -85,6 +86,7 @@ export async function POST(request: NextRequest) {
     brokerId: session.brokerId,
     positionId,
     againstPositionId,
+    dealSource: clientDealSource(request.headers.get("x-client-platform")),
   });
 
   if (!result.ok) {

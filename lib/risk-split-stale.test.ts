@@ -106,14 +106,14 @@ describe("a stale prefilter cannot make the web act on an engine-owned account",
     const position = await prisma.position.findUniqueOrThrow({ where: { id: s.positionId }, include: { symbol: true } });
     await expect(
       prisma.$transaction((tx) =>
-        closePositionInTx(tx, { position: { id: position.id, accountId: s.accountId, brokerId: s.brokerId, side: "BUY", openPrice: position.openPrice, volume: position.volume, symbol: { contractSize: position.symbol.contractSize } }, closePrice: D(90), riskActor: "WEB" })
+        closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: { id: position.id, accountId: s.accountId, brokerId: s.brokerId, side: "BUY", openPrice: position.openPrice, volume: position.volume, symbol: { contractSize: position.symbol.contractSize } }, closePrice: D(90), riskActor: "WEB" })
       )
     ).rejects.toBeInstanceOf(NotRiskOwnerError);
     expect((await prisma.position.findUniqueOrThrow({ where: { id: s.positionId } })).status).toBe("OPEN");
     expect(await prisma.transaction.count({ where: { accountId: s.accountId } })).toBe(0);
     // the same close as the owner goes through
     const ok = await prisma.$transaction((tx) =>
-      closePositionInTx(tx, { position: { id: position.id, accountId: s.accountId, brokerId: s.brokerId, side: "BUY", openPrice: position.openPrice, volume: position.volume, symbol: { contractSize: position.symbol.contractSize } }, closePrice: D(90), riskActor: "RUST" })
+      closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: { id: position.id, accountId: s.accountId, brokerId: s.brokerId, side: "BUY", openPrice: position.openPrice, volume: position.volume, symbol: { contractSize: position.symbol.contractSize } }, closePrice: D(90), riskActor: "RUST" })
     );
     expect(ok.closed).toBe(true);
   }, 30_000);

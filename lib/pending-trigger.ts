@@ -19,6 +19,7 @@ import type { RiskOwner } from "@/lib/risk-authority";
 import { hedgeAccountHoldsFunds } from "@/lib/coverage-pending";
 import { getLivePriceRow, getFreshPrices } from "@/lib/live-price";
 import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
+import { writeOpenDealInTx } from "@/lib/deals";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -309,6 +310,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
       },
     });
     await chargeCommission(tx, { brokerId: order.brokerId, accountId: order.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume: order.volume });
+    await writeOpenDealInTx(tx, { positionId: position.id, reason: "CLIENT" });
     await tx.auditLog.create({
       data: {
         brokerId: order.brokerId,
@@ -394,6 +396,7 @@ async function fillCoverageOrder(args: {
     const position = await tx.position.create({
       data: { brokerId: order.brokerId, accountId: order.accountId, symbolId: order.symbolId, originOrderId: order.id, side: order.side, volume: order.volume, openPrice: fillPrice, slPrice: order.slPrice, tpPrice: order.tpPrice, bookType: "A_BOOK" },
     });
+    await writeOpenDealInTx(tx, { positionId: position.id, reason: "COVERAGE" });
     await tx.auditLog.create({
       data: {
         brokerId: order.brokerId,

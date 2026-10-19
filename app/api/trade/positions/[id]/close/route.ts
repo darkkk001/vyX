@@ -17,6 +17,7 @@ import { afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queue
 import { runAfterResponse } from "@/lib/after-response";
 import { isDemoTenant } from "@/lib/demo-policy";
 import { demoQuoteTimeRefusal } from "@/lib/demo-prices";
+import { clientDealSource } from "@/lib/deals";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -280,6 +281,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
       },
       closePrice,
       closeVolume,
+      deal: { reason: source === "stm_bulk" ? "BULK" : "CLIENT", source: clientDealSource(request.headers.get("x-client-platform")) },
     })
   ));
 

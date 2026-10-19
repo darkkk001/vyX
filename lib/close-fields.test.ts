@@ -147,7 +147,7 @@ describe("pro-rata swap", () => {
       const cur = await pos(p.id);
       expect(cur.volume.toString()).toBe(volume.toString());
       const out = await prisma.$transaction((tx) =>
-        closePositionInTx(tx, { position: { id: p.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: cur.openPrice, volume: cur.volume, symbol: { contractSize: D(1) } }, closePrice: "100", closeVolume: D(lots) })
+        closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: { id: p.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: cur.openPrice, volume: cur.volume, symbol: { contractSize: D(1) } }, closePrice: "100", closeVolume: D(lots) })
       );
       expect(out.closed).toBe(true);
       volume = volume.sub(lots);
