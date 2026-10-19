@@ -415,16 +415,53 @@ function report(plans: PositionPlan[], lines: string[]): PositionPlan[] {
 
   const counts = new Map<string, number>();
   for (const p of plans) for (const d of p.deals) counts.set(`${d.entry} ${d.reason}`, (counts.get(`${d.entry} ${d.reason}`) ?? 0) + 1);
-  const closed = plans.filter((p) => p.pos.status === "CLOSED" && p.pos.deletedAt == null);
-  const bookOld = closed.reduce((s, p) => s.add(p.pos.realizedPnl ?? ZERO), ZERO);
-  const bookNew = closed.reduce((s, p) => s.add(p.outProfit), ZERO);
   lines.push("", "== totals");
   lines.push(`positions scanned: ${plans.length} (open ${plans.filter((p) => p.pos.status === "OPEN").length}, closed ${plans.filter((p) => p.pos.status === "CLOSED").length}, voided ${plans.filter((p) => p.pos.status === "VOIDED").length})`);
   lines.push(`deals to write: ${[...counts.values()].reduce((s, n) => s + n, 0)}  (${[...counts.entries()].sort().map(([k, n]) => `${k} ${n}`).join(", ") || "none"})`);
   lines.push(`initialVolume to set: ${plans.filter((p) => p.setInitialVolume).length}; reversedFromPositionId to set: ${plans.filter((p) => p.setReversedFrom).length}; deals to mark voided: ${plans.reduce((s, p) => s + p.existingToVoid.length, 0)} existing + new ones on voided positions`);
   lines.push(`ambiguous positions: ${amb.length}; changed rows (old -> new above): ${changed.length}`);
-  lines.push(`Book P/L of closed positions: row realizedPnl ${bookOld} -> sum of OUT profit ${bookNew} (difference ${bookNew.sub(bookOld)})`);
   return changed;
+}
+
+// Same filter as lib/book-pnl.ts heldSql (that file is server-only, a tsx script cannot import it): held book, live,
+// not internal, not the coverage account or a COVERAGE group, not a demo sandbox broker, B_BOOK / DEALING at open.
+// A test compares the "before" figure with bookPnlRealized so the two cannot drift apart.
+function heldSql(brokerId: string, coverageAccountId: string | null) {
+  return Prisma.sql`p."brokerId" = ${brokerId} AND p."deletedAt" IS NULL
+    AND NOT EXISTS (SELECT 1 FROM "Broker" sb WHERE sb.id = p."brokerId" AND sb."isDemoSandbox")
+    AND a."accountMode" = 'LIVE' AND a."isInternal" = false
+    AND (${coverageAccountId}::text IS NULL OR a.id <> ${coverageAccountId})
+    AND (g.category IS NULL OR g.category <> 'COVERAGE')
+    AND COALESCE(p."groupCategoryAtOpen"::text, g.category::text) IN ('B_BOOK', 'DEALING')
+    AND p."bookType" = 'B_BOOK'`;
+}
+
+export type BookLine = { brokerId: string; broker: string; currency: string; positions: number; before: Prisma.Decimal; after: Prisma.Decimal };
+
+/** Book P/L as the dashboard shows it (broker view = minus the clients' P/L, all time), per broker and account currency:
+ *  before = the Position rows' realizedPnl, after = the sum of each position's OUT profit (what step 7 writes back). */
+export async function bookPnlByBroker(tx: Tx, plans: PositionPlan[]): Promise<BookLine[]> {
+  const out: BookLine[] = [];
+  for (const brokerId of [...new Set(plans.map((p) => p.pos.brokerId))].sort()) {
+    const [b] = await tx.$queryRaw<{ name: string; coverageAccountId: string | null }[]>`SELECT name, "coverageAccountId" FROM "Broker" WHERE id = ${brokerId}`;
+    const closed = plans.filter((p) => p.pos.brokerId === brokerId && p.pos.status === "CLOSED");
+    const held = closed.length === 0 ? [] : await tx.$queryRaw<{ id: string }[]>`
+      SELECT p.id FROM "Position" p JOIN "Account" a ON a.id = p."accountId" LEFT JOIN "Group" g ON g.id = a."groupId"
+       WHERE ${heldSql(brokerId, b?.coverageAccountId ?? null)} AND p.id = ANY(${closed.map((p) => p.pos.id)}::text[])`;
+    const heldSet = new Set(held.map((r) => r.id));
+    const byCcy = new Map<string, BookLine>();
+    for (const p of closed) {
+      if (!heldSet.has(p.pos.id)) continue;
+      const line = byCcy.get(p.pos.accountCurrency) ?? { brokerId, broker: b?.name ?? "?", currency: p.pos.accountCurrency, positions: 0, before: ZERO, after: ZERO };
+      line.positions += 1;
+      line.before = line.before.sub(p.pos.realizedPnl ?? ZERO);
+      // an AMBIGUOUS position keeps its row (step 7 does not touch it)
+      line.after = line.after.sub(p.ambiguous.length ? (p.pos.realizedPnl ?? ZERO) : p.outProfit);
+      byCcy.set(p.pos.accountCurrency, line);
+    }
+    out.push(...[...byCcy.values()].sort((x, y) => (x.currency < y.currency ? -1 : 1)));
+  }
+  return out;
 }
 
 /** Ledger rows that undo money (an admin's manual correction, or the negative-balance write-off paired with a close). */
@@ -480,6 +517,13 @@ export async function preApplyChecks(tx: Tx, plans: PositionPlan[], changed: Pos
       lines.push(`  ***${acct} ${o.createdAt.toISOString()} ${o.type} ${o.status} ${o.amount} ref ${o.referenceType ?? "-"}${usedOffsets.has(o.id) ? "  (matched above)" : ""}${o.note ? `  "${o.note.slice(0, 80)}"` : ""}`);
     }
     lines.push(`duplicates without an exact offset: total ${unmatched}`);
+  }
+
+  const book = await bookPnlByBroker(tx, plans);
+  lines.push("", "== Book P/L, dashboard filter (live, not internal, not coverage, not a demo sandbox, B-book; broker view, all time): before -> after the deals");
+  if (book.length === 0) lines.push("no held-book closed positions");
+  for (const b of book) {
+    lines.push(`${b.broker} (broker …${b.brokerId.slice(-4)}) ${b.currency}: ${b.before.toFixed(2)} -> ${b.after.toFixed(2)} (difference ${b.after.sub(b.before).toFixed(2)}; ${b.positions} closed position(s))`);
   }
 
   const brokerIds = [...new Set(changed.map((p) => p.pos.brokerId))];

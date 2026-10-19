@@ -96,6 +96,9 @@ const LABELS: Record<string, string> = {
   BALANCE_ADJUSTMENT_REQUESTED: "Requested balance adjustment (pending approval)",
   BALANCE_ADJUSTMENT_APPROVED: "Approved balance adjustment",
   BALANCE_ADJUSTMENT_REJECTED: "Rejected balance adjustment",
+  // 2026-10-19: owner-run one-off (docs/LEDGER-RECONCILIATION-PLAN-2026-10-19.md): Account.balance set to its ledger
+  // after lost updates; no ledger row of its own
+  LEDGER_RECONCILIATION: "Reconciled balance to the ledger",
   // 2026-09-28: Credit ($) add / remove (lib/credit-adjustment.ts)
   CREDIT_ADDED: "Added credit",
   CREDIT_REMOVED: "Removed credit",

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { openReason, parseArgs, reasonFromNote, restoreFromLog, run, BackfillRefused } from "./backfill-deals";
+import { bookPnlRealized } from "@/lib/book-pnl";
 
 // Deal model step 3 (docs/POSITION-DEAL-MODEL.md section 4, "Backfill" row): the backfill on synthetic history in the
 // scratch database, one broker per test (every run is limited to it with --broker). History is written row by row the
@@ -143,7 +144,8 @@ describe("backfill on synthetic history (scratch DB)", () => {
     const line = dry.lines.find((l) => l.startsWith(`${p.ticket} |`));
     expect(line).toContain("6 -> 10");
     expect(line).toContain("0.6 -> 1");
-    expect(dry.lines.some((l) => l.startsWith("Book P/L of closed positions: row realizedPnl 6 -> sum of OUT profit 10"))).toBe(true);
+    // broker view (minus the clients' P/L): the row's 6 -> the deals' 10
+    expect(dry.lines.some((l) => l.startsWith("Backfill ") && l.includes(" USD: -6.00 -> -10.00 (difference -4.00; 1 closed position(s))"))).toBe(true);
     await apply(fx);
     expect((await deals(p.id)).map((d) => [...brief(d), d.swap.toString()])).toEqual([
       ["IN", "CLIENT", "BUY", "1", "100", "0", "0"],
@@ -357,6 +359,25 @@ describe("backfill on synthetic history (scratch DB)", () => {
     expect([after.realizedPnl?.toString(), after.closePrice?.toString(), after.volume.toString()]).toEqual(["6", "110", "0.6"]);
     expect(await prisma.transaction.findMany({ where: { brokerId: fx.brokerId }, orderBy: { id: "asc" } })).toEqual(ledger);
     expect(await prisma.account.findMany({ where: { brokerId: fx.brokerId }, orderBy: { id: "asc" } })).toEqual(accounts);
+  });
+
+  it("Book P/L uses the dashboard filter: the before figure is lib/book-pnl's, an internal account is left out", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const p = await position(fx, { side: "BUY", orderVolume: "1.00", volume: "0.60", openPrice: "100", status: "CLOSED", closePrice: "110", realizedPnl: "6" });
+    await pnl(fx, p.id, "4", "Partial close: 0.4 lots @ 110");
+    await pnl(fx, p.id, "6", null);
+    // a test account: internal, so out of every broker-wide figure
+    await prisma.account.update({ where: { id: fx.eurAccountId }, data: { isInternal: true } });
+    const q = await position(fx, { side: "BUY", orderVolume: "1.00", openPrice: "100", status: "CLOSED", closePrice: "150", realizedPnl: "50", accountId: fx.eurAccountId });
+    await pnl(fx, q.id, "50", null, at(), fx.eurAccountId);
+    const lib = await bookPnlRealized(prisma, { brokerId: fx.brokerId, coverageAccountId: null }, new Date(0));
+    expect(lib.map((c) => [c.currency, c.amount.toString()])).toEqual([["USD", "-6"]]);
+    const r = await bf(fx);
+    const from = r.lines.findIndex((l) => l.startsWith("== Book P/L, dashboard filter"));
+    const section = r.lines.slice(from + 1, r.lines.indexOf("", from + 1));
+    expect(section).toHaveLength(1);
+    expect(section[0]).toMatch(/^Backfill \S+ \(broker …\w{4}\) USD: -6\.00 -> -10\.00 \(difference -4\.00; 1 closed position\(s\)\)$/);
   });
 
   it("an open position partially closed before: IN + the OUT, and IN minus OUT = the open volume", async () => {

@@ -1,7 +1,11 @@
 # Ledger reconciliation plan: ***680 and ***704 (2026-10-19)
 
-Status: **prepared, not run.** Waiting for the owner's answer on whether ***680 and ***704 (Futurix Global) are test
-or real accounts. Nothing here has been applied.
+Status: **prepared, not run.** Both are TEST accounts (owner, 2026-10-19). ***680 is internal since 2026-10-06; the
+owner marks ***704 internal. The ledger chain (`C:\vyx-secrets\ledger-chain-680-704.txt`) explains the whole
+difference on both: the sum of the balance gaps equals balance - ledger exactly (12,337.628 and 360.25), no row's own
+after differs from before + amount, the last row's after equals the balance, no row is other than COMPLETED.
+***704's gaps are concurrent staff and dealer closes, 2026-09-11 to 09-23. The run is section 0 of
+`DEAL-MODEL-GO-LIVE-RUNBOOK.md`.
 
 ## 1. Findings (live, read-only, deal backfill dry run 2026-10-19)
 
@@ -27,8 +31,8 @@ withdrawal" rows. The owner decides.
 
 ## 2. Correction (per account, only after the owner's go)
 
-Script: `C:\vyx-secrets\reconcile-680-704.sql` (kept out of the repo: it names live tickets). It ends with ROLLBACK;
-the owner replaces it with COMMIT to apply.
+Script: `C:\vyx-secrets\reconcile-680-704.sql` (kept out of the repo: it names live tickets). Without `-v commit=1`
+it ends with ROLLBACK (a rehearsal); with it, COMMIT.
 
 - `Account.balance := ledger`, under the account's row lock, in one transaction.
 - One AuditLog row per account: action `LEDGER_RECONCILIATION`, entity the Account, old and new balance, the
@@ -42,8 +46,8 @@ the owner replaces it with COMMIT to apply.
 - Afterwards: re-run the deal backfill dry run (per-account check: 0 differing). The engine reads Account.balance from
   the database (closes lock the row), so nothing restarts. The trader's terminal shows the new balance on its next
   account poll.
-- Before running: add `LEDGER_RECONCILIATION: "Reconciled balance to the ledger"` to `lib/audit-labels.ts` so the
-  backoffice audit screen shows a label, not the raw action.
+- `lib/audit-labels.ts` has `LEDGER_RECONCILIATION: "Reconciled balance to the ledger"` (live with the step 1-3
+  web deploy; until then the audit screen shows the raw action).
 
 Tested on scratch with a synthetic account and a lost update: ROLLBACK leaves the balance and the audit table
 unchanged; a wrong reviewed balance refuses; COMMIT sets the balance to the ledger and writes one audit row.
@@ -60,7 +64,6 @@ audited).
 
 1. If ***680 / ***704 are test accounts: Futurix's BROKER_ADMIN marks them internal. Book P/L is computed on the
    fly, so their history leaves every figure at once, past periods included.
-2. The deal backfill dry run's "Book P/L of closed positions" line currently sums every closed position (demo,
-   internal and coverage included), unlike the dashboard. Proposed: print it per broker with the same filter as
-   `lib/book-pnl.ts` (as `scripts/correct-multi-close-positions.ts` bookPnlBeforeAfter already does), so the dry
-   run's before/after is the figure the broker sees.
+2. Done: the deal backfill dry run prints Book P/L per broker and currency with `lib/book-pnl.ts`'s filter (live,
+   not internal, not coverage, not a demo sandbox, B-book), broker view; a test checks its "before" against
+   `bookPnlRealized`.
