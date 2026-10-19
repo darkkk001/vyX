@@ -113,8 +113,10 @@ beforeAll(async () => {
   try { await prisma.$queryRaw`SELECT 1`; await getRedis().ping(); } catch { console.warn("staff-auth-batch4.test.ts: DB or Redis unreachable, skipping"); return; }
   await assertNotProductionDatabase(prisma);
   const s = randomUUID().replace(/-/g, "").slice(0, 10);
-  const b = await prisma.broker.create({ data: { name: `B4 Auth ${s}`, subdomain: `b4auth-${s}` } });
-  const o = await prisma.broker.create({ data: { name: `B4 Other ${s}`, subdomain: `b4other-${s}` } });
+  // staff 2FA follows Broker.requireAdmin2fa (c537614): the column defaults to false (Optional) but
+  // POST /api/admin/brokers creates every broker Required, which is the case this file tests
+  const b = await prisma.broker.create({ data: { name: `B4 Auth ${s}`, subdomain: `b4auth-${s}`, requireAdmin2fa: true } });
+  const o = await prisma.broker.create({ data: { name: `B4 Other ${s}`, subdomain: `b4other-${s}`, requireAdmin2fa: true } });
   brokerId = b.id; otherBrokerId = o.id; createdBrokerIds.push(b.id, o.id);
   ready = true;
 }, 30000);
