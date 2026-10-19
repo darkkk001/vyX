@@ -99,6 +99,7 @@ describe("note and order mapping (pure)", () => {
     expect(reasonFromNote("Coverage auto-close (auto-hedged leg): client #1 closed 1 of 2").reason).toBe("COVERAGE");
     expect(reasonFromNote("Close by #100000123").reason).toBe("CLOSE_BY");
     expect(reasonFromNote("Reversed (close & reopen) by admin @ 100").reason).toBe("REVERSE");
+    expect(reasonFromNote("Reversed by admin @ 4438.33")).toEqual({ reason: "REVERSE", known: true });
     expect(reasonFromNote("something else")).toEqual({ reason: "CLIENT", known: false });
   });
   it("maps the opening order's key", () => {
@@ -352,7 +353,7 @@ describe("backfill on synthetic history (scratch DB)", () => {
     expect(dry.lines.some((l) => l.startsWith(`Backfill `) && l.includes(": 1 position(s), accounts ***"))).toBe(true);
     await apply(fx);
     const after = await prisma.position.findUniqueOrThrow({ where: { id: p.id } });
-    expect(after).toEqual({ ...before, initialVolume: D(1), updatedAt: after.updatedAt });
+    expect(after).toEqual({ ...before, initialVolume: D(1) });
     expect([after.realizedPnl?.toString(), after.closePrice?.toString(), after.volume.toString()]).toEqual(["6", "110", "0.6"]);
     expect(await prisma.transaction.findMany({ where: { brokerId: fx.brokerId }, orderBy: { id: "asc" } })).toEqual(ledger);
     expect(await prisma.account.findMany({ where: { brokerId: fx.brokerId }, orderBy: { id: "asc" } })).toEqual(accounts);

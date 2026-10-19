@@ -106,6 +106,8 @@ export function reasonFromNote(note: string | null): { reason: DealReason; known
     ["Stop loss hit", "SL"], ["Take profit hit", "TP"], ["Stop-out", "STOP_OUT"], ["Bulk close", "BULK"], ["STM bulk close", "BULK"],
     ["Manual partial close by admin", "ADMIN"], ["Manual close by admin", "ADMIN"], ["Dealer close", "DEALER"], ["Dealer desk turned off", "DEALER"],
     ["Mirror close", "MIRROR"], ["Coverage auto-close", "COVERAGE"], ["Close by ", "CLOSE_BY"], ["Reversed (close & reopen)", "REVERSE"],
+    // the older wording of the same close-and-reopen note (live 100000606, 2026-10-19 dry run)
+    ["Reversed by admin @ ", "REVERSE"],
   ];
   for (const [prefix, reason] of starts) if (note.startsWith(prefix)) return { reason, known: true };
   return { reason: "CLIENT", known: false };
