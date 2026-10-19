@@ -41,7 +41,7 @@
 //   --broker <id> limits any run to one broker; --batch <n> changes the batch size (default 500).
 import fs from "node:fs";
 import { Prisma, PrismaClient, type DealEntry, type DealReason, type OrderSide, type OrderSource } from "@prisma/client";
-import { CLOSE_BY, PARTIAL, splitDuplicates } from "./correct-multi-close-positions";
+import { accountChecks, CLOSE_BY, PARTIAL, splitDuplicates } from "./correct-multi-close-positions";
 
 type Tx = Prisma.TransactionClient;
 const D = (v: Prisma.Decimal.Value) => new Prisma.Decimal(v);
@@ -85,6 +85,8 @@ export type PositionPlan = {
   ambiguous: string[];
   notes: string[];
   duplicates: number;
+  /** the duplicate TRADE_PNL rows themselves (the report checks each for an offsetting ADJUSTMENT) */
+  duplicateRows: TxRow[];
   inVolume: Prisma.Decimal;
   ledgerPnl: Prisma.Decimal;
   outProfit: Prisma.Decimal;
@@ -278,6 +280,7 @@ export function planPosition(input: {
     ambiguous,
     notes,
     duplicates: duplicates.length,
+    duplicateRows: duplicates,
     inVolume,
     ledgerPnl,
     outProfit,
@@ -390,7 +393,7 @@ export type Opts = {
 };
 export type Result = { exitCode: number; lines: string[]; written: number; plans: PositionPlan[] };
 
-function report(plans: PositionPlan[], lines: string[]) {
+function report(plans: PositionPlan[], lines: string[]): PositionPlan[] {
   const changed = plans.filter((p) => !p.ambiguous.length && p.pos.status === "CLOSED" && (
     !(p.pos.realizedPnl ?? ZERO).eq(p.ledgerPnl) || !p.pos.volume.eq(p.inVolume) || (p.vwap != null && p.pos.closePrice != null && !p.pos.closePrice.eq(p.vwap))));
   lines.push("", `== positions whose row differs from their deals (old -> new): ${changed.length}`);
@@ -419,6 +422,73 @@ function report(plans: PositionPlan[], lines: string[]) {
   lines.push(`initialVolume to set: ${plans.filter((p) => p.setInitialVolume).length}; reversedFromPositionId to set: ${plans.filter((p) => p.setReversedFrom).length}; deals to mark voided: ${plans.reduce((s, p) => s + p.existingToVoid.length, 0)} existing + new ones on voided positions`);
   lines.push(`ambiguous positions: ${amb.length}; changed rows (old -> new above): ${changed.length}`);
   lines.push(`Book P/L of closed positions: row realizedPnl ${bookOld} -> sum of OUT profit ${bookNew} (difference ${bookNew.sub(bookOld)})`);
+  return changed;
+}
+
+/** Ledger rows that undo money (an admin's manual correction, or the negative-balance write-off paired with a close). */
+const OFFSET_TYPES = ["ADJUSTMENT", "NEGATIVE_BALANCE_PROTECTION", "CREDIT"];
+
+/** Read-only checks printed after the report (docs/POSITION-DEAL-MODEL.md section 0): every touched account's balance
+ *  against its ledger, each duplicate booking against any later offsetting ledger row, and the brokers of the changed
+ *  positions. Nothing here changes what --apply writes. Returns the accounts whose balance differs from the ledger. */
+export async function preApplyChecks(tx: Tx, plans: PositionPlan[], changed: PositionPlan[], lines: string[]): Promise<number> {
+  const accountIds = [...new Set(plans.map((p) => p.pos.accountId))];
+  const check = await accountChecks(tx, accountIds);
+  lines.push("", `== per-account ledger check: ${check.checked} account(s) touched; balance vs opening balance + completed balance-moving ledger rows; differing: ${check.diffs.length}`);
+  for (const d of check.diffs) {
+    lines.push(`MISMATCH ***${d.accountNumber.slice(-3)}: balance ${d.balance} vs ledger ${d.ledger} (opening ${d.opening}, difference ${d.balance.sub(d.ledger)})`);
+  }
+
+  const dups = plans.filter((p) => p.duplicateRows.length);
+  if (dups.length) {
+    lines.push("", "== duplicate bookings in detail: every ledger row of the position, then the offsetting rows on its account");
+    const ids = dups.map((p) => p.pos.id);
+    const rows = await tx.$queryRaw<{ id: string; referenceId: string; type: string; status: string; amount: Prisma.Decimal; balanceBefore: Prisma.Decimal | null; balanceAfter: Prisma.Decimal | null; createdAt: Date; note: string | null }[]>`
+      SELECT id, "referenceId", type::text AS type, status::text AS status, amount, "balanceBefore", "balanceAfter", "createdAt", note
+        FROM "Transaction" WHERE "referenceId" = ANY(${ids}::text[]) ORDER BY "createdAt", id`;
+    const dupAccounts = [...new Set(dups.map((p) => p.pos.accountId))];
+    const offsets = await tx.$queryRaw<{ id: string; accountId: string; type: string; status: string; amount: Prisma.Decimal; createdAt: Date; referenceType: string | null; referenceId: string | null; note: string | null }[]>`
+      SELECT id, "accountId", type::text AS type, status::text AS status, amount, "createdAt", "referenceType", "referenceId", note
+        FROM "Transaction" WHERE "accountId" = ANY(${dupAccounts}::text[]) AND type::text = ANY(${OFFSET_TYPES}::text[]) ORDER BY "createdAt", id`;
+    const usedOffsets = new Set<string>();
+    let unmatched = ZERO;
+    for (const p of dups) {
+      lines.push(`${p.pos.ticket} ***${p.pos.accountNumber.slice(-3)} ${p.pos.symbol}:`);
+      const dupIds = new Set(p.duplicateRows.map((d) => d.id));
+      for (const r of rows.filter((r) => r.referenceId === p.pos.id)) {
+        lines.push(`  ${r.createdAt.toISOString()} ${r.type} ${r.status} ${r.amount} balance ${str(r.balanceBefore)} -> ${str(r.balanceAfter)}${dupIds.has(r.id) ? "  <- DUPLICATE" : ""}${r.note ? `  "${r.note.slice(0, 60)}"` : ""}`);
+      }
+      for (const d of p.duplicateRows) {
+        // an offset: a completed row on the same account, after the duplicate, for exactly the opposite amount, not used yet
+        const o = offsets.find((o) => !usedOffsets.has(o.id) && o.accountId === p.pos.accountId && o.status === "COMPLETED" && o.createdAt >= d.createdAt && D(o.amount).eq(D(d.amount).neg()));
+        if (o) {
+          usedOffsets.add(o.id);
+          lines.push(`  duplicate ${d.amount}: OFFSET by ${o.type} ${o.amount} at ${o.createdAt.toISOString()}${o.note ? ` "${o.note.slice(0, 60)}"` : ""}`);
+        } else {
+          unmatched = unmatched.add(d.amount);
+          lines.push(`  duplicate ${d.amount}: no offsetting row of exactly ${D(d.amount).neg()}`);
+        }
+      }
+    }
+    const firstDup = dups.flatMap((p) => p.duplicateRows).reduce((m, d) => (d.createdAt < m ? d.createdAt : m), new Date(8.64e15));
+    const later = offsets.filter((o) => o.createdAt >= firstDup);
+    lines.push(`offsetting-type rows (${OFFSET_TYPES.join(", ")}) on those accounts since the first duplicate: ${later.length}`);
+    for (const o of later) {
+      const acct = dups.find((p) => p.pos.accountId === o.accountId)!.pos.accountNumber.slice(-3);
+      lines.push(`  ***${acct} ${o.createdAt.toISOString()} ${o.type} ${o.status} ${o.amount} ref ${o.referenceType ?? "-"}${usedOffsets.has(o.id) ? "  (matched above)" : ""}${o.note ? `  "${o.note.slice(0, 80)}"` : ""}`);
+    }
+    lines.push(`duplicates without an exact offset: total ${unmatched}`);
+  }
+
+  const brokerIds = [...new Set(changed.map((p) => p.pos.brokerId))];
+  const brokers = brokerIds.length ? await tx.$queryRaw<{ id: string; name: string }[]>`SELECT id, name FROM "Broker" WHERE id = ANY(${brokerIds}::text[])` : [];
+  lines.push("", `== changed positions by broker: ${brokerIds.length} broker(s)`);
+  for (const b of brokerIds) {
+    const ps = changed.filter((p) => p.pos.brokerId === b);
+    const accts = [...new Set(ps.map((p) => `***${p.pos.accountNumber.slice(-3)}`))].join(", ");
+    lines.push(`${brokers.find((x) => x.id === b)?.name ?? "?"} (broker …${b.slice(-4)}): ${ps.length} position(s), accounts ${accts}`);
+  }
+  return check.diffs.length;
 }
 
 export async function run(prisma: PrismaClient, opts: Opts): Promise<Result> {
@@ -447,7 +517,11 @@ export async function run(prisma: PrismaClient, opts: Opts): Promise<Result> {
     plans.push(...batch);
     cursor = batch[batch.length - 1].pos.id;
   }
-  report(plans, lines);
+  const changed = report(plans, lines);
+  const ledgerDiffs = await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
+    return preApplyChecks(tx, plans, changed, lines);
+  }, { timeout: 120_000 });
   if (opts.outFile) {
     fs.writeFileSync(opts.outFile, JSON.stringify(plans.map((p) => ({
       ticket: p.pos.ticket, id: p.pos.id, account: `***${p.pos.accountNumber.slice(-3)}`, status: p.pos.status, ambiguous: p.ambiguous, notes: p.notes,
@@ -459,7 +533,7 @@ export async function run(prisma: PrismaClient, opts: Opts): Promise<Result> {
   }
   const ambiguousCount = plans.filter((p) => p.ambiguous.length).length;
   if (!opts.apply) {
-    lines.push("", `dry run: nothing written.${ambiguousCount ? ` ${ambiguousCount} AMBIGUOUS position(s) need the owner's sign-off (--skip-ambiguous) before --apply.` : ""}`);
+    lines.push("", `dry run: nothing written.${ambiguousCount ? ` ${ambiguousCount} AMBIGUOUS position(s) need the owner's sign-off (--skip-ambiguous) before --apply.` : ""}${ledgerDiffs ? ` ${ledgerDiffs} account(s) differ from their ledger (listed above).` : ""}`);
     return { exitCode: 0, lines, written: 0, plans };
   }
   if (ambiguousCount && !opts.skipAmbiguous) {

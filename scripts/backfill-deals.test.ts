@@ -299,6 +299,65 @@ describe("backfill on synthetic history (scratch DB)", () => {
     expect(await withoutDeal(fx)).toBe(0);
   });
 
+  it("each duplicate is checked for a later offsetting row of exactly the opposite amount; its ledger rows are printed", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const p1 = await position(fx, { side: "BUY", orderVolume: "1.00", openPrice: "100", status: "CLOSED", closePrice: "110", realizedPnl: "10" });
+    const p2 = await position(fx, { side: "BUY", orderVolume: "1.00", openPrice: "100", status: "CLOSED", closePrice: "107", realizedPnl: "7" });
+    const w1 = at();
+    await pnl(fx, p1.id, "10", null, w1);
+    await pnl(fx, p1.id, "10", null, new Date(w1.getTime() + 300));
+    const w2 = at();
+    await pnl(fx, p2.id, "7", null, w2);
+    await pnl(fx, p2.id, "7", null, new Date(w2.getTime() + 300));
+    await prisma.transaction.create({
+      data: { brokerId: fx.brokerId, accountId: fx.accountId, type: "ADJUSTMENT", status: "COMPLETED", amount: D(-10), balanceBefore: D(0), balanceAfter: D(-10), note: "reverse double close", createdAt: at() },
+    });
+    const r = await bf(fx);
+    const from = r.lines.indexOf("== duplicate bookings in detail: every ledger row of the position, then the offsetting rows on its account");
+    expect(from).toBeGreaterThan(0);
+    const detail = r.lines.slice(from);
+    expect(detail.filter((l) => l.endsWith("<- DUPLICATE"))).toHaveLength(2);
+    expect(detail.some((l) => l.startsWith('  duplicate 10: OFFSET by ADJUSTMENT -10 at') && l.endsWith('"reverse double close"'))).toBe(true);
+    expect(detail).toContain("  duplicate 7: no offsetting row of exactly -7");
+    expect(detail).toContain("duplicates without an exact offset: total 7");
+  });
+
+  it("per-account ledger check: every touched account's balance against its ledger; the differing ones are listed, masked", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const p = await position(fx, { side: "BUY", orderVolume: "1.00", openPrice: "100", status: "CLOSED", closePrice: "110", realizedPnl: "10" });
+    await commission(fx, p.id, "-7");
+    await pnl(fx, p.id, "10", null);
+    await prisma.account.update({ where: { id: fx.accountId }, data: { balance: D(3) } });
+    const q = await position(fx, { side: "BUY", orderVolume: "1.00", openPrice: "100", status: "CLOSED", closePrice: "105", realizedPnl: "5", accountId: fx.eurAccountId });
+    await pnl(fx, q.id, "5", null, at(), fx.eurAccountId);
+    const eur = await prisma.account.findUniqueOrThrow({ where: { id: fx.eurAccountId } });
+    const r = await bf(fx);
+    expect(r.lines).toContain("== per-account ledger check: 2 account(s) touched; balance vs opening balance + completed balance-moving ledger rows; differing: 1");
+    expect(r.lines).toContain(`MISMATCH ***${eur.accountNumber.slice(-3)}: balance 100000 vs ledger 5 (opening 0, difference 99995)`);
+    expect(r.lines.at(-1)).toContain("1 account(s) differ from their ledger (listed above).");
+  });
+
+  it("--apply writes deals, initialVolume and reversedFromPositionId only: realizedPnl, closePrice and every other Position field stay", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const p = await position(fx, { side: "BUY", orderVolume: "1.00", volume: "0.60", openPrice: "100", status: "CLOSED", closePrice: "110", realizedPnl: "6", swap: "3" });
+    await pnl(fx, p.id, "4", "Partial close: 0.4 lots @ 110");
+    await pnl(fx, p.id, "6", null);
+    const ledger = await prisma.transaction.findMany({ where: { brokerId: fx.brokerId }, orderBy: { id: "asc" } });
+    const accounts = await prisma.account.findMany({ where: { brokerId: fx.brokerId }, orderBy: { id: "asc" } });
+    const before = await prisma.position.findUniqueOrThrow({ where: { id: p.id } });
+    const dry = await bf(fx);
+    expect(dry.lines.some((l) => l.startsWith(`Backfill `) && l.includes(": 1 position(s), accounts ***"))).toBe(true);
+    await apply(fx);
+    const after = await prisma.position.findUniqueOrThrow({ where: { id: p.id } });
+    expect(after).toEqual({ ...before, initialVolume: D(1), updatedAt: after.updatedAt });
+    expect([after.realizedPnl?.toString(), after.closePrice?.toString(), after.volume.toString()]).toEqual(["6", "110", "0.6"]);
+    expect(await prisma.transaction.findMany({ where: { brokerId: fx.brokerId }, orderBy: { id: "asc" } })).toEqual(ledger);
+    expect(await prisma.account.findMany({ where: { brokerId: fx.brokerId }, orderBy: { id: "asc" } })).toEqual(accounts);
+  });
+
   it("an open position partially closed before: IN + the OUT, and IN minus OUT = the open volume", async () => {
     if (!dbReachable) return;
     const fx = await fixture();
