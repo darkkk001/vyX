@@ -14,7 +14,7 @@ Separate and test-only: `fix/staff-2fa-tests`.
 | 1 | Local merge + full verification (no push) | owner PC | no |
 | 2 | Migrations A + B on live | owner PC | additive schema |
 | 3 | Push main = Vercel production (web dual write) | owner PC | yes |
-| 4 | Database role grants for the engine and the shadow role | owner PC | privileges |
+| 4 | Column grants for the read-only shadow role | owner PC | privileges |
 | 5 | Engine deploy (risk mode, dual write) | VPS | yes |
 | 6 | Gate: every new close writes its deal | owner PC | no |
 | 7 | Backfill: dry run, compare, `--apply`, verify | owner PC | Deal rows, `initialVolume`, `reversedFromPositionId` |
@@ -111,42 +111,65 @@ SELECT d.ticket, d.entry, d.reason, d.volume, d.price, d.profit, (d."transaction
 **Verify:** the IN and OUT of that trade, tickets from 10000001, the OUT linked. Logs: no `Deal` errors
 (`npx vercel logs <deployment-url> | Select-String 'Deal|deal_ticket'` empty).
 
-## 4. Grants (before the engine writes deals)
+## 4. Grants: the read-only shadow role only
 
-The engine's close inserts the OUT deal in the close transaction: without the privilege EVERY engine close (SL / TP /
-stop-out) fails. The shadow reconciler (read-only role `vyx_shadow_ro`, column grants) now joins `"Deal"`.
-`$EngineRole` = the user in the VPS engine `DATABASE_URL`, `$WebRole` = the user in Vercel's (read them, do not print
-the URLs):
+The engine and the web both connect as `neondb_owner` (owner, 2026-10-19), which owns `"Deal"` and
+`deal_ticket_seq`: nothing to grant for them (`deploy/engine-deals-2026-10-24.ps1` proves the engine's deal write
+before it stops the old engine). The one role that needs a grant is `vyx_shadow_ro` (`deploy/neon-shadow-readonly.sql`,
+column grants): the shadow reconciler now joins `"Deal"` and reads `"transactionId"` and `reason`. Risk mode does not
+run the shadow, so today nothing reads with that role; the grant is there so a fallback to shadow mode
+(`STAGE6-RUNBOOK-FUTURIX-DEMO.md` 8, step 5.2) does not start with `shadow reconciler NOT running`.
 
 ```powershell
-$EngineRole = "<engine role>"; $WebRole = "<web role>"
-@"
-SELECT r AS role, has_table_privilege(r, '"Deal"', 'INSERT') AS ins, has_column_privilege(r, '"Deal"', 'ticket', 'SELECT') AS sel_ticket,
-       has_sequence_privilege(r, 'deal_ticket_seq', 'USAGE') AS seq
-  FROM (VALUES ('$EngineRole'), ('$WebRole')) v(r);
-SELECT has_column_privilege('vyx_shadow_ro', '"Deal"', 'transactionId', 'SELECT') AS ro_txn, has_column_privilege('vyx_shadow_ro', '"Deal"', 'reason', 'SELECT') AS ro_reason;
-"@ | & $Psql -X -q -d $Live
-```
-
-**Verify:** all `t`. If not, as the database owner (the owner role passes all of these already):
-
-```sql
-GRANT SELECT, INSERT ON "Deal" TO <role>;  GRANT USAGE ON SEQUENCE deal_ticket_seq TO <role>;
+@'
 GRANT SELECT ("transactionId", reason) ON "Deal" TO vyx_shadow_ro;
+SELECT has_column_privilege('vyx_shadow_ro', '"Deal"', 'transactionId', 'SELECT') AS ro_txn,
+       has_column_privilege('vyx_shadow_ro', '"Deal"', 'reason', 'SELECT') AS ro_reason,
+       has_table_privilege('vyx_shadow_ro', '"Deal"', 'INSERT') AS ro_insert;
+'@ | & $Psql -X -q -v ON_ERROR_STOP=1 -d $Live
 ```
+
+**Verify:** `t | t | f` (it may read those two columns, it may not write). Rollback: `REVOKE SELECT ("transactionId",
+reason) ON "Deal" FROM vyx_shadow_ro;`. Add the same GRANT line to `deploy/neon-shadow-readonly.sql` in the next
+change to that file, so a rebuilt role keeps it.
 
 ## 5. Engine deploy (VPS, risk mode)
 
-`deploy/engine-stage6.ps1` refuses a risk-mode engine (it is shadow-only), so this release needs its own script,
-**to be written before the go**: `deploy/engine-deals-<date>.ps1`, same skeleton (mandatory `-Branch main -Commit
-<MERGE> -OwnerGo "main@<MERGE>"`, separate target dir, backup, swap, `/health`, automatic restore on any failed
-check), requiring `ENGINE_ORDER_MANAGEMENT=risk`, markers of this code (`pub enum DealReason` in `book.rs`,
-`kind_from_deal_reason` in `reconcile.rs`), and in the startup log `RISK MODE` + `risk heartbeat`, no `RISK MODE
-REFUSED`, no `ERROR`.
+Script: `deploy/engine-deals-2026-10-24.ps1` (`engine-stage6.ps1` is shadow-only and refuses this engine). On the
+VPS, elevated PowerShell, `<MERGE>` = the full sha of section 1:
 
-**Verify:** `DEPLOY OK`; `/health` 200; `RiskEngineHeartbeat.beatAt` fresh (< 30 s); the next engine close (or an SL
-on a test account) has its OUT deal with reason SL / TP / STOP_OUT and `transactionId` set; the post-close outbox row
-carries `dealId`. Engine log 10 minutes: no `ERROR`, shadow reconcile pairs `MATCH` / `PREEMPTED` as before.
+```powershell
+cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <MERGE>
+powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-deals-2026-10-24.ps1 -Branch main -Commit <MERGE> -OwnerGo "main@<MERGE>"
+```
+
+(`-Psql <full path>` if `psql` is not on the VPS PATH.) What it does, in order; any failure before the stop = `REFUSED
+... Nothing touched.`, any failure after it = the previous exe put back and started:
+
+1. owner-go gate (as `engine-stage6.ps1`): all three parameters, `-OwnerGo` = `main@<MERGE>`, HEAD = `<MERGE>`, on main;
+2. pre-flight, nothing touched: `start-engine.cmd` says `ENGINE_ORDER_MANAGEMENT=risk` with a valid
+   `VYX_RISK_FLIP_INTENT`; Migration A applied on the engine's own `DATABASE_URL`; **deal-write smoke check**: a
+   rolled-back `INSERT INTO "Deal"` with the engine's column list on the newest position, `RETURNING ticket`; prints
+   the engine-owned (RUST) brokers;
+3. code markers (deal write, reconcile from `Deal.reason`, Stage 6, 10-05), build in `engine\build-tmp`, backup of the
+   exe (and a copy of `start-engine.cmd`, never edited);
+4. stop, swap, start, `/health` 200 within 30 s; then a **fresh risk heartbeat written after the restart** (database
+   clock) within 30 s;
+5. startup log of this start: required `risk mode: the pool is writable`, `risk heartbeat: written`, `post-close outbox
+   dispatcher running`, `RISK MODE ACTIVE`, `risk mode: margin fires of engine-owned accounts`, `risk hook margin
+   trigger enabled`, `risk trigger loop: decoupled`, `pricing cache loaded`, `pricing cache: reload on change
+   subscribed`; refused: `RISK MODE REFUSED`, dispatcher not configured, first beat failed, heartbeat PAUSED, the
+   flip-marker WARNING, any shadow / legacy / off mode, risk hook or margin trigger OFF;
+6. the deal-write smoke check again; TRADE_PNL rows since the restart without a deal (a WARN, not a restore: a web
+   path could be the writer; section 6 decides).
+
+Each smoke check uses up one deal ticket (a sequence is not transactional), so tickets may show a gap of two.
+Tested locally: every refusal of the gate; the SQL helpers, taken from the script's own text, on the scratch database
+(the smoke insert leaves nothing, fails on a database without `"Deal"`; heartbeat, clock and gap queries).
+
+**Verify:** last line `DEPLOY OK (risk mode ACTIVE, engine closes write their deals)`; every `OK` line printed. Then
+the next engine close (or an SL on a test account of a RUST broker) has its OUT deal with reason SL / TP / STOP_OUT and
+`transactionId` set, and its post-close outbox row carries `dealId`. Engine log 10 minutes: no `ERROR`.
 
 ## 6. Gate: no new close without a deal
 
@@ -212,7 +235,7 @@ place). Its rollback will be `restoreFromLog(<runId>)` (puts every logged value 
 | 1 merge | none | `git reset --hard newrepo/main` | nothing pushed |
 | 2 migrations | leave them | additive; nothing reads them. Full removal ONLY after web and engine are back on code without deals (else every close fails): `DROP TABLE "DealBackfillLog"; DROP TABLE "Deal"; DROP TYPE "DealEntry"; DROP TYPE "DealReason"; ALTER TABLE "Position" DROP COLUMN "initialVolume", DROP COLUMN "reversedFromPositionId"; DELETE FROM _prisma_migrations WHERE migration_name IN ('20261019120000_deal_model_a', '20261019130000_deal_backfill_log');` (the sequence goes with the table) | a migration half applied: `npx prisma migrate resolve --rolled-back <name>`, then re-run deploy |
 | 3 web | the previous Vercel deployment | `npx vercel ls`, then `npx vercel promote <previous Ready deployment url>`; later `git revert -m 1` the merges in reverse order and push | safe: the previous deployment is today's main (Stage 6 aware). Deals already written stay (harmless, re-covered by the backfill) |
-| 4 grants | none needed | privileges on a table nothing else uses | |
+| 4 grants | revoke | `REVOKE SELECT ("transactionId", reason) ON "Deal" FROM vyx_shadow_ro;` | read-only role; not used in risk mode |
 | 5 engine | the old exe | the script restores it by itself on a failed check; manually: `nssm stop vyxtrader-engine`, copy the backup `trading-core-server.pre.exe` over the release exe, `nssm start vyxtrader-engine` (nssm: `C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe`) | the old engine writes no deals: its closes become backfill work (re-run 7) |
 | 6 gate | | nothing changed | |
 | 7 backfill | delete what it wrote | as the database owner, one transaction: `UPDATE "Position" SET "initialVolume" = NULL WHERE id IN (SELECT "positionId" FROM "Deal" WHERE backfilled AND entry = 'IN'); UPDATE "Position" SET "reversedFromPositionId" = NULL WHERE id IN (SELECT "positionId" FROM "Deal" WHERE backfilled AND entry = 'IN' AND reason = 'REVERSE'); DELETE FROM "Deal" WHERE backfilled;` | nothing reads deals before step 4; the dual-write deals (`backfilled = false`) stay |

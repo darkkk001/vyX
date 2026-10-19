@@ -58,3 +58,6 @@ GRANT SELECT (id, "accountId", type, body, "createdAt") ON "Notification" TO vyx
 GRANT SELECT ("isDemoSandbox") ON "Broker" TO vyx_shadow_ro;
 GRANT SELECT ("brokerId") ON "Transaction" TO vyx_shadow_ro;
 GRANT SELECT ("brokerId") ON "Notification" TO vyx_shadow_ro;
+-- 2026-10-19 (deal model step 2, docs/DEAL-MODEL-GO-LIVE-RUNBOOK.md section 4): the shadow reconciler finds a risk close's kind
+-- from its deal (LEFT JOIN "Deal" ON "transactionId", reads reason). Needs Migration A (20261019120000_deal_model_a) applied first.
+GRANT SELECT ("transactionId", reason) ON "Deal" TO vyx_shadow_ro;
