@@ -93,8 +93,8 @@ export type Plan = {
   duplicates: TxRow[];
 };
 
-const PARTIAL = /^(?:Manual partial close by admin|Partial close): ([0-9]+(?:\.[0-9]+)?) lots @ ([0-9]+(?:\.[0-9]+)?)$/;
-const CLOSE_BY = /^Close by (#?)(\S+)$/;
+export const PARTIAL = /^(?:Manual partial close by admin|Partial close): ([0-9]+(?:\.[0-9]+)?) lots @ ([0-9]+(?:\.[0-9]+)?)$/;
+export const CLOSE_BY = /^Close by (#?)(\S+)$/;
 const PAIR_WINDOW_MS = 5000;
 const DUPLICATE_WINDOW_MS = 1000;
 
