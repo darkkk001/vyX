@@ -1099,6 +1099,9 @@ model Group {
   // Group minimum volume per order (owner S3, 2026-10-06). Null = the symbol's own minLot. Effective minimum =
   // max(BrokerSymbol.minLot, minLotSize); it must sit on each symbol's lot-step grid (checked at save).
   minLotSize         Decimal?             @db.Decimal(10, 2)
+  // Group volume step / "lot multiplier". Null = the symbol's own lotStep. Effective step = max(BrokerSymbol.lotStep,
+  // lotStep); it must be a whole multiple of every enabled symbol's step (checked at save). See lib/risk.ts checkGroupLotStep.
+  lotStep            Decimal?             @db.Decimal(10, 2)
   // Same enum/semantics as BrokerSymbol.tradingMode -- see
   // lib/risk.ts's checkGroupTradingRestriction.
   tradingRestriction TradingMode          @default(BOTH)

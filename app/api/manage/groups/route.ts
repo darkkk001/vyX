@@ -7,6 +7,7 @@ import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
 import { parseGroupMinLot } from "@/lib/group-min-volume";
+import { parseGroupLotStep } from "@/lib/group-lot-step";
 import { symbolVisibility } from "@/lib/synthetic-symbols";
 
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
@@ -105,6 +106,8 @@ export async function GET() {
       maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
       // group minimum volume per order ("" = none: the symbol minimum applies)
       minLotSize: g.minLotSize ? g.minLotSize.toString() : "",
+      // group volume step / lot multiplier ("" = none: the symbol step applies)
+      lotStep: g.lotStep ? g.lotStep.toString() : "",
       tradingRestriction: g.tradingRestriction,
       tradingHalted: g.tradingHaltedAt != null,
       // per-group close-only (2026-09-23): the dealing desk scopes its own emergency controls with it
@@ -178,6 +181,10 @@ async function postHandler(request: NextRequest) {
   const minLot = await parseGroupMinLot(body, { brokerId, maxLotSize, existing: null });
   if (!minLot.ok) return NextResponse.json(minLot.body, { status: minLot.status });
   const minLotSize = minLot.value;
+  // group volume step / lot multiplier, lib/group-lot-step.ts
+  const lotStepResult = await parseGroupLotStep(body, { brokerId, minLotSize, existing: null });
+  if (!lotStepResult.ok) return NextResponse.json(lotStepResult.body, { status: lotStepResult.status });
+  const lotStep = lotStepResult.value;
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
   // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit from
   // the hardcoded false floor" (nothing below Group in the chain).
@@ -214,7 +221,7 @@ async function postHandler(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
+        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -231,6 +238,7 @@ async function postHandler(request: NextRequest) {
             isDefault,
             maxLotSize: maxLotSize?.toString() ?? null,
             minLotSize: minLotSize?.toString() ?? null,
+            lotStep: lotStep?.toString() ?? null,
             tradingRestriction,
             swapFree,
             forceDealingMode,
@@ -255,6 +263,7 @@ async function postHandler(request: NextRequest) {
         isDefault: group.isDefault,
         maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : "",
         minLotSize: group.minLotSize ? group.minLotSize.toString() : "",
+        lotStep: group.lotStep ? group.lotStep.toString() : "",
         tradingRestriction: group.tradingRestriction,
         swapFree: group.swapFree,
         forceDealingMode: group.forceDealingMode,

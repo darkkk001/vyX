@@ -20,6 +20,7 @@ import {
   checkLotStep,
   checkGroupMaxLot,
   checkGroupMinLot,
+  checkGroupLotStep,
   riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
@@ -168,6 +169,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupMinLot(order.volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
+    (account.group ? checkGroupLotStep(order.volume, account.group.lotStep, account.group.minLotSize, brokerSymbol) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
     // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
     checkAccountTradingRights(account, "open") ??

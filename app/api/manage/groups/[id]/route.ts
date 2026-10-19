@@ -10,6 +10,7 @@ import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
 import { parseGroupMinLot } from "@/lib/group-min-volume";
+import { parseGroupLotStep } from "@/lib/group-lot-step";
 
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
 const GROUP_DEALING_MODES: GroupDealingMode[] = ["INHERIT", "AUTO", "MANUAL"];
@@ -75,6 +76,10 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   const minLot = await parseGroupMinLot(body, { brokerId, maxLotSize, existing });
   if (!minLot.ok) return NextResponse.json(minLot.body, { status: minLot.status });
   const minLotSize = minLot.value;
+  // group volume step / lot multiplier (absent = keep), lib/group-lot-step.ts
+  const lotStepResult = await parseGroupLotStep(body, { brokerId, minLotSize, existing });
+  if (!lotStepResult.ok) return NextResponse.json(lotStepResult.body, { status: lotStepResult.status });
+  const lotStep = lotStepResult.value;
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
   // Tri-state (2026-09-07 Stage 5, now that Group.swapFree is nullable and
   // actually read at fill time -- lib/pricing-engine.ts): explicit null
@@ -145,7 +150,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
+        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -162,6 +167,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             isDefault: existing.isDefault,
             maxLotSize: existing.maxLotSize?.toString() ?? null,
             minLotSize: existing.minLotSize?.toString() ?? null,
+            lotStep: existing.lotStep?.toString() ?? null,
             tradingRestriction: existing.tradingRestriction,
             swapFree: existing.swapFree,
             forceDealingMode: existing.forceDealingMode,
@@ -180,6 +186,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             isDefault,
             maxLotSize: maxLotSize?.toString() ?? null,
             minLotSize: minLotSize?.toString() ?? null,
+            lotStep: lotStep?.toString() ?? null,
             tradingRestriction,
             swapFree,
             forceDealingMode,
@@ -212,6 +219,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       isDefault: group.isDefault,
       maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : null,
       minLotSize: group.minLotSize ? group.minLotSize.toString() : null,
+      lotStep: group.lotStep ? group.lotStep.toString() : "",
       tradingRestriction: group.tradingRestriction,
       swapFree: group.swapFree,
       forceDealingMode: group.forceDealingMode,

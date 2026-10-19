@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { displayCurrency } from "@/lib/demo-policy";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { checkGroupAllowedSymbol, effectiveMinLot } from "@/lib/risk";
+import { checkGroupAllowedSymbol, effectiveLotStep, effectiveMaxLot, effectiveMinLot } from "@/lib/risk";
 
 // The trader terminal's own symbol universe -- every symbol this broker
 // has enabled, full stop. Replaces lib/market-simulator.ts's hardcoded
@@ -23,7 +23,7 @@ export async function GET() {
   // order is checked with (lib/risk.ts checkGroupAllowedSymbol); the picker used to list symbols the order then refused
   const account = await prisma.account.findUnique({
     where: { id: session.accountId },
-    select: { group: { select: { restrictSymbols: true, minLotSize: true, allowedSymbols: { select: { symbolId: true } } } } },
+    select: { group: { select: { restrictSymbols: true, minLotSize: true, maxLotSize: true, lotStep: true, allowedSymbols: { select: { symbolId: true } } } } },
   });
   const allowedIds = account?.group?.allowedSymbols.map((s) => s.symbolId) ?? [];
   const allowed = (symbolId: string) => !account?.group || checkGroupAllowedSymbol(account.group.restrictSymbols, allowedIds, symbolId) === null;
@@ -80,8 +80,13 @@ export async function GET() {
       // symbolMinLot is the symbol's own minimum: the step grid and partial closes still count from it.
       minLot: effectiveMinLot(bs.minLot, account?.group?.minLotSize ?? null).toString(),
       symbolMinLot: bs.minLot.toString(),
-      maxLot: bs.maxLot.toString(),
-      lotStep: bs.lotStep.toString(),
+      // Group volume step (lot multiplier): maxLot = lesser of symbol max and group max, lotStep = larger of symbol step
+      // and group step (lib/risk.ts effectiveMaxLot / effectiveLotStep). The symbol* fields are the symbol's own values;
+      // partial closes keep counting on those, a group step never applies to closes.
+      maxLot: effectiveMaxLot(bs.maxLot, account?.group?.maxLotSize ?? null).toString(),
+      symbolMaxLot: bs.maxLot.toString(),
+      lotStep: effectiveLotStep(bs.lotStep, account?.group?.lotStep ?? null).toString(),
+      symbolLotStep: bs.lotStep.toString(),
       // MT5 hedged margin (lib/margin.ts hedgedUsedMargin): the terminal / WebTrader account panel uses it so the
       // margin they show is the one the server stops out on. 200 = no reduction.
       hedgedMarginPct: bs.hedgedMarginPct.toString(),

@@ -118,6 +118,44 @@ export function checkGroupMinLot(volume: Prisma.Decimal, groupMinLot: Prisma.Dec
   if (volume.lt(min)) return `${GROUP_MIN_VOLUME_TEXT}${min.toFixed(2)} lots.`;
   return null;
 }
+// Group volume step ("lot multiplier"). Null = exactly the symbol's own step (no extra refusal). When set, the step an
+// account trades in is the larger of the symbol's step and the group's, and a new order's volume must sit on the grid
+// effectiveMin + n x effectiveStep. The refusal text starts with "volume " so the order routes answer INVALID_VOLUME.
+export function effectiveLotStep(symbolLotStep: Prisma.Decimal, groupLotStep: Prisma.Decimal | null): Prisma.Decimal {
+  return groupLotStep != null && groupLotStep.gt(symbolLotStep) ? groupLotStep : symbolLotStep;
+}
+/** Largest order an account may place: the lesser of the symbol's max and the group's max (null = none). */
+export function effectiveMaxLot(symbolMaxLot: Prisma.Decimal, groupMaxLot: Prisma.Decimal | null): Prisma.Decimal {
+  return groupMaxLot != null && groupMaxLot.lt(symbolMaxLot) ? groupMaxLot : symbolMaxLot;
+}
+export function checkGroupLotStep(
+  volume: Prisma.Decimal,
+  groupLotStep: Prisma.Decimal | null,
+  groupMinLot: Prisma.Decimal | null,
+  symbol: { minLot: Prisma.Decimal; lotStep: Prisma.Decimal },
+): string | null {
+  if (groupLotStep == null || groupLotStep.lte(0)) return null;
+  const step = effectiveLotStep(symbol.lotStep, groupLotStep);
+  const min = effectiveMinLot(symbol.minLot, groupMinLot);
+  if (volume.sub(min).mod(step).isZero()) return null;
+  return min.mod(step).isZero()
+    ? `volume must be a multiple of ${step.toFixed(2)} lots for this account`
+    : `volume must be ${min.toFixed(2)} plus a multiple of ${step.toFixed(2)} lots for this account`;
+}
+/**
+ * Group save: the step must be a whole multiple of every listed symbol's own step (else no order could be on both
+ * grids), and, when the group also has a minimum, the effective minimum must be a multiple of the step. Returns the
+ * names of the symbols it does not fit (empty = fine).
+ */
+export function groupStepOffGrid(
+  groupLotStep: Prisma.Decimal,
+  groupMinLot: Prisma.Decimal | null,
+  symbols: { name: string; minLot: Prisma.Decimal; lotStep: Prisma.Decimal }[],
+): { stepOff: string[]; minOff: string[] } {
+  const stepOff = symbols.filter((s) => s.lotStep.gt(0) && !groupLotStep.mod(s.lotStep).isZero()).map((s) => s.name);
+  const minOff = groupMinLot == null ? [] : symbols.filter((s) => !effectiveMinLot(s.minLot, groupMinLot).mod(groupLotStep).isZero()).map((s) => s.name);
+  return { stepOff, minOff };
+}
 /** The machine-readable code for a risk refusal, when it has one (spread into the JSON error body). */
 export function riskCode(error: string): { code: string } | Record<string, never> {
   return error.startsWith(GROUP_MIN_VOLUME_TEXT) ? { code: GROUP_MIN_VOLUME } : error.startsWith("hedging is not allowed") ? { code: "HEDGING_NOT_ALLOWED" } : {};

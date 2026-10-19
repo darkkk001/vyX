@@ -123,6 +123,7 @@ export function buildSymbolDef(row: {
   symbolMinLot?: string | number;
   maxLot?: string | number;
   lotStep?: string | number;
+  symbolLotStep?: string | number;
   hedgedMarginPct?: string | number;
   quoteCurrency?: string;
 }): SymbolDef {
@@ -144,7 +145,8 @@ export function buildSymbolDef(row: {
     // the SYMBOL minimum (partial closes count from it); /api/trade/symbols minLot is the account's order minimum
     minLot: toNum(row.symbolMinLot ?? row.minLot, 0.01),
     maxLot: toNum(row.maxLot, 100),
-    lotStep: toNum(row.lotStep, 0.01),
+    // the SYMBOL step (partial closes use it); /api/trade/symbols lotStep is the account's order step (group step applied)
+    lotStep: toNum(row.symbolLotStep ?? row.lotStep, 0.01),
     hedgedMarginPct: toNum(row.hedgedMarginPct, 200),
     ...(row.quoteCurrency ? { quoteCurrency: row.quoteCurrency.toUpperCase() } : {}),
   };

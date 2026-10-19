@@ -13,6 +13,7 @@ import {
   checkLotStep,
   checkGroupMaxLot,
   checkGroupMinLot,
+  checkGroupLotStep,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkGroupCloseOnly,
@@ -71,6 +72,7 @@ export async function placeCoveragePendingOrder(p: CoveragePendingParams): Promi
     checkLotStep(p.volume, bs.minLot, bs.lotStep) ??
     (account.group ? checkGroupMaxLot(p.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupMinLot(p.volume, account.group.minLotSize, bs.minLot) : null) ??
+    (account.group ? checkGroupLotStep(p.volume, account.group.lotStep, account.group.minLotSize, bs) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, p.side) : null) ??
     checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
