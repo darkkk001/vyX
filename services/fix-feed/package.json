@@ -1,0 +1,18 @@
+{
+  "name": "@vyxtrader/fix-feed",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "cTrader FIX 4.4 QUOTE session -> engine /internal/price-feed (drop-in for the MT5 EA's direct mode)",
+  "engines": { "node": ">=23.6" },
+  "scripts": {
+    "start": "node src/index.ts",
+    "mock-engine": "node tools/mock-engine.ts",
+    "typecheck": "tsc",
+    "test": "node --test src/feed.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}
