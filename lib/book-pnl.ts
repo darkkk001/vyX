@@ -4,6 +4,7 @@ import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
 import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { dealReads } from "@/lib/deal-reads";
 
 // Book P/L, defined ONCE (owner 2026-10-06; naming.md / memory "BOOK P/L RULE"). Every screen that shows a Book P/L
 // (Dashboard today / week / month, Reports for any range) calls this module, so the same range always gives the same
@@ -38,8 +39,28 @@ function heldSql(s: BookScope) {
     AND p."bookType" = 'B_BOOK'`;
 }
 
-/** Realized Book P/L of positions CLOSED in [from, to) (to = null: up to now), per account currency. */
+/** Realized Book P/L in [from, to) (to = null: up to now), per account currency.
+ *  Ledger way: positions CLOSED in the range, their realizedPnl. With DEAL_READS=book_pnl (deal model step 4): every close
+ *  executed in the range, each on its own time (a partial close of a still open position counts on its day; a position
+ *  closed in several parts counts every part), the deal profit being the TRADE_PNL amount; `count` = positions with a
+ *  close in the range. */
 export async function bookPnlRealized(db: Db, s: BookScope, from: Date, to: Date | null = null): Promise<CurrencyAmount[]> {
+  if (dealReads("book_pnl")) return bookPnlRealizedFromDeals(db, s, from, to);
+  return bookPnlRealizedFromPositions(db, s, from, to);
+}
+
+export async function bookPnlRealizedFromDeals(db: Db, s: BookScope, from: Date, to: Date | null = null): Promise<CurrencyAmount[]> {
+  const rows = await db.$queryRaw<{ currency: string; total: Prisma.Decimal | null; n: bigint }[]>`
+    SELECT a.currency, -SUM(d.profit) AS total, COUNT(DISTINCT d."positionId")::bigint AS n
+      FROM "Deal" d JOIN "Position" p ON p.id = d."positionId" JOIN "Account" a ON a.id = p."accountId" LEFT JOIN "Group" g ON g.id = a."groupId"
+     WHERE ${heldSql(s)} AND p.status IN ('OPEN', 'CLOSED')
+       AND d.entry IN ('OUT', 'OUT_BY') AND d."transactionId" IS NOT NULL AND d."voidedAt" IS NULL
+       AND d."executedAt" >= ${from} AND (${to}::timestamptz IS NULL OR d."executedAt" < ${to})
+     GROUP BY a.currency ORDER BY a.currency`;
+  return rows.map((r) => ({ currency: r.currency, amount: new Prisma.Decimal(r.total ?? 0), count: Number(r.n) }));
+}
+
+export async function bookPnlRealizedFromPositions(db: Db, s: BookScope, from: Date, to: Date | null = null): Promise<CurrencyAmount[]> {
   const rows = await db.$queryRaw<{ currency: string; total: Prisma.Decimal | null; n: bigint }[]>`
     SELECT a.currency, -SUM(p."realizedPnl") AS total, COUNT(*)::bigint AS n
       FROM "Position" p JOIN "Account" a ON a.id = p."accountId" LEFT JOIN "Group" g ON g.id = a."groupId"

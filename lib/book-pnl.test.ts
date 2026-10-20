@@ -36,6 +36,8 @@ afterAll(async () => {
   const where = { brokerId: { in: brokers } };
   await prisma.broker.updateMany({ where: { id: { in: brokers } }, data: { coverageAccountId: null } }).catch(() => {});
   await prisma.auditLog.deleteMany({ where }).catch(() => {});
+  await prisma.deal.deleteMany({ where }).catch(() => {});
+  await prisma.transaction.deleteMany({ where }).catch(() => {});
   await prisma.position.deleteMany({ where }).catch(() => {});
   await prisma.order.deleteMany({ where }).catch(() => {});
   await prisma.account.deleteMany({ where }).catch(() => {});
@@ -87,6 +89,12 @@ async function pos(fx: Fx, accountId: string, closed?: { pnl: number; at?: Date;
         commission: D(closed?.commission ?? 0), swap: D(closed?.swap ?? 0), deletedAt: extra?.deleted ? new Date() : null,
       },
     });
+    if (closed) {
+      // what the close code writes too: the TRADE_PNL ledger row and its OUT deal (DEAL_READS=book_pnl reads the deal)
+      const at = closed.at ?? new Date();
+      const t = await prisma.transaction.create({ data: { brokerId: fx.brokerId, accountId, type: "TRADE_PNL", status: "COMPLETED", amount: D(closed.pnl), balanceBefore: D(100000), balanceAfter: D(100000).add(closed.pnl), referenceType: "Position", referenceId: p.id, createdAt: at } });
+      await prisma.deal.create({ data: { brokerId: fx.brokerId, accountId, positionId: p.id, symbolId: fx.symbolId, side: "SELL", entry: "OUT", reason: "CLIENT", volume: D(1), price: D(100), profit: D(closed.pnl), executedAt: at, transactionId: t.id, ...(extra?.status === "VOIDED" ? { voidedAt: at } : {}) } });
+    }
   } else if (extra?.deleted) {
     await prisma.position.update({ where: { id: p.id }, data: { deletedAt: new Date() } });
   }
