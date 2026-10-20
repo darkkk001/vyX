@@ -45,3 +45,23 @@ describe("closeByTarget", () => {
     expect(closeByTarget(null)).toBeNull();
   });
 });
+
+// the ?closes=1 History view (terminal 1.0.90 Deals / Positions)
+describe("closesOf, all mode", () => {
+  const sx = (s: number, amount: number, vol: string, price: string): CloseTx => ({ ...tx(s, amount, null), closeVolume: D(vol), closePrice: D(price) });
+  it("lists an OPEN position's partial closes, none final", () => {
+    const legs = closesOf(pos({ status: "OPEN", closePrice: null, closedAt: null }), [sx(10, 3, "0.3", "100"), sx(20, 2, "0.2", "101")], [], { all: true })!;
+    expect(legs.map((l) => [l.volume, l.price, l.final])).toEqual([["0.3", "100", false], ["0.2", "101", false]]);
+  });
+  it("lists a single plain close (the default view keeps it flat)", () => {
+    expect(closesOf(pos(), [tx(30, 6, null)], [], { all: true })).toEqual([{ at: at(30).toISOString(), volume: "0.5", price: "102", pnl: "6", closedByTicket: null, final: true }]);
+    expect(closesOf(pos(), [tx(30, 6, null)], [])).toBeNull();
+  });
+  it("keeps an unreadable pre-hotfix close with no lots / price instead of dropping the list", () => {
+    const legs = closesOf(pos(), [tx(10, 1, "Mirror partial close"), tx(30, 6, null)], [], { all: true })!;
+    expect(legs[0]).toMatchObject({ volume: null, price: null, pnl: "1", final: false });
+    expect(legs[1]).toMatchObject({ volume: "0.5", final: true });
+    expect(closesOf(pos(), [tx(10, 1, "Mirror partial close"), tx(30, 6, null)], [])).toBeNull();   // the default view is unchanged
+  });
+  it("an OPEN position with no closes has none", () => expect(closesOf(pos({ status: "OPEN" }), [], [], { all: true })).toBeNull());
+});
