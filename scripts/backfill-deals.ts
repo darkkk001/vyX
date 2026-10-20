@@ -545,7 +545,7 @@ export async function run(prisma: PrismaClient, opts: Opts): Promise<Result> {
     if (!opts.host.toLowerCase().includes(needle)) throw new BackfillRefused(`--confirm-host "${needle}" is not part of the database host "${opts.host}"`);
   }
 
-  const schema = opts.schemaOverride ?? (await prisma.$transaction((tx) => detectSchema(tx)));
+  const schema = opts.schemaOverride ?? (await prisma.$transaction((tx) => detectSchema(tx), { timeout: 120_000 }));
   lines.push(`schema: deal tables ${schema.deals ? "present" : "ABSENT (dry run reads as: no deals yet)"}; close fields ${schema.closeFields ? "present" : "ABSENT (every row read from its note)"}`);
   if (opts.apply && !(schema.deals && schema.closeFields)) {
     throw new BackfillRefused("--apply needs the deal_model_a and close_fields migrations on this database");
@@ -558,7 +558,7 @@ export async function run(prisma: PrismaClient, opts: Opts): Promise<Result> {
     const batch = await prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
       return planBatch(tx, cursor, opts.batch, opts.broker ?? null, schema);
-    });
+    }, { timeout: 120_000 });
     if (batch.length === 0) break;
     plans.push(...batch);
     cursor = batch[batch.length - 1].pos.id;
@@ -649,7 +649,8 @@ async function main() {
   const host = hostOf(url);
   const endpoint = (h: string) => h.replace(/-pooler(?=\.)/, "").split(":")[0];
   if (endpoint(host) !== endpoint(hostOf(direct))) throw new BackfillRefused(`DATABASE_URL (${host}) and DIRECT_URL (${hostOf(direct)}) point at different databases`);
-  const prisma = new PrismaClient();
+  // --apply runs its interactive transactions on DIRECT_URL (the non-pooled endpoint), not the pooler
+  const prisma = args.apply ? new PrismaClient({ datasourceUrl: direct }) : new PrismaClient();
   try {
     const r = await run(prisma, { ...args, host });
     console.log(r.lines.join("\n"));
