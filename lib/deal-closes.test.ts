@@ -68,5 +68,6 @@ describe("dealReads", () => {
     expect(dealReads("history", "reports, History")).toBe(true);
     expect(dealReads("history", "all")).toBe(true);
     expect(dealReads("history", "historyx")).toBe(false);
+    expect(dealReads("book_pnl", "history,book_pnl")).toBe(true);
   });
 });
