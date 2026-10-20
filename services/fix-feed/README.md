@@ -44,6 +44,7 @@ FEED_URL=http://127.0.0.1:8091 FEED_SECRET=test ENV_FILE=... node src/index.ts
 | `FIX_TARGET_COMP_ID` (or `TARGET`) | `cServer` | |
 | `FIX_SENDER_SUB_ID`, `FIX_TARGET_SUB_ID` | `QUOTE` | |
 | `FIX_HEARTBEAT_SEC` | `30` | |
+| `FIX_MAX_LOGON_FAILURES` | `3` | stop after this many failed logons in a row (account-lock protection); `0` = keep retrying |
 | `FIX_SYMBOLS` | the EA's default list in cTrader names | cTrader symbol names |
 | `FIX_SYMBOL_IDS` | from SecurityListRequest | `XAUUSD=41,...` when the server has no security list |
 | `FIX_SYMBOL_MAP` | built-in table in `src/config.ts` | `cTraderName=OurName,...`, overrides the table |

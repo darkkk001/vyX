@@ -37,6 +37,7 @@ export interface Config {
   username: string;
   password: string;
   heartbeatSec: number;
+  maxLogonFailures: number;               // consecutive rejected/unanswered logons before giving up; 0 = never
   symbols: string[];                       // cTrader names to subscribe
   symbolIds: Record<string, string>;       // cTrader name -> numeric FIX Symbol(55), when set by hand
   symbolMap: Record<string, string>;       // cTrader name -> canonical name
@@ -101,6 +102,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     username,
     password: required(env, "FIX_PASSWORD"),
     heartbeatSec: int(env, "FIX_HEARTBEAT_SEC", 30),
+    maxLogonFailures: int(env, "FIX_MAX_LOGON_FAILURES", 3),
     symbols: (env.FIX_SYMBOLS || DEFAULT_SYMBOLS).split(",").map((s) => s.trim()).filter(Boolean),
     symbolIds: pairs(env.FIX_SYMBOL_IDS ?? ""),
     symbolMap: { ...DEFAULT_SYMBOL_MAP, ...pairs(env.FIX_SYMBOL_MAP ?? "") },

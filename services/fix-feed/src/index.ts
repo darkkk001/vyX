@@ -17,6 +17,7 @@ const stats = new TickStats(cfg.gapAlertMs, log);
 
 const session = new QuoteSession(cfg, {
   onLog: log,
+  onGaveUp: (reason) => void shutdown(`gave up: ${reason}`),
   onQuote(q) {
     // A one-sided book (rare: one side pulled) is not a tradable price; the EA skips bid<=0/ask<=0 the same way.
     if (q.bid === undefined || q.ask === undefined || q.bid <= 0 || q.ask <= 0) return;

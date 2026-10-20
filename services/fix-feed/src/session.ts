@@ -20,6 +20,8 @@ export interface SessionHandlers {
   onLog(line: string): void;
   onLoggedOn?(): void;
   onDisconnected?(reason: string): void;
+  // Called once when cfg.maxLogonFailures consecutive logons failed; the session has stopped reconnecting.
+  onGaveUp?(reason: string): void;
 }
 
 export interface SessionCounters {
@@ -67,6 +69,7 @@ export class QuoteSession {
   private secListTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private attempt = 0;
+  private logonFailures = 0;
   private stopping = false;
   private closedReason = "";
   private reqCounter = 0;
@@ -165,6 +168,16 @@ export class QuoteSession {
     this.log(`disconnected: ${reason}`);
     this.h.onDisconnected?.(reason);
     if (this.stopping) return;
+    // Repeated bad logons can lock the account on cTrader, so a run of them stops the session instead of retrying.
+    if (!wasOn) {
+      this.logonFailures++;
+      if (this.cfg.maxLogonFailures > 0 && this.logonFailures >= this.cfg.maxLogonFailures) {
+        this.stopping = true;
+        this.log(`giving up after ${this.logonFailures} failed logons in a row (FIX_MAX_LOGON_FAILURES=${this.cfg.maxLogonFailures})`);
+        this.h.onGaveUp?.(reason);
+        return;
+      }
+    }
     if (wasOn && Date.now() - this.loggedOnAt >= STABLE_SESSION_MS) this.attempt = 0;
     const base = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** this.attempt);
     const delay = Math.round(base * (1 + Math.random() * 0.2));
@@ -303,6 +316,7 @@ export class QuoteSession {
     this.loggedOn = true;
     this.loggedOnAt = Date.now();
     this.counters.logons++;
+    this.logonFailures = 0;
     this.log(`< Logon accepted, HeartBtInt ${m.get(108)}s, seq reset ${m.get(141) === "Y" ? "Y" : "N"}`);
     this.h.onLoggedOn?.();
     if (this.cfg.symbols.every((s) => this.idByName.has(s))) {
