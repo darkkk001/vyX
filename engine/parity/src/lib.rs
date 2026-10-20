@@ -239,6 +239,30 @@ pub struct CloseRow {
     pub close_by_position_id: Option<String>,
 }
 
+/// Deal model gate (docs/POSITION-DEAL-MODEL.md section 4): one "Deal" row as both runners read it, per position in
+/// write order. Ids that differ per run (deal id, ticket, transaction id) are left out; `linked` = the deal's
+/// "transactionId" is a TRADE_PNL row of the same position (OUT / OUT_BY).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DealRow {
+    pub entry: String,
+    pub reason: String,
+    pub side: String,
+    pub volume: String,
+    pub price: String,
+    pub profit: String,
+    pub swap: String,
+    pub by_position_id: Option<String>,
+    pub linked: bool,
+}
+
+/// Deal model gate, section 4 item 1: TRADE_PNL rows with no deal (must be 0).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DealGate {
+    pub trade_pnl_without_deal: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioOutcome {
@@ -253,6 +277,11 @@ pub struct ScenarioOutcome {
     /// DB mode: the TRADE_PNL rows' structured close fields per position id, in write order
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_rows: Option<BTreeMap<String, Vec<CloseRow>>>,
+    /// DB mode: every position's deals, in write order (deal model step 2)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deals: Option<BTreeMap<String, Vec<DealRow>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deal_gate: Option<DealGate>,
 }
 
 fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
@@ -410,7 +439,7 @@ pub fn evaluate(sc: &Scenario) -> ScenarioOutcome {
         .map(|g| (g.key.clone(), MarginThresholds { call_level: g.margin_call_level, stop_out_level: g.stop_out_level }))
         .collect();
     let accounts = sc.accounts.iter().map(|a| (a.key.clone(), evaluate_account(sc, a, &by_group))).collect();
-    ScenarioOutcome { scenario: sc.name.clone(), engine: "rust", accounts, side_effects: None, positions: None, close_rows: None }
+    ScenarioOutcome { scenario: sc.name.clone(), engine: "rust", accounts, side_effects: None, positions: None, close_rows: None, deals: None, deal_gate: None }
 }
 
 #[cfg(test)]

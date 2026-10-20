@@ -10,7 +10,7 @@
 //! an auto-hedged coverage leg) is evaluated in a later cycle, after that follow-up ran -- the web's order. Each
 //! account is evaluated exactly once, like the web's single pass, and the side effects are compared too.
 
-use crate::{AccountOutcome, CloseRow, PositionState, Scenario, ScenarioOutcome, Txn};
+use crate::{AccountOutcome, CloseRow, DealGate, DealRow, PositionState, Scenario, ScenarioOutcome, Txn};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -148,6 +148,8 @@ pub async fn evaluate(pool: &PgPool, sc: &Scenario) -> Result<ScenarioOutcome, S
         side_effects: Some(side_effects(pool).await?),
         positions: Some(position_states(pool).await?),
         close_rows: Some(close_rows(pool).await?),
+        deals: Some(deals(pool).await?),
+        deal_gate: Some(deal_gate(pool).await?),
     })
 }
 
@@ -212,4 +214,43 @@ pub async fn close_rows(pool: &PgPool) -> Result<BTreeMap<String, Vec<CloseRow>>
         });
     }
     Ok(out)
+}
+
+/// Deal model gate: every position's deals in write order (the same query as scripts/parity/run-ts.ts deals).
+pub async fn deals(pool: &PgPool) -> Result<BTreeMap<String, Vec<DealRow>>, String> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, String, String, Decimal, Decimal, Decimal, Decimal, Option<String>, bool)> = sqlx::query_as(
+        r#"SELECT d."positionId", d.entry::text, d.reason::text, d.side::text, d.volume, d.price, d.profit, d.swap, d."byPositionId",
+                  EXISTS (SELECT 1 FROM "Transaction" t WHERE t.id = d."transactionId" AND t.type = 'TRADE_PNL' AND t."referenceId" = d."positionId")
+           FROM "Deal" d ORDER BY d."executedAt", d.ticket"#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut out: BTreeMap<String, Vec<DealRow>> = BTreeMap::new();
+    for (position, entry, reason, side, volume, price, profit, swap, by, linked) in rows {
+        out.entry(position).or_default().push(DealRow {
+            entry,
+            reason,
+            side,
+            volume: money(volume),
+            price: money(price),
+            profit: money(profit),
+            swap: money(swap),
+            by_position_id: by,
+            linked,
+        });
+    }
+    Ok(out)
+}
+
+/// Deal model gate, section 4 item 1: TRADE_PNL rows without a deal.
+pub async fn deal_gate(pool: &PgPool) -> Result<DealGate, String> {
+    let (n,): (i64,) = sqlx::query_as(
+        r#"SELECT count(*) FROM "Transaction" t WHERE t.type = 'TRADE_PNL' AND NOT EXISTS (SELECT 1 FROM "Deal" d WHERE d."transactionId" = t.id)"#,
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(DealGate { trade_pnl_without_deal: n })
 }

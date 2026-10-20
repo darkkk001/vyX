@@ -59,11 +59,15 @@ type Scenario = {
   prices: { symbol: string; bid: Dec; ask: Dec; ageSeconds: number; updatedAgeSeconds?: number }[];
   // Stage 4.5: mirror rules onto a master account, with their source -> target position links
   mirrors?: { key: string; master: string; fillPriceMode?: "SOURCE_PRICE" | "MARKET"; links: { source: string; target: string }[] }[];
+  // deal model step 2: web closes made while seeding, BEFORE either side evaluates (both runs see the same history):
+  // a partial / full client close at `price`, or a close-by of `position` against `closeBy` at the live mid
+  preCloses?: { position: string; volume?: Dec; price?: Dec; closeBy?: string }[];
   dbOnly?: boolean;
 };
 
 type PositionState = { status: string; volume: string; closePrice: string | null; realizedPnl: string | null; closedVolume: string | null; closedSwap: string | null };
 type CloseRow = { amount: string; closeVolume: string | null; closePrice: string | null; closeSwap: string | null; closeByPositionId: string | null };
+type DealRow = { entry: string; reason: string; side: string; volume: string; price: string; profit: string; swap: string; byPositionId: string | null; linked: boolean };
 
 type AccountOutcome = {
   marginLevelBefore: string | null;
@@ -83,6 +87,8 @@ async function main() {
   const { Prisma } = await import("@prisma/client");
   const { prisma } = await import("@/lib/prisma");
   const { evaluateAccountRisk, accountMarginLevel } = await import("@/lib/risk-monitor");
+  const { closePositionInTx } = await import("@/lib/position-close");
+  const { closePositionsByEachOther } = await import("@/lib/close-by");
   const D = (v: string | number) => new Prisma.Decimal(v);
 
   const [where] = await prisma.$queryRaw<{ db: string; port: number }[]>`SELECT current_database() AS db, inet_server_port() AS port`;
@@ -189,6 +195,24 @@ async function main() {
         VALUES (${px.symbol}, ${D(px.bid)}, ${D(px.ask)}, now() - make_interval(secs => ${px.ageSeconds}::double precision), now() - make_interval(secs => ${updatedAge}::double precision))`;
     }
 
+    for (const pc of sc.preCloses ?? []) {
+      const p = await prisma.position.findUniqueOrThrow({ where: { id: pc.position }, include: { symbol: true } });
+      if (pc.closeBy) {
+        const r = await closePositionsByEachOther(prisma, { accountId: p.accountId, brokerId: broker.id, positionId: p.id, againstPositionId: pc.closeBy });
+        if (!r.ok) throw new Error(`${sc.name}: pre-close close-by ${p.id} / ${pc.closeBy} refused: ${r.error}`);
+      } else {
+        const out = await prisma.$transaction((tx) =>
+          closePositionInTx(tx, {
+            position: { id: p.id, accountId: p.accountId, brokerId: p.brokerId, side: p.side, openPrice: p.openPrice, volume: p.volume, symbol: { contractSize: p.symbol.contractSize } },
+            closePrice: D(pc.price!),
+            ...(pc.volume ? { closeVolume: D(pc.volume) } : {}),
+            deal: { reason: "CLIENT" },
+          })
+        );
+        if (!out.closed) throw new Error(`${sc.name}: pre-close of ${p.id} lost`);
+      }
+    }
+
     if (seedOnly) {
       console.log(`[parity:seed] ${sc.name} seeded into vyx_rust_harness`);
       continue;
@@ -201,12 +225,14 @@ async function main() {
       if (!result.evaluated) throw new Error(`${sc.name}/${a.key}: evaluateAccountRisk returned evaluated=false`);
       const closed = [...result.slTpClosed, ...result.stopOutClosed];
       const txs = await prisma.transaction.findMany({ where: { accountId: a.key }, orderBy: { createdAt: "asc" } });
+      // from the risk close's deal (a position with earlier web closes has other TRADE_PNL rows before it)
+      const riskDeals = await prisma.deal.findMany({ where: { positionId: { in: closed }, reason: { in: ["SL", "TP", "STOP_OUT"] } } });
       const reasons = closed.map((id) => {
-        const note = txs.find((t) => t.referenceId === id && t.type === "TRADE_PNL")?.note ?? "";
-        if (note.startsWith("Stop loss")) return "stop_loss";
-        if (note.startsWith("Take profit")) return "take_profit";
-        if (note.startsWith("Stop-out")) return "stop_out";
-        return `unknown:${note}`;
+        const reason = riskDeals.find((d) => d.positionId === id)?.reason;
+        if (reason === "SL") return "stop_loss";
+        if (reason === "TP") return "take_profit";
+        if (reason === "STOP_OUT") return "stop_out";
+        return `unknown:${txs.find((t) => t.referenceId === id && t.type === "TRADE_PNL")?.note ?? ""}`;
       });
       const rank = (t: (typeof txs)[number]) => {
         const i = closed.indexOf(t.referenceId ?? "");
@@ -248,7 +274,22 @@ async function main() {
         closeSwap: t.closeSwap?.toString() ?? null, closeByPositionId: t.closeByPositionId,
       });
     }
-    const out = { scenario: sc.name, engine: "ts", accounts, sideEffects, positions, closeRows };
+    // deal model gate: every position's deals in write order, and TRADE_PNL rows without a deal (db_mode.rs deals / deal_gate)
+    const dealRows = await prisma.$queryRaw<{ positionId: string; entry: string; reason: string; side: string; volume: { toString(): string }; price: { toString(): string }; profit: { toString(): string }; swap: { toString(): string }; byPositionId: string | null; linked: boolean }[]>`
+      SELECT d."positionId", d.entry::text AS entry, d.reason::text AS reason, d.side::text AS side, d.volume, d.price, d.profit, d.swap, d."byPositionId",
+             EXISTS (SELECT 1 FROM "Transaction" t WHERE t.id = d."transactionId" AND t.type = 'TRADE_PNL' AND t."referenceId" = d."positionId") AS linked
+      FROM "Deal" d ORDER BY d."executedAt", d.ticket`;
+    const deals: Record<string, DealRow[]> = {};
+    for (const d of dealRows) {
+      (deals[d.positionId] ??= []).push({
+        entry: d.entry, reason: d.reason, side: d.side, volume: d.volume.toString(), price: d.price.toString(), profit: d.profit.toString(), swap: d.swap.toString(),
+        byPositionId: d.byPositionId, linked: d.linked,
+      });
+    }
+    const [gate] = await prisma.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM "Transaction" t WHERE t.type = 'TRADE_PNL' AND NOT EXISTS (SELECT 1 FROM "Deal" d WHERE d."transactionId" = t.id)`;
+    const dealGate = { tradePnlWithoutDeal: Number(gate.n) };
+    const out = { scenario: sc.name, engine: "ts", accounts, sideEffects, positions, closeRows, deals, dealGate };
     fs.writeFileSync(path.join(outDir, `${sc.name}.json`), JSON.stringify(out, null, 2) + "\n");
     console.log(`[parity:ts] ${sc.name}: ${Object.entries(accounts).map(([k, v]) => `${k} closed=[${v.closedPositionIds.join(",")}] balance=${v.finalBalance} mc=${v.marginCallNotified}`).join("; ")}`);
   }

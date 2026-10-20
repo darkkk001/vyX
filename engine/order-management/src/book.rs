@@ -734,6 +734,46 @@ pub struct CloseOutcome {
     pub broker_id: String,
     /// the TRADE_PNL "Transaction" row this close wrote (one per close: the outbox dedupe key uses it)
     pub trade_txn_id: String,
+    /// the OUT deal this close wrote next to it (docs/POSITION-DEAL-MODEL.md, step 2), linked by "transactionId"
+    pub deal_id: String,
+    pub deal_ticket: i64,
+}
+
+/// Why a deal happened ("DealReason" in prisma/schema.prisma, = lib/deals.ts's reasons). The engine itself only closes for
+/// SL, TP and stop-out; the other values exist so the enum is the schema's, one to one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DealReason {
+    Client,
+    Dealer,
+    Admin,
+    Sl,
+    Tp,
+    StopOut,
+    Bulk,
+    Mirror,
+    Coverage,
+    CloseBy,
+    Reverse,
+    Expiry,
+}
+
+impl DealReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DealReason::Client => "CLIENT",
+            DealReason::Dealer => "DEALER",
+            DealReason::Admin => "ADMIN",
+            DealReason::Sl => "SL",
+            DealReason::Tp => "TP",
+            DealReason::StopOut => "STOP_OUT",
+            DealReason::Bulk => "BULK",
+            DealReason::Mirror => "MIRROR",
+            DealReason::Coverage => "COVERAGE",
+            DealReason::CloseBy => "CLOSE_BY",
+            DealReason::Reverse => "REVERSE",
+            DealReason::Expiry => "EXPIRY",
+        }
+    }
 }
 
 /// What a close attempt came to (close_position_as).
@@ -757,8 +797,9 @@ pub async fn close_position_in_tx(
     close_price: Decimal,
     realized_pnl: Decimal,
     note: &str,
+    reason: DealReason,
 ) -> Result<Option<CloseOutcome>, sqlx::Error> {
-    Ok(match close_position_as(tx, None, position_id, expected_volume, close_price, realized_pnl, note).await? {
+    Ok(match close_position_as(tx, None, position_id, expected_volume, close_price, realized_pnl, note, reason).await? {
         CloseResult::Closed(outcome) => Some(outcome),
         CloseResult::Lost | CloseResult::NotOwner(_) => None,
     })
@@ -777,8 +818,9 @@ pub async fn close_position_as(
     close_price: Decimal,
     realized_pnl: Decimal,
     note: &str,
+    reason: DealReason,
 ) -> Result<CloseResult, sqlx::Error> {
-    close_position_full(tx, actor, position_id, expected_volume, close_price, realized_pnl, note, None).await
+    close_position_full(tx, actor, position_id, expected_volume, close_price, realized_pnl, note, reason, None).await
 }
 
 /// close_position_as plus the close-by partner link: `close_by_position_id` is stored on the TRADE_PNL row's
@@ -790,6 +832,11 @@ pub async fn close_position_as(
 /// - Position: "realizedPnl" and "closedVolume" are running totals (+ this close), "closedSwap" takes the unattributed
 ///   swap remainder: closeSwap = round2(swap - closedSwap), "closePrice" = this close's price, volume untouched;
 /// - the TRADE_PNL row carries closeVolume, closePrice, closeSwap and closeByPositionId.
+///
+/// Deal model (docs/POSITION-DEAL-MODEL.md section 3.3, step 2), identical to closePositionInTx: one "Deal" row next to
+/// the TRADE_PNL row, in this transaction -- entry OUT (OUT_BY when `close_by_position_id` is set), the side opposite
+/// to the position's, `reason`, the closed lots / price / P&L / swap share of the ledger row, "transactionId" = that
+/// row (unique: one deal per ledger row), "executedAt" = now(), the ledger row's own "createdAt".
 /// The old row values are read in the same statement that closes the row (a CTE with FOR UPDATE), so a concurrent
 /// close sees either all or none of it. Postgres ROUND (half away from zero) is Decimal.js ROUND_HALF_UP.
 #[allow(clippy::too_many_arguments)]
@@ -801,9 +848,10 @@ pub async fn close_position_full(
     close_price: Decimal,
     realized_pnl: Decimal,
     note: &str,
+    reason: DealReason,
     close_by_position_id: Option<&str>,
 ) -> Result<CloseResult, sqlx::Error> {
-    let claimed: Option<(String, String, Decimal)> = sqlx::query_as(
+    let claimed: Option<(String, String, Decimal, String, String)> = sqlx::query_as(
         r#"WITH old AS (
              SELECT id, swap, "closedSwap" FROM "Position"
              WHERE id = $3 AND status = 'OPEN' AND volume = $4
@@ -817,7 +865,7 @@ pub async fn close_position_full(
                "closedAt" = now()
            FROM old
            WHERE p.id = old.id
-           RETURNING p."accountId", p."brokerId", ROUND(old.swap - COALESCE(old."closedSwap", 0), 2)"#,
+           RETURNING p."accountId", p."brokerId", ROUND(old.swap - COALESCE(old."closedSwap", 0), 2), p."symbolId", p.side::text"#,
     )
     .bind(close_price)
     .bind(realized_pnl)
@@ -825,7 +873,7 @@ pub async fn close_position_full(
     .bind(expected_volume)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((account_id, broker_id, close_swap)) = claimed else {
+    let Some((account_id, broker_id, close_swap, symbol_id, side)) = claimed else {
         return Ok(CloseResult::Lost);
     };
 
@@ -883,6 +931,30 @@ pub async fn close_position_full(
     .bind(close_swap)
     .bind(close_by_position_id)
     .execute(&mut **tx)
+    .await?;
+
+    let deal_id = Uuid::new_v4().to_string();
+    let (deal_ticket,): (i64,) = sqlx::query_as(
+        r#"INSERT INTO "Deal"
+             (id, "brokerId", "accountId", "positionId", "symbolId", side, entry, reason, volume, price, profit, swap, "byPositionId", "transactionId", "executedAt")
+           VALUES ($1, $2, $3, $4, $5, $6::"OrderSide", $7::"DealEntry", $8::"DealReason", $9, $10, $11, $12, $13, $14, now())
+           RETURNING ticket"#,
+    )
+    .bind(&deal_id)
+    .bind(&broker_id)
+    .bind(&account_id)
+    .bind(position_id)
+    .bind(&symbol_id)
+    .bind(if side == "BUY" { "SELL" } else { "BUY" })
+    .bind(if close_by_position_id.is_some() { "OUT_BY" } else { "OUT" })
+    .bind(reason.as_str())
+    .bind(expected_volume)
+    .bind(close_price)
+    .bind(realized_pnl)
+    .bind(close_swap)
+    .bind(close_by_position_id)
+    .bind(&trade_txn_id)
+    .fetch_one(&mut **tx)
     .await?;
 
     if let Some(used) = credit_used {
@@ -962,6 +1034,8 @@ pub async fn close_position_full(
         account_id,
         broker_id,
         trade_txn_id,
+        deal_id,
+        deal_ticket,
     }))
 }
 
@@ -1058,6 +1132,15 @@ pub enum CloseReason {
 }
 
 impl CloseReason {
+    /// the deal reason of a close for this reason
+    pub fn deal_reason(&self) -> DealReason {
+        match self {
+            CloseReason::StopLoss => DealReason::Sl,
+            CloseReason::TakeProfit => DealReason::Tp,
+            CloseReason::StopOut { .. } => DealReason::StopOut,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             CloseReason::StopLoss => "stop_loss",
@@ -1085,6 +1168,10 @@ pub async fn enqueue_post_close(
         "sourceVolumeBeforeClose": volume_before.normalize().to_string(),
         "closePrice": close_price.normalize().to_string(),
         "realizedPnl": outcome.realized_pnl.normalize().to_string(),
+        // deal model step 2: the OUT deal this close wrote, and what is left open (the engine closes in full)
+        "dealId": outcome.deal_id,
+        "dealTicket": outcome.deal_ticket.to_string(),
+        "remainingVolume": "0",
     });
     if let CloseReason::StopOut { margin_level, stop_out_level } = reason {
         // the same text lib/risk-monitor.ts passes: level to 2 dp, the threshold as configured
