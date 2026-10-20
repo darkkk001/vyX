@@ -13,6 +13,11 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 // (ISO date or datetime; range on closedAt -- `to` is inclusive of the
 // whole day when only a date is given), accountId, groupId. Used by the
 // backoffice dealing-group HISTORY view's date-range picker.
+//
+// view=deals (deal model step 4): one row per execution from the Deal table instead of one row per closed position:
+// the opening IN, every OUT (partial / final), OUT_BY legs, a reverse's OUT + IN pair. Same filters (from / to on the
+// execution time), same cap and headers. Voided trades stay listed (voided: true), as the positions view lists VOIDED
+// rows. Without `view` (or view=positions) the answer is the positions list, unchanged.
 const DEALS_LIMIT = 500;
 
 export async function GET(request: NextRequest) {
@@ -56,6 +61,8 @@ export async function GET(request: NextRequest) {
   // list -- "recoverable from the audit view" (the brief's own words)
   // means the audit log, not this list; see POSITION_DELETED's own
   // AuditLog entry for the full record.
+  if (sp.get("view") === "deals") return dealsView(brokerId, { accountId, groupId, from: closedAt.gte as Date | undefined, before: closedAt.lt as Date | undefined });
+
   const dealsWhere: Prisma.PositionWhereInput = {
     brokerId,
     status: { in: ["CLOSED", "VOIDED"] },
@@ -118,4 +125,66 @@ export async function GET(request: NextRequest) {
     })),
     { headers }
   );
+}
+
+const fmt = (d: Date) => d.toISOString().replace("T", " ").slice(0, 19);
+
+/** view=deals: the broker's deals, newest first, capped like the positions view. */
+async function dealsView(brokerId: string, f: { accountId: string | null; groupId: string | null; from?: Date; before?: Date }) {
+  let accountIds: string[] | undefined;
+  if (f.groupId) {
+    accountIds = (await prisma.account.findMany({ where: { brokerId, groupId: f.groupId, ...(f.accountId ? { id: f.accountId } : {}) }, select: { id: true } })).map((a) => a.id);
+    if (accountIds.length === 0) return NextResponse.json([], { headers: { "x-row-limit": String(DEALS_LIMIT), "x-truncated": "false" } });
+  }
+  const where: Prisma.DealWhereInput = {
+    brokerId,
+    ...(accountIds ? { accountId: { in: accountIds } } : f.accountId ? { accountId: f.accountId } : {}),
+    ...(f.from || f.before ? { executedAt: { ...(f.from ? { gte: f.from } : {}), ...(f.before ? { lt: f.before } : {}) } } : {}),
+  };
+  const deals = await prisma.deal.findMany({ where, orderBy: [{ executedAt: "desc" }, { ticket: "desc" }], take: DEALS_LIMIT + 1 });
+  const truncated = deals.length > DEALS_LIMIT;
+  if (truncated) deals.length = DEALS_LIMIT;
+  const positionIds = [...new Set(deals.flatMap((d) => (d.byPositionId ? [d.positionId, d.byPositionId] : [d.positionId])))];
+  const [positions, accounts, symbols] = await Promise.all([
+    prisma.position.findMany({ where: { brokerId, id: { in: positionIds } }, select: { id: true, ticket: true, deletedAt: true } }),
+    prisma.account.findMany({ where: { brokerId, id: { in: [...new Set(deals.map((d) => d.accountId))] } }, select: { id: true, accountNumber: true, fullName: true, currency: true } }),
+    prisma.symbol.findMany({ where: { id: { in: [...new Set(deals.map((d) => d.symbolId))] } }, select: { id: true, name: true, digits: true } }),
+  ]);
+  const pos = new Map(positions.map((p) => [p.id, p]));
+  const acc = new Map(accounts.map((a) => [a.id, a]));
+  const sym = new Map(symbols.map((s) => [s.id, s]));
+  const headers: Record<string, string> = { "x-row-limit": String(DEALS_LIMIT), "x-truncated": truncated ? "true" : "false" };
+  if (truncated) headers["x-total-count"] = String(await prisma.deal.count({ where }));
+  const rows = [];
+  for (const d of deals) {
+    const p = pos.get(d.positionId);
+    const a = acc.get(d.accountId);
+    if (!p || p.deletedAt || !a) continue; // a soft-deleted position stays out, as in the positions view
+    const s = sym.get(d.symbolId);
+    const digits = s?.digits ?? 5;
+    rows.push({
+      id: d.id,
+      ticket: Number(d.ticket),
+      positionId: d.positionId,
+      positionTicket: p.ticket,
+      accountNumber: a.accountNumber,
+      currency: a.currency,
+      accountFullName: a.fullName,
+      symbol: s?.name ?? null,
+      digits,
+      side: d.side,
+      entry: d.entry,
+      reason: d.reason,
+      source: d.source,
+      volume: d.volume.toString(),
+      price: d.price.toFixed(digits),
+      profit: d.profit.toFixed(2),
+      commission: d.commission.toFixed(2),
+      swap: d.swap.toFixed(2),
+      executedAt: fmt(d.executedAt),
+      byPositionTicket: d.byPositionId ? pos.get(d.byPositionId)?.ticket ?? null : null,
+      voided: d.voidedAt != null,
+    });
+  }
+  return NextResponse.json(rows, { headers });
 }
