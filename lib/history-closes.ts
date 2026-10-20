@@ -19,7 +19,8 @@ import { Prisma } from "@prisma/client";
 
 export type CloseLeg = {
   at: string;
-  volume: string;
+  /** null only in the `all` view, for a pre-hotfix row whose lots cannot be read (the close is still listed) */
+  volume: string | null;
   price: string | null;
   pnl: string;
   /** the ticket of the position this close was made against (a close-by / hedge close), else null */
@@ -55,14 +56,20 @@ export function closeByTarget(note: string | null): { ticket: number } | { id: s
   return { id: m[2] };
 }
 
+/** Options of {@link closesOf}. `all` = the `?closes=1` History view (terminal Deals / Positions views): an OPEN position too
+ *  (none of its closes is final), a single plain close too (always a list), and a pre-hotfix row whose lots / price cannot be
+ *  read is still listed (volume / price null) instead of making the whole list null. Without it nothing changes. */
+export type ClosesOptions = { all?: boolean };
+
 /** The closes of one CLOSED position, oldest first; null when they cannot be stated exactly (the row stays flat). */
-export function closesOf(position: HistoryPosition, txs: CloseTx[], counterparts: Counterpart[]): CloseLeg[] | null {
-  if (position.status !== "CLOSED" || txs.length === 0) return null;
+export function closesOf(position: HistoryPosition, txs: CloseTx[], counterparts: Counterpart[], opts: ClosesOptions = {}): CloseLeg[] | null {
+  const all = opts.all === true;
+  if ((!all && position.status !== "CLOSED") || txs.length === 0) return null;
   const sorted = [...txs].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   const legs: CloseLeg[] = [];
   for (let i = 0; i < sorted.length; i++) {
     const tx = sorted[i];
-    const final = i === sorted.length - 1;
+    const final = i === sorted.length - 1 && position.status === "CLOSED";
     if (tx.closeVolume != null) {
       const cp = tx.closeByPositionId ? counterparts.find((c) => c.id === tx.closeByPositionId) : undefined;
       legs.push({ at: tx.createdAt.toISOString(), volume: tx.closeVolume.toString(), price: tx.closePrice?.toString() ?? null, pnl: tx.amount.toString(), closedByTicket: cp ? cp.ticket : null, final });
@@ -85,8 +92,10 @@ export function closesOf(position: HistoryPosition, txs: CloseTx[], counterparts
       legs.push({ at: tx.createdAt.toISOString(), volume: other.volume.toString(), price: other.closePrice?.toString() ?? null, pnl: tx.amount.toString(), closedByTicket: other.ticket, final: false });
       continue;
     }
+    if (all) { legs.push({ at: tx.createdAt.toISOString(), volume: null, price: null, pnl: tx.amount.toString(), closedByTicket, final: false }); continue; }
     return null;
   }
+  if (all) return legs;
   const grouped = legs.length > 1 || legs.some((l) => l.closedByTicket != null) || sorted.some((t) => t.closeByPositionId);
   return grouped ? legs : null;
 }
