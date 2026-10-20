@@ -10,6 +10,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
 import { lockAccountBalance, lockAccountFunds } from "@/lib/account-lock";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { markDealsVoidedInTx, writeFlipDealsInTx, writeOpenDealInTx } from "@/lib/deals";
 
 type Tx = Prisma.TransactionClient;
 
@@ -121,6 +122,7 @@ export async function executeAdminCloseInTx(
     closeVolume,
     note: isPartial ? `Manual partial close by admin: ${closeVolume} lots @ ${closePrice}` : `Manual close by admin @ ${closePrice}`,
     closeByPositionId: params.closeByPositionId ?? null,
+    deal: { reason: "ADMIN", source: "ADMIN", adminId },
   });
   if (!outcome.closed) return { closed: false };
 
@@ -151,7 +153,9 @@ export async function executeAdminCloseInTx(
 // ---------- Reverse: in-place flip (new default) ----------
 // Same position, same entry price, side inverted -- no close event, no
 // new position row, no realized P/L, no Transaction at all (this is a
-// correction, not a trade). Margin is intentionally left untouched: this
+// correction, not a trade); its deal history gets an OUT + IN pair at the
+// entry price (writeFlipDealsInTx), for it and for every follower it flips.
+// Margin is intentionally left untouched: this
 // app's own margin formula (lib/margin.ts's requiredMarginFor) is
 // side-independent (volume * contractSize * CURRENT price / leverage),
 // so there is nothing stored on Position for a side flip to update --
@@ -201,6 +205,7 @@ export async function executeReverseInPlace(
     : null;
 
   const updated = await tx.position.update({ where: { id: position.id }, data: { side: newSide } });
+  await writeFlipDealsInTx(tx, { positionId: position.id, adminId: params.adminId });
   const mirrorWarning = await isAccountMirrored(tx, position.accountId, position.account.groupId);
 
   // Audit 2026-09-24 (money): the positions that follow this one flip with it, in the same transaction -- an in-place
@@ -213,6 +218,7 @@ export async function executeReverseInPlace(
     if (leg && leg.status === "OPEN") {
       const legSide: OrderSide = leg.side === "BUY" ? "SELL" : "BUY";
       await tx.position.update({ where: { id: leg.id }, data: { side: legSide } });
+      await writeFlipDealsInTx(tx, { positionId: leg.id, adminId: params.adminId });
       followers.push({ positionId: leg.id, accountId: leg.accountId });
       await tx.auditLog.create({
         data: {
@@ -233,6 +239,7 @@ export async function executeReverseInPlace(
     if (copy && copy.status === "OPEN") {
       const copySide: OrderSide = copy.side === "BUY" ? "SELL" : "BUY";
       await tx.position.update({ where: { id: copy.id }, data: { side: copySide } });
+      await writeFlipDealsInTx(tx, { positionId: copy.id, adminId: params.adminId });
       followers.push({ positionId: copy.id, accountId: copy.accountId });
       await tx.auditLog.create({
         data: {
@@ -330,6 +337,7 @@ export async function executeReverseCloseReopen(
     position: { id: position.id, accountId: position.accountId, brokerId: params.brokerId, side: position.side, openPrice: position.openPrice, volume: position.volume, symbol: { contractSize: position.symbol.contractSize } },
     closePrice,
     note: `Reversed (close & reopen) by admin @ ${closePrice}`,
+    deal: { reason: "REVERSE", source: "ADMIN", adminId: params.adminId },
   });
   if (!closed.closed) throw new PositionActionError("position was closed or changed by another action, refresh and try again");
   const realizedPnl = closed.realizedPnl;
@@ -367,8 +375,10 @@ export async function executeReverseCloseReopen(
       // where the symbol's (now unused) default said. This previously stamped
       // B_BOOK onto a reversal opened on an A_BOOK or COVERAGE account.
       bookType: resolveBookType(account.group.category),
+      reversedFromPositionId: position.id,
     },
   });
+  await writeOpenDealInTx(tx, { positionId: newPosition.id, reason: "REVERSE", adminId: params.adminId });
 
   await tx.auditLog.create({
     data: {
@@ -438,6 +448,7 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
     data: { status: "VOIDED", closedAt: new Date(), closedByAdminId: params.adminId },
   });
   if (claim.count === 0) throw new PositionActionError("position was closed or changed by another action, refresh and try again");
+  await markDealsVoidedInTx(tx, position.id);
 
   const positionTxns = await tx.transaction.aggregate({
     where: { accountId: position.accountId, referenceType: "Position", referenceId: position.id, status: "COMPLETED" },
@@ -513,6 +524,7 @@ async function executeVoidClosed(
   // claim first: a concurrent void stops here instead of reversing twice
   const claim = await tx.position.updateMany({ where: { id: position.id, status: "CLOSED" }, data: { status: "VOIDED" } });
   if (claim.count === 0) throw new PositionActionError("position was changed by another action, refresh and try again");
+  await markDealsVoidedInTx(tx, position.id);
 
   const rows = await tx.transaction.groupBy({
     by: ["type"],

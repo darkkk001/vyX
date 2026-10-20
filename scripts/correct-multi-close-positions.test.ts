@@ -252,7 +252,7 @@ describe("--apply", () => {
     const p = await prisma.position.create({ data: { brokerId: w.brokerId, accountId: account.id, symbolId: w.symbolId, originOrderId: order.id, side: "BUY", volume: D(1), openPrice: D(100), swap: D("-1.01") } });
     for (const [lots, price] of [["0.33", "101"], ["0.33", "102"], ["0.34", "103"]]) {
       const cur = await prisma.position.findUniqueOrThrow({ where: { id: p.id } });
-      await prisma.$transaction((tx) => closePositionInTx(tx, { position: { id: p.id, accountId: account.id, brokerId: w.brokerId, side: "BUY", openPrice: cur.openPrice, volume: cur.volume, symbol: { contractSize: D(1) } }, closePrice: price, closeVolume: D(lots) }));
+      await prisma.$transaction((tx) => closePositionInTx(tx, { deal: { reason: "CLIENT" }, position: { id: p.id, accountId: account.id, brokerId: w.brokerId, side: "BUY", openPrice: cur.openPrice, volume: cur.volume, symbol: { contractSize: D(1) } }, closePrice: price, closeVolume: D(lots) }));
     }
     const before = await snapshot();
     const r = await run(prisma, APPLY);

@@ -257,6 +257,7 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
           closePrice: cp,
           note: reason === "stop_loss" ? "Stop loss hit (automatic)" : "Take profit hit (automatic)",
           riskActor: "WEB",
+          deal: { reason: reason === "stop_loss" ? "SL" : "TP" },
         })
       )
     );
@@ -315,6 +316,7 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
           closePrice: worst.closePrice,
           note: `Stop-out (automatic): margin level ${marginLevel.toFixed(2)}% at or below ${stopOutLevel}%`,
           riskActor: "WEB",
+          deal: { reason: "STOP_OUT" },
         })
       )
     );

@@ -35,6 +35,7 @@ import {
   checkAccountTradingRights,
 } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
+import { writeOpenDealInTx } from "@/lib/deals";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -437,6 +438,7 @@ export async function POST(request: NextRequest) {
       },
     });
     await chargeCommission(tx, { brokerId, accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume });
+    await writeOpenDealInTx(tx, { positionId: position.id, reason: "ADMIN", adminId: session.adminId });
 
     await tx.auditLog.create({
       data: {

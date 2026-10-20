@@ -62,7 +62,7 @@ export type SweepRules = { hedgingAllowed: boolean; maxOpenPositions: number | n
 
 export type SweepPorts = {
   /** Book the close at the given time. `closed: false` = somebody else closed it first. balance/credit = the account after. */
-  closePosition(p: SimPos, closePrice: Prisma.Decimal, atMs: number, note: string): Promise<{ closed: boolean; balance: Prisma.Decimal; credit: Prisma.Decimal }>;
+  closePosition(p: SimPos, closePrice: Prisma.Decimal, atMs: number, note: string, reason: "SL" | "TP" | "STOP_OUT"): Promise<{ closed: boolean; balance: Prisma.Decimal; credit: Prisma.Decimal }>;
   /** Fill the pending order at the given time and price; null = it was no longer pending. */
   fillPending(o: SimOrder, fillPrice: Prisma.Decimal, atMs: number): Promise<SimPos | null>;
   rejectPending(o: SimOrder, reason: string, atMs: number): Promise<void>;
@@ -269,7 +269,7 @@ export async function simulateSweep(input: {
       }
       if (!reason) continue;
       const price = D(p.side === "BUY" ? qt.bid : qt.ask);
-      const r = await ports.closePosition(p, price, tMs, reason === "stop_loss" ? "Stop loss hit (demo)" : "Take profit hit (demo)");
+      const r = await ports.closePosition(p, price, tMs, reason === "stop_loss" ? "Stop loss hit (demo)" : "Take profit hit (demo)", reason === "stop_loss" ? "SL" : "TP");
       positions = positions.filter((x) => x.id !== p.id);
       acct.balance = r.balance;
       acct.credit = r.credit;
@@ -285,7 +285,7 @@ export async function simulateSweep(input: {
           const m = measure(acct, openNow(), q);
           if (m.level == null || m.level.gt(acct.stopOutLevel) || !m.worst) break;
           const w = m.worst;
-          const r = await ports.closePosition(w.pos, w.closePrice, tMs, `Stop-out (demo): margin level ${m.level.toFixed(2)}% at or below ${acct.stopOutLevel.toString()}%`);
+          const r = await ports.closePosition(w.pos, w.closePrice, tMs, `Stop-out (demo): margin level ${m.level.toFixed(2)}% at or below ${acct.stopOutLevel.toString()}%`, "STOP_OUT");
           positions = positions.filter((x) => x.id !== w.pos.id);
           acct.balance = r.balance;
           acct.credit = r.credit;

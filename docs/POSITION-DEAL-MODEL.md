@@ -178,7 +178,7 @@ enum DealReason { CLIENT DEALER ADMIN SL TP STOP_OUT BULK MIRROR COVERAGE CLOSE_
 
 model Deal {
   id            String     @id @default(cuid())
-  ticket        BigInt     @unique              // own sequence deal_ticket_seq, never reuses order tickets
+  ticket        BigInt     @unique              // own sequence deal_ticket_seq from 10000001 (8 digits; order tickets are 9)
   brokerId      String
   accountId     String
   positionId    String                           // Position.id (the position identifier)
@@ -190,13 +190,14 @@ model Deal {
   source        OrderSource?                     // channel (WEB / DESKTOP_NATIVE / ...), when a client acted
   volume        Decimal    @db.Decimal(10, 2)
   price         Decimal    @db.Decimal(18, 5)
-  profit        Decimal    @default(0) @db.Decimal(18, 2)   // account currency, = the TRADE_PNL amount
-  commission    Decimal    @default(0) @db.Decimal(18, 2)
+  profit        Decimal    @default(0) @db.Decimal(18, 4)   // account currency, = the TRADE_PNL amount (ledger's 4 dp)
+  commission    Decimal    @default(0) @db.Decimal(18, 4)   // = the COMMISSION amount (ledger's 4 dp, negative)
   swap          Decimal    @default(0) @db.Decimal(18, 2)
   byPositionId  String?                          // OUT_BY: the opposite position
   transactionId String?    @unique              // the TRADE_PNL (OUT) or COMMISSION (IN) ledger row
   adminId       String?                          // staff actor
   executedAt    DateTime   @db.Timestamptz(3)
+  voidedAt      DateTime?  @db.Timestamptz(3)       // set when the position is voided; the row stays
   backfilled    Boolean    @default(false)       // true = derived from history, see backfillNote
   backfillNote  String?
   createdAt     DateTime   @default(now()) @db.Timestamptz(3)
@@ -206,6 +207,12 @@ model Deal {
   @@index([brokerId, executedAt])
 }
 ```
+
+Approved departures from the first draft (owner, 2026-10-19): `voidedAt` (section 3.4's "void marks deals" needs a
+column), profit and commission at 4 decimals (each deal equals its ledger row exactly), deal tickets from 10000001.
+Staff reverse in place (side flipped on the same row) writes an OUT (reason REVERSE) for the old side and an IN for the
+new side on the same position, both at the entry price with profit 0 (the flip realises nothing and writes no ledger
+row); INOUT stays reserved for netting.
 
 `Position` gains `initialVolume Decimal?` (the IN volume, immutable) and `reversedFromPositionId String? @unique`
 (close-and-reopen link). `Position.volume` keeps meaning "open now". After the switch `realizedPnl` means the sum

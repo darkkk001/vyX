@@ -9,6 +9,7 @@ import { getFreshPrice } from "@/lib/live-price";
 import { ensureCoverageAccount } from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
 import { placeCoveragePendingOrder } from "@/lib/coverage-pending";
+import { writeOpenDealInTx } from "@/lib/deals";
 
 // Dealer order entry on the coverage account (2026-09-22). The dealing
 // screen's order ticket, one-click widget and "order at price" had no
@@ -137,6 +138,7 @@ export async function POST(request: NextRequest) {
         bookType: "A_BOOK",
       },
     });
+    await writeOpenDealInTx(tx, { positionId: position.id, reason: "COVERAGE", adminId: session!.adminId });
     await tx.auditLog.create({
       data: {
         brokerId,

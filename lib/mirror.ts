@@ -475,7 +475,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       });
       // NO SL/TP on the mirrored position -- the brief's own explicit
       // instruction; master risk is the rule's caps, not per-trade stops.
-      const position = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot);
+      const position = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "MIRROR" });
 
       // Idempotency: sourcePositionId is unique. A retried/duplicate
       // onFill for the same source position throws P2002 here, which
@@ -594,6 +594,7 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose, opts?: { re
           closePrice,
           closeVolume,
           note: `Mirror close (rule ${rule.id}, source position ${closeEvent.positionId}, mode ${rule.fillPriceMode})`,
+          deal: { reason: "MIRROR" },
         });
         // Closes respect DEALER mode: a mirrored close bypasses the dealer; a close the target's
         // client had queued is moot once the position is gone (a partial keeps it, and its lock).

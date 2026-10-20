@@ -1,5 +1,5 @@
 import "server-only";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient, type OrderSource } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
@@ -128,7 +128,17 @@ export async function selectBulkCloseTargets(
 
 export async function closeBulkForAccount(
   db: Db,
-  params: { accountId: string; brokerId: string; scope: BulkCloseScope; symbol?: string; positionIds?: string[]; side?: "BUY" | "SELL" }
+  params: {
+    accountId: string;
+    brokerId: string;
+    scope: BulkCloseScope;
+    symbol?: string;
+    positionIds?: string[];
+    side?: "BUY" | "SELL";
+    // for the deals: the client's channel (trader bulk close) or the staff member (backoffice bulk close)
+    dealSource?: OrderSource | null;
+    adminId?: string | null;
+  }
 ): Promise<BulkClosePositionResult[]> {
   const { brokerId, accountId, scope } = params;
   const { matching, priceBySymbol, nextOpenBySymbolName, closePriceOf } = await selectBulkCloseTargets(db, params);
@@ -163,6 +173,7 @@ export async function closeBulkForAccount(
         },
         closePrice,
         note: `Bulk close (${scope})`,
+        deal: { reason: "BULK", source: params.dealSource ?? null, adminId: params.adminId ?? null },
       });
       if (!outcome.closed) {
         // Raced with something else closing this exact position between

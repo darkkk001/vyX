@@ -6,6 +6,7 @@ import { isDemoSymbolName } from "@/lib/demo-prices";
 import { acquireSweepLock, getDemoBrokerId, isGuestAccountNumber, readDemoState, releaseSweepLock, writeDemoState } from "@/lib/demo";
 import { simulateSweep, type SimOrder, type SimPos, type SweepEvent, type SweepLimits, type SweepPorts } from "@/lib/demo-sweep-core";
 import { resolveBookType } from "@/lib/group-pricing";
+import { writeOpenDealInTx } from "@/lib/deals";
 
 // Database side of the demo's lazy risk replay (the walk itself is lib/demo-sweep-core.ts). One guest account at a time:
 // load its open positions and resting orders, replay the price path from the account's cursor (Redis, see lib/demo.ts) to
@@ -70,13 +71,14 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
   const accountRow = { id: account.id, brokerId: account.brokerId };
 
   const ports: SweepPorts = {
-    async closePosition(p, closePrice, atMs, note) {
+    async closePosition(p, closePrice, atMs, note, reason) {
       const outcome = await prisma.$transaction((tx) =>
         closePositionInTx(tx, {
           position: { id: p.id, accountId, brokerId: accountRow.brokerId, side: p.side, openPrice: p.openPrice, volume: p.volume, symbol: { contractSize: p.contractSize } },
           closePrice,
           note,
           at: new Date(atMs),
+          deal: { reason },
         })
       );
       const fresh = await prisma.account.findUniqueOrThrow({ where: { id: accountId }, select: { balance: true, credit: true } });
@@ -94,6 +96,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
           },
           include: { symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
         });
+        await writeOpenDealInTx(tx, { positionId: created.id, reason: "CLIENT" });
         await tx.auditLog.create({
           data: {
             brokerId: accountRow.brokerId, action: "ORDER_TRIGGERED_AND_FILLED", entityType: "Position", entityId: created.id,

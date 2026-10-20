@@ -250,7 +250,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     const positionVolumeBefore = order.closesPosition?.volume ?? order.volume;
     const result = await prisma.$transaction(async (tx) => {
-      const r = await executeQueuedCloseInTx(tx, { order, fromStatus: "PENDING", closePrice, note: `Dealer close (${fillMode === "MARKET" ? "at market" : "at requested price"})` });
+      const r = await executeQueuedCloseInTx(tx, { order, fromStatus: "PENDING", closePrice, note: `Dealer close (${fillMode === "MARKET" ? "at market" : "at requested price"})`, adminId: session.adminId });
       if (r.kind === "closed") {
         await tx.auditLog.create({
           data: {
@@ -373,7 +373,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
       if (claimed.count === 0) throw new Error("RACED");
 
-      const position = await openPositionFromOrder(tx, order, markedUpFillPrice, bookType, pricing.commissionPerLot);
+      const position = await openPositionFromOrder(tx, order, markedUpFillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", adminId: session.adminId });
 
       await tx.auditLog.create({
         data: {

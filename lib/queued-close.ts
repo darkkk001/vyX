@@ -187,6 +187,7 @@ export async function executeQueuedCloseInTx(
     fromStatus: "PENDING" | "REQUOTED";
     closePrice: Prisma.Decimal;
     note: string;
+    adminId?: string | null; // the dealer who accepted, when a person did
   }
 ): Promise<ExecuteQueuedCloseResult> {
   const claimed = await tx.order.updateMany({ where: { id: p.order.id, status: p.fromStatus }, data: { status: "ACCEPTED" } });
@@ -201,6 +202,7 @@ export async function executeQueuedCloseInTx(
   }
   // a partial close asked for more than is left (the position shrank meanwhile) closes what remains
   const closeVolume = (p.order.closeVolume ?? p.order.volume).gt(position.volume) ? position.volume : (p.order.closeVolume ?? p.order.volume);
+  const { source } = await tx.order.findUniqueOrThrow({ where: { id: p.order.id }, select: { source: true } });
   const outcome = await closePositionInTx(tx, {
     position: {
       id: position.id,
@@ -215,6 +217,8 @@ export async function executeQueuedCloseInTx(
     closeVolume,
     note: p.note,
     closeByPositionId: p.order.closeByPositionId ?? null,
+    // the queued close Order carries the client's channel and, for a close-by, the opposite leg (OUT_BY)
+    deal: { reason: "DEALER", source, orderId: p.order.id, adminId: p.adminId ?? null },
   });
   if (!outcome.closed) {
     await tx.order.update({ where: { id: p.order.id }, data: { status: "CANCELLED", rejectionReason: "position already closed" } });

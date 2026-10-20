@@ -1987,6 +1987,11 @@ model Position {
   // volume stays the open remainder; swap stays the total accrued. NULL on rows closed before the hotfix.
   closedVolume    Decimal?       @db.Decimal(10, 2)
   closedSwap      Decimal?       @db.Decimal(18, 2)
+  // Deal model step 1 (docs/POSITION-DEAL-MODEL.md section 3.2): the IN volume, set once when the open writes its IN
+  // deal and never changed. NULL on rows opened before it (the backfill fills them) and on engine opens until step 2.
+  initialVolume   Decimal?       @db.Decimal(10, 2)
+  // Staff reverse close-and-reopen: the new position points at the one it replaced.
+  reversedFromPositionId String? @unique
   // Stamped from BrokerSymbol.defaultBookType at fill time -- record-
   // keeping only, see that field's schema comment.
   bookType        BookType       @default(B_BOOK)
@@ -2591,4 +2596,64 @@ model RiskEngineHeartbeat {
   staleAfterSecs Int      @default(30)
   engineVersion  String?
   instance       String?
+}
+
+// Deal model step 1 (docs/POSITION-DEAL-MODEL.md section 3.2): one row per execution, MT5 DEAL style, written in the
+// same transaction as the ledger row it explains. IN = an open (transactionId = its COMMISSION row, if charged);
+// OUT = a close or partial close, OUT_BY = a close-by leg (transactionId = its TRADE_PNL row). Transaction stays the
+// money record; nothing reads this table yet (write-only until the read switch, step 4). INOUT is reserved for netting.
+enum DealEntry {
+  IN
+  OUT
+  OUT_BY
+  INOUT
+}
+
+enum DealReason {
+  CLIENT
+  DEALER
+  ADMIN
+  SL
+  TP
+  STOP_OUT
+  BULK
+  MIRROR
+  COVERAGE
+  CLOSE_BY
+  REVERSE
+  EXPIRY
+}
+
+model Deal {
+  id            String       @id @default(cuid())
+  // own sequence (deal_ticket_seq), never an order ticket
+  ticket        BigInt       @unique @default(dbgenerated("nextval('deal_ticket_seq'::regclass)"))
+  brokerId      String
+  accountId     String
+  positionId    String // Position.id (the position identifier)
+  orderId       String? // the opening Order, or the queued close Order
+  symbolId      String
+  side          OrderSide // direction of THIS deal: a close of a BUY is a SELL deal
+  entry         DealEntry
+  reason        DealReason
+  source        OrderSource? // client channel, when known
+  volume        Decimal      @db.Decimal(10, 2)
+  price         Decimal      @db.Decimal(18, 5)
+  // profit and commission keep the ledger's 4 dp, so they equal the TRADE_PNL / COMMISSION amount exactly
+  profit        Decimal      @default(0) @db.Decimal(18, 4)
+  commission    Decimal      @default(0) @db.Decimal(18, 4)
+  swap          Decimal      @default(0) @db.Decimal(18, 2) // this close's pro-rata share (= Transaction.closeSwap)
+  byPositionId  String? // OUT_BY: the opposite position
+  transactionId String?      @unique // the TRADE_PNL (OUT / OUT_BY) or COMMISSION (IN) ledger row
+  adminId       String? // staff actor
+  executedAt    DateTime     @db.Timestamptz(3)
+  // set when the position is voided; the row itself stays
+  voidedAt      DateTime?    @db.Timestamptz(3)
+  backfilled    Boolean      @default(false) // true = derived from history (step 3), see backfillNote
+  backfillNote  String?
+  createdAt     DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@index([accountId, executedAt])
+  @@index([positionId])
+  @@index([brokerId, executedAt])
 }

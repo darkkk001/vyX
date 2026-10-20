@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { closeBulkForAccount, selectBulkCloseTargets, type BulkCloseScope, type BulkClosePositionResult } from "@/lib/bulk-close";
 import { closePriceFor } from "@/lib/trading";
+import { clientDealSource } from "@/lib/deals";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 
 const SCOPES: BulkCloseScope[] = ["ALL", "PROFIT", "LOSS", "SYMBOL"];
@@ -136,6 +137,7 @@ export async function POST(request: NextRequest) {
     scope,
     symbol,
     side,
+    dealSource: clientDealSource(request.headers.get("x-client-platform")),
   });
   await auditStm(results);
 
