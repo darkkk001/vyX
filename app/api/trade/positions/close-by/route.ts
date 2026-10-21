@@ -89,6 +89,7 @@ export async function POST(request: NextRequest) {
     positionId,
     againstPositionId,
     dealSource: clientDealSource(request.headers.get("x-client-platform")),
+    capture: requestMeta(request.headers),
   });
 
   if (!result.ok) {

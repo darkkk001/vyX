@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { tradingDayStart } from "@/lib/trading-day";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { executionDetail } from "@/lib/order-execution";
+import { dealExecutionDetail, executionDetail } from "@/lib/order-execution";
 
 // Same query app/manage/(shell)/deals/page.tsx's Server Component used
 // to do inline -- exposed as JSON so DealsManager can fetch it itself
@@ -25,9 +25,10 @@ import { executionDetail } from "@/lib/order-execution";
 //                     when deleted, deletedAt / deletedBy (staff e-mail) / deleteReason
 //   pendingAction     the void / delete / reverse request waiting for approval on the trade, or null:
 //                     { type: VOID | DELETE | REVERSE_IN_PLACE | REVERSE_CLOSE_REOPEN, requestId, requestedBy, requestedAt }
-//   execution detail  positions view: openExecution (the opening order) and closeExecution (the last filled close order,
-//                     dealer-queued closes only); deals view: execution (the deal's order). lib/order-execution.ts
-//                     executionDetail: a field the server does not have is left out.
+//   execution detail  positions view: openExecution (the opening order) and closeExecution (the last close: its filled
+//                     close order for a dealer-queued close, otherwise its OUT deal, D-3, so every close has one);
+//                     deals view: execution (the deal's order, or an OUT deal's own capture). lib/order-execution.ts
+//                     executionDetail / dealExecutionDetail: a field the server does not have is left out.
 const DEALS_LIMIT = 500;
 
 const EXEC_SELECT = {
@@ -47,6 +48,14 @@ async function pendingActions(brokerId: string, positionIds: string[]) {
 }
 
 const truthy = (v: string | null) => v === "1" || v === "true";
+
+/// closeExecution: the queued close's Order when the close went through the dealer, else the last OUT deal; none while
+/// nothing was closed.
+function closeExecutionOf(order: Parameters<typeof executionDetail>[0] | undefined, out: Parameters<typeof dealExecutionDetail>[0] | undefined, digits: number, bookType: string) {
+  if (order) return { closeExecution: executionDetail(order, digits) };
+  if (out) return { closeExecution: dealExecutionDetail(out, digits, bookType) };
+  return {};
+}
 
 export async function GET(request: NextRequest) {
   const session = await getAdminSession();
@@ -123,6 +132,12 @@ export async function GET(request: NextRequest) {
   const headers: Record<string, string> = { "x-row-limit": String(DEALS_LIMIT), "x-truncated": truncated ? "true" : "false" };
   if (truncated) headers["x-total-count"] = String(await prisma.position.count({ where: dealsWhere }));
   const pending = await pendingActions(brokerId, positions.map((p) => p.id));
+  // the last close of each position (D-3): the newest OUT / OUT_BY deal
+  const lastOut = new Map<string, Awaited<ReturnType<typeof prisma.deal.findMany>>[number]>();
+  if (positions.length > 0) {
+    const outs = await prisma.deal.findMany({ where: { positionId: { in: positions.map((p) => p.id) }, entry: { in: ["OUT", "OUT_BY"] } }, orderBy: [{ executedAt: "desc" }, { ticket: "desc" }] });
+    for (const d of outs) if (!lastOut.has(d.positionId)) lastOut.set(d.positionId, d);
+  }
 
   return NextResponse.json(
     positions.map((p) => ({
@@ -159,7 +174,7 @@ export async function GET(request: NextRequest) {
       ...(p.deletedAt ? { deletedAt: p.deletedAt.toISOString(), deletedBy: p.deletedByAdmin?.email ?? "", deleteReason: p.deleteReason ?? "" } : {}),
       pendingAction: pending.get(p.id) ?? null,
       openExecution: executionDetail(p.originOrder, p.symbol.digits),
-      ...(p.closeOrders[0] ? { closeExecution: executionDetail(p.closeOrders[0], p.symbol.digits) } : {}),
+      ...closeExecutionOf(p.closeOrders[0], lastOut.get(p.id), p.symbol.digits, p.bookType),
     })),
     { headers }
   );
@@ -185,7 +200,7 @@ async function dealsView(brokerId: string, f: { accountId: string | null; groupI
   const positionIds = [...new Set(deals.flatMap((d) => (d.byPositionId ? [d.positionId, d.byPositionId] : [d.positionId])))];
   const orderIds = [...new Set(deals.map((d) => d.orderId).filter((id): id is string => !!id))];
   const [positions, accounts, symbols, orders, pending] = await Promise.all([
-    prisma.position.findMany({ where: { brokerId, id: { in: positionIds } }, select: { id: true, ticket: true, deletedAt: true } }),
+    prisma.position.findMany({ where: { brokerId, id: { in: positionIds } }, select: { id: true, ticket: true, deletedAt: true, bookType: true } }),
     prisma.account.findMany({ where: { brokerId, id: { in: [...new Set(deals.map((d) => d.accountId))] } }, select: { id: true, accountNumber: true, fullName: true, currency: true } }),
     prisma.symbol.findMany({ where: { id: { in: [...new Set(deals.map((d) => d.symbolId))] } }, select: { id: true, name: true, digits: true } }),
     orderIds.length === 0 ? Promise.resolve([]) : prisma.order.findMany({ where: { brokerId, id: { in: orderIds } }, select: { id: true, ...EXEC_SELECT } }),
@@ -228,7 +243,9 @@ async function dealsView(brokerId: string, f: { accountId: string | null; groupI
       voided: d.voidedAt != null,
       deleted: p.deletedAt != null,
       pendingAction: pending.get(d.positionId) ?? null,
-      ...(d.orderId && ord.get(d.orderId) ? { execution: executionDetail(ord.get(d.orderId)!, digits) } : {}),
+      ...(d.orderId && ord.get(d.orderId)
+        ? { execution: executionDetail(ord.get(d.orderId)!, digits) }
+        : d.entry === "OUT" || d.entry === "OUT_BY" ? { execution: dealExecutionDetail(d, digits, p.bookType) } : {}),
     });
   }
   return NextResponse.json(rows, { headers });

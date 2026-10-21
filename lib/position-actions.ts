@@ -122,7 +122,7 @@ export async function executeAdminCloseInTx(
     closeVolume,
     note: isPartial ? `Manual partial close by admin: ${closeVolume} lots @ ${closePrice}` : `Manual close by admin @ ${closePrice}`,
     closeByPositionId: params.closeByPositionId ?? null,
-    deal: { reason: "ADMIN", source: "ADMIN", adminId },
+    deal: { reason: "ADMIN", source: "ADMIN", adminId, capture: { requestedAt: new Date(), platform: "Backoffice", executionMode: "DEALER" } },
   });
   if (!outcome.closed) return { closed: false };
 

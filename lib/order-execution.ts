@@ -1,4 +1,4 @@
-import type { Order } from "@prisma/client";
+import type { Deal, Order } from "@prisma/client";
 
 // Per-order execution capture (Batch D, owner 2026-10-21): what the backoffice execution detail shows for an order. The
 // columns are on Order (prisma/schema.prisma); this module derives the request side (who asked, from where, on what) and
@@ -71,5 +71,27 @@ export function executionDetail(o: ExecOrder, digits: number) {
   if (o.routing) out.routing = o.routing;
   if (o.executionMode) out.executionMode = o.executionMode;
   if (o.rejectionReason) out.rejectReason = o.rejectionReason;
+  return out;
+}
+
+type ExecDeal = Pick<Deal, "ticket" | "reason" | "source" | "voidedAt" | "price" | "executedAt" | "requestedAt" | "requestedPrice" | "clientIp" | "platform" | "routing" | "executionMode">;
+
+/// D-3: the execution detail of a close that went through no Order (direct client close, bulk, close-by, staff close,
+/// SL / TP / stop-out), from its OUT deal. Same field names as executionDetail; the fill is the deal itself (filledPrice,
+/// executedAt), so every close has one. dealTicket / reason replace orderTicket / orderType. Routing falls back to the
+/// position's book (fixed for its life); a field the server does not have is left out.
+export function dealExecutionDetail(d: ExecDeal, digits: number, bookType: string | null) {
+  const out: Record<string, string | number> = { dealTicket: Number(d.ticket), reason: d.reason, status: d.voidedAt ? "VOIDED" : "FILLED" };
+  if (d.source) out.source = d.source;
+  if (d.requestedAt) out.requestedAt = d.requestedAt.toISOString();
+  out.executedAt = d.executedAt.toISOString();
+  if (d.requestedAt) out.latencyMs = Math.max(0, d.executedAt.getTime() - d.requestedAt.getTime());
+  if (d.requestedPrice) out.requestedPrice = d.requestedPrice.toFixed(digits);
+  out.filledPrice = d.price.toFixed(digits);
+  if (d.clientIp) out.clientIp = d.clientIp;
+  if (d.platform) out.platform = d.platform;
+  const routing = d.routing ?? bookType;
+  if (routing) out.routing = routing;
+  if (d.executionMode) out.executionMode = d.executionMode;
   return out;
 }

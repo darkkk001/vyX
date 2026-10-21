@@ -2668,6 +2668,15 @@ model Deal {
   executedAt    DateTime     @db.Timestamptz(3)
   // set when the position is voided; the row itself stays
   voidedAt      DateTime?    @db.Timestamptz(3)
+  // Execution capture of a close that went through no Order (D-3, owner 2026-10-21; same meaning as the Order columns,
+  // lib/order-execution.ts): a direct client close, a bulk / close-by close, a staff close, SL / TP / stop-out. The fill
+  // is this deal's price and executedAt. Null on deals written before it and on deals of a queued close (its Order has them).
+  requestedAt    DateTime?    @db.Timestamptz(3)
+  requestedPrice Decimal?     @db.Decimal(18, 5)
+  clientIp       String?
+  platform       String?
+  routing        String?
+  executionMode  String?
   backfilled    Boolean      @default(false) // true = derived from history (step 3), see backfillNote
   backfillNote  String?
   createdAt     DateTime     @default(now()) @db.Timestamptz(3)

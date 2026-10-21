@@ -138,6 +138,8 @@ export async function closeBulkForAccount(
     // for the deals: the client's channel (trader bulk close) or the staff member (backoffice bulk close)
     dealSource?: OrderSource | null;
     adminId?: string | null;
+    // D-3: who asked, from where (lib/order-execution.ts requestMeta / staffRequestMeta)
+    capture?: { requestedAt: Date; clientIp: string | null; platform: string };
   }
 ): Promise<BulkClosePositionResult[]> {
   const { brokerId, accountId, scope } = params;
@@ -173,7 +175,7 @@ export async function closeBulkForAccount(
         },
         closePrice,
         note: `Bulk close (${scope})`,
-        deal: { reason: "BULK", source: params.dealSource ?? null, adminId: params.adminId ?? null },
+        deal: { reason: "BULK", source: params.dealSource ?? null, adminId: params.adminId ?? null, capture: { ...params.capture, routing: p.bookType, executionMode: params.adminId ? "DEALER" : "AUTO" } },
       });
       if (!outcome.closed) {
         // Raced with something else closing this exact position between

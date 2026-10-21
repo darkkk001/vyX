@@ -71,6 +71,16 @@ export type CloseDealInput = {
   source?: OrderSource | null;
   orderId?: string | null; // the queued close Order, when the close went through the dealer queue
   adminId?: string | null;
+  // D-3: the execution capture of a close with no Order (lib/order-execution.ts closeCapture)
+  capture?: DealCapture;
+};
+export type DealCapture = {
+  requestedAt?: Date;
+  requestedPrice?: Prisma.Decimal | string | null;
+  clientIp?: string | null;
+  platform?: string | null;
+  routing?: string | null;
+  executionMode?: "AUTO" | "DEALER";
 };
 
 /// Staff reverse in place (side flipped on the same row): an OUT for the old side and an IN for the new side, both on

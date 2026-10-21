@@ -46,12 +46,12 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const startedAt = Date.now();
-  const res = await handleClose(request, params);
+  const res = await handleClose(request, params, new Date(startedAt));
   res.headers.set("Server-Timing", `app;dur=${Date.now() - startedAt}`);
   return res;
 }
 
-async function handleClose(request: NextRequest, params: Promise<{ id: string }>) {
+async function handleClose(request: NextRequest, params: Promise<{ id: string }>, requestedAt: Date) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
@@ -283,7 +283,12 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
       },
       closePrice,
       closeVolume,
-      deal: { reason: source === "stm_bulk" ? "BULK" : "CLIENT", source: clientDealSource(request.headers.get("x-client-platform")) },
+      deal: {
+        reason: source === "stm_bulk" ? "BULK" : "CLIENT",
+        source: clientDealSource(request.headers.get("x-client-platform")),
+        // D-3: a direct close writes no Order; its execution detail is on the OUT deal
+        capture: { ...requestMeta(request.headers, requestedAt), requestedPrice: clientReferencePrice, routing: position.bookType, executionMode: "AUTO" },
+      },
     })
   ));
 

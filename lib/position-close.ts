@@ -5,7 +5,20 @@ import { quoteToAccountRate } from "@/lib/fx";
 import { lockAccountFunds } from "@/lib/account-lock";
 import { assertRiskActorInTx } from "@/lib/risk-owner";
 import type { RiskOwner } from "@/lib/risk-authority";
-import type { CloseDealInput } from "@/lib/deals";
+import type { CloseDealInput, DealCapture } from "@/lib/deals";
+
+/// The OUT deal's capture columns (D-3); a requested price arrives as the client sent it.
+function dealCapture(c: DealCapture | undefined) {
+  if (!c) return {};
+  return {
+    requestedAt: c.requestedAt ?? null,
+    requestedPrice: c.requestedPrice != null && c.requestedPrice !== "" ? new Prisma.Decimal(c.requestedPrice) : null,
+    clientIp: c.clientIp ?? null,
+    platform: c.platform ?? null,
+    routing: c.routing ?? null,
+    executionMode: c.executionMode ?? null,
+  };
+}
 
 export type ClosePositionInput = {
   id: string;
@@ -224,6 +237,7 @@ export async function closePositionInTx(
       transactionId: transaction.id,
       adminId: params.deal.adminId ?? null,
       executedAt: transaction.createdAt,
+      ...dealCapture(params.deal.capture),
     },
   });
 

@@ -136,6 +136,7 @@ export async function POST(request: NextRequest) {
   const results = await closeBulkForAccount(prisma, {
     accountId: session.accountId,
     brokerId: session.brokerId,
+    capture: requestMeta(request.headers),
     scope,
     symbol,
     side,

@@ -105,7 +105,7 @@ export async function resolveCloseByPair(
 
 export async function closePositionsByEachOther(
   db: Db,
-  params: { accountId: string; brokerId: string; positionId: string; againstPositionId: string; dealSource?: OrderSource | null }
+  params: { accountId: string; brokerId: string; positionId: string; againstPositionId: string; dealSource?: OrderSource | null; capture?: { requestedAt: Date; clientIp: string | null; platform: string } }
 ): Promise<CloseByResult> {
   const pair = await resolveCloseByPair(db, params);
   if (!pair.ok) return pair;
@@ -118,7 +118,7 @@ export async function closePositionsByEachOther(
       closeVolume,
       note: `Close by ${b.id}`,
       closeByPositionId: b.id,
-      deal: { reason: "CLOSE_BY", source: params.dealSource ?? null },
+      deal: { reason: "CLOSE_BY", source: params.dealSource ?? null, capture: { ...params.capture, executionMode: "AUTO" } },
     });
     if (!outcomeA.closed) return null;
     const outcomeB = await closePositionInTx(tx, {
@@ -127,7 +127,7 @@ export async function closePositionsByEachOther(
       closeVolume,
       note: `Close by ${a.id}`,
       closeByPositionId: a.id,
-      deal: { reason: "CLOSE_BY", source: params.dealSource ?? null },
+      deal: { reason: "CLOSE_BY", source: params.dealSource ?? null, capture: { ...params.capture, executionMode: "AUTO" } },
     });
     if (!outcomeB.closed) return null;
     return { outcomeA, outcomeB };

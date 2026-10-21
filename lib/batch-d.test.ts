@@ -231,15 +231,56 @@ describe("D-1: ticket search and execution capture", () => {
     // close it so the Closed trades list has it; the open side's execution detail comes back with every captured field
     const p = await prisma.position.findFirstOrThrow({ where: { originOrderId: o.id } });
     const { POST: close } = await import("@/app/api/trade/positions/[id]/close/route");
-    expect((await call(close, `/api/trade/positions/${p.id}/close`, "POST", { closePrice: "100.00", maxSlippagePips: "5" }, { id: p.id })).status).toBe(200);
+    expect((await call(close, `/api/trade/positions/${p.id}/close`, "POST", { closePrice: "100.00", maxSlippagePips: "5" }, { id: p.id }, {
+      "x-client-platform": "DESKTOP_NATIVE", "x-client-build": "futurixglobal-terminal-1.0.93-70ac7d4cc6e1", "x-real-ip": "203.0.113.9",
+    })).status).toBe(200);
     asManager(fx);
     const { GET } = await import("@/app/api/manage/deals/route");
     const row = ((await call(GET, `/api/manage/deals?accountId=${fx.accountId}`)).json as Record<string, unknown>[]).find((x) => x.id === p.id)!;
     expect(row.openExecution).toMatchObject({ orderTicket: o.ticket, platform: "Windows terminal 1.0.93", clientIp: "203.0.113.7", routing: "B_BOOK", executionMode: "AUTO", requestedPrice: "100.10", status: "FILLED" });
     expect(typeof (row.openExecution as { latencyMs: number }).latencyMs).toBe("number");
-    expect(row.closeExecution).toBeUndefined();   // a direct close writes no order
+    // D-3: a direct close writes no order; its execution detail comes from the OUT deal, with the request side captured
+    const outDeal = await prisma.deal.findFirstOrThrow({ where: { positionId: p.id, entry: "OUT" } });
+    expect(row.closeExecution).toMatchObject({
+      dealTicket: Number(outDeal.ticket), reason: "CLIENT", status: "FILLED", source: "DESKTOP_NATIVE", requestedPrice: "100.00", filledPrice: outDeal.price.toFixed(2),
+      clientIp: "203.0.113.9", platform: "Windows terminal 1.0.93", routing: "B_BOOK", executionMode: "AUTO", executedAt: outDeal.executedAt.toISOString(),
+    });
+    expect((row.closeExecution as { latencyMs: number }).latencyMs).toBeGreaterThanOrEqual(0);
+    const outRow = ((await call(GET, `/api/manage/deals?view=deals&accountId=${fx.accountId}`)).json as Record<string, unknown>[]).find((x) => x.positionId === p.id && x.entry === "OUT")!;
+    expect(outRow.execution).toMatchObject({ platform: "Windows terminal 1.0.93", requestedPrice: "100.00", executionMode: "AUTO" });
     const deal = ((await call(GET, `/api/manage/deals?view=deals&accountId=${fx.accountId}`)).json as Record<string, unknown>[]).find((x) => x.positionId === p.id && x.entry === "IN")!;
     expect(deal.execution).toMatchObject({ orderTicket: o.ticket, platform: "Windows terminal 1.0.93" });
+  });
+
+  it("every close has a closeExecution: a close with no capture shows its fill and book only; bulk and staff closes are captured", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture({ balance: 100000 });
+    const old = await trade(fx, { open: "100", close: "104" });   // written through closePositionInTx with no capture
+    asManager(fx);
+    const { GET } = await import("@/app/api/manage/deals/route");
+    const rows = async () => (await call(GET, `/api/manage/deals?accountId=${fx.accountId}`)).json as Record<string, unknown>[];
+    const oldOut = await prisma.deal.findFirstOrThrow({ where: { positionId: old.id, entry: "OUT" } });
+    expect((await rows()).find((x) => x.id === old.id)!.closeExecution).toEqual({
+      dealTicket: Number(oldOut.ticket), reason: "CLIENT", status: "FILLED", executedAt: oldOut.executedAt.toISOString(), filledPrice: "104.00", routing: "B_BOOK",
+    });
+    // a trader's bulk close and a staff close
+    const open = async () => {
+      asTrader(fx);
+      const { POST } = await import("@/app/api/trade/orders/route");
+      const r = await call(POST, "/api/trade/orders", "POST", { symbol: fx.symbolName, side: "BUY", type: "MARKET", volume: "0.10", price: "100.10", idempotencyKey: `bd:${randomUUID()}` });
+      return prisma.position.findFirstOrThrow({ where: { originOrderId: r.json.order.id } });
+    };
+    const a = await open();
+    asTrader(fx);
+    const { POST: bulk } = await import("@/app/api/trade/positions/close-bulk/route");
+    expect((await call(bulk, "/api/trade/positions/close-bulk", "POST", { scope: "ALL" }, undefined, { "x-client-platform": "MOBILE", "x-real-ip": "198.51.100.8" })).status).toBe(200);
+    expect((await rows()).find((x) => x.id === a.id)!.closeExecution).toMatchObject({ reason: "BULK", platform: "Mobile", clientIp: "198.51.100.8", executionMode: "AUTO", routing: "B_BOOK" });
+    const b = await open();
+    asAdmin(fx);
+    const { POST: adminClose } = await import("@/app/api/manage/positions/[id]/close/route");
+    expect((await call(adminClose, `/api/manage/positions/${b.id}/close`, "POST", {}, { id: b.id })).status).toBe(200);
+    asManager(fx);
+    expect((await rows()).find((x) => x.id === b.id)!.closeExecution).toMatchObject({ reason: "ADMIN", platform: "Backoffice", executionMode: "DEALER" });
   });
 
   it("a dealer's reject records the outcome: REJECTED, DEALER, executedAt, the reason", async () => {
