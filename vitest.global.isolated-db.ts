@@ -46,6 +46,16 @@ export default async function setup(project: TestProject) {
   prefix = `${baseDb}_t${run}`.toLowerCase();
   const template = `${prefix}_tpl`;
   admin = new PrismaClient({ datasourceUrl: withDb(base, "postgres") });
+  // no server there (CI points DATABASE_URL at an unreachable localhost on purpose): run shared, as for a remote DB,
+  // and every DB-backed file skips itself as it always did. Before, this threw and failed the whole run.
+  try {
+    await admin.$queryRawUnsafe("SELECT 1");
+  } catch {
+    console.warn(`isolated-db: no Postgres at ${base.host}; DB-backed test files will skip`);
+    await admin.$disconnect().catch(() => {});
+    admin = null;
+    return;
+  }
   // clones a killed earlier run left behind (same base only, idle, older than 2 h)
   await dropStaleClones(admin, baseDb).catch(() => []);
   // the base must be idle for a TEMPLATE copy: drop our own idle sessions first (a previous run's leftovers)
