@@ -200,6 +200,17 @@ describe("A-book: one intent per deal, in the deal's transaction", () => {
     expect((await intents(fx)).length).toBe(before);
   });
 
+  it("delete of a closed A-book trade adds nothing (its hedge was reduced at close; delete never takes an open position)", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture("A_BOOK");
+    const { executeDelete } = await import("@/lib/position-actions");
+    const closed = await marketOrder(fx, "BUY", "0.10");
+    await clientClose(fx, closed.id);
+    const before = (await intents(fx)).length;
+    await prisma.$transaction((tx) => executeDelete(tx, { brokerId: fx.brokerId, positionId: closed.id, adminId: fx.adminId, reason: "test" }));
+    expect((await intents(fx)).length).toBe(before);
+  });
+
   it("engine SL close (PostCloseEffect): the hedge step keys the intent to the engine's OUT deal, once", async () => {
     if (!dbReachable) return;
     const fx = await fixture("A_BOOK");
