@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
+import { dealReads } from "@/lib/deal-reads";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -27,6 +28,9 @@ async function commissionSince(db: Db, relationship: Relationship, since: Date |
   };
   const agg = await db.position.aggregate({ where, _sum: { commission: true } });
 
+  if (relationship.commissionType === "PER_LOT" && dealReads("ib_lots")) {
+    return relationship.commissionRate.mul(await closedLotsFromDeals(db, relationship.clientAccountId, since, until));
+  }
   if (relationship.commissionType === "PER_LOT") {
     // lots traded = the cumulative closed lots; Position.volume of a closed row is only the last remaining piece, so it
     // is used only for rows closed before closedVolume existed (hotfix 2026-10-12)
@@ -44,6 +48,20 @@ async function commissionSince(db: Db, relationship: Relationship, since: Date |
   // choice -- flagged in docs/architecture.md's IB log entry.
   const brokerCommissionRevenue = agg._sum.commission ?? new Prisma.Decimal(0);
   return relationship.commissionRate.div(100).mul(brokerCommissionRevenue);
+}
+
+// The client's closed lots in (since, until] from the deals: every close (OUT / OUT_BY with its TRADE_PNL row) at its own
+// time, partials of a still-open position included. Flip legs have no ledger row; 0-lot duplicate bookings add nothing;
+// a voided trade's closes do not count (same as the CLOSED-only rule of the position query).
+async function closedLotsFromDeals(db: Db, accountId: string, since: Date | null, until: Date | null): Promise<Prisma.Decimal> {
+  const executedAt: Prisma.DateTimeFilter = {};
+  if (since) executedAt.gt = since;
+  if (until) executedAt.lte = until;
+  const agg = await db.deal.aggregate({
+    where: { accountId, entry: { in: ["OUT", "OUT_BY"] }, transactionId: { not: null }, voidedAt: null, ...(since || until ? { executedAt } : {}) },
+    _sum: { volume: true },
+  });
+  return agg._sum.volume ?? new Prisma.Decimal(0);
 }
 
 // Pending IB commission. Owner decision 2026-09-25 (audit Batch 4): commission is fixed at each trade's close, so a
