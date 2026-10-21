@@ -584,8 +584,11 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
 export async function attachAdminEventStream(server: Server, natsUrl: string): Promise<void> {
   const nc: NatsConnection = await connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 });
   logNatsConnectionLoss("admin event stream", nc);
-  // "config.>" + "margin.>" (Batch 5): broker config changes and margin-call / stop-out crossings reach the backoffice
-  const subs = [nc.subscribe("order.>"), nc.subscribe("position.>"), nc.subscribe("dealing.>"), nc.subscribe("account.>"), nc.subscribe("config.>"), nc.subscribe("margin.>")];
+  // "config.>" + "margin.>" (Batch 5): broker config changes and margin-call / stop-out crossings reach the backoffice.
+  // "bridge.result.>" (QoreBridge M5): the broker's bridge announces committed hedge results ({type: "HedgeResult",
+  // broker_id}), so the Liquidity tab's hedges and UNHEDGED EXPOSURE refresh at once. Backoffice only: the trader
+  // stream never subscribes it.
+  const subs = [nc.subscribe("order.>"), nc.subscribe("position.>"), nc.subscribe("dealing.>"), nc.subscribe("account.>"), nc.subscribe("config.>"), nc.subscribe("margin.>"), nc.subscribe("bridge.result.>")];
 
   const wss = new WebSocketServer({ noServer: true });
   // ws -> that connection's own admin's brokerId, same per-tenant

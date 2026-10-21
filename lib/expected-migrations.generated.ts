@@ -104,6 +104,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261019130000_deal_backfill_log",
   "20261019150000_broker_staff_2fa_default_required",
   "20261021100000_hedge_intent_result",
+  "20261021110000_hedge_escalation_notify",
   "20261021120000_execution_capture_hidden_ledger",
   "20261021125000_deal_close_capture"
 ];

@@ -295,3 +295,50 @@ describe("B-book regression: no other book ever writes an intent", () => {
     expect(await intents(fx)).toEqual([]);
   });
 });
+
+describe("backoffice: GET /api/manage/hedges and the escalation notice", () => {
+  it("plain outcomes, LP price and slippage per hedge; unhedged exposure from both sides; one dealer notice per escalated leg", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture("A_BOOK");
+    const lp = await prisma.liquidityProvider.create({ data: { brokerId: fx.brokerId, name: "Test LP" } });
+    const a = await marketOrder(fx, "BUY", "1.00");
+    const b = await marketOrder(fx, "BUY", "0.50");
+    const [ia, ib] = await intents(fx);
+    // what QoreBridge writes: a's leg filled (better than the client), b's leg escalated after a partial fill
+    await prisma.hedgeResult.create({ data: { legId: `${ia.id}_1`, intentId: ia.id, liquidityProviderId: lp.id, status: "FILLED", requestedVolume: D("1"), filledVolume: D("1"), avgPrice: D("100.05"), attempts: 1, lpOrderIds: "L1" } });
+    await prisma.hedgeIntent.update({ where: { id: ia.id }, data: { status: "DONE" } });
+    await prisma.hedgeResult.create({ data: { legId: `${ib.id}_1`, intentId: ib.id, liquidityProviderId: lp.id, status: "ROUTED", requestedVolume: D("0.5") } });
+    await prisma.hedgeResult.update({ where: { legId: `${ib.id}_1` }, data: { status: "ESCALATED", filledVolume: D("0.2"), avgPrice: D("100.10"), attempts: 3, reason: "LP rejected: no liquidity" } });
+    await prisma.hedgeIntent.update({ where: { id: ib.id }, data: { status: "DONE" } });
+
+    asAdmin(fx);
+    const { GET } = await import("@/app/api/manage/hedges/route");
+    const r = await call(GET, "/api/manage/hedges", "GET");
+    expect(r.status).toBe(200);
+    const byId = new Map((r.json.hedges as { id: string }[]).map((h) => [h.id, h as Record<string, unknown>]));
+    expect([byId.get(ia.id)!.outcome, byId.get(ia.id)!.lpPrice, byId.get(ia.id)!.slippage, byId.get(ia.id)!.providers]).toEqual(["HEDGED", "100.05", "0.05", ["Test LP"]]);
+    expect([byId.get(ib.id)!.outcome, byId.get(ib.id)!.filledVolume, byId.get(ib.id)!.positionTicket]).toEqual(["PART_HEDGED", "0.2", b.ticket.toString()]);
+    // clients long 1.5, LPs filled 1.2: 0.3 unhedged; no technical text anywhere in the answer
+    expect(r.json.exposure).toEqual([{ symbol: fx.symbolName, clientNetLots: "1.5", hedgedNetLots: "1.2", unhedgedLots: "0.3" }]);
+    expect([r.json.unhedged, r.json.waiting, r.json.needsAttention]).toEqual([true, 0, 1]);
+    expect(JSON.stringify(r.json)).not.toMatch(/no liquidity|FIX|ClOrdID|bridge/i);
+    expect(byId.get(ia.id)!.positionTicket).toBe(a.ticket.toString());
+
+    const notices = await prisma.notification.findMany({ where: { brokerId: fx.brokerId, type: "HEDGE_ESCALATED" } });
+    expect(notices.map((n) => [n.title, n.entityId])).toEqual([["Hedge not completed", b.id]]);
+    expect(notices[0].body).toContain(`0.3 lots ${fx.symbolName} (BUY)`);
+  });
+
+  it("other roles and other brokers see nothing", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture("A_BOOK");
+    vi.mocked(getAdminSession).mockResolvedValue({ adminId: fx.adminId, role: "SUPPORT", brokerId: fx.brokerId } as never);
+    const { GET } = await import("@/app/api/manage/hedges/route");
+    expect((await call(GET, "/api/manage/hedges", "GET")).status).toBe(403);
+    const other = await fixture("A_BOOK");
+    await marketOrder(other, "BUY", "0.10");
+    asAdmin(fx);
+    const r = await call(GET, "/api/manage/hedges", "GET");
+    expect([r.json.hedges, r.json.exposure]).toEqual([[], []]);
+  });
+});
