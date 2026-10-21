@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 
 // Phase 2 batch 2 (owner decision 2026-09-26): routing by the group's category, end to end through the real routes on
 // the local scratch DB. B_BOOK = auto-fill never queued; DEALING = follows the dealer desk (queued when on), plus the
-// per-group "Always send to dealer"; REVERSAL = auto-fill; A_BOOK = no accounts, no orders until an LP is connected;
+// per-group "Always send to dealer"; REVERSAL = auto-fill; A_BOOK = no accounts until an LP is connected, orders fill and are hedged after (M5);
 // COVERAGE = system only.
 vi.mock("@/lib/account-auth", () => ({ getAccountSession: vi.fn() }));
 vi.mock("@/lib/client-auth", () => ({ getClientSession: vi.fn() }));
@@ -85,7 +85,7 @@ describe("market orders by category and desk switch", () => {
     ["DEALING", false, false, "FILLED"], // desk off -> auto-fill
     ["DEALING", false, true, "QUEUED"], // desk off + "Always send to dealer"
     ["REVERSAL", true, false, "FILLED"],
-    ["A_BOOK", true, false, "REFUSED LP_NOT_CONNECTED"],
+    ["A_BOOK", true, false, "FILLED"], // fill first, then hedge (QoreBridge M5): the deal leaves a HedgeIntent
     ["COVERAGE", true, false, "REFUSED SYSTEM_ACCOUNT"],
   ] as const)("%s, desk on=%s, always-to-dealer=%s -> %s", async (category, deskOn, force, expected) => {
     if (!dbReachable) return;
@@ -93,7 +93,7 @@ describe("market orders by category and desk switch", () => {
     const a = await accountIn(b.brokerId, category, { force });
     const r = await marketBuy(b.brokerId, a.accountId, b.symbolName);
     expect(outcome(r)).toBe(expected);
-    if (category === "A_BOOK") expect(r.json.error).toMatch(/liquidity provider and none is connected/);
+    if (category === "A_BOOK") expect(await prisma.hedgeIntent.count({ where: { accountId: a.accountId, kind: "OPEN" } })).toBe(1);
   });
 
   it("the retired per-group dealing mode no longer routes: a B_BOOK group set to MANUAL still auto-fills", async () => {

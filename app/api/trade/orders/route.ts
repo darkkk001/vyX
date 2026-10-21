@@ -21,7 +21,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
-import { deskIsOn, orderRoute, LP_NOT_CONNECTED, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
+import { deskIsOn, orderRoute, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
 import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
 import { writeOpenDealInTx } from "@/lib/deals";
@@ -277,7 +277,6 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
   // Phase 2 batch 2 (owner): routing by the group's category (lib/dealing-routing.ts). An A_BOOK group with no liquidity
   // provider connected takes no orders; the broker's system coverage account takes no client orders.
   const route = orderRoute(account.group, deskIsOn(broker));
-  if (route === "NO_LP") return NextResponse.json(LP_NOT_CONNECTED, { status: 400 });
   if (route === "SYSTEM") return NextResponse.json(SYSTEM_ACCOUNT_ORDER, { status: 400 });
   const wantsQueue = route === "QUEUE" && !isDemo; // the demo has no dealer: always instant
 

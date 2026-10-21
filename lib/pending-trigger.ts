@@ -8,7 +8,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
-import { deskIsOn, orderRoute, LP_NOT_CONNECTED, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
+import { deskIsOn, orderRoute, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
@@ -193,7 +193,6 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
 
   // Phase 2 batch 2: an A_BOOK group without a connected LP / the system coverage account never fills a trigger
   const route = orderRoute(account.group, deskIsOn(broker));
-  if (route === "NO_LP") return fail(LP_NOT_CONNECTED.code, { message: LP_NOT_CONNECTED.error });
   if (route === "SYSTEM" && !isCoverage) return fail(SYSTEM_ACCOUNT_ORDER.code, { message: SYSTEM_ACCOUNT_ORDER.error });
   if (isCoverage) return fillCoverageOrder({ order, account, brokerSymbol, livePrice, triggerPrice, origin, fail });
   const wantsQueue = route === "QUEUE";

@@ -7,6 +7,7 @@ import { publishTradingEvent, withTradingEventBuffer, type BufferedTradingEvent 
 import { createNotification } from "@/lib/notifications";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
+import { hedgeDealInTx, isHedgedCategory } from "@/lib/hedge";
 
 // Rust cutover Stage 3 (docs/RUST-CUTOVER-PLAN.md §Stage 3): what the web does after an AUTOMATIC close, for the
 // closes the engine's monitor makes. The engine writes a PostCloseEffect row in the same transaction as the close
@@ -56,7 +57,8 @@ type Row = {
   attempts: number;
 };
 
-type ClosePayload = { closedLots: string; sourceVolumeBeforeClose: string; closePrice: string; realizedPnl: string; marginLevel?: string; stopOutLevel?: string };
+// dealId: the OUT deal the engine wrote with the close (deal model step 2); absent on rows from before that
+type ClosePayload = { closedLots: string; sourceVolumeBeforeClose: string; closePrice: string; realizedPnl: string; marginLevel?: string; stopOutLevel?: string; dealId?: string };
 type MarginCallPayload = { marginLevel: string; marginCallLevel: string };
 
 const D = (v: string) => new Prisma.Decimal(v);
@@ -134,6 +136,27 @@ function closeSteps(row: Row): { name: string; work: (tx: Prisma.TransactionClie
           { positionId, brokerId: row.brokerId, closedLots, sourceVolumeBeforeClose, reason: stopOut ? "stop_out" : "sl_tp", marginLevel: stopOut ? p.marginLevel : undefined },
           { retryWithoutPrice: row.attempts < NO_PRICE_RETRIES }
         ),
+    },
+    {
+      // QoreBridge M5 (docs/qorebridge/00-current-state.md, Close-side hooks): an engine SL / TP / stop-out close of an
+      // A-book position leaves its hedge-reduce intent, keyed to the OUT deal the engine wrote (payload.dealId), so the
+      // web stays the only intent writer and the engine needs no change. The step marker makes it once; dealId is unique.
+      name: "hedge",
+      work: async (tx) => {
+        if (!p.dealId) {
+          // a row written before the engine's deal dual write has no deal: nothing to key the intent on. Not expected
+          // for any A-book position (A_BOOK took no orders before M5); logged so it is visible if it ever happens.
+          const cat = await tx.position.findUnique({ where: { id: positionId }, select: { groupCategoryAtOpen: true } });
+          if (isHedgedCategory(cat?.groupCategoryAtOpen)) console.error(`post-close ${row.id}: A-book close without a dealId, no hedge intent`);
+          return;
+        }
+        const deal = await tx.deal.findUnique({
+          where: { id: p.dealId },
+          select: { id: true, brokerId: true, accountId: true, positionId: true, side: true, entry: true, reason: true, volume: true, price: true },
+        });
+        if (!deal) throw new Error(`post-close ${row.id}: deal ${p.dealId} not found`);
+        await hedgeDealInTx(tx, deal);
+      },
     },
     {
       name: "activity",

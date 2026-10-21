@@ -1,5 +1,4 @@
 import type { RoutingCategory } from "@prisma/client";
-import { isLpConnected } from "@/lib/liquidity";
 
 // Where a client's order goes: ONE rule, by the group's routing CATEGORY (owner decision 2026-09-26, Phase 2 batch 2).
 // Every open and close path asks this: app/api/trade/orders (MARKET), the pending-order trigger (lib/pending-trigger.ts),
@@ -11,7 +10,9 @@ import { isLpConnected } from "@/lib/liquidity";
 //                is OFF -- unless the group's "Always send to dealer" option (Group.forceDealingMode) is set: then
 //                queued even with the desk off. That option exists for DEALING groups only.
 //   REVERSAL     auto-fill; the copy rule (lib/mirror.ts) mirrors it
-//   A_BOOK       bridged to a liquidity provider: until one is connected (lib/liquidity.ts) orders are REFUSED
+//   A_BOOK       fill first, then hedge (QoreBridge M5, owner decision 2026-10-16): filled like B_BOOK; the deal leaves a
+//                HedgeIntent (lib/hedge.ts) and QoreBridge hedges it at the LP afterwards. No LP reject ever reaches
+//                the client. Placing accounts in an A_BOOK group is still gated (lib/account-structure.ts).
 //   COVERAGE     system (the broker's own hedge account): client orders never route here
 //
 // Retired (owner, same date): Group.dealingMode (MANUAL / AUTO / INHERIT), Group.forceDealingMode on any category but
@@ -20,7 +21,7 @@ import { isLpConnected } from "@/lib/liquidity";
 // changed nothing.
 
 export type RoutingGroup = { category: RoutingCategory; forceDealingMode: boolean };
-export type OrderRoute = "FILL" | "QUEUE" | "NO_LP" | "SYSTEM";
+export type OrderRoute = "FILL" | "QUEUE" | "SYSTEM";
 
 // `error` is the sentence a client shows as-is; `code` is what a client keys on (the same { error, code } shape the
 // volume refusals use).
@@ -38,12 +39,10 @@ export function orderRoute(group: RoutingGroup | null | undefined, deskOn: boole
   switch (group?.category ?? "B_BOOK") {
     case "DEALING":
       return deskOn || !!group?.forceDealingMode ? "QUEUE" : "FILL";
-    case "A_BOOK":
-      return isLpConnected(group) ? "FILL" : "NO_LP";
     case "COVERAGE":
       return "SYSTEM";
     default:
-      return "FILL"; // B_BOOK, REVERSAL
+      return "FILL"; // B_BOOK, REVERSAL, A_BOOK (hedged afterwards)
   }
 }
 

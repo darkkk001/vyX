@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma, type DealReason, type OrderSource } from "@prisma/client";
+import { hedgeDealInTx } from "@/lib/hedge";
 
 type Tx = Prisma.TransactionClient;
 
@@ -34,6 +35,7 @@ export async function writeOpenDealInTx(
       openedAt: true,
       originOrderId: true,
       originOrder: { select: { source: true } },
+      groupCategoryAtOpen: true,
     },
   });
   const commissions = await tx.transaction.findMany({
@@ -61,6 +63,8 @@ export async function writeOpenDealInTx(
     },
   });
   await tx.position.update({ where: { id: position.id }, data: { initialVolume: position.volume } });
+  // QoreBridge M5: an A-book open leaves its hedge intent in this transaction (no query for any other book)
+  await hedgeDealInTx(tx, deal, position.groupCategoryAtOpen);
   return deal;
 }
 
@@ -90,7 +94,7 @@ export type DealCapture = {
 export async function writeFlipDealsInTx(tx: Tx, params: { positionId: string; adminId: string }) {
   const position = await tx.position.findUniqueOrThrow({
     where: { id: params.positionId },
-    select: { id: true, brokerId: true, accountId: true, symbolId: true, side: true, volume: true, openPrice: true },
+    select: { id: true, brokerId: true, accountId: true, symbolId: true, side: true, volume: true, openPrice: true, groupCategoryAtOpen: true },
   });
   const executedAt = new Date();
   const common = {
@@ -107,8 +111,12 @@ export async function writeFlipDealsInTx(tx: Tx, params: { positionId: string; a
     executedAt,
   };
   // sequential, so the OUT gets the lower ticket and reads first at the same executedAt
-  await tx.deal.create({ data: { ...common, entry: "OUT" } });
-  await tx.deal.create({ data: { ...common, entry: "IN" } });
+  const out = await tx.deal.create({ data: { ...common, entry: "OUT" } });
+  const inDeal = await tx.deal.create({ data: { ...common, entry: "IN" } });
+  // QoreBridge M5: an A-book flip is "reduce N, then open N on the new side": both deals trade the new side, so the
+  // hedge moves by twice the volume, one intent per deal
+  await hedgeDealInTx(tx, out, position.groupCategoryAtOpen);
+  await hedgeDealInTx(tx, inDeal, position.groupCategoryAtOpen);
 }
 
 /// Void: the position's deals stay, marked voided (the ledger reversal is the ADJUSTMENT row the void writes).

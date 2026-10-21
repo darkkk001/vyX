@@ -15,7 +15,7 @@ describe("orderRoute: one rule per category", () => {
     ["DEALING", true, "QUEUE", "QUEUE"], // "Always send to dealer": queued even with the desk off
     ["REVERSAL", false, "FILL", "FILL"],
     ["REVERSAL", true, "FILL", "FILL"],
-    ["A_BOOK", false, "NO_LP", "NO_LP"], // no liquidity provider connected yet
+    ["A_BOOK", false, "FILL", "FILL"], // fill first, then hedge (QoreBridge M5): never refused, never queued
     ["COVERAGE", false, "SYSTEM", "SYSTEM"],
   ] as const)("%s (always to dealer: %s): desk on -> %s, desk off -> %s", (category, always, deskOnRoute, deskOffRoute) => {
     expect(orderRoute(g(category, always), true)).toBe(deskOnRoute);
@@ -26,7 +26,7 @@ describe("orderRoute: one rule per category", () => {
     expect(orderRoute(null, true)).toBe("FILL");
   });
 
-  it("queue / dealer-managed are exactly route === QUEUE; NO_LP and SYSTEM are never queued (a close must not strand)", () => {
+  it("queue / dealer-managed are exactly route === QUEUE; A_BOOK and SYSTEM are never queued (a close must not strand)", () => {
     for (const [group, deskOn, queued] of [
       [g("DEALING"), true, true],
       [g("DEALING"), false, false],

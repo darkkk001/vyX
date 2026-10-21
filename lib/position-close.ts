@@ -6,6 +6,7 @@ import { lockAccountFunds } from "@/lib/account-lock";
 import { assertRiskActorInTx } from "@/lib/risk-owner";
 import type { RiskOwner } from "@/lib/risk-authority";
 import type { CloseDealInput, DealCapture } from "@/lib/deals";
+import { hedgeDealInTx } from "@/lib/hedge";
 
 /// The OUT deal's capture columns (D-3); a requested price arrives as the client sent it.
 function dealCapture(c: DealCapture | undefined) {
@@ -87,6 +88,7 @@ export async function closePositionInTx(
       symbolId: true,
       symbol: { select: { quoteCurrency: true } },
       account: { select: { currency: true } },
+      groupCategoryAtOpen: true,
       swap: true,
       realizedPnl: true,
       closedVolume: true,
@@ -218,7 +220,7 @@ export async function closePositionInTx(
   // The deal for this close: opposite side to the position, the same lots / price / P/L / swap share as the TRADE_PNL
   // row, linked to it by the unique transactionId (one deal per ledger row, structurally).
   const closeByPositionId = params.closeByPositionId ?? null;
-  await tx.deal.create({
+  const deal = await tx.deal.create({
     data: {
       brokerId: position.brokerId,
       accountId: position.accountId,
@@ -240,6 +242,9 @@ export async function closePositionInTx(
       ...dealCapture(params.deal.capture),
     },
   });
+  // QoreBridge M5: an A-book close leaves its hedge-reduce intent for the volume this close applied (every web close
+  // path comes through here; no query for any other book)
+  await hedgeDealInTx(tx, deal, ccy.groupCategoryAtOpen);
 
   if (creditUsed) {
     await tx.transaction.create({

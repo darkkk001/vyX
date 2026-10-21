@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { lockAccountBalance, lockAccountFunds } from "@/lib/account-lock";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import { markDealsVoidedInTx, writeFlipDealsInTx, writeOpenDealInTx } from "@/lib/deals";
+import { hedgeVoidInTx } from "@/lib/hedge";
 
 type Tx = Prisma.TransactionClient;
 
@@ -450,6 +451,9 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
   });
   if (claim.count === 0) throw new PositionActionError("position was closed or changed by another action, refresh and try again");
   await markDealsVoidedInTx(tx, position.id);
+  // QoreBridge M5: an A-book position that never existed takes its hedge off (a voided CLOSED trade needs nothing:
+  // its hedge was reduced at close)
+  await hedgeVoidInTx(tx, position);
 
   const positionTxns = await tx.transaction.aggregate({
     where: { accountId: position.accountId, referenceType: "Position", referenceId: position.id, status: "COMPLETED" },

@@ -140,7 +140,19 @@ export async function publishTradingEvent(
   // error or a 5xx, inside the same budget: the gateway stamps book events with a sequence the engine checks for gaps
   // (services/api-gateway), but an event that never REACHES the gateway gets no number, so this hop is the one a gap
   // cannot reveal -- the engine's 10-minute safety reload is the backstop behind the retry.
-  const body = JSON.stringify({ subject: SUBJECTS[type], payload: { type, ...payload } });
+  await postEvent(SUBJECTS[type], { type, ...payload }, type);
+}
+
+/** QoreBridge M5: wakes the broker's bridge (bridge.intent.<brokerId>) after a hedge intent committed. Loss-tolerant by
+ *  design: the HedgeIntent table is the source of truth and the bridge polls it; a lost nudge only costs one poll
+ *  interval. Not a book event (the gateway does not number it) and no client stream subscribes it. */
+export async function publishBridgeNudge(brokerId: string): Promise<void> {
+  if (await isDemoBrokerId(brokerId)) return;
+  await postEvent(`bridge.intent.${brokerId}`, { type: "HedgeIntent", broker_id: brokerId }, "HedgeIntent");
+}
+
+async function postEvent(subject: string, payload: Record<string, unknown>, label: string): Promise<void> {
+  const body = JSON.stringify({ subject, payload });
   const deadline = Date.now() + 2000;
   for (let attempt = 1; attempt <= 2; attempt++) {
     const controller = new AbortController();
@@ -154,12 +166,12 @@ export async function publishTradingEvent(
       });
       if (res.ok) return;
       if (res.status < 500 || attempt === 2 || Date.now() >= deadline) {
-        console.warn("publishTradingEvent: gateway rejected event", type, res.status);
+        console.warn("publishTradingEvent: gateway rejected event", label, res.status);
         return;
       }
     } catch (err) {
       if (attempt === 2 || Date.now() >= deadline - 50) {
-        console.warn("failed to publish trading event to gateway", type, err);
+        console.warn("failed to publish trading event to gateway", label, err);
         return;
       }
     } finally {
