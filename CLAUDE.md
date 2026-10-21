@@ -66,11 +66,11 @@ These apply to this repo and to darkkk001/VyxTrader:
 - Never commit installers, update packages or screenshots. One exception: the update feed under
   `public/native-*-updates/` stays in git until the feed moves to a separate host (tracked in
   `docs/BACKEND-NEEDED.md`, Infrastructure). Nothing else of that kind, anywhere.
-- Feed publishing (owner 2026-10-14, revised): EVERY terminal and backoffice pack publishes its update feed to ALL
-  brokers in the same job (`futurixglobal` included); there is no "unpublished until owner test" step any more. The
-  owner checks releases on `qoretrader`, which runs the same build. Merge `releases.win.json` and `RELEASES` into the
-  live feed (never overwrite them), byte-check the live files after the deploy, and only then revoke the builds the
-  new pack replaced.
+- Feed publishing (owner 2026-10-22, PERMANENT): the Futurix (`futurixglobal`) feed is published only after the owner's
+  test, and every other brand's feed is published with the pack. Both terminal and backoffice. The Futurix build is
+  packed and ACTIVE in the same job, but its feed waits for the owner's go (the owner tests on `qoretrader`, which
+  runs the same build). Always merge `releases.win.json` and `RELEASES` into the live feed (never copy a pack's index
+  over it), byte-check the live files after the deploy, and only then revoke the builds the new pack replaced.
 - Version numbers (owner 2026-10-14): a version is never reused once ANY build of it was installed anywhere (an owner
   test install counts), published or not. Every repack bumps the version, for every brand, so an installed copy can
   always update to the next build. Never revoke a build the owner may have installed without asking first. Per-install beta/stable channels are tracked in `docs/BACKEND-NEEDED.md`.
