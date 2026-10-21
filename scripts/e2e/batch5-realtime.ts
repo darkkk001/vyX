@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- an ad-hoc e2e probe over loosely shaped JSON responses and events */
 // Batch 5 local end-to-end proof: scratch DB + local NATS + local gateway (:8090) + local web (:3100).
 // Backoffice writes go through the real admin API; the trader side listens on the real gateway WebSocket.
 // Run (local only; refuses any DB but the scratch one): nats-server -p 4299; gateway PORT=8090 NATS_URL=nats://127.0.0.1:4299

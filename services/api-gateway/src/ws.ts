@@ -352,7 +352,7 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   // the iterator simply completing because NATS tore the subscription down --
   // resubscribes with backoff instead of leaving the feed dark forever.
   let currentSub = sub;
-  let stopped = false;
+  const stopped = false;
   let consecutiveFailures = 0;
 
   async function runSubscription(): Promise<void> {

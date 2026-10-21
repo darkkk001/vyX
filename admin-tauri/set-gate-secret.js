@@ -13,6 +13,7 @@
 // Usage: node set-gate-secret.js --secret "the-same-value-as-Vercel's-SUPER_ADMIN_DESKTOP_GATE_SECRET-env-var"
 // Then:  npm run build
 
+/* eslint-disable @typescript-eslint/no-require-imports -- a plain CommonJS script run with node */
 const fs = require("fs");
 const path = require("path");
 
