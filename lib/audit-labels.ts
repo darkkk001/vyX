@@ -13,6 +13,17 @@ export const excludeSuperAdminActor: Prisma.AuditLogWhereInput = {
   OR: [{ actorAdminId: null }, { actorAdmin: { role: { not: "SUPER_ADMIN" } } }],
 };
 
+// Batch D (owner 2026-10-21): the record of a trade DELETE (POSITION_DELETED, and the request / approve / reject of a
+// DELETE request) is read by BROKER_ADMIN and Super Admin only. It is stored for every delete; MANAGER / SUPPORT and the
+// client (GET /api/trade/audit) never get these rows back. Put it in the query's AND list (it carries its own NOT).
+export const DELETE_REQUEST_ACTIONS = ["POSITION_ACTION_REQUESTED", "POSITION_ACTION_APPROVED", "POSITION_ACTION_REJECTED"];
+export const withoutDeleteAudit: Prisma.AuditLogWhereInput = {
+  NOT: [{ action: "POSITION_DELETED" }, { action: { in: DELETE_REQUEST_ACTIONS }, newValue: { path: ["actionType"], equals: "DELETE" } }],
+};
+export function deleteAuditFilter(role: string | null | undefined): Prisma.AuditLogWhereInput {
+  return role === "BROKER_ADMIN" || role === "SUPER_ADMIN" ? {} : withoutDeleteAudit;
+}
+
 // Humanized labels for AuditLog.action -- every value currently written
 // anywhere in the app (grepped across app/api/manage and app/api/admin),
 // plus the two this restyle pass adds (POSITION_SLTP_MODIFIED,

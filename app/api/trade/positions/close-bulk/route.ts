@@ -6,6 +6,7 @@ import { closeBulkForAccount, selectBulkCloseTargets, type BulkCloseScope, type 
 import { closePriceFor } from "@/lib/trading";
 import { clientDealSource } from "@/lib/deals";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
+import { requestMeta } from "@/lib/order-execution";
 
 const SCOPES: BulkCloseScope[] = ["ALL", "PROFIT", "LOSS", "SYMBOL"];
 
@@ -93,6 +94,7 @@ export async function POST(request: NextRequest) {
             requestedPrice,
             idempotencyKey: `close:${p.id}:${batch}`,
             source: orderSource,
+            capture: requestMeta(request.headers),
             symbolName: p.symbol.name,
             accountNumber: account.accountNumber,
             note: `Bulk close (${scope})`,

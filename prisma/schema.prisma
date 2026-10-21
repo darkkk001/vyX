@@ -1577,6 +1577,10 @@ model Transaction {
   closePrice        Decimal?          @db.Decimal(18, 5)
   closeSwap         Decimal?          @db.Decimal(18, 2)
   closeByPositionId String?
+  // Batch D (owner 2026-10-21): set on every ledger row of a DELETED trade (its TRADE_PNL / COMMISSION / CREDIT / write-off
+  // rows and the reversal the delete books) to that position's id. Every client-facing read (history, deals, transactions,
+  // the summary's lines) leaves these rows out; the backoffice still lists them. Null on every other row.
+  hiddenForPositionId String?
 
   // Client cabinet Funds UI (VYX-FUNDS-V0) -- provider-agnostic PSP
   // adapter fields, all nullable/additive so every pre-existing
@@ -1943,6 +1947,21 @@ model Order {
   closeVolume      Decimal?  @db.Decimal(10, 2)
   // Close-by link for a dealer-queued close-by: the opposite leg's position id, carried through to execution.
   closeByPositionId String?
+
+  // Execution capture (Batch D, owner 2026-10-21; the backoffice execution detail). Null on orders written before it.
+  //   requestedAt    when the request reached the server (a client order: the route's start; others: the insert)
+  //   executedAt     when the order reached its outcome: filled, rejected or (a dealer's) requoted
+  //   clientIp       the caller's IP (first x-forwarded-for hop); null for server-made orders (trigger, mirror, coverage)
+  //   platform       "Windows terminal 1.0.93" | "Mobile 1.2.0" | "WebTrader" | "API" | "Backoffice" | "Server"
+  //   routing        "A_BOOK" | "B_BOOK" (the account group's book) | "LP" (a coverage hedge sent to the LP)
+  //   executionMode  "AUTO" (filled / rejected by the server or the smart dealer) | "DEALER" (a dealer's hand)
+  // The reject reason stays rejectionReason; requestedPrice / filledPrice are above.
+  requestedAt   DateTime? @default(now()) @db.Timestamptz(3)
+  executedAt    DateTime? @db.Timestamptz(3)
+  clientIp      String?
+  platform      String?
+  routing       String?
+  executionMode String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

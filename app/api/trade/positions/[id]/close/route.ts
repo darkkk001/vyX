@@ -18,6 +18,7 @@ import { runAfterResponse } from "@/lib/after-response";
 import { isDemoTenant } from "@/lib/demo-policy";
 import { demoQuoteTimeRefusal } from "@/lib/demo-prices";
 import { clientDealSource } from "@/lib/deals";
+import { requestMeta } from "@/lib/order-execution";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -225,6 +226,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
           requestedPrice: clientReferencePrice,
           idempotencyKey,
           source: orderSource,
+          capture: requestMeta(request.headers),
           symbolName: position.symbol.name,
           accountNumber: position.account.accountNumber,
           note: source === "stm_bulk" ? "STM bulk close" : "Client close",

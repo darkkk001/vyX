@@ -49,7 +49,7 @@ export type ApiPosition = {
   realizedPnl: string | null;
   swap: string;
   commission: string;
-  status: "OPEN" | "CLOSED";
+  status: "OPEN" | "CLOSED" | "VOIDED"; // VOIDED: history only (Batch D), its money reversed
   openedAt: string;
   closedAt: string | null;
   symbol: { name: string; digits: number; contractSize?: string };

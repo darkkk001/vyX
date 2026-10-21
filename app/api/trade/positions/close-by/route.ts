@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { closePositionsByEachOther, resolveCloseByPair } from "@/lib/close-by";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 import { clientDealSource } from "@/lib/deals";
+import { requestMeta } from "@/lib/order-execution";
 
 // "Close By" -- nets the smaller of two opposite-side
 // positions on the same symbol against the larger one at a single fair
@@ -47,19 +48,20 @@ export async function POST(request: NextRequest) {
     const orderSource: "WEB" | "DESKTOP_NATIVE" | "MOBILE" | "API" =
       clientPlatformHeader === "DESKTOP_NATIVE" || clientPlatformHeader === "MOBILE" || clientPlatformHeader === "API" ? clientPlatformHeader : "WEB";
     const batch = Date.now();
+    const capture = requestMeta(request.headers);
     let orders;
     try {
       orders = await prisma.$transaction(async (tx) => {
         const oa = await queueCloseInTx(tx, {
           brokerId: session.brokerId, accountId: session.accountId,
           position: { id: a.id, symbolId: a.symbol.id, side: a.side, volume: a.volume, ticket: a.ticket, closePendingOrderId: a.closePendingOrderId },
-          closeVolume, requestedPrice: closePrice, idempotencyKey: `close:${a.id}:${batch}`, source: orderSource,
+          closeVolume, requestedPrice: closePrice, idempotencyKey: `close:${a.id}:${batch}`, source: orderSource, capture,
           symbolName: a.symbol.name, accountNumber: account.accountNumber, note: `Close by #${b.ticket}`, closeByPositionId: b.id,
         });
         const ob = await queueCloseInTx(tx, {
           brokerId: session.brokerId, accountId: session.accountId,
           position: { id: b.id, symbolId: b.symbol.id, side: b.side, volume: b.volume, ticket: b.ticket, closePendingOrderId: b.closePendingOrderId },
-          closeVolume, requestedPrice: closePrice, idempotencyKey: `close:${b.id}:${batch}`, source: orderSource,
+          closeVolume, requestedPrice: closePrice, idempotencyKey: `close:${b.id}:${batch}`, source: orderSource, capture,
           symbolName: b.symbol.name, accountNumber: account.accountNumber, note: `Close by #${a.ticket}`, closeByPositionId: a.id,
         });
         return { oa, ob };

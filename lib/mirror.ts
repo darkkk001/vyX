@@ -471,6 +471,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
           // belt-and-suspenders for the brief's idempotency requirement.
           idempotencyKey: `mirror:${rule.id}:${source.id}`,
           status: "PENDING",
+          platform: "Server", // execution capture: a mirror copy; openPositionFromOrder records the fill
         },
       });
       // NO SL/TP on the mirrored position -- the brief's own explicit

@@ -88,7 +88,7 @@ async function rejectPending(
 ): Promise<boolean> {
   const done = await prisma.$transaction(async (tx) => {
     if (actor) await assertRiskActorInTx(tx, order.accountId, actor);
-    const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "REJECTED", rejectionReason: reason } });
+    const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "REJECTED", rejectionReason: reason, executedAt: new Date(), executionMode: "AUTO" } });
     if (claimed.count === 0) return false;
     await tx.auditLog.create({
       data: {
@@ -294,7 +294,8 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
   const result = await prisma.$transaction(async (tx) => {
     if (actor) await assertRiskActorInTx(tx, order.accountId, actor);
     // status-guarded claim: the server trigger and an older terminal's fill POST can never both fill this order
-    const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date() } });
+    const now = new Date();
+    const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "FILLED", filledPrice: fillPrice, filledAt: now, executedAt: now, executionMode: "AUTO", routing: bookType } });
     if (claimed.count === 0) return null;
     const filledOrder = await tx.order.findUniqueOrThrow({ where: { id: order.id } });
     const position = await tx.position.create({
@@ -392,7 +393,8 @@ async function fillCoverageOrder(args: {
   });
   if (marginError) return fail(marginError.error, marginError.required != null && marginError.available != null ? { required: marginError.required, available: marginError.available } : undefined);
   const result = await prisma.$transaction(async (tx) => {
-    const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date() } });
+    const now = new Date();
+    const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "FILLED", filledPrice: fillPrice, filledAt: now, executedAt: now, executionMode: "AUTO", routing: "LP" } });
     if (claimed.count === 0) return null;
     const filledOrder = await tx.order.findUniqueOrThrow({ where: { id: order.id } });
     const position = await tx.position.create({

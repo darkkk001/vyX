@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { humanizeAction, summarizeAuditDiff } from "@/lib/audit-labels";
+import { humanizeAction, summarizeAuditDiff, deleteAuditFilter } from "@/lib/audit-labels";
 
 // Impression Pack #5 -- Dealing Replay v1. This app stores M1/M5/... OHLC
 // candles, not raw tick history (see docs/market-data.md), so a real
@@ -42,7 +42,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   });
 
   const auditRows = await prisma.auditLog.findMany({
-    where: { brokerId, entityId: { in: [position.id, position.originOrderId] } },
+    where: { brokerId, entityId: { in: [position.id, position.originOrderId] }, AND: [deleteAuditFilter(session!.role)] },
     include: { actorAdmin: { select: { email: true } } },
     orderBy: { createdAt: "asc" },
   });

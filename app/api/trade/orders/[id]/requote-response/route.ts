@@ -240,7 +240,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       });
       if (claimed.count === 0) throw new Error("RACED");
 
-      const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER" });
+      const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", executionMode: "DEALER" });
 
       await tx.auditLog.create({
         data: {

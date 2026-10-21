@@ -95,6 +95,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         source: "ADMIN",
         filledPrice: fillPrice,
         filledAt: new Date(),
+        executedAt: new Date(), executionMode: "DEALER", platform: "Backoffice", routing: "LP", // execution capture
       },
     });
     const coveragePosition = await tx.position.create({

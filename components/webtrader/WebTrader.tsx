@@ -4879,7 +4879,7 @@ export default function WebTrader({
                       {allSymbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
                     </select>
                     <div className="history-summary">
-                      {history.length > 0 ? <>{history.length} trades · Total <span className={TONE_CSS[tone(history.reduce((s, h) => s + (h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0))]}>{money(history.reduce((s, h) => s + (h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0))}</span></> : null}
+                      {history.length > 0 ? <>{history.length} trades · Total <span className={TONE_CSS[tone(historyTotal(history))]}>{money(historyTotal(history))}</span></> : null}
                     </div>
                   </div>
                   {histPeriod === "custom" ? (
@@ -4900,8 +4900,9 @@ export default function WebTrader({
                         if (row.kind === "trade") {
                           const h = row.trade;
                           const pnl = h.realizedPnl ? parseFloat(h.realizedPnl) : 0;
+                          const voided = h.status === "VOIDED";
                           return (
-                            <div className="history-row" key={h.id}>
+                            <div className="history-row" key={h.id} style={voided ? { opacity: 0.45 } : undefined} title={voided ? "Voided: this trade's result was reversed" : undefined}>
                               <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.id.slice(-8)}</span>
                               <span className="pos-cell pos-symbol">{h.symbol.name}</span>
                               <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
@@ -6097,4 +6098,9 @@ function AnalyticsGrid({ trades }: { trades: ApiPosition[] }) {
       ))}
     </div>
   );
+}
+
+/** The history total: a voided trade's result was reversed (Batch D), so it is listed greyed but not counted. */
+function historyTotal(rows: { status: string; realizedPnl: string | null }[]): number {
+  return rows.reduce((s, h) => s + (h.status !== "VOIDED" && h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0);
 }

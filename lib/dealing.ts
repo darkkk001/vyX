@@ -1,6 +1,7 @@
 import { Prisma, BookType, OrderSide, type DealReason } from "@prisma/client";
 import { chargeCommission } from "@/lib/group-pricing";
 import { writeOpenDealInTx } from "@/lib/deals";
+import type { ExecutionMode } from "@/lib/order-execution";
 
 type Tx = Prisma.TransactionClient;
 
@@ -31,12 +32,15 @@ export async function openPositionFromOrder(
   fillPrice: Prisma.Decimal,
   bookType: BookType,
   commissionPerLot: Prisma.Decimal,
-  // the IN deal's reason (docs/POSITION-DEAL-MODEL.md): DEALER for a dealer-queue fill, MIRROR for a mirror copy
-  deal: { reason: DealReason; adminId?: string | null }
+  // the IN deal's reason (docs/POSITION-DEAL-MODEL.md): DEALER for a dealer-queue fill, MIRROR for a mirror copy.
+  // executionMode (lib/order-execution.ts): DEALER when a dealer's hand decided the fill (an accept, or a requote the client
+  // took), AUTO otherwise (smart dealer, desk-off flush, mirror); by default DEALER exactly when a staff member is named.
+  deal: { reason: DealReason; adminId?: string | null; executionMode?: ExecutionMode }
 ) {
+  const now = new Date();
   await tx.order.update({
     where: { id: order.id },
-    data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date() },
+    data: { status: "FILLED", filledPrice: fillPrice, filledAt: now, executedAt: now, routing: bookType, executionMode: deal.executionMode ?? (deal.adminId ? "DEALER" : "AUTO") },
   });
   const position = await tx.position.create({
     data: {

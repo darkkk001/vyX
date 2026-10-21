@@ -4,13 +4,13 @@ import { getAccountSession } from "@/lib/account-auth";
 
 // GET /api/trade/deals: the account's deals, MT5 "Deals" view (deal model step 4, docs/POSITION-DEAL-MODEL.md 3.4).
 // One row per execution: the opening IN, every OUT (partial or final close), both OUT_BY legs of a close-by, and the
-// OUT + IN pair of a reverse in place (profit 0). Account-scoped by the session; voided trades and deleted positions are
-// left out. Newest first; `from` / `to` filter on the deal's own execution time; `symbol` by name; `limit` 1..5000
+// OUT + IN pair of a reverse in place (profit 0). Account-scoped by the session. Deleted positions are left out; a voided
+// trade's deals are listed with status VOIDED (Batch D, owner 2026-10-21), every other deal FILLED. Newest first; `from` / `to` filter on the deal's own execution time; `symbol` by name; `limit` 1..5000
 // (1000 by default, 5000 when `from` bounds the window), like /api/trade/history.
 //
 // Row: ticket (deal ticket, its own sequence), positionTicket, symbol, digits, side (of THIS deal: the close of a BUY is a
 // SELL), entry IN | OUT | OUT_BY, reason, source, volume, price, profit (= the TRADE_PNL amount of a close), commission,
-// swap (this close's share), executedAt, byPositionTicket (close-by counterpart).
+// swap (this close's share), executedAt, byPositionTicket (close-by counterpart), status FILLED | VOIDED.
 export async function GET(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) {
@@ -35,7 +35,6 @@ export async function GET(request: NextRequest) {
   const deals = await prisma.deal.findMany({
     where: {
       accountId: session.accountId,
-      voidedAt: null,
       ...(symbolId ? { symbolId } : {}),
       ...(fromDate || toDate ? { executedAt: { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lte: toDate } : {}) } } : {}),
     },
@@ -72,6 +71,7 @@ export async function GET(request: NextRequest) {
       swap: d.swap.toString(),
       executedAt: d.executedAt.toISOString(),
       byPositionTicket: d.byPositionId ? pos.get(d.byPositionId)?.ticket ?? null : null,
+      status: d.voidedAt ? "VOIDED" : "FILLED",
     });
   }
   return NextResponse.json(rows);

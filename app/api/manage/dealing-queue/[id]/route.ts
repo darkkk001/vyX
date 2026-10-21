@@ -124,7 +124,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const updated = await prisma.$transaction(async (tx) => {
       const result = await tx.order.updateMany({
         where: { id, status: priorStatus }, // race guard -- see the note on ACCEPT's transaction below
-        data: { status: "REJECTED", rejectionReason: reason },
+        data: { status: "REJECTED", rejectionReason: reason, executedAt: new Date(), executionMode: "DEALER" },
       });
       if (result.count === 0) throw new Error("RACED");
       // a rejected CLOSE leaves the position open and unlocked
@@ -181,7 +181,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const updated = await prisma.$transaction(async (tx) => {
       const result = await tx.order.updateMany({
         where: { id, status: "PENDING" },
-        data: { status: "REQUOTED", requotedPrice },
+        data: { status: "REQUOTED", requotedPrice, executedAt: new Date(), executionMode: "DEALER" },
       });
       if (result.count === 0) throw new Error("RACED");
       await tx.auditLog.create({

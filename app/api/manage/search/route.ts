@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { searchTickets, ticketQuery } from "@/lib/ticket-search";
 
 // Backoffice global omni-search. Broker-scoped and RBAC-respecting, same
 // role gate as every other /api/manage/* route -- this is a lookup, not
@@ -19,6 +20,8 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 //    is long enough to plausibly be a real prefix -- short queries would
 //    otherwise table-scan three tables for a match that can't exist yet)
 //  - symbol -> this broker's own enabled BrokerSymbol list
+//  - ticket (Batch D): digits with or without a leading "#" -> `tickets`, every position / order / deal whose ticket STARTS
+//    with them, the exact ticket first (lib/ticket-search.ts)
 export async function GET(request: NextRequest) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
@@ -28,12 +31,13 @@ export async function GET(request: NextRequest) {
   const q = (new URL(request.url).searchParams.get("q") ?? "").trim();
 
   if (q.length < 2) {
-    return NextResponse.json({ accounts: [], orders: [], positions: [], transactions: [], symbols: [] });
+    return NextResponse.json({ accounts: [], orders: [], positions: [], transactions: [], symbols: [], tickets: [] });
   }
 
   const idLike = q.length >= 6 && /^[a-z0-9]+$/i.test(q);
+  const ticketDigits = ticketQuery(q);
 
-  const [accounts, orders, positions, transactions, brokerSymbols] = await Promise.all([
+  const [accounts, orders, positions, transactions, brokerSymbols, tickets] = await Promise.all([
     prisma.account.findMany({
       where: {
         brokerId,
@@ -74,6 +78,7 @@ export async function GET(request: NextRequest) {
       take: 6,
       orderBy: { symbol: { name: "asc" } },
     }),
+    ticketDigits ? searchTickets(brokerId, ticketDigits) : Promise.resolve([]),
   ]);
 
   return NextResponse.json({
@@ -82,5 +87,6 @@ export async function GET(request: NextRequest) {
     positions: positions.map((p) => ({ id: p.id, accountId: p.account.id, accountNumber: p.account.accountNumber, symbol: p.symbol.name, side: p.side, status: p.status })),
     transactions: transactions.map((t) => ({ id: t.id, accountId: t.account.id, accountNumber: t.account.accountNumber, type: t.type, status: t.status, amount: t.amount.toString() })),
     symbols: brokerSymbols.map((bs) => ({ id: bs.symbolId, name: bs.symbol.name, category: bs.symbol.category })),
+    tickets,
   });
 }

@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { humanizeAction, auditEntityHref, excludeSuperAdminActor, summarizeAuditDiff, extractOrderIdentity, auditActorKind, auditSource } from "@/lib/audit-labels";
+import { humanizeAction, auditEntityHref, excludeSuperAdminActor, summarizeAuditDiff, extractOrderIdentity, auditActorKind, auditSource, deleteAuditFilter } from "@/lib/audit-labels";
 
 // Same query app/manage/(shell)/audit/page.tsx's Server Component used
 // to do inline -- exposed as JSON so AuditLogTable.tsx can fetch it
@@ -58,7 +58,8 @@ export async function GET(request: NextRequest) {
       brokerId: session!.brokerId!,
       ...excludeSuperAdminActor,
       ...(createdAt.gte || createdAt.lt ? { createdAt } : {}),
-      ...(keyset ? { AND: [keyset] } : {}),
+      // the keyset page cursor and (Batch D) the delete record, BROKER_ADMIN only
+      AND: [...(keyset ? [keyset] : []), deleteAuditFilter(session!.role)],
       ...(q
         ? {
             OR: [

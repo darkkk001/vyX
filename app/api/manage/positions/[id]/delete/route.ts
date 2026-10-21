@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { PositionActionError, executeDelete, requestPositionAction, positionActionNeedsApproval } from "@/lib/position-actions";
+import { publishTradingEvent } from "@/lib/nats";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -11,10 +12,9 @@ async function requireManager() {
   return session!;
 }
 
-// True DELETE (VYX-POSITION-TOOLS-V0), distinct from VOID: the row is
-// never physically removed -- it's soft-deleted (Position.deletedAt) out
-// of the trader-visible statement/history only, fully recoverable from
-// the audit view. deletedBy/reason are mandatory, per the brief.
+// DELETE (Batch D, owner 2026-10-21): the trade's money is reversed like a void AND the trade and its ledger rows are
+// hidden from the client (lib/position-actions.ts executeDelete). Nothing is physically removed; there is no undelete.
+// The reason is mandatory. A MANAGER files a request (202); a second request on the same trade is refused (409).
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
@@ -49,8 +49,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: message }, { status });
   }
 
-  // No realtime publish here -- DELETE is only ever eligible on an
-  // already-CLOSED/VOIDED position (see executeDelete's own comment), so
-  // no OPEN-position view anywhere needs to react to it.
-  return NextResponse.json({ id: result.position.id, deletedAt: result.position.deletedAt });
+  // only CLOSED / VOIDED trades are deleted (no open-position view reacts), but a CLOSED trade's money was just reversed
+  if (!result.reversalAmount.isZero()) {
+    await publishTradingEvent("BalanceChanged", { account_id: result.accountId, broker_id: brokerId }).catch((err) => console.error("BalanceChanged publish failed", err));
+  }
+  return NextResponse.json({ id: result.position.id, deletedAt: result.position.deletedAt, status: result.position.status, reversalAmount: result.reversalAmount.toString(), hiddenRows: result.hiddenRows });
 }

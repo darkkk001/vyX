@@ -5,7 +5,7 @@ import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { tradingDayStart } from "@/lib/trading-day";
 import { bookPnlFloating, bookPnlRealized, currencyAmountsJson, legacySum, type CurrencyAmount } from "@/lib/book-pnl";
-import { humanizeAction, excludeSuperAdminActor, auditActorKind, auditSource } from "@/lib/audit-labels";
+import { humanizeAction, excludeSuperAdminActor, auditActorKind, auditSource, deleteAuditFilter } from "@/lib/audit-labels";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -85,7 +85,7 @@ export async function GET(request: Request) {
       _count: true,
     }),
     prisma.auditLog.findMany({
-      where: { brokerId, ...excludeSuperAdminActor },
+      where: { brokerId, ...excludeSuperAdminActor, AND: [deleteAuditFilter(session!.role)] },
       orderBy: { createdAt: "desc" },
       take: 15,
       include: { actorAdmin: { select: { email: true } } },

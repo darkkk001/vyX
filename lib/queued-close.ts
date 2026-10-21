@@ -36,6 +36,8 @@ export type QueueCloseInput = {
   accountNumber: string;
   note: string;
   closeByPositionId?: string | null; // close-by: the opposite leg, kept on the Order so execution can write the link
+  // execution capture (lib/order-execution.ts requestMeta): the client's request side
+  capture?: { requestedAt: Date; clientIp: string | null; platform: string };
 };
 
 export class ClosePendingError extends Error {
@@ -74,6 +76,7 @@ export async function queueCloseInTx(tx: Prisma.TransactionClient, input: QueueC
       closesPositionId: input.position.id,
       closeVolume: input.closeVolume,
       closeByPositionId: input.closeByPositionId ?? null,
+      ...(input.capture ?? {}),
     },
   });
   const locked = await tx.position.updateMany({
@@ -225,7 +228,12 @@ export async function executeQueuedCloseInTx(
     await tx.position.updateMany({ where: { id: position.id, closePendingOrderId: p.order.id }, data: { closePendingOrderId: null } });
     return { kind: "position_gone" };
   }
-  await tx.order.update({ where: { id: p.order.id }, data: { status: "FILLED", filledPrice: p.closePrice, filledAt: new Date() } });
+  // a requote the client took was still priced by a dealer: DEALER, like an accept by a person; the desk-off flush is AUTO
+  const now = new Date();
+  await tx.order.update({
+    where: { id: p.order.id },
+    data: { status: "FILLED", filledPrice: p.closePrice, filledAt: now, executedAt: now, routing: position.bookType, executionMode: p.adminId || p.fromStatus === "REQUOTED" ? "DEALER" : "AUTO" },
+  });
   await tx.position.updateMany({ where: { id: position.id, closePendingOrderId: p.order.id }, data: { closePendingOrderId: null } });
   return { kind: "closed", outcome, closePrice: p.closePrice, closeVolume };
 }

@@ -27,7 +27,8 @@ export async function GET(_request: NextRequest) {
   }
 
   const rows = await prisma.transaction.findMany({
-    where: { accountId: session.accountId, type: { in: BALANCE_TYPES } },
+    // Batch D: the ledger rows of a deleted trade (hiddenForPositionId) are left out, like the trade itself
+    where: { accountId: session.accountId, type: { in: BALANCE_TYPES }, hiddenForPositionId: null },
     orderBy: { createdAt: "desc" },
     take: 200,
     select: { id: true, type: true, amount: true, note: true, status: true, createdAt: true },

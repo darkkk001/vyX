@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { describeOrderAuditEvent } from "@/lib/order-audit";
+import { withoutDeleteAudit } from "@/lib/audit-labels";
 
 // Broker feedback items 14+15 -- the trader's own "Logs" tab
 // (components/webtrader/WebTrader.tsx) previously only showed ephemeral,
@@ -31,6 +32,8 @@ export async function GET() {
         { oldValue: { path: ["accountNumber"], equals: account.accountNumber } },
         { newValue: { path: ["accountNumber"], equals: account.accountNumber } },
       ],
+      // Batch D: a deleted trade is invisible to the client, its delete record too (lib/audit-labels.ts)
+      AND: [withoutDeleteAudit],
     },
     orderBy: { createdAt: "desc" },
     take: 100,

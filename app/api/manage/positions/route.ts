@@ -421,6 +421,8 @@ export async function POST(request: NextRequest) {
         source: "ADMIN",
         filledPrice: fillPrice,
         filledAt: new Date(),
+        // execution capture (lib/order-execution.ts): made by staff in the backoffice
+        executedAt: new Date(), executionMode: "DEALER", platform: "Backoffice", routing: resolveBookType(account.group.category),
       },
     });
     const position = await tx.position.create({

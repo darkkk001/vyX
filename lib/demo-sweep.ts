@@ -87,7 +87,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
     async fillPending(o, fillPrice, atMs) {
       const symbolId = symbolIdByName.get(o.symbol)!;
       return prisma.$transaction(async (tx) => {
-        const claimed = await tx.order.updateMany({ where: { id: o.id, status: "PENDING" }, data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date(atMs) } });
+        const claimed = await tx.order.updateMany({ where: { id: o.id, status: "PENDING" }, data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date(atMs), executedAt: new Date(atMs), executionMode: "AUTO" } });
         if (claimed.count === 0) return null;
         const created = await tx.position.create({
           data: {
@@ -112,7 +112,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
     },
     async rejectPending(o, reason, atMs) {
       await prisma.$transaction(async (tx) => {
-        const claimed = await tx.order.updateMany({ where: { id: o.id, status: "PENDING" }, data: { status: "REJECTED", rejectionReason: reason } });
+        const claimed = await tx.order.updateMany({ where: { id: o.id, status: "PENDING" }, data: { status: "REJECTED", rejectionReason: reason, executedAt: new Date(atMs), executionMode: "AUTO" } });
         if (claimed.count === 0) return;
         await tx.auditLog.create({
           data: {

@@ -41,9 +41,10 @@ const H = 3_600_000;
 /// The identity of lib/account-summary.ts, recomputed from the response's own strings.
 function identity(s: AccountSummary) {
   const n = (x: string) => D(x);
-  const f = s.funds, t = s.trades;
+  const f = s.funds, t = s.trades, v = s.voided;
   return n(s.openingBalance).add(n(f.deposits)).sub(n(f.withdrawals)).add(n(f.creditUsed)).add(n(f.adjustments)).add(n(f.transfersIn)).sub(n(f.transfersOut))
-    .add(n(f.nbp)).add(n(f.ibCommission)).add(n(t.grossPnl)).sub(n(t.commission)).sub(n(t.swap));
+    .add(n(f.nbp)).add(n(f.ibCommission)).add(n(t.grossPnl)).sub(n(t.commission)).sub(n(t.swap))
+    .add(n(v.grossPnl)).sub(n(v.commission)).add(n(v.reversal)).add(n(f.deletedTrades));
 }
 
 // ------------------------------------------------------------------------------------------------ pure
@@ -83,7 +84,8 @@ describe("account summary (pure)", () => {
         { entry: "OUT", reason: "REVERSE", volume: D(1), profit: D(0), commission: D(0), voidedAt: null, transactionId: null },
       ],
     });
-    expect(s.trades).toEqual({ count: 2, wins: 1, losses: 1, winRate: "50.00", volumeLots: "1.00", grossPnl: "20.00", commission: "5.00", swap: "1.50", netPnl: "13.50", voided: 0 });
+    expect(s.trades).toEqual({ count: 2, wins: 1, losses: 1, winRate: "50.00", volumeLots: "1.00", grossPnl: "20.00", commission: "5.00", swap: "1.50", netPnl: "13.50" });
+    expect(s.voided).toEqual({ count: 0, volumeLots: "0.00", grossPnl: "0.00", commission: "0.00", reversal: "0.00", net: "0.00" });
     expect(s.funds.creditIn).toBe("300.00");
     expect(s.funds.transfersOut).toBe("20.00");
     expect(s.reconciliation).toEqual({ computedClosing: "1093.50", difference: "0.00", ok: true });
@@ -223,16 +225,16 @@ describe("account summary over the real write paths", () => {
     // opening: 10,000 - 2 + 4 (the partial before the range); the pending request moved nothing
     expect(s.openingBalance).toBe("10002.00");
     expect(s.funds).toEqual({
-      deposits: "0.00", withdrawals: "500.00", creditIn: "300.00", creditOut: "0.00", creditUsed: "300.00", adjustments: (10 - (30 - 1)).toFixed(2),
-      transfersIn: "200.00", transfersOut: "50.00", nbp: s.funds.nbp, ibCommission: "0.00",
+      deposits: "0.00", withdrawals: "500.00", creditIn: "300.00", creditOut: "0.00", creditUsed: "300.00", adjustments: "10.00",
+      transfersIn: "200.00", transfersOut: "50.00", nbp: s.funds.nbp, ibCommission: "0.00", deletedTrades: "0.00",
     });
     expect(D(s.funds.nbp).gt(0)).toBe(true);
-    expect(s.trades.count).toBe(3);   // the rest of A (-3), C (-10,000), V (+30, voided since)
-    expect(s.trades.wins).toBe(1);
-    expect(s.trades.voided).toBe(1);
-    expect(s.trades.volumeLots).toBe("101.60");
-    expect(s.trades.grossPnl).toBe("-9973.00");
-    expect(s.trades.commission).toBe("14.00");   // B 3 + C 10 + V 1, charged inside; A's 2 was before
+    expect(s.trades.count).toBe(2);   // the rest of A (-3), C (-10,000); V (+30) was voided since: its own line
+    expect(s.trades.wins).toBe(0);
+    expect(s.voided).toEqual({ count: 1, volumeLots: "1.00", grossPnl: "30.00", commission: "1.00", reversal: "-29.00", net: "0.00" });
+    expect(s.trades.volumeLots).toBe("100.60");
+    expect(s.trades.grossPnl).toBe("-10003.00");
+    expect(s.trades.commission).toBe("13.00");   // B 3 + C 10 charged inside (V's 1 is in the voided line); A's 2 was before
     expect(s.trades.swap).toBe("1.25");
     expect(s.closingBalance).toBe("0.00");   // the write-off left the account at zero; the adjustment / void came after it
 

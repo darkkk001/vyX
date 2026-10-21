@@ -73,9 +73,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       await publishTradingEvent("PositionClosed", { position_id: execResult.position.id, account_id: execResult.accountId, broker_id: brokerId });
       break;
     case "DELETE":
-      // No realtime publish -- DELETE is only ever eligible on an
-      // already-CLOSED/VOIDED position (see executeDelete's own
-      // comment), so no OPEN-position view needs to react to it.
+      // only CLOSED / VOIDED trades are deleted, so no open-position view reacts; but the delete reverses the money of a
+      // CLOSED trade (Batch D), so the client's balance moves
+      if (!execResult.reversalAmount.isZero()) {
+        await publishTradingEvent("BalanceChanged", { account_id: execResult.accountId, broker_id: brokerId }).catch((err) => console.error("BalanceChanged publish failed", err));
+      }
       break;
   }
 

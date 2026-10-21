@@ -23,7 +23,9 @@ export async function GET(request: NextRequest) {
   const trades = await prisma.position.findMany({
     where: {
       accountId: session.accountId,
-      status: "CLOSED",
+      // Batch D (owner 2026-10-21): a voided trade stays visible to the client, status VOIDED (its reversal is the
+      // "Void of #ticket" adjustment in /api/trade/transactions); a deleted one is gone with its money rows
+      status: { in: ["CLOSED", "VOIDED"] },
       deletedAt: null,
       // `from`/`to` arrive as full ISO instants -- the trader's own local
       // day boundaries, converted client-side (WebTrader.tsx's
@@ -99,9 +101,10 @@ async function closesView(accountId: string, sp: URLSearchParams) {
   const from = sp.get("from");
   const to = sp.get("to");
   const symbolName = sp.get("symbol");
-  // the positions that can be listed: this account's, not deleted, open or closed (a VOIDED one never moved money)
+  // the positions that can be listed: this account's, not deleted; open, closed or voided (Batch D: a voided trade is
+  // listed with status VOIDED, its closes as they were; an open position voided before any close has no close to list)
   const eligible = await prisma.position.findMany({
-    where: { accountId, deletedAt: null, status: { in: ["OPEN", "CLOSED"] }, ...(symbolName ? { symbol: { name: symbolName } } : {}) },
+    where: { accountId, deletedAt: null, status: { in: ["OPEN", "CLOSED", "VOIDED"] }, ...(symbolName ? { symbol: { name: symbolName } } : {}) },
     select: { id: true },
   });
   if (eligible.length === 0) return NextResponse.json([]);

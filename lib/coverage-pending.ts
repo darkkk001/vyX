@@ -125,6 +125,7 @@ export async function placeCoveragePendingOrder(p: CoveragePendingParams): Promi
         idempotencyKey: `coverage_dealer_pending_${crypto.randomUUID()}`,
         status: "PENDING",
         source: "ADMIN",
+        platform: "Backoffice", routing: "LP", // execution capture: filled later by lib/pending-trigger.ts fillCoverageOrder
       },
     });
     await tx.auditLog.create({

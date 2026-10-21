@@ -102,5 +102,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261019090000_group_lot_step",
   "20261019120000_deal_model_a",
   "20261019130000_deal_backfill_log",
-  "20261019150000_broker_staff_2fa_default_required"
+  "20261019150000_broker_staff_2fa_default_required",
+  "20261021120000_execution_capture_hidden_ledger"
 ];

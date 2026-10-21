@@ -120,6 +120,7 @@ export async function POST(request: NextRequest) {
         source: "ADMIN",
         filledPrice: fillPrice,
         filledAt: new Date(),
+        executedAt: new Date(), executionMode: "DEALER", platform: "Backoffice", routing: "LP", // execution capture
         slPrice,
         tpPrice,
       },

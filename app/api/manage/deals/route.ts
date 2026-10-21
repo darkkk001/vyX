@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { tradingDayStart } from "@/lib/trading-day";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { executionDetail } from "@/lib/order-execution";
 
 // Same query app/manage/(shell)/deals/page.tsx's Server Component used
 // to do inline -- exposed as JSON so DealsManager can fetch it itself
@@ -18,7 +19,34 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 // the opening IN, every OUT (partial / final), OUT_BY legs, a reverse's OUT + IN pair. Same filters (from / to on the
 // execution time), same cap and headers. Voided trades stay listed (voided: true), as the positions view lists VOIDED
 // rows. Without `view` (or view=positions) the answer is the positions list, unchanged.
+//
+// Batch D (owner 2026-10-21), on both views:
+//   ?deleted=1        also list deleted trades (the "show deleted" filter); each row carries `deleted` (true / false) and,
+//                     when deleted, deletedAt / deletedBy (staff e-mail) / deleteReason
+//   pendingAction     the void / delete / reverse request waiting for approval on the trade, or null:
+//                     { type: VOID | DELETE | REVERSE_IN_PLACE | REVERSE_CLOSE_REOPEN, requestId, requestedBy, requestedAt }
+//   execution detail  positions view: openExecution (the opening order) and closeExecution (the last filled close order,
+//                     dealer-queued closes only); deals view: execution (the deal's order). lib/order-execution.ts
+//                     executionDetail: a field the server does not have is left out.
 const DEALS_LIMIT = 500;
+
+const EXEC_SELECT = {
+  ticket: true, type: true, source: true, status: true, requestedAt: true, executedAt: true, clientIp: true, platform: true, routing: true,
+  executionMode: true, requestedPrice: true, filledPrice: true, rejectionReason: true,
+} as const;
+
+/// The waiting request per position (at most one: PositionActionRequest_one_pending_per_position).
+async function pendingActions(brokerId: string, positionIds: string[]) {
+  if (positionIds.length === 0) return new Map<string, { type: string; requestId: string; requestedBy: string; requestedAt: string }>();
+  const rows = await prisma.positionActionRequest.findMany({
+    where: { brokerId, status: "PENDING", positionId: { in: positionIds } },
+    select: { id: true, positionId: true, actionType: true, createdAt: true, requestedByAdmin: { select: { email: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+  return new Map(rows.map((r) => [r.positionId, { type: r.actionType, requestId: r.id, requestedBy: r.requestedByAdmin.email, requestedAt: r.createdAt.toISOString() }]));
+}
+
+const truthy = (v: string | null) => v === "1" || v === "true";
 
 export async function GET(request: NextRequest) {
   const session = await getAdminSession();
@@ -61,12 +89,13 @@ export async function GET(request: NextRequest) {
   // list -- "recoverable from the audit view" (the brief's own words)
   // means the audit log, not this list; see POSITION_DELETED's own
   // AuditLog entry for the full record.
-  if (sp.get("view") === "deals") return dealsView(brokerId, { accountId, groupId, from: closedAt.gte as Date | undefined, before: closedAt.lt as Date | undefined });
+  const showDeleted = truthy(sp.get("deleted"));
+  if (sp.get("view") === "deals") return dealsView(brokerId, { accountId, groupId, from: closedAt.gte as Date | undefined, before: closedAt.lt as Date | undefined, showDeleted });
 
   const dealsWhere: Prisma.PositionWhereInput = {
     brokerId,
     status: { in: ["CLOSED", "VOIDED"] },
-    deletedAt: null,
+    ...(showDeleted ? {} : { deletedAt: null }),
     ...(accountId ? { accountId } : {}),
     ...(groupId ? { account: { groupId } } : {}),
     ...(closedAt.gte || closedAt.lt ? { closedAt } : {}),
@@ -80,6 +109,9 @@ export async function GET(request: NextRequest) {
       // in the Smart Dealer Manager -- AWAITING DEALER vs a real ORPHAN (lib/coverage.ts onClose)
       coveragePosition: { select: { autoHedged: true, status: true } },
       symbol: { select: { name: true, digits: true } },
+      originOrder: { select: EXEC_SELECT },
+      closeOrders: { where: { status: "FILLED" }, orderBy: { filledAt: "desc" }, take: 1, select: EXEC_SELECT },
+      deletedByAdmin: { select: { email: true } },
     },
     orderBy: { closedAt: "desc" },
     take: DEALS_LIMIT + 1,
@@ -90,6 +122,7 @@ export async function GET(request: NextRequest) {
   if (truncated) positions.length = DEALS_LIMIT;
   const headers: Record<string, string> = { "x-row-limit": String(DEALS_LIMIT), "x-truncated": truncated ? "true" : "false" };
   if (truncated) headers["x-total-count"] = String(await prisma.position.count({ where: dealsWhere }));
+  const pending = await pendingActions(brokerId, positions.map((p) => p.id));
 
   return NextResponse.json(
     positions.map((p) => ({
@@ -122,6 +155,11 @@ export async function GET(request: NextRequest) {
       // A_BOOK / B_BOOK: the Smart Dealer Manager's realized DEALER P/L counts only the desk's own
       // B-book closes (2026-09-23); an A-book trade's result is the LP's, not the dealer's
       bookType: p.bookType,
+      deleted: p.deletedAt != null,
+      ...(p.deletedAt ? { deletedAt: p.deletedAt.toISOString(), deletedBy: p.deletedByAdmin?.email ?? "", deleteReason: p.deleteReason ?? "" } : {}),
+      pendingAction: pending.get(p.id) ?? null,
+      openExecution: executionDetail(p.originOrder, p.symbol.digits),
+      ...(p.closeOrders[0] ? { closeExecution: executionDetail(p.closeOrders[0], p.symbol.digits) } : {}),
     })),
     { headers }
   );
@@ -130,7 +168,7 @@ export async function GET(request: NextRequest) {
 const fmt = (d: Date) => d.toISOString().replace("T", " ").slice(0, 19);
 
 /** view=deals: the broker's deals, newest first, capped like the positions view. */
-async function dealsView(brokerId: string, f: { accountId: string | null; groupId: string | null; from?: Date; before?: Date }) {
+async function dealsView(brokerId: string, f: { accountId: string | null; groupId: string | null; from?: Date; before?: Date; showDeleted: boolean }) {
   let accountIds: string[] | undefined;
   if (f.groupId) {
     accountIds = (await prisma.account.findMany({ where: { brokerId, groupId: f.groupId, ...(f.accountId ? { id: f.accountId } : {}) }, select: { id: true } })).map((a) => a.id);
@@ -145,12 +183,16 @@ async function dealsView(brokerId: string, f: { accountId: string | null; groupI
   const truncated = deals.length > DEALS_LIMIT;
   if (truncated) deals.length = DEALS_LIMIT;
   const positionIds = [...new Set(deals.flatMap((d) => (d.byPositionId ? [d.positionId, d.byPositionId] : [d.positionId])))];
-  const [positions, accounts, symbols] = await Promise.all([
+  const orderIds = [...new Set(deals.map((d) => d.orderId).filter((id): id is string => !!id))];
+  const [positions, accounts, symbols, orders, pending] = await Promise.all([
     prisma.position.findMany({ where: { brokerId, id: { in: positionIds } }, select: { id: true, ticket: true, deletedAt: true } }),
     prisma.account.findMany({ where: { brokerId, id: { in: [...new Set(deals.map((d) => d.accountId))] } }, select: { id: true, accountNumber: true, fullName: true, currency: true } }),
     prisma.symbol.findMany({ where: { id: { in: [...new Set(deals.map((d) => d.symbolId))] } }, select: { id: true, name: true, digits: true } }),
+    orderIds.length === 0 ? Promise.resolve([]) : prisma.order.findMany({ where: { brokerId, id: { in: orderIds } }, select: { id: true, ...EXEC_SELECT } }),
+    pendingActions(brokerId, [...new Set(deals.map((d) => d.positionId))]),
   ]);
   const pos = new Map(positions.map((p) => [p.id, p]));
+  const ord = new Map(orders.map((o) => [o.id, o]));
   const acc = new Map(accounts.map((a) => [a.id, a]));
   const sym = new Map(symbols.map((s) => [s.id, s]));
   const headers: Record<string, string> = { "x-row-limit": String(DEALS_LIMIT), "x-truncated": truncated ? "true" : "false" };
@@ -159,7 +201,7 @@ async function dealsView(brokerId: string, f: { accountId: string | null; groupI
   for (const d of deals) {
     const p = pos.get(d.positionId);
     const a = acc.get(d.accountId);
-    if (!p || p.deletedAt || !a) continue; // a soft-deleted position stays out, as in the positions view
+    if (!p || (p.deletedAt && !f.showDeleted) || !a) continue; // a deleted trade stays out unless asked for, as in the positions view
     const s = sym.get(d.symbolId);
     const digits = s?.digits ?? 5;
     rows.push({
@@ -184,6 +226,9 @@ async function dealsView(brokerId: string, f: { accountId: string | null; groupI
       executedAt: fmt(d.executedAt),
       byPositionTicket: d.byPositionId ? pos.get(d.byPositionId)?.ticket ?? null : null,
       voided: d.voidedAt != null,
+      deleted: p.deletedAt != null,
+      pendingAction: pending.get(d.positionId) ?? null,
+      ...(d.orderId && ord.get(d.orderId) ? { execution: executionDetail(ord.get(d.orderId)!, digits) } : {}),
     });
   }
   return NextResponse.json(rows, { headers });

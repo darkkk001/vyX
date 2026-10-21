@@ -506,6 +506,7 @@ export async function onFillAutoHedge(
           source: "ADMIN",
           filledPrice: fillPrice,
           filledAt: new Date(),
+          executedAt: new Date(), executionMode: "AUTO", platform: "Server", routing: "LP", // execution capture
         },
       });
       const legPosition = await tx.position.create({

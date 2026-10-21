@@ -79,6 +79,9 @@ export const MANIFEST: Row[] = [
   { mod: "accounts/[id]/funds/route", method: "POST", perm: "FUNDS_APPROVAL", needsId: true, body: {} },
   { mod: "accounts/[id]/positions/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/equity-curve/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
+  // Batch C-2 account summary (owner 2026-10-21): the history summary bar and statements, readable by SUPPORT
+  { mod: "accounts/[id]/summary/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
+  { mod: "accounts/summary/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
   { mod: "accounts/[id]/kyc/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "accounts/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
   { mod: "accounts/[id]/reset-password/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },

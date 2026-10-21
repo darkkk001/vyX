@@ -19,9 +19,16 @@ import { prisma } from "@/lib/prisma";
 //     but are not in the identity. The credit a closing LOSS used (type CREDIT) does move the balance: creditUsed;
 //   - a deposit / withdrawal moves the balance when it is approved (the PENDING row turns COMPLETED, updatedAt), not when it
 //     was requested (createdAt): that is the time the range filters it on. Every other row is written once, at createdAt.
-// A voided trade keeps its deals (voidedAt set) and its ledger rows; the void books one ADJUSTMENT that reverses them. So
-// voided deals stay in the trade money (and are counted in trades.voided) and the reversal is in adjustments: the
-// identity holds across a void, in whichever period each half falls.
+// Voided and deleted trades (Batch D, owner 2026-10-21):
+//   - a VOIDED trade keeps its deals (voidedAt set) and ledger rows; the void books one ADJUSTMENT referencing the position
+//     that reverses them. Its closes are NOT in `trades` (count, win rate, gross P/L, commission): they are the separate
+//     `voided` line { count, volumeLots, grossPnl, commission, reversal, net }, its reversal there and not in adjustments;
+//   - a DELETED trade is invisible to the client: its deals are in no line, and its ledger rows (hiddenForPositionId: its
+//     P/L, commission, credit, write-off and the delete's reversal) are in no line either. Their net is funds.deletedTrades:
+//     0 when the trade and its delete fall in the same range (the delete books its swap refund as a visible SWAP row, so
+//     the swap line nets out too), the reversal alone when the trade closed in an earlier range;
+//   the identity holds across both, in whichever period each half falls:
+//      ... (as above) + voided.grossPnl - voided.commission + voided.reversal + deletedTrades = closingBalance.
 // Opening / closing balance: the balance at that moment = today's Account.balance minus every balance-moving amount booked
 // after it, read in one snapshot. Not the stored balanceAfter of the last row: on production (read-only check 2026-10-21)
 // every account's ledger AMOUNTS add up to its balance exactly, but 2 accounts carry wrong balanceBefore / balanceAfter
@@ -52,19 +59,21 @@ export type AccountSummary = {
     commission: string; // cost: positive = charged
     swap: string; // cost: positive = charged, negative = swap paid to the account
     netPnl: string; // grossPnl - commission - swap
-    voided: number; // closes in the period whose trade was voided since (their money is in, the reversal is in adjustments)
   };
+  // trades of the period voided since: their closes and commission, and the reversals booked in the period
+  voided: { count: number; volumeLots: string; grossPnl: string; commission: string; reversal: string; net: string };
   funds: {
     deposits: string;
     withdrawals: string; // positive = money out
     creditIn: string; // credit facility granted (not balance)
     creditOut: string; // credit facility removed (not balance)
     creditUsed: string; // credit a closing loss consumed: adds to the balance
-    adjustments: string; // signed (void reversals included)
+    adjustments: string; // signed (void reversals are in voided.reversal, a deleted trade's in deletedTrades)
     transfersIn: string;
     transfersOut: string; // positive = money out
     nbp: string; // negative-balance protection write-offs: add to the balance
     ibCommission: string; // IB commission paid out to this account (COMMISSION rows not tied to a position)
+    deletedTrades: string; // net of a deleted trade's hidden rows booked in the period (see the header)
   };
   net: string; // closingBalance - openingBalance
   reconciliation: { computedClosing: string; difference: string; ok: boolean };
@@ -75,10 +84,13 @@ export type LedgerRow = {
   type: TransactionType;
   amount: Prisma.Decimal;
   referenceType: string | null;
+  referenceId?: string | null;
+  hiddenForPositionId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
 export type DealRow = {
+  positionId?: string;
   entry: "IN" | "OUT" | "OUT_BY" | "INOUT";
   reason: string;
   volume: Prisma.Decimal;
@@ -109,8 +121,17 @@ export function summarize(input: {
   closingBalance: Prisma.Decimal;
   ledger: LedgerRow[];
   deals: DealRow[];
+  // positions of these deals / rows that are VOIDED (and not deleted) and that are deleted
+  voidedPositionIds?: ReadonlySet<string>;
+  deletedPositionIds?: ReadonlySet<string>;
 }): AccountSummary {
-  const sum = (pred: (r: LedgerRow) => boolean) => input.ledger.filter(pred).reduce((s, r) => s.add(r.amount), ZERO);
+  const voidedIds = input.voidedPositionIds ?? new Set<string>();
+  const deletedIds = input.deletedPositionIds ?? new Set<string>();
+  const hidden = input.ledger.filter((r) => r.hiddenForPositionId);
+  const visible = input.ledger.filter((r) => !r.hiddenForPositionId);
+  const isVoidReversal = (r: LedgerRow) => r.type === "ADJUSTMENT" && r.referenceType === "Position" && !!r.referenceId && voidedIds.has(r.referenceId);
+  const sumOf = (rows: LedgerRow[]) => rows.reduce((s, r) => s.add(r.amount), ZERO);
+  const sum = (pred: (r: LedgerRow) => boolean) => sumOf(visible.filter(pred));
   const of = (t: TransactionType) => (r: LedgerRow) => r.type === t;
 
   const deposits = sum(of("DEPOSIT"));
@@ -118,26 +139,38 @@ export function summarize(input: {
   const creditIn = sum(of("CREDIT_IN"));
   const creditOut = sum(of("CREDIT_OUT")).neg();
   const creditUsed = sum(of("CREDIT"));
-  const adjustments = sum(of("ADJUSTMENT"));
+  const adjustments = sum((r) => r.type === "ADJUSTMENT" && !isVoidReversal(r));
+  const voidReversal = sum(isVoidReversal);
+  const deletedTrades = sumOf(hidden);
   const transfersIn = sum(of("TRANSFER_IN"));
   const transfersOut = sum(of("TRANSFER_OUT")).neg();
   const nbp = sum(of("NEGATIVE_BALANCE_PROTECTION"));
   const ibCommission = sum((r) => r.type === "COMMISSION" && r.referenceType !== "Position");
   const swap = sum(of("SWAP")).neg();
 
-  // a close = an OUT / OUT_BY deal; a staff reverse in place writes an OUT with no ledger row and profit 0: not a close
-  const closes = input.deals.filter((d) => (d.entry === "OUT" || d.entry === "OUT_BY") && !(d.reason === "REVERSE" && d.transactionId === null));
+  // a close = an OUT / OUT_BY deal; a staff reverse in place writes an OUT with no ledger row and profit 0: not a close.
+  // A deleted trade's deals are in no line; a voided trade's are the `voided` line.
+  const shown = input.deals.filter((d) => !(d.positionId && deletedIds.has(d.positionId)));
+  const isClose = (d: DealRow) => (d.entry === "OUT" || d.entry === "OUT_BY") && !(d.reason === "REVERSE" && d.transactionId === null);
+  const live = shown.filter((d) => d.voidedAt === null);
+  const gone = shown.filter((d) => d.voidedAt !== null);
+  const closes = live.filter(isClose);
+  const voidedCloses = gone.filter(isClose);
   const grossPnl = closes.reduce((s, d) => s.add(d.profit), ZERO);
   const volume = closes.reduce((s, d) => s.add(d.volume), ZERO);
   const wins = closes.filter((d) => d.profit.gt(0)).length;
   const losses = closes.filter((d) => d.profit.lt(0)).length;
   // commission when charged: the IN deals executed in the period (Deal.commission is the signed ledger amount, a debit)
-  const commission = input.deals.filter((d) => d.entry === "IN").reduce((s, d) => s.add(d.commission), ZERO).neg();
+  const commission = live.filter((d) => d.entry === "IN").reduce((s, d) => s.add(d.commission), ZERO).neg();
   const netPnl = grossPnl.sub(commission).sub(swap);
+  const voidedGross = voidedCloses.reduce((s, d) => s.add(d.profit), ZERO);
+  const voidedCommission = gone.filter((d) => d.entry === "IN").reduce((s, d) => s.add(d.commission), ZERO).neg();
+  const voidedNet = voidedGross.sub(voidedCommission).add(voidReversal);
 
   const computedClosing = input.openingBalance
     .add(deposits).sub(withdrawals).add(creditUsed).add(adjustments).add(transfersIn).sub(transfersOut).add(nbp).add(ibCommission)
-    .add(grossPnl).sub(commission).sub(swap);
+    .add(grossPnl).sub(commission).sub(swap)
+    .add(voidedNet).add(deletedTrades);
   const difference = input.closingBalance.sub(computedClosing);
 
   return {
@@ -158,7 +191,14 @@ export function summarize(input: {
       commission: money(commission),
       swap: money(swap),
       netPnl: money(netPnl),
-      voided: closes.filter((d) => d.voidedAt !== null).length,
+    },
+    voided: {
+      count: voidedCloses.length,
+      volumeLots: voidedCloses.reduce((s, d) => s.add(d.volume), ZERO).toFixed(2),
+      grossPnl: money(voidedGross),
+      commission: money(voidedCommission),
+      reversal: money(voidReversal),
+      net: money(voidedNet),
     },
     funds: {
       deposits: money(deposits),
@@ -171,6 +211,7 @@ export function summarize(input: {
       transfersOut: money(transfersOut),
       nbp: money(nbp),
       ibCommission: money(ibCommission),
+      deletedTrades: money(deletedTrades),
     },
     net: money(input.closingBalance.sub(input.openingBalance)),
     // ledger amounts carry 4 dp: a difference under half a cent is rounding, not a gap
@@ -179,7 +220,7 @@ export function summarize(input: {
 }
 
 // ------------------------------------------------------------------------------------------------ database part
-const LEDGER_SELECT = { type: true, amount: true, referenceType: true, createdAt: true, updatedAt: true } as const;
+const LEDGER_SELECT = { type: true, amount: true, referenceType: true, referenceId: true, hiddenForPositionId: true, createdAt: true, updatedAt: true } as const;
 type Tx = Prisma.TransactionClient;
 
 /// The sum of the balance-moving amounts booked after a moment (`gt`) or from it on (`gte`): today's balance minus this is
@@ -208,9 +249,15 @@ export async function summarizeAccount(accountId: string, range: SummaryRange, s
       const approved = await tx.transaction.findMany({ where: { accountId, status: "COMPLETED", type: { in: APPROVED_LATER }, updatedAt: inRange }, select: LEDGER_SELECT });
       const deals = await tx.deal.findMany({
         where: { accountId, executedAt: inRange },
-        select: { entry: true, reason: true, volume: true, profit: true, commission: true, voidedAt: true, transactionId: true },
+        select: { positionId: true, entry: true, reason: true, volume: true, profit: true, commission: true, voidedAt: true, transactionId: true },
       });
-      return summarize({ account, range, openingBalance, closingBalance, ledger: [...written, ...approved], deals });
+      const ledger = [...written, ...approved];
+      // which of the positions these deals / rows belong to are voided or deleted
+      const positionIds = [...new Set([...deals.map((d) => d.positionId), ...ledger.filter((r) => r.referenceType === "Position" && r.referenceId).map((r) => r.referenceId!)])];
+      const states = positionIds.length === 0 ? [] : await tx.position.findMany({ where: { accountId, id: { in: positionIds }, OR: [{ status: "VOIDED" }, { deletedAt: { not: null } }] }, select: { id: true, status: true, deletedAt: true } });
+      const deletedPositionIds = new Set(states.filter((p) => p.deletedAt).map((p) => p.id));
+      const voidedPositionIds = new Set(states.filter((p) => !p.deletedAt && p.status === "VOIDED").map((p) => p.id));
+      return summarize({ account, range, openingBalance, closingBalance, ledger, deals, voidedPositionIds, deletedPositionIds });
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
   );
@@ -254,7 +301,14 @@ export function totalsByCurrency(accounts: AccountSummary[]) {
         commission: add((a) => a.trades.commission),
         swap: add((a) => a.trades.swap),
         netPnl: add((a) => a.trades.netPnl),
-        voided: list.reduce((s, a) => s + a.trades.voided, 0),
+      },
+      voided: {
+        count: list.reduce((s, a) => s + a.voided.count, 0),
+        volumeLots: list.reduce((s, a) => s.add(D(a.voided.volumeLots)), ZERO).toFixed(2),
+        grossPnl: add((a) => a.voided.grossPnl),
+        commission: add((a) => a.voided.commission),
+        reversal: add((a) => a.voided.reversal),
+        net: add((a) => a.voided.net),
       },
       funds: Object.fromEntries((Object.keys(list[0].funds) as (keyof AccountSummary["funds"])[]).map((k) => [k, add((a) => a.funds[k])])),
       net: add((a) => a.net),

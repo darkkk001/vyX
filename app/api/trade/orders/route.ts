@@ -54,6 +54,7 @@ import {
   isValidMaxSlippageInput,
   checkAccountTradingRights,
 } from "@/lib/risk";
+import { requestMeta } from "@/lib/order-execution";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
   await prisma.auditLog.create({
@@ -89,7 +90,7 @@ export async function POST(request: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
-  const response = await handlePlaceOrder(request, session);
+  const response = await handlePlaceOrder(request, session, new Date(startedAt));
   const appMs = Date.now() - startedAt;
   response.headers.set("Server-Timing", `app;dur=${appMs}`);
   if (response.status === 201 && !(await isDemoBrokerId(session.brokerId))) {
@@ -100,7 +101,9 @@ export async function POST(request: NextRequest) {
 
 type Session = { accountId: string; brokerId: string };
 
-async function handlePlaceOrder(request: NextRequest, session: Session) {
+async function handlePlaceOrder(request: NextRequest, session: Session, requestedAt: Date) {
+  // execution capture (lib/order-execution.ts): when the request arrived, from where, on what
+  const meta = requestMeta(request.headers, requestedAt);
   const body = await request.json().catch(() => null);
   // synthetic names keep their case (lib/synthetic-symbols.ts); every other name is upper-cased as before
   const symbolName = typeof body?.symbol === "string" ? canonicalSymbolName(body.symbol) : "";
@@ -225,6 +228,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
   // QoreTrader demo tenant (DEMO_BROKER_SUBDOMAIN): instant execution on the B-book only, at the deterministic server price;
   // nothing it does reaches the engine, the gateway, a dealer, a mirror or the coverage account.
   const isDemo = isDemoTenant(broker.subdomain);
+  // every order this request writes carries the request side and the book it is routed to
+  const capture = { requestedAt: meta.requestedAt, clientIp: meta.clientIp, platform: meta.platform, routing: resolveBookType(account.group.category) };
   if (isDemo && resolveBookType(account.group.category) !== "B_BOOK") {
     return NextResponse.json({ error: "DEMO_B_BOOK_ONLY", reason: "Demo accounts trade the B-book only." }, { status: 400 });
   }
@@ -444,6 +449,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
           idempotencyKey,
           status: "PENDING",
           source: orderSource,
+          ...capture,
         },
       });
       // Broker feedback items 14+15 -- placement itself is a lifecycle
@@ -496,7 +502,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
           const marginError = marginGate(fillPrice);
           if (!marginError) {
             const position = await withDeadlockRetry(() => prisma.$transaction(async (tx) => {
-              const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER" });
+              const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", executionMode: "AUTO" });
               await tx.auditLog.create({
                 data: {
                   brokerId: session.brokerId,
@@ -552,7 +558,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
         if (broker.smartDealerRejectPct != null && diffPct.gte(broker.smartDealerRejectPct)) {
           const reason = "price moved beyond broker tolerance (auto-rejected)";
           const rejected = await prisma.$transaction(async (tx) => {
-            const o = await tx.order.update({ where: { id: order.id }, data: { status: "REJECTED", rejectionReason: reason } });
+            const o = await tx.order.update({ where: { id: order.id }, data: { status: "REJECTED", rejectionReason: reason, executedAt: new Date(), executionMode: "AUTO" } });
             await tx.auditLog.create({
               data: {
                 brokerId: session.brokerId,
@@ -673,6 +679,9 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
             filledPrice: fillPrice,
             filledAt: new Date(),
             source: orderSource,
+            ...capture,
+            executedAt: new Date(),
+            executionMode: "AUTO",
           },
         });
         const position = await tx.position.create({
@@ -765,6 +774,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
         idempotencyKey,
         status: "PENDING",
         source: orderSource,
+        ...capture,
       },
     });
     // Broker feedback items 14+15 -- a resting LIMIT/STOP order (the

@@ -360,6 +360,7 @@ export async function executeReverseCloseReopen(
       source: "ADMIN",
       filledPrice: openPrice,
       filledAt: new Date(),
+      executedAt: new Date(), executionMode: "DEALER", platform: "Backoffice", routing: resolveBookType(account.group.category), // execution capture
     },
   });
   const newPosition = await tx.position.create({
@@ -478,7 +479,7 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
         balanceAfter,
         referenceType: "Position",
         referenceId: position.id,
-        note: "Void reversal: undoes commission/swap booked against this position",
+        note: `Void of #${position.ticket}: undoes the commission and swap booked against it`,
       },
     });
   }
@@ -516,6 +517,8 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
 // write-off, plus its accrued swap. One ADJUSTMENT row carries the net change; the position becomes VOIDED. Refused when
 // the balance would end below zero (a profitable trade whose money was withdrawn cannot be undone) or the account is
 // CLOSED. SUSPENDED is allowed. MANAGER files a request, BROKER_ADMIN executes (same rule as the open void).
+// Batch D (owner 2026-10-21): the void stays VISIBLE to the client (history / deals list it as VOIDED, greyed) and the
+// reversal's note names the ticket ("Void of #100003783: ...").
 async function executeVoidClosed(
   tx: Tx,
   params: { brokerId: string; positionId: string; adminId: string },
@@ -525,7 +528,42 @@ async function executeVoidClosed(
   const claim = await tx.position.updateMany({ where: { id: position.id, status: "CLOSED" }, data: { status: "VOIDED" } });
   if (claim.count === 0) throw new PositionActionError("position was changed by another action, refresh and try again");
   await markDealsVoidedInTx(tx, position.id);
+  const r = await reverseClosedTradeInTx(tx, params.brokerId, position, { splitSwap: false, note: `Void of #${position.ticket}: reverses its result, commission and swap` });
 
+  const updated = await tx.position.findUniqueOrThrow({ where: { id: position.id } });
+  await tx.auditLog.create({
+    data: {
+      brokerId: params.brokerId,
+      actorAdminId: params.adminId,
+      action: "CLOSED_TRADE_VOID",
+      entityType: "Position",
+      entityId: position.id,
+      oldValue: { status: "CLOSED", balance: r.balanceBefore.toString(), credit: r.creditBefore.toString(), realizedPnl: position.realizedPnl?.toString() ?? null },
+      newValue: {
+        status: "VOIDED",
+        accountNumber: position.account.accountNumber,
+        symbol: position.symbol.name,
+        side: position.side,
+        volume: position.volume.toString(),
+        reversalAmount: r.reversalAmount.toString(),
+        creditRestored: r.creditUsed.toString(),
+        balanceAfter: r.balanceAfter.toString(),
+      },
+    },
+  });
+  return { kind: "VOID", accountId: position.accountId, position: updated, reversalAmount: r.reversalAmount, balanceBefore: r.balanceBefore, balanceAfter: r.balanceAfter };
+}
+
+/// The money half of a closed-trade void, shared with delete. The reversal = -(commission + P/L + credit used + write-off
+/// booked against the position) - its swap; refused below a zero balance. `splitSwap` (delete): the swap part is booked as
+/// its own SWAP row instead of inside the ADJUSTMENT, so that once the trade's rows are hidden from the client the hidden
+/// rows add up to zero and the swap the client was charged for it comes back on the swap line (lib/account-summary.ts).
+async function reverseClosedTradeInTx(
+  tx: Tx,
+  brokerId: string,
+  position: { id: string; accountId: string; swap: Prisma.Decimal; ticket: number },
+  opts: { splitSwap: boolean; note: string }
+) {
   const rows = await tx.transaction.groupBy({
     by: ["type"],
     where: { accountId: position.accountId, referenceType: "Position", referenceId: position.id, status: "COMPLETED", type: { in: ["COMMISSION", "TRADE_PNL", "CREDIT", "NEGATIVE_BALANCE_PROTECTION"] } },
@@ -535,73 +573,57 @@ async function executeVoidClosed(
   const creditUsed = sum("CREDIT");
   // every one of these rows added its amount to the balance (credit used and the write-off included)
   const booked = sum("COMMISSION").add(sum("TRADE_PNL")).add(creditUsed).add(sum("NEGATIVE_BALANCE_PROTECTION"));
-  const reversalAmount = booked.neg().sub(position.swap);
+  const swapRefund = position.swap.neg();
+  const reversalAmount = booked.neg().add(swapRefund);
 
   const funds = await lockAccountFunds(tx, position.accountId);
   const balanceBefore = funds.balance;
   const balanceAfter = balanceBefore.add(reversalAmount);
   if (balanceAfter.isNegative()) {
-    throw new PositionActionError(`cannot void: the balance would go below zero (balance ${balanceBefore.toFixed(2)}, reversal ${reversalAmount.toFixed(2)})`);
+    throw new PositionActionError(`cannot reverse: the balance would go below zero (balance ${balanceBefore.toFixed(2)}, reversal ${reversalAmount.toFixed(2)})`);
   }
 
   await tx.account.update({
     where: { id: position.accountId },
     data: creditUsed.gt(0) ? { balance: balanceAfter, credit: funds.credit.add(creditUsed) } : { balance: balanceAfter },
   });
-  if (!reversalAmount.isZero()) {
+  const adjustment = opts.splitSwap ? booked.neg() : reversalAmount;
+  let running = balanceBefore;
+  if (!adjustment.isZero()) {
     await tx.transaction.create({
       data: {
-        brokerId: params.brokerId,
-        accountId: position.accountId,
-        type: "ADJUSTMENT",
-        status: "COMPLETED",
-        amount: reversalAmount,
-        balanceBefore,
-        balanceAfter,
-        referenceType: "Position",
-        referenceId: position.id,
-        note: "Void of closed trade: reverses its result, commission and swap",
+        brokerId, accountId: position.accountId, type: "ADJUSTMENT", status: "COMPLETED", amount: adjustment,
+        balanceBefore: running, balanceAfter: running.add(adjustment), referenceType: "Position", referenceId: position.id, note: opts.note,
+      },
+    });
+    running = running.add(adjustment);
+  }
+  if (opts.splitSwap && !swapRefund.isZero()) {
+    await tx.transaction.create({
+      data: {
+        brokerId, accountId: position.accountId, type: "SWAP", status: "COMPLETED", amount: swapRefund,
+        balanceBefore: running, balanceAfter: running.add(swapRefund), referenceType: "Position", referenceId: position.id,
+        note: `Swap of #${position.ticket} returned (trade deleted)`,
       },
     });
   }
-  const updated = await tx.position.findUniqueOrThrow({ where: { id: position.id } });
-  await tx.auditLog.create({
-    data: {
-      brokerId: params.brokerId,
-      actorAdminId: params.adminId,
-      action: "CLOSED_TRADE_VOID",
-      entityType: "Position",
-      entityId: position.id,
-      oldValue: { status: "CLOSED", balance: balanceBefore.toString(), credit: funds.credit.toString(), realizedPnl: position.realizedPnl?.toString() ?? null },
-      newValue: {
-        status: "VOIDED",
-        accountNumber: position.account.accountNumber,
-        symbol: position.symbol.name,
-        side: position.side,
-        volume: position.volume.toString(),
-        reversalAmount: reversalAmount.toString(),
-        creditRestored: creditUsed.toString(),
-        balanceAfter: balanceAfter.toString(),
-      },
-    },
-  });
-  return { kind: "VOID", accountId: position.accountId, position: updated, reversalAmount, balanceBefore, balanceAfter };
+  return { reversalAmount, swapRefund, creditUsed, balanceBefore, balanceAfter, creditBefore: funds.credit };
 }
 
 // ---------- Delete ----------
-// Soft-delete only -- the row (and every FK/report referencing it) never
-// physically disappears, it just stops showing up in the trader-visible
-// statement/history (see Position.deletedAt's own schema comment) and
-// stays fully recoverable from the audit view. Distinct from VOID: VOID
-// undoes an OPEN position's balance impact; DELETE just hides a row
-// (closed or voided) from the trader, e.g. for a genuinely duplicate or
-// test entry that shouldn't have existed at all. OPEN positions are
-// deliberately not eligible: hiding a still-live position from the
-// trader (app/api/trade/positions's own deletedAt filter) while it keeps
-// floating and counting in backoffice margin/exposure would strand it --
-// invisible to the trader, unmanageable (no SL/TP, no close), un-closed
-// forever. Void or close it first.
-export type DeleteResult = { kind: "DELETE"; accountId: string; position: Position };
+// Batch D (owner decision 2026-10-21): DELETE = the money reversed AND the trade invisible to the client.
+//   1. a CLOSED trade is reversed exactly like a void (reverseClosedTradeInTx; refused below a zero balance or on a CLOSED
+//      account) and becomes VOIDED, its deals marked voided; an already VOIDED trade is not reversed again. The swap
+//      part of the reversal is its own SWAP row (see reverseClosedTradeInTx); a trade voided earlier carried its swap
+//      inside the void's ADJUSTMENT, so that part is moved out the same way (a hidden ADJUSTMENT back, a visible SWAP
+//      refund: the balance does not move).
+//   2. the position is soft-deleted (deletedAt / deletedByAdminId / deleteReason, as before) and every ledger row that
+//      references it (TRADE_PNL, COMMISSION, CREDIT, write-off, the void / delete ADJUSTMENT) gets hiddenForPositionId:
+//      the client's history, deals, transactions, statement and summary leave the trade and its money out; the
+//      backoffice still lists them (marked deleted).
+// OPEN positions are refused: hiding a live position would strand it. Void or close it first. Nothing is ever physically
+// removed, but there is no undelete either.
+export type DeleteResult = { kind: "DELETE"; accountId: string; position: Position; reversalAmount: Prisma.Decimal; hiddenRows: number };
 
 export async function executeDelete(
   tx: Tx,
@@ -609,12 +631,50 @@ export async function executeDelete(
 ): Promise<DeleteResult> {
   const position = await tx.position.findUnique({
     where: { id: params.positionId },
-    include: { account: { select: { accountNumber: true } }, symbol: { select: { name: true } } },
+    include: { account: { select: { accountNumber: true, status: true } }, symbol: { select: { name: true } } },
   });
   if (!position || position.brokerId !== params.brokerId) throw new PositionActionError("position not found");
   if (position.status === "OPEN") throw new PositionActionError("cannot delete an open position, void or close it first");
   if (position.deletedAt) throw new PositionActionError("position already deleted");
 
+  let reversalAmount = new Prisma.Decimal(0);
+  let swapRefund = new Prisma.Decimal(0);
+  let balanceAfter: Prisma.Decimal | null = null;
+  const wasStatus = position.status;
+  if (position.status === "CLOSED") {
+    if (position.account.status === "CLOSED") throw new PositionActionError("account is closed");
+    const claim = await tx.position.updateMany({ where: { id: position.id, status: "CLOSED", deletedAt: null }, data: { status: "VOIDED" } });
+    if (claim.count === 0) throw new PositionActionError("position was changed by another action, refresh and try again");
+    await markDealsVoidedInTx(tx, position.id);
+    const r = await reverseClosedTradeInTx(tx, params.brokerId, position, { splitSwap: true, note: `Delete of #${position.ticket}: reverses its result and commission` });
+    reversalAmount = r.reversalAmount;
+    swapRefund = r.swapRefund;
+    balanceAfter = r.balanceAfter;
+  } else if (!position.swap.isZero()) {
+    // already VOIDED: its money is back; move the swap refund out of the void's ADJUSTMENT (net zero on the balance)
+    swapRefund = position.swap.neg();
+    const balance = await lockAccountBalance(tx, position.accountId);
+    await tx.transaction.create({
+      data: {
+        brokerId: params.brokerId, accountId: position.accountId, type: "ADJUSTMENT", status: "COMPLETED", amount: swapRefund.neg(),
+        balanceBefore: balance, balanceAfter: balance.sub(swapRefund), referenceType: "Position", referenceId: position.id,
+        note: `Delete of #${position.ticket}: swap refund moved to the swap line`,
+      },
+    });
+    await tx.transaction.create({
+      data: {
+        brokerId: params.brokerId, accountId: position.accountId, type: "SWAP", status: "COMPLETED", amount: swapRefund,
+        balanceBefore: balance.sub(swapRefund), balanceAfter: balance, referenceType: "Position", referenceId: position.id,
+        note: `Swap of #${position.ticket} returned (trade deleted)`,
+      },
+    });
+  }
+
+  // hide every ledger row of the trade from the client, except the swap refund (a SWAP row: see the header)
+  const hidden = await tx.transaction.updateMany({
+    where: { accountId: position.accountId, referenceType: "Position", referenceId: position.id, type: { not: "SWAP" } },
+    data: { hiddenForPositionId: position.id },
+  });
   const updated = await tx.position.update({
     where: { id: position.id },
     data: { deletedAt: new Date(), deletedByAdminId: params.adminId, deleteReason: params.reason },
@@ -627,17 +687,22 @@ export async function executeDelete(
       action: "POSITION_DELETED",
       entityType: "Position",
       entityId: position.id,
-      oldValue: { deletedAt: null },
+      oldValue: { deletedAt: null, status: wasStatus },
       newValue: {
         accountNumber: position.account.accountNumber,
         symbol: position.symbol.name,
-        status: position.status,
+        ticket: position.ticket,
+        status: "VOIDED",
         reason: params.reason,
+        reversalAmount: reversalAmount.toString(),
+        swapRefund: swapRefund.toString(),
+        hiddenRows: hidden.count,
+        ...(balanceAfter ? { balanceAfter: balanceAfter.toString() } : {}),
       },
     },
   });
 
-  return { kind: "DELETE", accountId: position.accountId, position: updated };
+  return { kind: "DELETE", accountId: position.accountId, position: updated, reversalAmount, hiddenRows: hidden.count };
 }
 
 export type PositionActionExecResult = ReverseInPlaceResult | ReverseCloseReopenResult | VoidResult | DeleteResult;
@@ -660,6 +725,9 @@ async function dispatchExecute(
 }
 
 // ---------- MANAGER maker-checker: request / approve / reject ----------
+const ACTION_WORD: Record<PositionActionType, string> = { DELETE: "delete", VOID: "void", REVERSE_IN_PLACE: "reverse", REVERSE_CLOSE_REOPEN: "reverse" };
+const ALREADY_WAITING = (t: PositionActionType | null) => `a ${t ? ACTION_WORD[t] + " " : ""}request for this trade is already waiting for approval`;
+
 export async function requestPositionAction(
   tx: Tx,
   params: { brokerId: string; positionId: string; adminId: string; actionType: PositionActionType; reason: string | null }
@@ -680,15 +748,25 @@ export async function requestPositionAction(
     await loadOpenPosition(tx, params.brokerId, params.positionId);
   }
 
-  const request = await tx.positionActionRequest.create({
-    data: {
-      brokerId: params.brokerId,
-      positionId: params.positionId,
-      actionType: params.actionType,
-      requestedByAdminId: params.adminId,
-      reason: params.reason,
-    },
-  });
+  // Batch D: one waiting request per position (a second one is refused, whatever its type). The partial unique index
+  // PositionActionRequest_one_pending_per_position backs this against two managers filing at the same moment.
+  const waiting = await tx.positionActionRequest.findFirst({ where: { positionId: params.positionId, status: "PENDING" }, select: { actionType: true } });
+  if (waiting) throw new PositionActionError(ALREADY_WAITING(waiting.actionType));
+  let request;
+  try {
+    request = await tx.positionActionRequest.create({
+      data: {
+        brokerId: params.brokerId,
+        positionId: params.positionId,
+        actionType: params.actionType,
+        requestedByAdminId: params.adminId,
+        reason: params.reason,
+      },
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") throw new PositionActionError(ALREADY_WAITING(null));
+    throw err;
+  }
   await tx.auditLog.create({
     data: {
       brokerId: params.brokerId,

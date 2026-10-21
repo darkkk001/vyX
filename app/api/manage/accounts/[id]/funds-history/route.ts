@@ -17,12 +17,12 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   if (!account || account.brokerId !== session!.brokerId) return NextResponse.json({ error: "not found" }, { status: 404 });
   const where = { accountId: id, type: { in: [...FUNDS_HISTORY_TYPES] } };
   const [rows, sums] = await Promise.all([
-    prisma.transaction.findMany({ where, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, status: true, amount: true, balanceAfter: true, note: true, createdAt: true } }),
+    prisma.transaction.findMany({ where, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, status: true, amount: true, balanceAfter: true, note: true, createdAt: true, hiddenForPositionId: true } }),
     prisma.transaction.groupBy({ by: ["type"], where: { ...where, status: "COMPLETED" }, _sum: { amount: true }, _count: { _all: true } }),
   ]);
   return NextResponse.json({
     currency: account.currency,
-    rows: rows.map((t) => ({ id: t.id, type: t.type, status: t.status, amount: t.amount.toFixed(2), balanceAfter: t.balanceAfter.toFixed(2), note: t.note ?? "", at: t.createdAt.toISOString() })),
+    rows: rows.map((t) => ({ id: t.id, type: t.type, status: t.status, amount: t.amount.toFixed(2), balanceAfter: t.balanceAfter.toFixed(2), note: t.note ?? "", at: t.createdAt.toISOString(), hiddenFromClient: t.hiddenForPositionId != null })), // Batch D: a deleted trade's row (the client does not see it)
     totals: sums.map((s) => ({ type: s.type, amount: s._sum.amount ? s._sum.amount.toFixed(2) : "0.00", count: s._count._all })),
   });
 }
