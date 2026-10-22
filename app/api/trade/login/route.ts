@@ -7,6 +7,7 @@ import {
   ACCOUNT_SESSION_COOKIE_NAME,
   accountSessionCookieOptions,
 } from "@/lib/account-auth";
+import { wantsSessionToken } from "@/lib/app-web";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
 import { issuePending2faChallenge } from "@/lib/totp";
@@ -101,6 +102,8 @@ export async function POST(request: NextRequest) {
     accountId: account.id,
     accountNumber: account.accountNumber,
     accountMode: account.accountMode,
+    // the QoreTrader web app keeps the session itself (lib/app-web.ts); never in the body otherwise
+    ...(wantsSessionToken(request.headers) ? { sessionToken: token } : {}),
   });
   response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, await accountSessionCookieOptions(remember));
   return response;

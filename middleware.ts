@@ -4,6 +4,7 @@ import { verifyDesktopGateToken } from "@/lib/desktop-gate";
 import { createBrokerResolver } from "@/lib/broker-resolve-cache";
 import { createSchemaGate, schemaGuardExempt, UPDATING_BODY } from "@/lib/schema-guard-edge";
 import { DEMO_ROBOTS_HEADER, demoBlockFor, isDemoTenant } from "@/lib/demo-policy";
+import { appWebCorsHeaders } from "@/lib/app-web";
 
 // Resolves which Broker a request belongs to, from the Host header:
 //   - subdomain:      brokername.<ROOT_DOMAIN>
@@ -140,7 +141,17 @@ async function askSchemaBehind(request: NextRequest): Promise<boolean> {
   return ((await res.json()) as { behind?: boolean }).behind === true;
 }
 
+// The QoreTrader web app (lib/app-web.ts) is a cross-origin caller: its preflight is answered here, before any
+// broker resolution, and every answer to it (refusals included) carries the CORS headers, else the browser hides it.
 export async function middleware(request: NextRequest) {
+  const cors = appWebCorsHeaders(request.headers.get("origin"), request.nextUrl.pathname);
+  if (cors && request.method === "OPTIONS") return new NextResponse(null, { status: 204, headers: cors });
+  const response = await route(request);
+  if (cors) for (const [k, v] of Object.entries(cors)) response.headers.set(k, v);
+  return response;
+}
+
+async function route(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (!schemaGuardExempt(pathname) && (await schemaGate.isBehind(() => askSchemaBehind(request)))) {
     const headers = { "Retry-After": "30", "Cache-Control": "no-store" };

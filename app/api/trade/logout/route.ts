@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ACCOUNT_SESSION_COOKIE_NAME, accountSessionCookieOptions, revokeAccountSession } from "@/lib/account-auth";
+import { bearerToken } from "@/lib/app-web";
 
 export async function POST(request: NextRequest) {
-  const token = request.cookies.get(ACCOUNT_SESSION_COOKIE_NAME)?.value;
+  // cookie, or the QoreTrader web app's bearer token (lib/app-web.ts)
+  const token = request.cookies.get(ACCOUNT_SESSION_COOKIE_NAME)?.value ?? bearerToken(request.headers.get("authorization"));
   // Deletes the Redis-held session record, not just the cookie — a token
   // captured before logout (e.g. via a leaked log line, an XSS bug
   // elsewhere) can no longer be replayed after this. Clearing only the

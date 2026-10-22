@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
 import { demoSessionHook } from "@/lib/demo-hook";
+import { bearerToken } from "@/lib/app-web";
 
 export const ACCOUNT_SESSION_COOKIE_NAME = "vyx_trade_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days -- Redis TTL backstop, both remembered and not (see createAccountSession's own comment on why this differs from the cookie's own maxAge)
@@ -260,11 +261,12 @@ export async function revokeAccountSessionById(accountId: string, sessionId: str
 // against another broker's data, even if the token itself is valid.
 export async function getAccountSession(): Promise<AccountSessionPayload | null> {
   const cookieStore = await cookies();
-  const token = cookieStore.get(ACCOUNT_SESSION_COOKIE_NAME)?.value;
+  const headerList = await headers();
+  // the QoreTrader web app (lib/app-web.ts) sends the same token as a bearer header: its origin never gets the cookie
+  const token = cookieStore.get(ACCOUNT_SESSION_COOKIE_NAME)?.value ?? bearerToken(headerList.get("authorization"));
   if (!token) return null;
 
   // latency fix 1 (2026-09-26): the session GET and the client-build GET run together, one Redis round trip
-  const headerList = await headers();
   const buildLookup = prefetchClientBuild(headerList);
   const session = await verifyAccountSessionToken(token);
   if (!session) return null;
