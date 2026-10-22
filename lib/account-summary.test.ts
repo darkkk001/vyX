@@ -27,6 +27,7 @@ vi.mock("@/lib/config-events", () => ({ withConfigEvent: (_scope: string, h: unk
 import { getAccountSession } from "@/lib/account-auth";
 import { getAdminSession } from "@/lib/auth";
 import { bookedAt, movesBalance, parseRange, summarize, summarizeAccount, summarizeAccounts, type AccountSummary, type LedgerRow } from "@/lib/account-summary";
+import { INITIAL_BALANCE_NOTE, LIVE_STARTING_BALANCE_NOTE } from "@/lib/initial-balance";
 import { closePositionInTx } from "@/lib/position-close";
 import { chargeCommission } from "@/lib/group-pricing";
 import { writeOpenDealInTx } from "@/lib/deals";
@@ -83,13 +84,47 @@ describe("account summary (pure)", () => {
         { entry: "OUT_BY", reason: "CLOSE_BY", volume: D("0.6"), profit: D(-10), commission: D(0), voidedAt: null, transactionId: "t2" },
         { entry: "OUT", reason: "REVERSE", volume: D(1), profit: D(0), commission: D(0), voidedAt: null, transactionId: null },
       ],
+      // the count: closed positions whose final close is in the range, won / lost on all their closes
+      positions: [
+        { id: "p1", status: "CLOSED", closes: [{ executedAt: new Date(5), profit: D(30) }, { executedAt: new Date(6), profit: D(-10) }] },   // partials merge: 1 trade, +20
+        { id: "p2", status: "OPEN", closes: [{ executedAt: new Date(7), profit: D(5) }] },                                                     // still open: no trade
+        { id: "p3", status: "CLOSED", closes: [{ executedAt: new Date(-5), profit: D(-50) }, { executedAt: new Date(8), profit: D(10) }] },  // final close inside: a loss of -40
+        { id: "p4", status: "CLOSED", closes: [{ executedAt: new Date(9), profit: D(1) }, { executedAt: new Date(20_000), profit: D(1) }] }, // final close after the range
+        { id: "p5", status: "CLOSED", closes: [{ executedAt: new Date(9), profit: D(0) }] },                                                   // flat: a trade, neither won nor lost
+      ],
     });
-    expect(s.trades).toEqual({ count: 2, wins: 1, losses: 1, winRate: "50.00", volumeLots: "1.00", grossPnl: "20.00", commission: "5.00", swap: "1.50", netPnl: "13.50" });
+    // P/L, volume and costs stay sums over the closes (the deals); the count is positions
+    expect(s.trades).toEqual({ count: 3, wins: 1, losses: 1, winRate: "33.33", volumeLots: "1.00", grossPnl: "20.00", commission: "5.00", swap: "1.50", netPnl: "13.50" });
     expect(s.voided).toEqual({ count: 0, volumeLots: "0.00", grossPnl: "0.00", commission: "0.00", reversal: "0.00", net: "0.00" });
     expect(s.funds.creditIn).toBe("300.00");
     expect(s.funds.transfersOut).toBe("20.00");
     expect(s.reconciliation).toEqual({ computedClosing: "1093.50", difference: "0.00", ok: true });
     expect(s.net).toBe("93.50");
+  });
+
+  it("the account-creation funding is its own figure inside adjustments; a voided position is one voided trade, a deleted one none", () => {
+    const note = (type: TransactionType, amount: string, n: string | null): LedgerRow => ({ type, amount: D(amount), referenceType: null, note: n, createdAt: new Date(1), updatedAt: new Date(1) });
+    const s = summarize({
+      account: { id: "acc", accountNumber: "1", currency: "USD" },
+      range: { from: new Date(0), to: new Date(10_000) },
+      openingBalance: D(0),
+      closingBalance: D(1265),
+      ledger: [note("ADJUSTMENT", "1000", INITIAL_BALANCE_NOTE), note("ADJUSTMENT", "250", LIVE_STARTING_BALANCE_NOTE), note("ADJUSTMENT", "15", "Goodwill"), note("DEPOSIT", "0", INITIAL_BALANCE_NOTE)],
+      deals: [],
+      voidedPositionIds: new Set(["v", "w"]),
+      deletedPositionIds: new Set(["d"]),
+      positions: [
+        { id: "v", status: "VOIDED", closes: [{ executedAt: new Date(4), profit: D(1) }, { executedAt: new Date(5), profit: D(3) }] },   // two partials: one voided trade
+        { id: "w", status: "VOIDED", closes: [{ executedAt: new Date(4), profit: D(1) }, { executedAt: new Date(20_000), profit: D(3) }] }, // final close after the range
+        { id: "d", status: "CLOSED", closes: [{ executedAt: new Date(5), profit: D(3) }] },
+        { id: "x", status: "VOIDED", closes: [{ executedAt: new Date(5), profit: D(3) }] },
+      ],
+    });
+    expect(s.funds.adjustments).toBe("1265.00");
+    expect(s.funds.initialBalance).toBe("1250.00");
+    expect(s.trades.count).toBe(0);
+    expect(s.voided.count).toBe(1);
+    expect(s.reconciliation.ok).toBe(true);
   });
 
   it("range: defaults to the last 90 days; bad or reversed dates are refused", () => {
@@ -208,6 +243,8 @@ describe("account summary over the real write paths", () => {
     await book(fx, "CREDIT_IN", "300", at(84));                 // credit facility: not balance
     await book(fx, "SWAP", "-1.25", at(36));
     await book(fx, "ADJUSTMENT", "10", at(96));
+    const funding = await book(fx, "ADJUSTMENT", "5", at(97));
+    await prisma.transaction.update({ where: { id: funding.id }, data: { note: INITIAL_BALANCE_NOTE } });   // as the provisioning books it
     const b = await open(fx, "SELL", "2", "100", at(98), "1.5");   // commission 3.00 inside, closed after the range
     const c = await open(fx, "BUY", "100", "100", at(100), "0.1");  // commission 10.00 inside
     await close(fx, c.id, "0", at(102));                       // -10,000: uses the 300 credit, the rest is written off
@@ -225,15 +262,18 @@ describe("account summary over the real write paths", () => {
     // opening: 10,000 - 2 + 4 (the partial before the range); the pending request moved nothing
     expect(s.openingBalance).toBe("10002.00");
     expect(s.funds).toEqual({
-      deposits: "0.00", withdrawals: "500.00", creditIn: "300.00", creditOut: "0.00", creditUsed: "300.00", adjustments: "10.00",
+      deposits: "0.00", withdrawals: "500.00", creditIn: "300.00", creditOut: "0.00", creditUsed: "300.00", adjustments: "15.00", initialBalance: "5.00",
       transfersIn: "200.00", transfersOut: "50.00", nbp: s.funds.nbp, ibCommission: "0.00", deletedTrades: "0.00",
     });
     expect(D(s.funds.nbp).gt(0)).toBe(true);
-    expect(s.trades.count).toBe(2);   // the rest of A (-3), C (-10,000); V (+30) was voided since: its own line
-    expect(s.trades.wins).toBe(0);
+    // positions closed inside: A (its partial +4 before the range merges into it: +1, a win) and C (-10,000); V (+30) was
+    // voided since: its own line; B closes after the range
+    expect(s.trades.count).toBe(2);
+    expect(s.trades.wins).toBe(1);
+    expect(s.trades.losses).toBe(1);
     expect(s.voided).toEqual({ count: 1, volumeLots: "1.00", grossPnl: "30.00", commission: "1.00", reversal: "-29.00", net: "0.00" });
     expect(s.trades.volumeLots).toBe("100.60");
-    expect(s.trades.grossPnl).toBe("-10003.00");
+    expect(s.trades.grossPnl).toBe("-10003.00");   // the closes inside: A's partial before the range is not in the sum
     expect(s.trades.commission).toBe("13.00");   // B 3 + C 10 charged inside (V's 1 is in the voided line); A's 2 was before
     expect(s.trades.swap).toBe("1.25");
     expect(s.closingBalance).toBe("0.00");   // the write-off left the account at zero; the adjustment / void came after it
@@ -249,7 +289,9 @@ describe("account summary over the real write paths", () => {
     expect(all.openingBalance).toBe("0.00");
     const acc = await prisma.account.findUniqueOrThrow({ where: { id: fx.accountId }, select: { balance: true } });
     expect(all.closingBalance).toBe(acc.balance.toFixed(2));
-    expect(before.trades.count).toBe(1);   // the partial close of A, counted at its own time
+    expect(before.trades.count).toBe(0);   // A's partial close: A was still open, so no trade yet (its P/L is in the sum)
+    expect(before.trades.grossPnl).toBe("4.00");
+    expect(after.trades.count).toBe(1);    // B
     expect(after.trades.grossPnl).toBe("20.00");
   }, 60000);
 

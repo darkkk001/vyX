@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 import { demoSubdomain, GUEST_NUMBER_MAX, GUEST_NUMBER_MIN, isGuestAccountNumber } from "@/lib/demo-policy";
 import { assertAccountStructure } from "@/lib/account-structure";
+import { INITIAL_BALANCE_NOTE } from "@/lib/initial-balance";
 
 // QoreTrader demo tenant, server side: who the demo broker is, how a guest account is made, and the Redis state the lazy
 // SL/TP sweep keeps per guest. The tenant is marked by DEMO_BROKER_SUBDOMAIN (lib/demo-policy.ts); no schema change.
@@ -179,7 +180,7 @@ export async function createGuestAccount(db: PrismaClient = prisma): Promise<Gue
             amount: new Prisma.Decimal(GUEST_START_BALANCE),
             balanceBefore: new Prisma.Decimal(0),
             balanceAfter: new Prisma.Decimal(GUEST_START_BALANCE),
-            note: "Initial balance on account creation",
+            note: INITIAL_BALANCE_NOTE,
           },
         });
         await tx.auditLog.create({
