@@ -654,18 +654,6 @@ html[data-mode="light"], html[data-mode="light"] body {
 /* "0.50 of 1.00" runs into the empty OPEN cell beside it */
 .history-row.history-child .pos-cell { min-width: 0; overflow: visible; text-overflow: clip; white-space: nowrap; }
 .history-tag { margin-left: 6px; white-space: nowrap; font-size: 10px; color: var(--text-3); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 4px; }
-/* Deals tab (MT5 Deals view): one row per execution */
-.deals-table-header, .deals-row {
-  display: grid;
-  grid-template-columns: 1.2fr 0.75fr 0.9fr 0.75fr 0.5fr 0.6fr 0.55fr 0.75fr 0.75fr 0.55fr 0.7fr;
-  gap: 8px; padding: 8px 4px; min-width: 820px;
-}
-.deals-table-header {
-  font-size: 10px; color: var(--text-3); letter-spacing: .03em; text-transform: uppercase;
-  border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-1); z-index: 1;
-}
-.deals-row { align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2); font-size: 12.5px; }
-.deals-row:last-child { border-bottom: none; }
 .pos-actions { display: flex; align-items: center; gap: 2px; justify-content: flex-end; }
 
 .sltp-pill {

@@ -63,25 +63,6 @@ export type ApiPosition = {
   lastCloseAt?: string | null;
 };
 
-// GET /api/trade/deals: one execution (MT5 Deals view). side is THIS deal's direction (the close of a BUY is a SELL);
-// profit / commission / swap are ledger amounts (a charge is negative).
-export type ApiDeal = {
-  ticket: number;
-  positionTicket: number;
-  symbol: string | null;
-  digits: number | null;
-  side: "BUY" | "SELL";
-  entry: "IN" | "OUT" | "OUT_BY";
-  reason: string;
-  volume: string;
-  price: string;
-  profit: string;
-  commission: string;
-  swap: string;
-  executedAt: string;
-  byPositionTicket: number | null;
-  status: "FILLED" | "VOIDED";
-};
 
 // tickAt is the real last-tick time (see LivePrice.tickAt's own schema
 // comment) -- what feedStatusFor's staleness clock should read, not
@@ -267,13 +248,6 @@ export const tradeApi = {
     if (params.to) qs.set("to", params.to);
     if (params.symbol) qs.set("symbol", params.symbol);
     return call<ApiPosition[]>(`/api/trade/history?${qs.toString()}`);
-  },
-  deals: (params: { from?: string; to?: string; symbol?: string }) => {
-    const qs = new URLSearchParams();
-    if (params.from) qs.set("from", params.from);
-    if (params.to) qs.set("to", params.to);
-    if (params.symbol) qs.set("symbol", params.symbol);
-    return call<ApiDeal[]>(`/api/trade/deals?${qs.toString()}`);
   },
   placeOrder: (body: {
     symbol: string;

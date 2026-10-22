@@ -25,7 +25,7 @@ import {
   type SymbolCategory,
 } from "@/lib/market-simulator";
 import { conversionRateNum, fxLookupNum, marginInAccount, newOrderMarginInAccount, pnlInAccount, quoteCurrencyOf, type FxQuoteNum } from "@/lib/fx-client";
-import { tradeApi, serverNow, effectiveAsk, spreadRuleFromPrice, ApiError, type SpreadRule, type AccountInfo, type ApiPosition, type ApiDeal, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
+import { tradeApi, serverNow, effectiveAsk, spreadRuleFromPrice, ApiError, type SpreadRule, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
 import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import AddSymbolDialog from "./AddSymbolDialog";
 import ChartSettingsDialog from "./ChartSettingsDialog";
@@ -93,7 +93,7 @@ function estimateFee(method: ApiPaymentMethod, amount: number): number {
   return (amount * parseFloat(method.feePercent)) / 100 + parseFloat(method.feeFixed);
 }
 
-type BottomTab = "positions" | "net" | "orders" | "allOrders" | "history" | "deals" | "analytics" | "logs";
+type BottomTab = "positions" | "net" | "orders" | "allOrders" | "history" | "analytics" | "logs";
 // id is string for a persisted server-side entry (its AuditLog cuid, see
 // the mount effect below) or number for an ephemeral session-local one
 // (nextId(), from appendLog) -- both render identically, only the source
@@ -381,8 +381,7 @@ export default function WebTrader({
   const [pendingOrders, setPendingOrders] = useState<ApiOrder[]>([]);
   const [allOrders, setAllOrders] = useState<ApiOrder[]>([]);
   const [history, setHistory] = useState<ApiPosition[]>([]);
-  // the Deals tab (GET /api/trade/deals, MT5 Deals view) and the History groups the trader opened (by position id)
-  const [deals, setDeals] = useState<ApiDeal[]>([]);
+  // the History groups the trader opened (by position id)
   const [openHistoryGroups, setOpenHistoryGroups] = useState<Set<string>>(() => new Set());
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comments, setComments] = useState<Record<string, string>>({});
@@ -1289,17 +1288,6 @@ export default function WebTrader({
         .catch(() => [])
     );
   }, [histFrom, histTo, histSymbol]);
-  const refreshDeals = useCallback(async () => {
-    setDeals(
-      await tradeApi
-        .deals({
-          from: histFrom ? localDayBoundary(histFrom, false) : undefined,
-          to: histTo ? localDayBoundary(histTo, true) : undefined,
-          symbol: histSymbol,
-        })
-        .catch(() => [])
-    );
-  }, [histFrom, histTo, histSymbol]);
   const refreshFundsHistory = useCallback(async () => setFundsHistory(await tradeApi.fundsHistory().catch(() => [])), []);
   const refreshPaymentMethods = useCallback(async () => {
     const methods = await tradeApi.paymentMethods().catch(() => []);
@@ -1482,7 +1470,6 @@ export default function WebTrader({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => { refreshHistory(); }, [refreshHistory]);
-  useEffect(() => { if (activeBottomTab === "deals") refreshDeals(); }, [activeBottomTab, refreshDeals]);
   // Previously only fetched when the Funds modal opened -- the bottom-
   // panel History tab now shows deposits/withdrawals/adjustments
   // alongside closed trades (see historyRows below), so it needs to be
@@ -4631,7 +4618,6 @@ export default function WebTrader({
                   <div className={`tab${activeBottomTab === "orders" ? " active" : ""}`} onClick={() => setActiveBottomTab("orders")}>Pending Orders ({pendingOrders.length})</div>
                   <div className={`tab${activeBottomTab === "allOrders" ? " active" : ""}`} onClick={() => setActiveBottomTab("allOrders")}>Orders ({allOrders.length})</div>
                   <div className={`tab${activeBottomTab === "history" ? " active" : ""}`} onClick={() => setActiveBottomTab("history")}>History</div>
-                  <div className={`tab${activeBottomTab === "deals" ? " active" : ""}`} onClick={() => setActiveBottomTab("deals")}>Deals</div>
                   <div className={`tab${activeBottomTab === "analytics" ? " active" : ""}`} onClick={() => setActiveBottomTab("analytics")}>Analytics</div>
                   <div className={`tab${activeBottomTab === "logs" ? " active" : ""}`} onClick={() => setActiveBottomTab("logs")}>Logs</div>
                 </div>
@@ -4991,56 +4977,6 @@ export default function WebTrader({
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(amount)]}`}>{money(amount)}</span>
-                          </div>
-                        );
-                      })}
-                    </>
-                  )}
-                </div>
-              ) : null}
-
-              {activeBottomTab === "deals" ? (
-                <div className="panel-body">
-                  <div className="history-toolbar">
-                    <select className="history-period-select" value={histPeriod} onChange={(e) => selectHistPeriod(e.target.value)}>
-                      <option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="all">All history</option><option value="custom">Custom range</option>
-                    </select>
-                    <select className="history-period-select" value={histSymbol} onChange={(e) => setHistSymbol(e.target.value)}>
-                      <option value="">All symbols</option>
-                      {allSymbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
-                    </select>
-                  </div>
-                  {histPeriod === "custom" ? (
-                    <div className="history-custom-range">
-                      <input type="date" className="mono" value={histFrom} onChange={(e) => setHistFrom(e.target.value)} />
-                      <span style={{ color: "var(--text-3)", fontSize: 11 }}>to</span>
-                      <input type="date" className="mono" value={histTo} onChange={(e) => setHistTo(e.target.value)} />
-                    </div>
-                  ) : null}
-                  {deals.length === 0 ? (
-                    <div className="empty-state">No deals yet</div>
-                  ) : (
-                    <>
-                      <div className="deals-table-header">
-                        <span>Time</span><span>Deal</span><span>Position</span><span>Symbol</span><span>Type</span><span>Direction</span><span>Volume</span><span>Price</span><span>Commission</span><span>Swap</span><span>Profit</span>
-                      </div>
-                      {deals.map((d) => {
-                        const voided = d.status === "VOIDED";
-                        const profit = Number(d.profit);
-                        const at = new Date(d.executedAt);
-                        return (
-                          <div className="deals-row" key={d.ticket} style={voided ? { opacity: 0.45 } : undefined} title={voided ? "Voided: this trade's result was reversed" : undefined}>
-                            <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{at.toLocaleDateString([], { month: "short", day: "numeric" })} {at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
-                            <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{d.ticket}</span>
-                            <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>#{d.positionTicket}</span>
-                            <span className="pos-cell pos-symbol">{d.symbol ?? ""}</span>
-                            <span className="pos-cell"><span className={`pos-side ${d.side.toLowerCase()}`}>{d.side === "BUY" ? "Buy" : "Sell"}</span></span>
-                            <span className="pos-cell" style={{ color: "var(--text-2)", fontSize: 11 }}>{d.entry === "IN" ? "In" : d.entry === "OUT_BY" ? `Out by${d.byPositionTicket ? ` #${d.byPositionTicket}` : ""}` : "Out"}</span>
-                            <span className="pos-cell mono">{formatVolume(d.volume)}</span>
-                            <span className="pos-cell mono">{fmt(parseFloat(d.price), d.digits ?? 2)}</span>
-                            <span className="pos-cell pos-commission mono">{formatSigned(Number(d.commission))}</span>
-                            <span className="pos-cell pos-swap mono">{formatSigned(Number(d.swap))}</span>
-                            <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(profit)]}`}>{formatSigned(profit)}</span>
                           </div>
                         );
                       })}
