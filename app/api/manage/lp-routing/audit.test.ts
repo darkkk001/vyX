@@ -25,6 +25,7 @@ afterAll(async () => {
   await prisma.auditLog.deleteMany({ where });
   await prisma.lpRoutingRule.deleteMany({ where });
   await prisma.liquidityProvider.deleteMany({ where });
+  await prisma.group.deleteMany({ where });
   await prisma.adminUser.deleteMany({ where });
   await prisma.broker.deleteMany({ where: { id: { in: brokers } } });
 });
@@ -54,5 +55,41 @@ describe("LP / routing audit rows", () => {
     const d = await prisma.auditLog.findFirstOrThrow({ where: { brokerId: fx.brokerId, action: "LP_ROUTING_RULE_DELETED" } });
     expect([d.entityId, (d.oldValue as { priority: number; notes: string }).notes]).toEqual([id, "backup"]);
     expect(await prisma.lpRoutingRule.count({ where: { id } })).toBe(0);
+  });
+
+  it("M5 fields: a rule carries its group, weight and on / off; GET returns them; a PATCH changes them with one audit row", async () => {
+    const fx = await fixture();
+    const group = await prisma.group.create({ data: { brokerId: fx.brokerId, name: `MKT ${randomUUID().slice(0, 6)}`, category: "A_BOOK" } });
+    const { POST, GET } = await import("@/app/api/manage/lp-routing/route");
+    const created = await POST(req("/api/manage/lp-routing", "POST", { liquidityProviderId: fx.lpId, groupId: group.id, weight: "70", enabled: false }));
+    expect(created.status).toBe(201);
+    const { id } = await created.json();
+    const list = (await (await GET()).json()) as { id: string; groupId: string; groupName: string; groupCategory: string; weight: string; enabled: boolean; priority: number }[];
+    expect(list.map((r) => [r.id, r.groupId, r.groupName, r.groupCategory, r.weight, r.enabled, r.priority])).toEqual([[id, group.id, group.name, "A_BOOK", "70", false, 1]]);
+
+    const { PATCH } = await import("@/app/api/manage/lp-routing/[id]/route");
+    const patch = (body: unknown) => PATCH(req(`/api/manage/lp-routing/${id}`, "PATCH", body), { params: Promise.resolve({ id }) });
+    expect((await (await patch({ enabled: true, weight: 30, priority: 2, groupId: null })).json()).changed).toBe(true);
+    const row = await prisma.lpRoutingRule.findUniqueOrThrow({ where: { id } });
+    expect([row.enabled, row.weight.toString(), row.priority, row.groupId]).toEqual([true, "30", 2, null]);
+    const a = await prisma.auditLog.findFirstOrThrow({ where: { brokerId: fx.brokerId, action: "LP_ROUTING_RULE_CHANGED" } });
+    expect([(a.oldValue as { enabled: boolean }).enabled, (a.newValue as { weight: string }).weight]).toEqual([false, "30"]);
+    // the same values again: nothing written
+    expect((await (await patch({ enabled: true })).json()).changed).toBe(false);
+    expect(await prisma.auditLog.count({ where: { brokerId: fx.brokerId, action: "LP_ROUTING_RULE_CHANGED" } })).toBe(1);
+  });
+
+  it("refuses another broker's group, a weight of 0 and a non-boolean enabled", async () => {
+    const fx = await fixture();
+    const other = await fixture();
+    const foreign = await prisma.group.create({ data: { brokerId: other.brokerId, name: `X ${randomUUID().slice(0, 6)}` } });
+    // fixture() switched the session to `other`; act as the first broker again
+    const { getAdminSession } = await import("@/lib/auth");
+    vi.mocked(getAdminSession).mockResolvedValue({ adminId: fx.adminId, role: "BROKER_ADMIN", brokerId: fx.brokerId } as never);
+    const { POST } = await import("@/app/api/manage/lp-routing/route");
+    expect((await POST(req("/api/manage/lp-routing", "POST", { liquidityProviderId: fx.lpId, groupId: foreign.id }))).status).toBe(404);
+    expect((await POST(req("/api/manage/lp-routing", "POST", { liquidityProviderId: fx.lpId, weight: 0 }))).status).toBe(400);
+    expect((await POST(req("/api/manage/lp-routing", "POST", { liquidityProviderId: fx.lpId, enabled: "yes" }))).status).toBe(400);
+    expect(await prisma.lpRoutingRule.count({ where: { brokerId: fx.brokerId } })).toBe(0);
   });
 });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { symbolHiddenFromBroker } from "@/lib/synthetic-symbols";
+import { parseRuleFields, ruleSnapshot, RuleInputError } from "@/lib/lp-routing-input";
 
 async function requireBrokerAdmin() {
   const session = await getAdminSession();
@@ -11,8 +11,8 @@ async function requireBrokerAdmin() {
   return session!;
 }
 
-// Intended routing, not live routing -- see LpRoutingRule's schema
-// comment. No execution path reads this yet.
+// QoreBridge M5: the rules QoreBridge reads (view HedgeRoutingRule) to pick the provider(s) for a market-book hedge.
+// lib/lp-routing-input.ts has the field rules.
 export async function GET() {
   const session = await requireBrokerAdmin();
   if (!session) {
@@ -24,6 +24,7 @@ export async function GET() {
     include: {
       liquidityProvider: { select: { name: true, status: true } },
       symbol: { select: { name: true } },
+      group: { select: { name: true, category: true } },
     },
     orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
   });
@@ -34,8 +35,14 @@ export async function GET() {
       liquidityProviderId: r.liquidityProviderId,
       liquidityProviderName: r.liquidityProvider.name,
       liquidityProviderStatus: r.liquidityProvider.status,
+      symbolId: r.symbolId,
       symbolName: r.symbol?.name ?? null,
+      groupId: r.groupId,
+      groupName: r.group?.name ?? null,
+      groupCategory: r.group?.category ?? null,
       priority: r.priority,
+      weight: r.weight.toString(),
+      enabled: r.enabled,
       notes: r.notes,
       createdAt: r.createdAt.toISOString(),
     }))
@@ -50,33 +57,27 @@ export async function POST(request: NextRequest) {
   const brokerId = session.brokerId!;
 
   const body = await request.json().catch(() => null);
-  const liquidityProviderId = typeof body?.liquidityProviderId === "string" ? body.liquidityProviderId : "";
-  if (!liquidityProviderId) {
+  if (typeof body?.liquidityProviderId !== "string" || !body.liquidityProviderId) {
     return NextResponse.json({ error: "liquidityProviderId is required" }, { status: 400 });
   }
-  const provider = await prisma.liquidityProvider.findUnique({ where: { id: liquidityProviderId } });
-  if (!provider || provider.brokerId !== brokerId) {
-    return NextResponse.json({ error: "liquidity provider not found" }, { status: 404 });
+  let fields;
+  try {
+    fields = await parseRuleFields(prisma, brokerId, body);
+  } catch (e) {
+    if (e instanceof RuleInputError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
   }
-
-  let symbolId: string | null = null;
-  if (typeof body?.symbolId === "string" && body.symbolId) {
-    const symbol = await prisma.symbol.findUnique({ where: { id: body.symbolId } });
-    if (!symbol || (await symbolHiddenFromBroker(prisma, brokerId, symbol.name))) {
-      return NextResponse.json({ error: "symbol not found" }, { status: 404 });
-    }
-    symbolId = symbol.id;
-  }
-
-  const priority = Number.isFinite(Number(body?.priority)) ? Math.trunc(Number(body.priority)) : 1;
-  if (priority <= 0) {
-    return NextResponse.json({ error: "priority must be a positive integer" }, { status: 400 });
-  }
-  const notes = typeof body?.notes === "string" && body.notes.trim() ? body.notes.trim() : null;
+  const liquidityProviderId = fields.liquidityProviderId!;
+  const provider = await prisma.liquidityProvider.findUniqueOrThrow({ where: { id: liquidityProviderId } });
 
   // Phase 2 batch 5: created and audited together (a rule create used to write no audit row)
   const rule = await prisma.$transaction(async (tx) => {
-    const created = await tx.lpRoutingRule.create({ data: { brokerId, liquidityProviderId, symbolId, priority, notes } });
+    const created = await tx.lpRoutingRule.create({
+      data: {
+        brokerId, liquidityProviderId, groupId: fields.groupId ?? null, symbolId: fields.symbolId ?? null, priority: fields.priority ?? 1,
+        ...(fields.weight ? { weight: fields.weight } : {}), enabled: fields.enabled ?? true, notes: fields.notes ?? null,
+      },
+    });
     await tx.auditLog.create({
       data: {
         brokerId,
@@ -84,7 +85,7 @@ export async function POST(request: NextRequest) {
         action: "LP_ROUTING_RULE_CREATED",
         entityType: "LpRoutingRule",
         entityId: created.id,
-        newValue: { liquidityProviderId, liquidityProvider: provider.name, symbolId, priority, notes },
+        newValue: { ...ruleSnapshot(created), liquidityProvider: provider.name },
       },
     });
     return created;
