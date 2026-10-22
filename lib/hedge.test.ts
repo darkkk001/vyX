@@ -57,7 +57,7 @@ afterAll(async () => {
 
 type Fx = { brokerId: string; adminId: string; accountId: string; groupId: string; symbolId: string; symbolName: string };
 
-async function fixture(category: RoutingCategory): Promise<Fx> {
+async function fixture(category: RoutingCategory, accountMode: "LIVE" | "DEMO" = "LIVE"): Promise<Fx> {
   const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
   const broker = await prisma.broker.create({ data: { name: `Hedge ${suffix}`, subdomain: `hedge-${suffix}`, dealingModeAt: null, dealingDeskAutoFillAt: new Date() } });
   brokers.push(broker.id);
@@ -70,7 +70,7 @@ async function fixture(category: RoutingCategory): Promise<Fx> {
   });
   // placed directly: the sign-up / placement guard keeps clients out of A_BOOK groups (open question 11)
   const account = await prisma.account.create({
-    data: { groupId: group.id, brokerId: broker.id, accountNumber: `4${suffix.slice(0, 7)}`, email: `hedge-client-${suffix}@test.local`, passwordHash: "x", fullName: "Hedge Client", accountMode: "LIVE", leverage: 100, balance: D(100000) },
+    data: { groupId: group.id, brokerId: broker.id, accountNumber: `4${suffix.slice(0, 7)}`, email: `hedge-client-${suffix}@test.local`, passwordHash: "x", fullName: "Hedge Client", accountMode, leverage: 100, balance: D(100000) },
   });
   return { brokerId: broker.id, adminId: admin.id, accountId: account.id, groupId: group.id, symbolId: symbol.id, symbolName: symbol.name };
 }
@@ -291,6 +291,30 @@ describe("B-book regression: no other book ever writes an intent", () => {
       ["OUT", "0.4"],
       ["OUT", "0.6"],
     ]);
+  });
+
+  it("a DEMO account in an A_BOOK group is never hedged: order, partial and full close, staff open, reverse, void write no intent", async () => {
+    if (!dbReachable) return;
+    // owner 2026-10-23: a demo trade must never reach a real LP, whatever its group
+    const fx = await fixture("A_BOOK", "DEMO");
+    const p = await marketOrder(fx, "BUY", "1.00");
+    await clientClose(fx, p.id, "0.40");
+    await clientClose(fx, p.id);
+    asAdmin(fx);
+    const { POST } = await import("@/app/api/manage/positions/route");
+    expect((await call(POST, "/api/manage/positions", "POST", { accountId: fx.accountId, symbolId: fx.symbolId, side: "SELL", volume: "0.20" })).status).toBe(200);
+    const staff = await prisma.position.findFirstOrThrow({ where: { accountId: fx.accountId, status: "OPEN" } });
+    const { executeReverseInPlace, executeVoid } = await import("@/lib/position-actions");
+    await prisma.$transaction((tx) => executeReverseInPlace(tx, { brokerId: fx.brokerId, positionId: staff.id, adminId: fx.adminId }));
+    await prisma.$transaction((tx) => executeVoid(tx, { brokerId: fx.brokerId, positionId: staff.id, adminId: fx.adminId }));
+    expect(await intents(fx)).toEqual([]);
+    expect((await prisma.position.findUniqueOrThrow({ where: { id: p.id } })).groupCategoryAtOpen).toBe("A_BOOK");   // it was A-book flow, still not hedged
+    // control: a LIVE account in the same group is hedged
+    const live = await prisma.account.create({
+      data: { groupId: fx.groupId, brokerId: fx.brokerId, accountNumber: `5${randomUUID().replace(/-/g, "").slice(0, 7)}`, email: `hedge-live-${randomUUID()}@test.local`, passwordHash: "x", fullName: "Hedge Live", accountMode: "LIVE", leverage: 100, balance: D(100000) },
+    });
+    await marketOrder({ ...fx, accountId: live.id }, "BUY", "0.10");
+    expect((await intents(fx)).map(brief)).toEqual([["OPEN", "BUY", "0.1", "PENDING", "CLIENT"]]);
   });
 
   it("a COVERAGE leg (bookType A_BOOK, the broker's own cover) writes no intent", async () => {

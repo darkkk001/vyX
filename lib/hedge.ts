@@ -17,6 +17,7 @@ type Tx = Prisma.TransactionClient;
 // A-book = the position's OWN copy of its group's category at open (Position.groupCategoryAtOpen, stamped by a DB
 // trigger), never the account's current group: moving an account between groups never hedges or un-hedges open
 // positions, and COVERAGE legs (bookType A_BOOK too) are the broker's own cover, not client flow, so they never hedge.
+// A DEMO account is never hedged (owner 2026-10-23): a demo trade must never reach a real LP, whatever its group.
 
 export type HedgeDeal = Pick<Deal, "id" | "brokerId" | "accountId" | "positionId" | "side" | "entry" | "reason" | "volume" | "price">;
 
@@ -31,9 +32,9 @@ export async function hedgeDealInTx(tx: Tx, deal: HedgeDeal, categoryAtOpen?: Ro
   if (categoryAtOpen !== undefined && !isHedgedCategory(categoryAtOpen)) return false;
   const position = await tx.position.findUniqueOrThrow({
     where: { id: deal.positionId },
-    select: { groupCategoryAtOpen: true, account: { select: { groupId: true } }, symbol: { select: { name: true } } },
+    select: { groupCategoryAtOpen: true, account: { select: { groupId: true, accountMode: true } }, symbol: { select: { name: true } } },
   });
-  if (!isHedgedCategory(position.groupCategoryAtOpen)) return false;
+  if (!isHedgedCategory(position.groupCategoryAtOpen) || position.account.accountMode === "DEMO") return false;
   // INOUT is reserved for netting accounts, which no A-book group has: refuse loudly rather than hedge the wrong way
   if (deal.entry === "INOUT") throw new Error(`hedge: INOUT deal ${deal.id} on an A-book position is not supported`);
   const written = await tx.hedgeIntent.createMany({
@@ -64,9 +65,9 @@ export async function hedgeDealInTx(tx: Tx, deal: HedgeDeal, categoryAtOpen?: Ro
 export async function hedgeVoidInTx(tx: Tx, position: { id: string; brokerId: string; accountId: string; side: OrderSide; volume: Prisma.Decimal }): Promise<boolean> {
   const p = await tx.position.findUniqueOrThrow({
     where: { id: position.id },
-    select: { groupCategoryAtOpen: true, account: { select: { groupId: true } }, symbol: { select: { name: true } } },
+    select: { groupCategoryAtOpen: true, account: { select: { groupId: true, accountMode: true } }, symbol: { select: { name: true } } },
   });
-  if (!isHedgedCategory(p.groupCategoryAtOpen)) return false;
+  if (!isHedgedCategory(p.groupCategoryAtOpen) || p.account.accountMode === "DEMO") return false;
   await tx.hedgeIntent.create({
     data: {
       brokerId: position.brokerId,
