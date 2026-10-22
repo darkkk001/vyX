@@ -1,10 +1,11 @@
 import "server-only";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { DealReason, Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 import { isDemoBrokerId } from "@/lib/demo";
+import { dealReads } from "@/lib/deal-reads";
 
 // Dealer awareness (2026-09-04 feature) -- a dealer responsible for a
 // DEALING-group account (Group.groupType === "DEALING") needs to see
@@ -178,6 +179,21 @@ export function closeReasonFromNote(note: string | null | undefined): CloseReaso
   return "MANUAL";
 }
 
+/// The same from the deal model (reader dealer_activity): the reason of the position's last close deal. A dealer
+/// executing a queued client close (DEALER) stays the client's close, as its note did ("Dealer close ...").
+export function closeReasonFromDeal(reason: DealReason): CloseReason {
+  switch (reason) {
+    case "SL": return "STOP_LOSS";
+    case "TP": return "TAKE_PROFIT";
+    case "STOP_OUT": return "STOP_OUT";
+    case "MIRROR": return "MIRROR";
+    case "COVERAGE": return "COVERAGE";
+    case "ADMIN":
+    case "REVERSE": return "ADMIN";
+    default: return "MANUAL";
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Shared cold-load query -- backs GET /api/manage/dealing-desk (DEALING-
 // group accounts only, plus the resting-orders list -- the Dealing page's
@@ -288,6 +304,16 @@ export async function getDealerActivityFeedRows(
     : [];
   const noteByPosition = new Map<string, string | null>();
   for (const r of pnlRows) if (r.referenceId && !noteByPosition.has(r.referenceId)) noteByPosition.set(r.referenceId, r.note);
+  // reader dealer_activity: the last close deal per position (a close has its TRADE_PNL row; flip legs have none)
+  const reasonByPosition = new Map<string, DealReason>();
+  if (closed.length && dealReads("dealer_activity")) {
+    const deals = await prisma.deal.findMany({
+      where: { positionId: { in: closed.map((p) => p.id) }, entry: { in: ["OUT", "OUT_BY"] }, transactionId: { not: null } },
+      select: { positionId: true, reason: true },
+      orderBy: [{ executedAt: "desc" }, { ticket: "desc" }],
+    });
+    for (const d of deals) if (!reasonByPosition.has(d.positionId)) reasonByPosition.set(d.positionId, d.reason);
+  }
   const closedRows = closed
     .map((p): DealerActivityFeedRow | null => {
       const isDealingGroup = isDealingManagedAccount({ group: p.account.group, deskOn: !dealingDeskAutoFillOn });
@@ -306,7 +332,7 @@ export async function getDealerActivityFeedRows(
         values: {
           closePrice: p.closePrice?.toString(),
           realizedPnl: p.realizedPnl?.toString(),
-          closeReason: closeReasonFromNote(noteByPosition.get(p.id)),
+          closeReason: reasonByPosition.has(p.id) ? closeReasonFromDeal(reasonByPosition.get(p.id)!) : closeReasonFromNote(noteByPosition.get(p.id)),
         },
       };
     })
