@@ -18,7 +18,7 @@ Separate and test-only: `fix/staff-2fa-tests`.
 | 5 | Engine deploy (risk mode, dual write) | VPS | yes |
 | 6 | Gate: every new close writes its deal | owner PC | no |
 | 7 | Backfill: dry run, compare, `--apply`, verify | owner PC | Deal rows, `initialVolume`, `reversedFromPositionId` |
-| 8 | Step 7 correction (`realizedPnl` / `closePrice` from deals) | later | NOT in this release |
+| 8 | Step 7 correction (`realizedPnl` / `closePrice` from deals) | 2026-10-21 21:24 UTC | DONE, internal accounts only (section 8) |
 | 9 | Rollback table | | |
 
 Window: a market-closed weekend for 5 (the engine restarts in risk mode) and 7 (no closes while batches run).
@@ -220,12 +220,19 @@ it plans 0 deals; `without_deal` 0, `no_in` 0, `closed_volume_mismatch` 0 (the 8
 do not count), `DealBackfillLog` 0 (the backfill never touches `realizedPnl` / `closePrice`). Position rows,
 balances and the ledger are unchanged (proven on scratch: `scripts/backfill-deals.test.ts`).
 
-## 8. Step 7 correction: not in this release
+## 8. Step 7 correction: done for internal accounts
 
-`Position.realizedPnl` / `closePrice` from the deals, old values saved in `DealBackfillLog` first. Per
-`POSITION-DEAL-MODEL.md` section 5 it runs after step 4 (the readers switch), with the owner's sign-off on the Book
-P/L before / after. **The correction script does not exist yet** (half a day; `restoreFromLog` and its test are in
-place). Its rollback will be `restoreFromLog(<runId>)` (puts every logged value back, once).
+`scripts/correct-from-deals.ts` (dry run by default; `--apply --confirm-host <host part>`; `--restore <runId>`). It
+rewrites `Position.realizedPnl` / `closePrice` of CLOSED positions on `isInternal` accounts from their closes: OUT /
+OUT_BY deals with a ledger row (`transactionId`) and volume > 0. Reverse-in-place flip legs have no ledger row and are
+not closes. The 0-lot duplicate bookings are left out, because their money was settled on the balance by the
+2026-10-19 LEDGER_RECONCILIATION. Old values go to `DealBackfillLog` first, in the same transaction.
+
+Applied on live 2026-10-21 21:24 UTC (owner sign-off 2026-10-22 PKT): runId `step7-2026-10-21-52f5f1ac`, 7 positions on
+50005680 / 50005704, realizedPnl total -568.773 -> -22,410.332 (each now equals its TRADE_PNL sum). After it, internal
+closed positions differ from their closes on 0 P/L and 0 close prices. Book P/L is unchanged, because it excludes
+internal accounts. Non-internal accounts were not touched: P/L already equal; 20 close prices differ (last price vs
+VWAP), cosmetic, owner 2026-10-21.
 
 ## 9. Rollback
 
@@ -239,4 +246,4 @@ place). Its rollback will be `restoreFromLog(<runId>)` (puts every logged value 
 | 5 engine | the old exe | the script restores it by itself on a failed check; manually: `nssm stop vyxtrader-engine`, copy the backup `trading-core-server.pre.exe` over the release exe, `nssm start vyxtrader-engine` (nssm: `C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe`) | the old engine writes no deals: its closes become backfill work (re-run 7) |
 | 6 gate | | nothing changed | |
 | 7 backfill | delete what it wrote | as the database owner, one transaction: `UPDATE "Position" SET "initialVolume" = NULL WHERE id IN (SELECT "positionId" FROM "Deal" WHERE backfilled AND entry = 'IN'); UPDATE "Position" SET "reversedFromPositionId" = NULL WHERE id IN (SELECT "positionId" FROM "Deal" WHERE backfilled AND entry = 'IN' AND reason = 'REVERSE'); DELETE FROM "Deal" WHERE backfilled;` | nothing reads deals before step 4; the dual-write deals (`backfilled = false`) stay |
-| 8 step 7 | `restoreFromLog(runId)` | | later |
+| 8 step 7 | put the old values back | `npx tsx scripts/correct-from-deals.ts --restore step7-2026-10-21-52f5f1ac --confirm-host <host part>` | once; restored rows are marked |
