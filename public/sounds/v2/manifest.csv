@@ -1,0 +1,17 @@
+file,event,duration_ms,bytes
+01-fill.wav,Trade filled,90,7982
+02-partial-fill.wav,Partial fill,170,15038
+03-close.wav,Position closed,90,7982
+04-tp.wav,Take profit hit,180,15920
+05-sl.wav,Stop loss hit,220,19448
+06-stop-out.wav,Stop-out,500,44144
+07-margin-call.wav,Margin call,400,35324
+08-reject.wav,Order rejected,150,13274
+09-requote.wav,Requote,200,17684
+10-cancel.wav,Order cancelled,150,13274
+11-price-alert.wav,Price alert,350,30914
+12-notification.wav,Notification,80,7100
+13-connect.wav,Connected,250,22094
+14-disconnect.wav,Disconnected,300,26504
+15-dealer-queue.wav,Dealer queue order,200,17684
+16-reminder.wav,Dealer queue reminder,100,8864
