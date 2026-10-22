@@ -276,6 +276,13 @@ Full rollback: drop the table; nothing else was altered.
 | Reports / Book P/L | Realised Book P/L = sum of OUT deal profit by `executedAt` in the range (a partial counts on its own day); floating unchanged. |
 | Rust engine | `close_position_as` writes the OUT deal in the same transaction (owner check `lock_owner_in_tx` still wraps it); the post-close outbox payload adds `dealId` and the remaining volume, `dedupeKey` per deal; `reconcile.rs` detects web closes from `Deal.reason` instead of note prefixes; parity `AccountOutcome` / `PositionState` (`db_mode.rs`, `parity/src/lib.rs`, `scripts/parity/run-ts.ts`) and the 27 scenarios assert deals; the split-harness `diff.mjs` diffs the Deal table. Risk hook, margin watch and book reads are unchanged (they read open `Position` rows). If partial stop-out or close-by in the engine is ever wanted, the close becomes "reduce by N lots" with a `volume >= N` guard. |
 
+**Step 4 status (2026-10-22).** DEAL_READS names: `history`, `book_pnl` (live 2026-10-20), `ib_lots` (live 2026-10-22),
+`reports_trading` (Reports trading CSV = MT5 Deals report), `dealer_activity` (close reason from `Deal.reason`). Kept on
+their current source on purpose: account equity curve and activity (ledger TRADE_PNL rows are one per close already),
+account risk / `lib/risk-radar.ts` (per trade; `realizedPnl` equals the deal sum on every closed position since step 7),
+mirror daily loss (ledger, as above). Open: WebTrader History on `?closes=1` (partials of open positions appear) and the
+optional Deals tab.
+
 ---
 
 ## 4. Cutover gate (before Stage 6 uses it)
