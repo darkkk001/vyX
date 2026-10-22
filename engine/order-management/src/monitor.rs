@@ -165,7 +165,7 @@ async fn apply_close(
             // the broker's negative-balance protection is read only when it can matter, as in the real close, and
             // applies only when this close leaves the account with no open position (book::close_money)
             let unprotected = book::close_money(state.effective_balance, state.credit, pnl, false, false);
-            let last_position = !state.positions.iter().any(|p| p.id != position.id && !ov.closed.contains(&p.id));
+            let last_position = shadow_closes_last_position(state, &ov.closed, &position.id);
             let protect = if unprotected.after_credit < Decimal::ZERO && last_position {
                 if let Some(a) = pass.and_then(|pb| pb.account(account_id)) {
                     a.nbp
@@ -701,6 +701,12 @@ async fn evaluate_account_checked(
     }
 
     Ok(Some(report))
+}
+
+/// The shadow's "last position" for negative-balance protection (book::close_money): nothing else of this account is
+/// still open in its in-memory book once `closing` closes (positions it already closed this pass count as closed).
+fn shadow_closes_last_position(state: &AccountState, closed: &HashSet<String>, closing: &str) -> bool {
+    !state.positions.iter().any(|p| p.id != closing && !closed.contains(&p.id))
 }
 
 /// Margin-call hysteresis (owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md section 3; = lib/risk-monitor.ts): an
@@ -1267,5 +1273,43 @@ mod margin_call_hysteresis_tests {
     #[test]
     fn with_no_episode_open_above_the_level_is_out() {
         assert_eq!(margin_call_edge_at(dec!(100.01), dec!(100), None, START), Some(MarginCallEdge::Out));
+    }
+}
+
+#[cfg(test)]
+mod shadow_last_position_tests {
+    use super::shadow_closes_last_position;
+    use crate::book::close_money;
+    use crate::calc::AccountState;
+    use crate::db::OpenPositionWithMarket;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+    use std::collections::HashSet;
+
+    fn pos(id: &str) -> OpenPositionWithMarket {
+        OpenPositionWithMarket {
+            id: id.into(), symbol: "XAUUSD".into(), side: protocol::OrderSide::Buy, volume: dec!(1), open_price: dec!(4000), contract_size: dec!(100),
+            bid: None, ask: None, sl_price: None, tp_price: None, fx_rate: Decimal::ONE, hedged_margin_pct: dec!(200), ask_rule: None,
+        }
+    }
+
+    #[test]
+    fn the_shadow_writes_off_only_when_its_book_has_nothing_else_open() {
+        let state = AccountState { effective_balance: dec!(100), credit: Decimal::ZERO, leverage: 100, positions: vec![pos("a"), pos("b"), pos("c")] };
+        let mut closed = HashSet::new();
+        // a closes, b and c still open: negative, no write-off
+        let last = shadow_closes_last_position(&state, &closed, "a");
+        assert!(!last);
+        let m = close_money(dec!(100), Decimal::ZERO, dec!(-150), true, last);
+        assert_eq!((m.final_balance, m.write_off), (dec!(-50), None));
+        closed.insert("a".to_string());
+        // b closes, c still open
+        assert!(!shadow_closes_last_position(&state, &closed, "b"));
+        closed.insert("b".to_string());
+        // c is the last one: the whole deficit, once
+        let last = shadow_closes_last_position(&state, &closed, "c");
+        assert!(last);
+        let m = close_money(dec!(-50), Decimal::ZERO, dec!(-20), true, last);
+        assert_eq!((m.final_balance, m.write_off), (Decimal::ZERO, Some(dec!(70))));
     }
 }

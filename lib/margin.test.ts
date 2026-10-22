@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
-import { requiredMarginFor, checkPreTradeMargin } from "@/lib/margin";
+import { requiredMarginFor, checkPreTradeMargin, marginCallEpisodeMayEnd } from "@/lib/margin";
 
 // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- these two
 // functions are deliberately kept in lockstep with
@@ -81,5 +81,22 @@ describe("checkPreTradeMargin (parity with engine/risk/src/lib.rs's check_free_m
       marginCallLevel: new Prisma.Decimal(100),
     });
     expect(rejected).toBe("INSUFFICIENT_MARGIN"); // 1000/1500*100 = 66.67 < 100
+  });
+});
+
+// Margin-call hysteresis (owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md section 3; = engine monitor.rs margin_call_edge_at)
+describe("marginCallEpisodeMayEnd", () => {
+  const start = new Date("2026-10-22T20:17:16.193Z");
+  const at = (ms: number) => new Date(start.getTime() + ms);
+  const L = (v: string) => new Prisma.Decimal(v);
+  it("holds the episode under call + 10 points or before 60 s", () => {
+    expect(marginCallEpisodeMayEnd(L("103.28"), L("100"), start, at(3_041))).toBe(false); // 50005696 at 20:17:19
+    expect(marginCallEpisodeMayEnd(L("110"), L("100"), start, at(59_999))).toBe(false);
+    expect(marginCallEpisodeMayEnd(L("109.99"), L("100"), start, at(60_000))).toBe(false);
+  });
+  it("ends it at >= call + 10 and >= 60 s", () => {
+    expect(marginCallEpisodeMayEnd(L("110"), L("100"), start, at(60_000))).toBe(true);
+    expect(marginCallEpisodeMayEnd(L("147.22"), L("100"), start, at(600_000))).toBe(true);
+    expect(marginCallEpisodeMayEnd(L("60"), L("50"), start, at(60_000))).toBe(true); // the group's own level
   });
 });

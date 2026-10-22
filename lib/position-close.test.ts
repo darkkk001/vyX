@@ -247,6 +247,80 @@ describe("closePositionInTx (live DB, rolled back)", () => {
     });
   });
 
+  // 2026-10-23 (owner, docs/NBP-LAST-CLOSE-DESIGN.md): negative-balance protection only on the close that leaves the
+  // account with no open position
+  describe("negative-balance protection on the last close only", () => {
+    const close = (tx: Prisma.TransactionClient, fx: Fixture, pos: { id: string; volume: Prisma.Decimal }, closePrice: string, closeVolume?: Prisma.Decimal) =>
+      closePositionInTx(tx, { deal: { reason: "STOP_OUT" },
+        position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: pos.volume, symbol: contractSizeArg },
+        closePrice,
+        closeVolume,
+      });
+    const nbpRows = (tx: Prisma.TransactionClient, fx: Fixture) =>
+      tx.transaction.findMany({ where: { accountId: fx.accountId, type: "NEGATIVE_BALANCE_PROTECTION" } });
+
+    it("a loss with another position still open leaves the balance negative and writes nothing off", async () => {
+      if (!dbReachable) return;
+      await withRollback(async (tx) => {
+        const fx = await createFixture(tx, "100");
+        const a = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+        await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+        await close(tx, fx, a, "3998.50"); // -150
+        expect((await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString()).toBe("-50");
+        expect(await nbpRows(tx, fx)).toHaveLength(0);
+      });
+    });
+
+    it("the close that empties the account writes off the whole deficit, once", async () => {
+      if (!dbReachable) return;
+      await withRollback(async (tx) => {
+        const fx = await createFixture(tx, "100");
+        const a = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+        const b = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+        await close(tx, fx, a, "3998.50"); // -150 -> -50
+        await close(tx, fx, b, "3999.80"); // -20 -> -70, nothing left open
+        expect((await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString()).toBe("0");
+        const rows = await nbpRows(tx, fx);
+        expect(rows.map((r) => [r.amount.toString(), r.balanceBefore.toString(), r.balanceAfter.toString(), r.referenceId])).toEqual([["70", "-70", "0", b.id]]);
+      });
+    });
+
+    it("a profitable last close that leaves the balance negative still writes the rest off", async () => {
+      if (!dbReachable) return;
+      await withRollback(async (tx) => {
+        const fx = await createFixture(tx, "100");
+        const a = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+        const b = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+        await close(tx, fx, a, "3998.00"); // -200 -> -100
+        await close(tx, fx, b, "4000.30"); // +30 -> -70
+        expect((await nbpRows(tx, fx)).map((r) => r.amount.toString())).toEqual(["70"]);
+      });
+    });
+
+    it("a partial close of the last position keeps it open: no write-off", async () => {
+      if (!dbReachable) return;
+      await withRollback(async (tx) => {
+        const fx = await createFixture(tx, "100");
+        const a = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+        await close(tx, fx, a, "3997.00", D("0.50")); // -150 on half -> -50
+        expect((await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString()).toBe("-50");
+        expect(await nbpRows(tx, fx)).toHaveLength(0);
+      });
+    });
+
+    it("protection off: the last close leaves the balance negative", async () => {
+      if (!dbReachable) return;
+      await withRollback(async (tx) => {
+        const fx = await createFixture(tx, "100");
+        await tx.broker.update({ where: { id: fx.brokerId }, data: { negativeBalanceProtection: false } });
+        const a = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+        await close(tx, fx, a, "3998.50");
+        expect((await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString()).toBe("-50");
+        expect(await nbpRows(tx, fx)).toHaveLength(0);
+      });
+    });
+  });
+
   it("a profitable close never touches credit", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
