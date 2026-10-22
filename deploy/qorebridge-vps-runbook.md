@@ -88,12 +88,18 @@ The self-check at the end prints exactly these rights, and nothing else:
 
 | table_name | rights |
 |---|---|
-| HedgeIntent | UPDATE (column: status, leasedBy, leaseUntil, lastError) |
+| HedgeIntent | SELECT, UPDATE |
 | HedgeIntent (table) | SELECT |
-| HedgeResult | UPDATE (columns: the outcome fields) |
+| HedgeResult | INSERT, SELECT, UPDATE |
 | HedgeResult (table) | INSERT, SELECT |
+| HedgeRoutingRule | SELECT |
 | HedgeRoutingRule (table) | SELECT |
-| Notification | INSERT (columns) |
+| Notification | INSERT |
+
+(Rows without "(table)" are the column grants; UPDATE is on the claim / outcome columns only, INSERT on Notification
+only on the columns the escalation trigger writes. Verified on a scratch clone 2026-10-22: every bridge statement runs
+as this role, and Account, Position, Deal, Notification reads, LpRoutingRule, any DELETE and any other column update
+are refused.)
 
 The role can read no Account, Position, Deal, Transaction or Broker row, and it can DELETE nothing.
 Rollback: the `Revert:` line at the top of `deploy/qorebridge-role.sql`.
