@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { assertAccountStructure, AccountStructureError } from "@/lib/account-structure";
+import { INITIAL_BALANCE_NOTE } from "@/lib/initial-balance";
 
 // Extracted out of app/api/manage/accounts/route.ts's own createAccount
 // (Manager's Add Account form) -- same numeric-safe sequential account
@@ -124,7 +125,7 @@ export async function provisionAccount(params: ProvisionAccountParams) {
               amount: params.initialBalance,
               balanceBefore: new Prisma.Decimal(0),
               balanceAfter: params.initialBalance,
-              note: "Initial balance on account creation",
+              note: INITIAL_BALANCE_NOTE,
               createdByAdminId: params.createdByAdminId,
             },
           });

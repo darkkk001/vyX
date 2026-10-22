@@ -1,11 +1,15 @@
 import "server-only";
 import { Prisma, type TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { isInitialBalanceRow } from "@/lib/initial-balance";
 
 // Ranged account summary: the one data source of the MT5-style history summary bar (terminal + backoffice client view)
 // and of account / group statements. Owner definitions (2026-10-21):
 //   1. trade P/L comes from the Deal rows (OUT / OUT_BY), not the TRADE_PNL ledger rows;
-//   2. a "trade" is each close (each OUT / OUT_BY deal), counted at the deal's executedAt;
+//   2. trade P/L, volume and costs sum each close (each OUT / OUT_BY deal) at the deal's executedAt; but the trade COUNT,
+//      wins, losses and win rate count CLOSED POSITIONS (owner 2026-10-22): a position counts once, in the range of its
+//      final close, won or lost on the P/L of all its closes (partials merge into it). An open position's partial closes
+//      add to the P/L sums and to no count;
 //   3. credit (CREDIT_IN / CREDIT_OUT) is its own line; adjustments, transfers and negative-balance protection are their own
 //      lines too, never folded into deposits / withdrawals;
 //   4. completed Transaction rows only (pending / rejected / cancelled are left out);
@@ -50,7 +54,7 @@ export type AccountSummary = {
   openingBalance: string;
   closingBalance: string;
   trades: {
-    count: number;
+    count: number; // closed positions (see the header), not closes
     wins: number;
     losses: number;
     winRate: string; // % of count, 2 dp ("0.00" with no trades)
@@ -69,6 +73,7 @@ export type AccountSummary = {
     creditOut: string; // credit facility removed (not balance)
     creditUsed: string; // credit a closing loss consumed: adds to the balance
     adjustments: string; // signed (void reversals are in voided.reversal, a deleted trade's in deletedTrades)
+    initialBalance: string; // of which the account-creation funding (lib/initial-balance.ts): PART of adjustments, not added again
     transfersIn: string;
     transfersOut: string; // positive = money out
     nbp: string; // negative-balance protection write-offs: add to the balance
@@ -86,9 +91,12 @@ export type LedgerRow = {
   referenceType: string | null;
   referenceId?: string | null;
   hiddenForPositionId?: string | null;
+  note?: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
+/// A position with a close in the range: its status and ALL its closes (any time), for the closed-position count.
+export type PositionCloses = { id: string; status: "OPEN" | "CLOSED" | "VOIDED"; closes: { executedAt: Date; profit: Prisma.Decimal }[] };
 export type DealRow = {
   positionId?: string;
   entry: "IN" | "OUT" | "OUT_BY" | "INOUT";
@@ -112,6 +120,11 @@ export function movesBalance(r: Pick<LedgerRow, "type">): boolean {
 
 const money = (d: Prisma.Decimal) => d.toFixed(2);
 
+/// A close = an OUT / OUT_BY deal; a staff reverse in place writes an OUT with no ledger row and profit 0: not a close.
+function isCloseDeal(d: Pick<DealRow, "entry" | "reason" | "transactionId">): boolean {
+  return (d.entry === "OUT" || d.entry === "OUT_BY") && !(d.reason === "REVERSE" && d.transactionId === null);
+}
+
 /// The summary from the rows of one account: ledger rows booked inside the range, deals executed inside it, and the
 /// opening / closing balances. Pure: lib/account-summary.test.ts drives it directly as well as through the database.
 export function summarize(input: {
@@ -124,6 +137,8 @@ export function summarize(input: {
   // positions of these deals / rows that are VOIDED (and not deleted) and that are deleted
   voidedPositionIds?: ReadonlySet<string>;
   deletedPositionIds?: ReadonlySet<string>;
+  // the positions of the range's closes (see PositionCloses): the trade count
+  positions?: PositionCloses[];
 }): AccountSummary {
   const voidedIds = input.voidedPositionIds ?? new Set<string>();
   const deletedIds = input.deletedPositionIds ?? new Set<string>();
@@ -140,6 +155,7 @@ export function summarize(input: {
   const creditOut = sum(of("CREDIT_OUT")).neg();
   const creditUsed = sum(of("CREDIT"));
   const adjustments = sum((r) => r.type === "ADJUSTMENT" && !isVoidReversal(r));
+  const initialBalance = sum(isInitialBalanceRow);
   const voidReversal = sum(isVoidReversal);
   const deletedTrades = sumOf(hidden);
   const transfersIn = sum(of("TRANSFER_IN"));
@@ -148,18 +164,27 @@ export function summarize(input: {
   const ibCommission = sum((r) => r.type === "COMMISSION" && r.referenceType !== "Position");
   const swap = sum(of("SWAP")).neg();
 
-  // a close = an OUT / OUT_BY deal; a staff reverse in place writes an OUT with no ledger row and profit 0: not a close.
   // A deleted trade's deals are in no line; a voided trade's are the `voided` line.
   const shown = input.deals.filter((d) => !(d.positionId && deletedIds.has(d.positionId)));
-  const isClose = (d: DealRow) => (d.entry === "OUT" || d.entry === "OUT_BY") && !(d.reason === "REVERSE" && d.transactionId === null);
+  const isClose = isCloseDeal;
   const live = shown.filter((d) => d.voidedAt === null);
   const gone = shown.filter((d) => d.voidedAt !== null);
   const closes = live.filter(isClose);
   const voidedCloses = gone.filter(isClose);
   const grossPnl = closes.reduce((s, d) => s.add(d.profit), ZERO);
   const volume = closes.reduce((s, d) => s.add(d.volume), ZERO);
-  const wins = closes.filter((d) => d.profit.gt(0)).length;
-  const losses = closes.filter((d) => d.profit.lt(0)).length;
+  // the count: closed positions whose final close is in the range, on the P/L of all their closes. Voided / deleted
+  // positions are not trades (a voided one is the `voided` line).
+  const { from, to } = input.range;
+  const trades = (input.positions ?? [])
+    .filter((p) => p.status === "CLOSED" && !voidedIds.has(p.id) && !deletedIds.has(p.id) && p.closes.length > 0)
+    .filter((p) => {
+      const last = Math.max(...p.closes.map((c) => c.executedAt.getTime()));
+      return last >= from.getTime() && last <= to.getTime();
+    })
+    .map((p) => p.closes.reduce((s, c) => s.add(c.profit), ZERO));
+  const wins = trades.filter((pnl) => pnl.gt(0)).length;
+  const losses = trades.filter((pnl) => pnl.lt(0)).length;
   // commission when charged: the IN deals executed in the period (Deal.commission is the signed ledger amount, a debit)
   const commission = live.filter((d) => d.entry === "IN").reduce((s, d) => s.add(d.commission), ZERO).neg();
   const netPnl = grossPnl.sub(commission).sub(swap);
@@ -182,10 +207,10 @@ export function summarize(input: {
     openingBalance: money(input.openingBalance),
     closingBalance: money(input.closingBalance),
     trades: {
-      count: closes.length,
+      count: trades.length,
       wins,
       losses,
-      winRate: closes.length === 0 ? "0.00" : ((wins / closes.length) * 100).toFixed(2),
+      winRate: trades.length === 0 ? "0.00" : ((wins / trades.length) * 100).toFixed(2),
       volumeLots: volume.toFixed(2),
       grossPnl: money(grossPnl),
       commission: money(commission),
@@ -207,6 +232,7 @@ export function summarize(input: {
       creditOut: money(creditOut),
       creditUsed: money(creditUsed),
       adjustments: money(adjustments),
+      initialBalance: money(initialBalance),
       transfersIn: money(transfersIn),
       transfersOut: money(transfersOut),
       nbp: money(nbp),
@@ -220,7 +246,7 @@ export function summarize(input: {
 }
 
 // ------------------------------------------------------------------------------------------------ database part
-const LEDGER_SELECT = { type: true, amount: true, referenceType: true, referenceId: true, hiddenForPositionId: true, createdAt: true, updatedAt: true } as const;
+const LEDGER_SELECT = { type: true, amount: true, referenceType: true, referenceId: true, hiddenForPositionId: true, note: true, createdAt: true, updatedAt: true } as const;
 type Tx = Prisma.TransactionClient;
 
 /// The sum of the balance-moving amounts booked after a moment (`gt`) or from it on (`gte`): today's balance minus this is
@@ -257,7 +283,18 @@ export async function summarizeAccount(accountId: string, range: SummaryRange, s
       const states = positionIds.length === 0 ? [] : await tx.position.findMany({ where: { accountId, id: { in: positionIds }, OR: [{ status: "VOIDED" }, { deletedAt: { not: null } }] }, select: { id: true, status: true, deletedAt: true } });
       const deletedPositionIds = new Set(states.filter((p) => p.deletedAt).map((p) => p.id));
       const voidedPositionIds = new Set(states.filter((p) => !p.deletedAt && p.status === "VOIDED").map((p) => p.id));
-      return summarize({ account, range, openingBalance, closingBalance, ledger, deals, voidedPositionIds, deletedPositionIds });
+      // the positions of the range's live closes, with all their closes (a partial may be before the range)
+      const closedIds = [...new Set(deals.filter((d) => d.voidedAt === null && isCloseDeal(d)).map((d) => d.positionId))];
+      const positions: PositionCloses[] = [];
+      if (closedIds.length > 0) {
+        const rows = await tx.position.findMany({ where: { accountId, id: { in: closedIds } }, select: { id: true, status: true } });
+        const all = await tx.deal.findMany({
+          where: { accountId, positionId: { in: closedIds }, entry: { in: ["OUT", "OUT_BY"] }, voidedAt: null },
+          select: { positionId: true, entry: true, reason: true, transactionId: true, executedAt: true, profit: true },
+        });
+        for (const p of rows) positions.push({ id: p.id, status: p.status, closes: all.filter((d) => d.positionId === p.id && isCloseDeal(d)) });
+      }
+      return summarize({ account, range, openingBalance, closingBalance, ledger, deals, voidedPositionIds, deletedPositionIds, positions });
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
   );

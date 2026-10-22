@@ -11,6 +11,7 @@ import { provisionAccount } from "@/lib/account-provisioning";
 import { isCountryCode } from "@/lib/countries";
 import { checkAccountStructure } from "@/lib/account-structure";
 import { AccountStructureError } from "@/lib/account-structure";
+import { LIVE_STARTING_BALANCE_NOTE } from "@/lib/initial-balance";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -359,7 +360,7 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
   let initialBalanceRequestId: string | null = null;
   if (initialBalanceNeedsApproval) {
     const req = await prisma.$transaction((tx) =>
-      requestBalanceAdjustment(tx, { brokerId, accountId: result.id, amount: requestedBalance, note: "Starting balance for a new LIVE account", adminId: session.adminId })
+      requestBalanceAdjustment(tx, { brokerId, accountId: result.id, amount: requestedBalance, note: LIVE_STARTING_BALANCE_NOTE, adminId: session.adminId })
     );
     initialBalanceRequestId = req.id;
   }
