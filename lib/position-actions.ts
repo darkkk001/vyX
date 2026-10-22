@@ -6,7 +6,7 @@ import { checkAccountTradingRights, checkTradingSession, computeNextSessionOpen 
 import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
 import { resolveBookType } from "@/lib/group-pricing";
-import { closePositionInTx } from "@/lib/position-close";
+import { closePositionInTx, writeOffIfFlatInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
 import { lockAccountBalance, lockAccountFunds } from "@/lib/account-lock";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
@@ -487,6 +487,10 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
       },
     });
   }
+
+  // the void may leave the account with no open position and a negative balance: the same single write-off as the
+  // last close (owner 2026-10-23, lib/position-close.ts writeOffIfFlatInTx)
+  await writeOffIfFlatInTx(tx, { accountId: position.accountId, brokerId: params.brokerId, positionId: position.id, balance: balanceAfter, rawBalanceAfter: balanceAfter });
 
   const updated = await tx.position.findUniqueOrThrow({
     where: { id: position.id }, // claimed (VOIDED) above

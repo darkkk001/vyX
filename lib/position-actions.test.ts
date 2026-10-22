@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { executeAdminCloseInTx, executeReverseCloseReopen } from "@/lib/position-actions";
+import { executeAdminCloseInTx, executeReverseCloseReopen, executeVoid } from "@/lib/position-actions";
 
 // Money-path guards on the backoffice's own close paths (2026-09-23). The admin close route and the
 // reverse (close & reopen) action each wrote the close with a bare update-by-id: no status guard (a
@@ -150,6 +150,39 @@ describe("executeReverseCloseReopen (live DB, rolled back)", () => {
       expect(closed.status).toBe("CLOSED");
       expect(closed.closedByAdminId).toBe(fx.adminId);
       expect(result.newPosition.side).toBe("SELL");
+    });
+  });
+});
+
+// Owner 2026-10-23 (docs/NBP-LAST-CLOSE-DESIGN.md): a void that leaves the account with no open position applies the
+// same single negative-balance write-off as the last close (lib/position-close.ts writeOffIfFlatInTx)
+describe("executeVoid of an open position: negative-balance protection when it empties the account", () => {
+  it("no write-off while another position stays open; one write-off for the whole deficit when the void empties the account", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx, "100");
+      const a = await openPosition(tx, fx, "BUY", "1.00", "4000.00");
+      const b = await openPosition(tx, fx, "BUY", "1.00", "4000.00");
+      const c = await openPosition(tx, fx, "BUY", "1.00", "4000.00");
+      // B's open commission -2.00 (as chargeCommission books it): the void gives it back
+      await tx.account.update({ where: { id: fx.accountId }, data: { balance: D("98") } });
+      await tx.transaction.create({
+        data: { brokerId: fx.brokerId, accountId: fx.accountId, type: "COMMISSION", status: "COMPLETED", amount: D("-2"), balanceBefore: D("100"), balanceAfter: D("98"), referenceType: "Position", referenceId: b.id },
+      });
+      const snapshot = await tx.position.findUniqueOrThrow({ where: { id: a.id }, include: { symbol: { select: { name: true, contractSize: true } }, account: { select: { accountNumber: true } } } });
+      await executeAdminCloseInTx(tx, { brokerId: fx.brokerId, adminId: fx.adminId, position: snapshot, closePrice: D("3998.50"), closeVolume: snapshot.volume }); // -150 -> -52
+      const nbp = () => tx.transaction.findMany({ where: { accountId: fx.accountId, type: "NEGATIVE_BALANCE_PROTECTION" } });
+      expect(await nbp()).toHaveLength(0);
+
+      await executeVoid(tx, { brokerId: fx.brokerId, positionId: b.id, adminId: fx.adminId }); // +2 -> -50, C still open
+      expect((await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString()).toBe("-50");
+      expect(await nbp()).toHaveLength(0);
+
+      await executeVoid(tx, { brokerId: fx.brokerId, positionId: c.id, adminId: fx.adminId }); // nothing to reverse; nothing left open
+      expect((await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString()).toBe("0");
+      const rows = await nbp();
+      expect(rows.map((r) => [r.amount.toString(), r.balanceBefore.toString(), r.balanceAfter.toString(), r.referenceId])).toEqual([["50", "-50", "0", c.id]]);
+      expect(await tx.auditLog.count({ where: { entityId: fx.accountId, action: "NEGATIVE_BALANCE_PROTECTION_APPLIED" } })).toBe(1);
     });
   });
 });

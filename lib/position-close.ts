@@ -188,20 +188,10 @@ export async function closePositionInTx(
   // covers the whole deficit. Counted after this position's update and with the account row locked above, so two
   // concurrent closes of the last two positions serialize and only the second sees zero left. A partial close leaves
   // this position open, so it never writes off. = engine/order-management/src/book.rs close_money(last_position).
-  let finalBalance = afterCredit;
-  let writeOffAmount: Prisma.Decimal | null = null;
-  const lastPosition = afterCredit.isNegative() && (await tx.position.count({ where: { accountId: position.accountId, status: "OPEN" } })) === 0;
-  if (lastPosition) {
-    const broker = await tx.broker.findUniqueOrThrow({ where: { id: position.brokerId }, select: { negativeBalanceProtection: true } });
-    if (broker.negativeBalanceProtection) {
-      writeOffAmount = afterCredit.neg();
-      finalBalance = new Prisma.Decimal(0);
-    }
-  }
-
+  // The write-off itself is writeOffIfFlatInTx (below), shared with the void of an open position.
   await tx.account.update({
     where: { id: position.accountId },
-    data: creditUsed ? { balance: finalBalance, credit: creditAfter } : { balance: finalBalance },
+    data: creditUsed ? { balance: afterCredit, credit: creditAfter } : { balance: afterCredit },
   });
 
   const transaction = await tx.transaction.create({
@@ -279,37 +269,55 @@ export async function closePositionInTx(
     });
   }
 
-  if (writeOffAmount) {
-    await tx.transaction.create({
-      data: {
-        brokerId: position.brokerId,
-        accountId: position.accountId,
-        type: "NEGATIVE_BALANCE_PROTECTION",
-        status: "COMPLETED",
-        amount: writeOffAmount,
-        balanceBefore: afterCredit,
-        balanceAfter: finalBalance,
-        referenceType: "Position",
-        referenceId: position.id,
-        note: `Negative-balance protection: broker absorbed $${writeOffAmount.toFixed(2)} beyond zero`,
-      },
-    });
-    await tx.auditLog.create({
-      data: {
-        brokerId: position.brokerId,
-        action: "NEGATIVE_BALANCE_PROTECTION_APPLIED",
-        entityType: "Account",
-        entityId: position.accountId,
-        newValue: {
-          positionId: position.id,
-          writeOffAmount: writeOffAmount.toFixed(2),
-          rawBalanceAfter: rawBalanceAfter.toFixed(2),
-        },
-      },
-    });
-  }
+  await writeOffIfFlatInTx(tx, { accountId: position.accountId, brokerId: position.brokerId, positionId: position.id, balance: afterCredit, rawBalanceAfter });
 
   const updatedPosition = await tx.position.findUniqueOrThrow({ where: { id: position.id } });
 
   return { closed: true, position: updatedPosition, transaction, partial: isPartial, realizedPnl };
+}
+
+// Negative-balance protection (2026-09-05 P0; timing owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md): when the account
+// has NO open position left and `balance` (already written, after credit) is below zero, the broker absorbs the deficit
+// ONCE -- balance 0, one NEGATIVE_BALANCE_PROTECTION row + one NEGATIVE_BALANCE_PROTECTION_APPLIED audit row against
+// `positionId` (the position whose close or void emptied the account). Anything still open: nothing, the balance stays
+// negative (equity decides stop-out). The caller holds the account row lock (lib/account-lock.ts) and has already
+// updated the position, so concurrent closes / voids of an account's last two positions serialize and only the second
+// sees zero left. Every web path that can take an account to no open position calls it: closePositionInTx (every close)
+// and executeVoid of an OPEN position (lib/position-actions.ts); a DELETE never takes an open position. The engine's
+// close (engine/order-management/src/book.rs close_money(last_position)) applies the same rule. Returns the write-off.
+export async function writeOffIfFlatInTx(
+  tx: Prisma.TransactionClient,
+  p: { accountId: string; brokerId: string; positionId: string; balance: Prisma.Decimal; rawBalanceAfter: Prisma.Decimal }
+): Promise<Prisma.Decimal | null> {
+  if (!p.balance.isNegative()) return null;
+  if ((await tx.position.count({ where: { accountId: p.accountId, status: "OPEN" } })) > 0) return null;
+  const broker = await tx.broker.findUniqueOrThrow({ where: { id: p.brokerId }, select: { negativeBalanceProtection: true } });
+  if (!broker.negativeBalanceProtection) return null;
+  const writeOffAmount = p.balance.neg();
+  const finalBalance = new Prisma.Decimal(0);
+  await tx.account.update({ where: { id: p.accountId }, data: { balance: finalBalance } });
+  await tx.transaction.create({
+    data: {
+      brokerId: p.brokerId,
+      accountId: p.accountId,
+      type: "NEGATIVE_BALANCE_PROTECTION",
+      status: "COMPLETED",
+      amount: writeOffAmount,
+      balanceBefore: p.balance,
+      balanceAfter: finalBalance,
+      referenceType: "Position",
+      referenceId: p.positionId,
+      note: `Negative-balance protection: broker absorbed $${writeOffAmount.toFixed(2)} beyond zero`,
+    },
+  });
+  await tx.auditLog.create({
+    data: {
+      brokerId: p.brokerId,
+      action: "NEGATIVE_BALANCE_PROTECTION_APPLIED",
+      entityType: "Account",
+      entityId: p.accountId,
+      newValue: { positionId: p.positionId, writeOffAmount: writeOffAmount.toFixed(2), rawBalanceAfter: p.rawBalanceAfter.toFixed(2) },
+    },
+  });
+  return writeOffAmount;
 }
