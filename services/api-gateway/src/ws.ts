@@ -24,6 +24,7 @@ import { getAdminSession } from "./admin-auth.js";
 import { getBrokerStreamConfig, query } from "./db.js";
 import { ClientAskRegistry } from "./client-ask.js";
 import { internalSecretOk } from "./internal-secret.js";
+import { answerPings, sendFrame, startKeepalive, wantsKeepalive } from "./ws-liveness.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
 const TRADING_STREAM_PATH = "/v1/trading/stream";
@@ -245,15 +246,8 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
     // own cold-start/DB-roundtrip time, not network latency). The browser's
     // native WebSocket API never surfaces protocol-level ping/pong frames
     // to JS, so this has to be a plain echoed application message instead.
-    ws.on("message", (data) => {
-      try {
-        const parsed = JSON.parse(data.toString());
-        if (parsed?.type === "ping") ws.send(JSON.stringify({ type: "pong", t: parsed.t }));
-      } catch {
-        // not a ping frame -- this socket never expects anything else from
-        // the client, so just ignore it
-      }
-    });
+    // (ws-liveness.ts; the two event streams below answer the same way.)
+    answerPings(ws);
     const forget = () => {
       clients.delete(ws);
       const acc = accountBySocket.get(ws);
@@ -466,7 +460,11 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
   const clientsByAccount = new Map<string, Set<WebSocket>>();
   const clientsByBroker = new Map<string, Set<WebSocket>>();
 
-  function registerClient(ws: WebSocket, accountId: string, brokerId: string) {
+  function registerClient(ws: WebSocket, accountId: string, brokerId: string, keepalive: boolean) {
+    // ping -> pong always; {"type":"keepalive"} only on ?keepalive=1 (ws-liveness.ts: today's clients refetch on
+    // any type they don't know)
+    answerPings(ws);
+    if (keepalive) startKeepalive(ws);
     let set = clientsByAccount.get(accountId);
     if (!set) {
       set = new Set();
@@ -493,8 +491,8 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
   }
 
   server.on("upgrade", (req: IncomingMessage, socket, head) => {
-    const { pathname } = new URL(req.url ?? "", "http://internal");
-    if (pathname !== TRADING_STREAM_PATH) return;
+    const url = new URL(req.url ?? "", "http://internal");
+    if (url.pathname !== TRADING_STREAM_PATH) return;
 
     resolveTraderSession(req)
       .then((session) => {
@@ -504,7 +502,7 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
           return;
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          registerClient(ws, session.accountId, session.brokerId);
+          registerClient(ws, session.accountId, session.brokerId, wantsKeepalive(url));
         });
       })
       .catch((err) => {
@@ -540,7 +538,7 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
             });
             for (const client of clientsByBroker.get(parsed.broker_id) ?? []) {
               if (client.readyState === WebSocket.OPEN) {
-                client.send(text);
+                sendFrame(client, text);
                 gatewayStats.tradingEventsForwardedTotal += 1;
               }
             }
@@ -554,7 +552,7 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
         if (!clients) continue;
         for (const client of clients) {
           if (client.readyState === WebSocket.OPEN) {
-            client.send(text);
+            sendFrame(client, text);
             gatewayStats.tradingEventsForwardedTotal += 1;
           }
         }
@@ -595,7 +593,11 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
   // filtering shape as attachPriceStream's clients map.
   const clientsByBroker = new Map<WebSocket, string>();
 
-  function registerClient(ws: WebSocket, brokerId: string) {
+  function registerClient(ws: WebSocket, brokerId: string, keepalive: boolean) {
+    // ping -> pong always; {"type":"keepalive"} when idle for the backoffice (its clients ignore unknown types), and
+    // for a headless client only on ?keepalive=1 (ws-liveness.ts)
+    answerPings(ws);
+    if (keepalive) startKeepalive(ws);
     clientsByBroker.set(ws, brokerId);
     gatewayStats.adminWsConnectionsTotal += 1;
     function unregister() {
@@ -630,7 +632,7 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
         return;
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
-        registerClient(ws, brokerId);
+        registerClient(ws, brokerId, wantsKeepalive(url));
       });
       return;
     }
@@ -650,7 +652,7 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
           return;
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          registerClient(ws, session.brokerId!);
+          registerClient(ws, session.brokerId!, true);
         });
       })
       .catch((err) => {
@@ -676,7 +678,7 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
         for (const [client, clientBrokerId] of clientsByBroker) {
           if (clientBrokerId !== brokerId) continue;
           if (client.readyState !== WebSocket.OPEN) continue;
-          client.send(text);
+          sendFrame(client, text);
           gatewayStats.adminEventsForwardedTotal += 1;
         }
       }
