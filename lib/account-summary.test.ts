@@ -102,7 +102,7 @@ describe("account summary (pure)", () => {
     expect(s.net).toBe("93.50");
   });
 
-  it("the account-creation funding is its own figure inside adjustments; a voided / deleted position is no trade", () => {
+  it("the account-creation funding is its own figure inside adjustments; a voided position is one voided trade, a deleted one none", () => {
     const note = (type: TransactionType, amount: string, n: string | null): LedgerRow => ({ type, amount: D(amount), referenceType: null, note: n, createdAt: new Date(1), updatedAt: new Date(1) });
     const s = summarize({
       account: { id: "acc", accountNumber: "1", currency: "USD" },
@@ -111,10 +111,11 @@ describe("account summary (pure)", () => {
       closingBalance: D(1265),
       ledger: [note("ADJUSTMENT", "1000", INITIAL_BALANCE_NOTE), note("ADJUSTMENT", "250", LIVE_STARTING_BALANCE_NOTE), note("ADJUSTMENT", "15", "Goodwill"), note("DEPOSIT", "0", INITIAL_BALANCE_NOTE)],
       deals: [],
-      voidedPositionIds: new Set(["v"]),
+      voidedPositionIds: new Set(["v", "w"]),
       deletedPositionIds: new Set(["d"]),
       positions: [
-        { id: "v", status: "CLOSED", closes: [{ executedAt: new Date(5), profit: D(3) }] },
+        { id: "v", status: "VOIDED", closes: [{ executedAt: new Date(4), profit: D(1) }, { executedAt: new Date(5), profit: D(3) }] },   // two partials: one voided trade
+        { id: "w", status: "VOIDED", closes: [{ executedAt: new Date(4), profit: D(1) }, { executedAt: new Date(20_000), profit: D(3) }] }, // final close after the range
         { id: "d", status: "CLOSED", closes: [{ executedAt: new Date(5), profit: D(3) }] },
         { id: "x", status: "VOIDED", closes: [{ executedAt: new Date(5), profit: D(3) }] },
       ],
@@ -122,6 +123,7 @@ describe("account summary (pure)", () => {
     expect(s.funds.adjustments).toBe("1265.00");
     expect(s.funds.initialBalance).toBe("1250.00");
     expect(s.trades.count).toBe(0);
+    expect(s.voided.count).toBe(1);
     expect(s.reconciliation.ok).toBe(true);
   });
 

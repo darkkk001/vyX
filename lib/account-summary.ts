@@ -27,6 +27,7 @@ import { isInitialBalanceRow } from "@/lib/initial-balance";
 //   - a VOIDED trade keeps its deals (voidedAt set) and ledger rows; the void books one ADJUSTMENT referencing the position
 //     that reverses them. Its closes are NOT in `trades` (count, win rate, gross P/L, commission): they are the separate
 //     `voided` line { count, volumeLots, grossPnl, commission, reversal, net }, its reversal there and not in adjustments;
+//     its count is voided POSITIONS by the trade count's final-close rule (owner 2026-10-22), its sums are over the closes;
 //   - a DELETED trade is invisible to the client: its deals are in no line, and its ledger rows (hiddenForPositionId: its
 //     P/L, commission, credit, write-off and the delete's reversal) are in no line either. Their net is funds.deletedTrades:
 //     0 when the trade and its delete fall in the same range (the delete books its swap refund as a visible SWAP row, so
@@ -173,16 +174,19 @@ export function summarize(input: {
   const voidedCloses = gone.filter(isClose);
   const grossPnl = closes.reduce((s, d) => s.add(d.profit), ZERO);
   const volume = closes.reduce((s, d) => s.add(d.volume), ZERO);
-  // the count: closed positions whose final close is in the range, on the P/L of all their closes. Voided / deleted
-  // positions are not trades (a voided one is the `voided` line).
+  // the count: closed positions whose final close is in the range, on the P/L of all their closes. Deleted positions are
+  // no trade; a voided one is not in `trades` but counts once in the `voided` line, by the same final-close rule.
   const { from, to } = input.range;
-  const trades = (input.positions ?? [])
-    .filter((p) => p.status === "CLOSED" && !voidedIds.has(p.id) && !deletedIds.has(p.id) && p.closes.length > 0)
-    .filter((p) => {
-      const last = Math.max(...p.closes.map((c) => c.executedAt.getTime()));
-      return last >= from.getTime() && last <= to.getTime();
-    })
+  const finalCloseInRange = (p: PositionCloses) => {
+    if (p.closes.length === 0) return false;
+    const last = Math.max(...p.closes.map((c) => c.executedAt.getTime()));
+    return last >= from.getTime() && last <= to.getTime();
+  };
+  const counted = (input.positions ?? []).filter((p) => !deletedIds.has(p.id) && finalCloseInRange(p));
+  const trades = counted
+    .filter((p) => p.status === "CLOSED" && !voidedIds.has(p.id))
     .map((p) => p.closes.reduce((s, c) => s.add(c.profit), ZERO));
+  const voidedCount = counted.filter((p) => voidedIds.has(p.id)).length;
   const wins = trades.filter((pnl) => pnl.gt(0)).length;
   const losses = trades.filter((pnl) => pnl.lt(0)).length;
   // commission when charged: the IN deals executed in the period (Deal.commission is the signed ledger amount, a debit)
@@ -218,7 +222,7 @@ export function summarize(input: {
       netPnl: money(netPnl),
     },
     voided: {
-      count: voidedCloses.length,
+      count: voidedCount, // voided positions (see above), not closes
       volumeLots: voidedCloses.reduce((s, d) => s.add(d.volume), ZERO).toFixed(2),
       grossPnl: money(voidedGross),
       commission: money(voidedCommission),
@@ -283,16 +287,20 @@ export async function summarizeAccount(accountId: string, range: SummaryRange, s
       const states = positionIds.length === 0 ? [] : await tx.position.findMany({ where: { accountId, id: { in: positionIds }, OR: [{ status: "VOIDED" }, { deletedAt: { not: null } }] }, select: { id: true, status: true, deletedAt: true } });
       const deletedPositionIds = new Set(states.filter((p) => p.deletedAt).map((p) => p.id));
       const voidedPositionIds = new Set(states.filter((p) => !p.deletedAt && p.status === "VOIDED").map((p) => p.id));
-      // the positions of the range's live closes, with all their closes (a partial may be before the range)
-      const closedIds = [...new Set(deals.filter((d) => d.voidedAt === null && isCloseDeal(d)).map((d) => d.positionId))];
+      // the positions of the range's closes, with all their closes (a partial may be before the range): the live closes of
+      // a live position, the voided closes of a voided one
+      const closedIds = [...new Set(deals.filter(isCloseDeal).map((d) => d.positionId))];
       const positions: PositionCloses[] = [];
       if (closedIds.length > 0) {
         const rows = await tx.position.findMany({ where: { accountId, id: { in: closedIds } }, select: { id: true, status: true } });
         const all = await tx.deal.findMany({
-          where: { accountId, positionId: { in: closedIds }, entry: { in: ["OUT", "OUT_BY"] }, voidedAt: null },
-          select: { positionId: true, entry: true, reason: true, transactionId: true, executedAt: true, profit: true },
+          where: { accountId, positionId: { in: closedIds }, entry: { in: ["OUT", "OUT_BY"] } },
+          select: { positionId: true, entry: true, reason: true, transactionId: true, executedAt: true, profit: true, voidedAt: true },
         });
-        for (const p of rows) positions.push({ id: p.id, status: p.status, closes: all.filter((d) => d.positionId === p.id && isCloseDeal(d)) });
+        for (const p of rows) {
+          const voided = voidedPositionIds.has(p.id);
+          positions.push({ id: p.id, status: p.status, closes: all.filter((d) => d.positionId === p.id && isCloseDeal(d) && (d.voidedAt !== null) === voided) });
+        }
       }
       return summarize({ account, range, openingBalance, closingBalance, ledger, deals, voidedPositionIds, deletedPositionIds, positions });
     },
