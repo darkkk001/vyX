@@ -75,7 +75,7 @@ async function scenario(book: Book): Promise<Record<string, string>> {
   await prisma.accountSymbolConfig.create({ data: { accountId: sellSl.id, symbolId: book.symbolId, spreadMarkup: D(3) } });
   await open(book, sellSl, "SELL", 90, { sl: 80.6 });
   await open(book, sellSl, "SELL", 95);
-  const recovered = await account(book.engine, book.gC, 10_000, { marginCallNotifiedAt: new Date() });
+  const recovered = await account(book.engine, book.gC, 10_000, { marginCallNotifiedAt: new Date(Date.now() - 61_000) } /* older than the 60 s hysteresis minimum (2026-10-23) */);
   await open(book, recovered, "BUY", 79);
   const idle = await account(book.plain, book.gB, 10_000);
   await open(book, idle, "BUY", 85);

@@ -245,13 +245,15 @@ describe("account summary over the real write paths", () => {
     await book(fx, "ADJUSTMENT", "10", at(96));
     const funding = await book(fx, "ADJUSTMENT", "5", at(97));
     await prisma.transaction.update({ where: { id: funding.id }, data: { note: INITIAL_BALANCE_NOTE } });   // as the provisioning books it
-    const b = await open(fx, "SELL", "2", "100", at(98), "1.5");   // commission 3.00 inside, closed after the range
     const c = await open(fx, "BUY", "100", "100", at(100), "0.1");  // commission 10.00 inside
-    await close(fx, c.id, "0", at(102));                       // -10,000: uses the 300 credit, the rest is written off
+    // the account's last open position: uses the 300 credit, the rest is written off (since 2026-10-23 negative-balance
+    // protection runs only on the close that leaves nothing open, docs/NBP-LAST-CLOSE-DESIGN.md)
+    await close(fx, c.id, "0", at(102));                       // -10,000
     const v = await open(fx, "BUY", "1", "100", at(104), "1");     // commission 1.00 inside
     await close(fx, v.id, "130", at(106));                      // +30 ...
     await prisma.$transaction((tx) => executeVoid(tx, { brokerId: fx.brokerId, positionId: v.id, adminId: fx.adminId }));
     await prisma.transaction.updateMany({ where: { referenceId: v.id, type: "ADJUSTMENT" }, data: { createdAt: at(108), updatedAt: at(108) } });   // ...voided inside
+    const b = await open(fx, "SELL", "2", "100", at(109), "1.5");  // commission 3.00 inside, after the write-off; closed after the range
     // ---- after the range ----
     await close(fx, b.id, "90", at(130));                       // +20 after the range
     await book(fx, "DEPOSIT", "1000", at(140));
@@ -276,7 +278,7 @@ describe("account summary over the real write paths", () => {
     expect(s.trades.grossPnl).toBe("-10003.00");   // the closes inside: A's partial before the range is not in the sum
     expect(s.trades.commission).toBe("13.00");   // B 3 + C 10 charged inside (V's 1 is in the voided line); A's 2 was before
     expect(s.trades.swap).toBe("1.25");
-    expect(s.closingBalance).toBe("0.00");   // the write-off left the account at zero; the adjustment / void came after it
+    expect(s.closingBalance).toBe("-3.00");   // the write-off left the account at zero; B's commission after it, with B still open
 
     // adjacent ranges chain: before + inside + after = everything, each reconciles
     const before = await summarizeAccount(fx.accountId, { from: at(-1), to: new Date(from.getTime() - 1) });

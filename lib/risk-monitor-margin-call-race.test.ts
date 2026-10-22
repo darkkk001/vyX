@@ -113,7 +113,8 @@ describe("margin call: one notice per episode under concurrent evaluations", () 
     await price(90);
     await evaluateAccountRisk(a.id); // enters margin call
     published.length = 0;
-    await prisma.account.update({ where: { id: a.id }, data: { balance: D(1000) } }); // equity 990 / 90 = 1100 %: recovered
+    // hysteresis (2026-10-23): an episode ends only >= 60 s after it started -- start it 61 s ago
+    await prisma.account.update({ where: { id: a.id }, data: { balance: D(1000), marginCallNotifiedAt: new Date(Date.now() - 61_000) } }); // equity 990 / 90 = 1100 %: recovered
     await evaluateConcurrently(a.id);
     expect((await prisma.account.findUniqueOrThrow({ where: { id: a.id } })).marginCallNotifiedAt).toBeNull();
     expect(await prisma.notification.count({ where: { accountId: a.id, type: "MARGIN_CALL_CLEARED" } })).toBe(1);
@@ -126,6 +127,28 @@ describe("margin call: one notice per episode under concurrent evaluations", () 
     await evaluateConcurrently(a.id);
     expect(await prisma.notification.count({ where: { entityId: a.id, type: "MARGIN_CALL", accountId: a.id } })).toBe(2);
     expect(marginCallEvents(a.id, "margin_call")).toHaveLength(1);
+  });
+
+  it(`margin-call hysteresis: a recovered episode younger than 60 s, or under the call level + 10, is held -- no CLEARED, no second MARGIN_CALL`, async () => {
+    const a = await account(80);
+    await open(a.id, 100);
+    await price(90);
+    await evaluateAccountRisk(a.id); // enters margin call (77.78 %)
+    published.length = 0;
+    await prisma.account.update({ where: { id: a.id }, data: { balance: D(1000) } }); // 1100 %, but the episode is seconds old
+    await evaluateConcurrently(a.id);
+    expect((await prisma.account.findUniqueOrThrow({ where: { id: a.id } })).marginCallNotifiedAt).not.toBeNull();
+    // old enough, but 105 %: still under 100 + 10
+    await prisma.account.update({ where: { id: a.id }, data: { balance: D("104.5"), marginCallNotifiedAt: new Date(Date.now() - 61_000) } }); // (104.5 - 10) / 90 = 105 %
+    await evaluateConcurrently(a.id);
+    expect((await prisma.account.findUniqueOrThrow({ where: { id: a.id } })).marginCallNotifiedAt).not.toBeNull();
+    // back under 100 inside the same episode: no second notice
+    await prisma.account.update({ where: { id: a.id }, data: { balance: D(80) } });
+    await evaluateConcurrently(a.id);
+    expect(await prisma.notification.count({ where: { accountId: a.id, type: "MARGIN_CALL_CLEARED" } })).toBe(0);
+    expect(await prisma.notification.count({ where: { entityId: a.id, type: "MARGIN_CALL" } })).toBe(2); // one episode: trader + staff copy
+    expect(marginCallEvents(a.id, "cleared")).toHaveLength(0);
+    expect(marginCallEvents(a.id, "margin_call")).toHaveLength(0);
   });
 
   it(`${CONCURRENT} concurrent evaluations of an account with nothing left open clear the flag once`, async () => {

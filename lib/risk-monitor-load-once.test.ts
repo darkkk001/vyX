@@ -118,7 +118,8 @@ describe("evaluateAccountRisk (load once, re-read after a close)", () => {
     const a = await account(1_000);
     const hit = await open(a.id, 100, { sl: 95 });
     const keep = await open(a.id, 90);
-    await prisma.account.update({ where: { id: a.id }, data: { marginCallNotifiedAt: new Date() } });
+    // an episode older than the 60 s hysteresis minimum (2026-10-23)
+    await prisma.account.update({ where: { id: a.id }, data: { marginCallNotifiedAt: new Date(Date.now() - 61_000) } });
     await price(94);
     const r = await evaluateAccountRisk(a.id);
     expect(r.slTpClosed).toEqual([hit.id]);
