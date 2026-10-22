@@ -1,5 +1,5 @@
 """Sounds v2 audition pack: 44.1 kHz mono 16-bit, triangle wave, 8 ms attack, exponential decay, peak -6 dBFS."""
-import math, struct, sys, wave, os, csv
+import math, struct, sys, wave, os, csv, hashlib
 
 SR = 44100
 PEAK = 10 ** (-6 / 20)          # -6 dBFS
@@ -62,6 +62,11 @@ SOUNDS = [
 ]
 
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+WAV_DIR = os.path.normpath(os.path.join(HERE, "..", "..", "public", "sounds", "v2"))   # the shipped set
+MANIFEST = os.path.join(HERE, "manifest.csv")                                           # the checksum manifest
+
+
 def main(out_dir):
     os.makedirs(out_dir, exist_ok=True)
     rows = []
@@ -69,14 +74,18 @@ def main(out_dir):
         peak = max(abs(x) for x in s)
         pcm = b"".join(struct.pack("<h", int(round(x / peak * PEAK * 32767))) for x in s)
         name = f"{i:02d}-{key}.wav"
-        with wave.open(os.path.join(out_dir, name), "wb") as w:
+        path = os.path.join(out_dir, name)
+        with wave.open(path, "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR); w.writeframes(pcm)
-        rows.append((name, label, round(len(s) * 1000 / SR), os.path.getsize(os.path.join(out_dir, name))))
-    with open(os.path.join(out_dir, "manifest.csv"), "w", newline="") as f:
-        csv.writer(f).writerows([("file", "event", "duration_ms", "bytes")] + rows)
+        with open(path, "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        rows.append((name, label, round(len(s) * 1000 / SR), os.path.getsize(path), sha))
+    with open(MANIFEST, "w", newline="") as f:
+        csv.writer(f, lineterminator="\n").writerows([("file", "event", "duration_ms", "bytes", "sha256")] + rows)
     for r in rows:
         print(*r, sep="\t")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    # python tools/sounds-v2/generate.py            rewrites public/sounds/v2/*.wav and tools/sounds-v2/manifest.csv
+    main(sys.argv[1] if len(sys.argv) > 1 else WAV_DIR)
