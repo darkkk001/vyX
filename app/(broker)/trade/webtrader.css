@@ -631,7 +631,7 @@ html[data-mode="light"], html[data-mode="light"] body {
    need the S/L/T/P/comment/action columns open positions do. */
 .history-table-header {
   display: grid;
-  grid-template-columns: 70px 0.8fr 0.6fr 0.5fr 0.7fr 0.7fr 0.9fr 0.9fr 0.55fr 0.7fr 0.7fr;
+  grid-template-columns: 96px 0.8fr 0.95fr 0.5fr 0.7fr 0.7fr 0.9fr 0.9fr 0.55fr 0.7fr 0.7fr;
   gap: 8px; padding: 8px 4px; font-size: 10px; color: var(--text-3);
   letter-spacing: .03em; text-transform: uppercase;
   border-bottom: 1px solid var(--border); min-width: 820px;
@@ -639,11 +639,21 @@ html[data-mode="light"], html[data-mode="light"] body {
 }
 .history-row {
   display: grid;
-  grid-template-columns: 70px 0.8fr 0.6fr 0.5fr 0.7fr 0.7fr 0.9fr 0.9fr 0.55fr 0.7fr 0.7fr;
+  grid-template-columns: 96px 0.8fr 0.95fr 0.5fr 0.7fr 0.7fr 0.9fr 0.9fr 0.55fr 0.7fr 0.7fr;
   gap: 8px; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2);
   font-size: 12.5px; min-width: 820px;
 }
 .history-row:last-child { border-bottom: none; }
+/* History, the terminal's one view: a position closed in parts is a group row (click to show its closes), its closes are
+   child rows; an open position's partial carries a Partial tag. */
+.history-row.history-group { cursor: pointer; }
+.history-row.history-group:hover { background: var(--bg-2); }
+.history-row .wl-category-chevron { display: inline-block; margin-right: 4px; transition: transform .15s; transform: rotate(90deg); }
+.history-row .wl-category-chevron.collapsed { transform: rotate(0deg); }
+.history-row.history-child { padding: 5px 4px; font-size: 11.5px; color: var(--text-2); background: var(--bg-0); }
+/* "0.50 of 1.00" runs into the empty OPEN cell beside it */
+.history-row.history-child .pos-cell { min-width: 0; overflow: visible; text-overflow: clip; white-space: nowrap; }
+.history-tag { margin-left: 6px; white-space: nowrap; font-size: 10px; color: var(--text-3); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 4px; }
 .pos-actions { display: flex; align-items: center; gap: 2px; justify-content: flex-end; }
 
 .sltp-pill {

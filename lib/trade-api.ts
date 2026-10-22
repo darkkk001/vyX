@@ -3,6 +3,7 @@
 // auth — no tokens handled in JS. Transport (fetch() vs. a bundled
 // desktop shell's window.vyxDesktop bridge) lives in lib/desktop-api.ts,
 // shared with manager-shell/admin-shell's own API wrappers.
+import type { HistoryClose } from "@/lib/history-view";
 import { apiCall as call, apiCallForm as callForm, serverNow, ApiError } from "./desktop-api";
 import type { SymbolCategory } from "./market-simulator";
 import type { ChartSettings } from "./chart-settings";
@@ -53,7 +54,15 @@ export type ApiPosition = {
   openedAt: string;
   closedAt: string | null;
   symbol: { name: string; digits: number; contractSize?: string };
+  // history with closes=1 only: the position ticket and every close (lib/history-view.ts reads them)
+  ticket?: number;
+  closes?: HistoryClose[];
+  remainingVolume?: string;
+  closedPnl?: string | null;
+  avgClosePrice?: string | null;
+  lastCloseAt?: string | null;
 };
+
 
 // tickAt is the real last-tick time (see LivePrice.tickAt's own schema
 // comment) -- what feedStatusFor's staleness clock should read, not
@@ -231,8 +240,10 @@ export const tradeApi = {
   // §4.5) -- includes FILLED/REJECTED/CANCELLED, not just what's
   // currently pending/requoted, unlike orders() above.
   allOrders: () => call<ApiOrder[]>("/api/trade/orders?status=all"),
-  history: (params: { from?: string; to?: string; symbol?: string }) => {
+  // closes: the terminal's view (every close of every position, an open position closed in part included)
+  history: (params: { from?: string; to?: string; symbol?: string; closes?: boolean }) => {
     const qs = new URLSearchParams();
+    if (params.closes) qs.set("closes", "1");
     if (params.from) qs.set("from", params.from);
     if (params.to) qs.set("to", params.to);
     if (params.symbol) qs.set("symbol", params.symbol);

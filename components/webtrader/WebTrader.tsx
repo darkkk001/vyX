@@ -2,7 +2,7 @@
 
 import PasswordField from "@/components/PasswordField";
 import { kycWord } from "@/lib/kyc-words";
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   SYMBOL_DEFS,
   SYMBOL_CATEGORY_ORDER,
@@ -52,6 +52,7 @@ import { playSound } from "@/lib/sounds";
 import { filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
 import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
 import { plainError, tradeActionError, TRADE_TEXT } from "@/lib/plain-error";
+import { closesTotal, historyLines, type HistoryLine } from "@/lib/history-view";
 import { formatCsvNumber, formatMarginLevel, formatMoney, formatPercent, formatSigned, formatVolume, tone, viewAmount, TONE_COLOR, type Tone } from "@/lib/format";
 import { DEMO_BANNER_TEXT } from "@/lib/demo-policy";
 import { DEMO_SYMBOLS, demoBucketStart, demoCandleOf, gridTime } from "@/lib/demo-prices";
@@ -380,6 +381,8 @@ export default function WebTrader({
   const [pendingOrders, setPendingOrders] = useState<ApiOrder[]>([]);
   const [allOrders, setAllOrders] = useState<ApiOrder[]>([]);
   const [history, setHistory] = useState<ApiPosition[]>([]);
+  // the History groups the trader opened (by position id)
+  const [openHistoryGroups, setOpenHistoryGroups] = useState<Set<string>>(() => new Set());
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comments, setComments] = useState<Record<string, string>>({});
   const trailingDistances = useRef<Record<string, number>>({});
@@ -1280,6 +1283,7 @@ export default function WebTrader({
           from: histFrom ? localDayBoundary(histFrom, false) : undefined,
           to: histTo ? localDayBoundary(histTo, true) : undefined,
           symbol: histSymbol,
+          closes: true,
         })
         .catch(() => [])
     );
@@ -1300,16 +1304,24 @@ export default function WebTrader({
   // row has no symbol/lots/open-close price, so those columns render as
   // "—"; its amount takes the same Profit column a trade's realizedPnl
   // does, since both are "how this row changed the balance."
+  //
+  // Trades follow the terminal's one History view (lib/history-view.ts, terminal 1.0.92): an open position's partial
+  // closes are rows of their own, a fully closed position is one row (grouped with its closes when closed in parts).
   type HistoryRow =
-    | { kind: "trade"; date: number; trade: ApiPosition }
+    | { kind: "trade"; date: number; line: HistoryLine<ApiPosition> }
     | { kind: "funds"; date: number; funds: ApiFundsRequest };
+  const histRange = useMemo(
+    () => ({ from: histFrom ? localDayBoundary(histFrom, false) : undefined, to: histTo ? localDayBoundary(histTo, true) : undefined }),
+    [histFrom, histTo]
+  );
+  const historyTotals = useMemo(() => closesTotal(history, histRange), [history, histRange]);
   const historyRows: HistoryRow[] = useMemo(() => {
-    const tradeRows: HistoryRow[] = history.map((h) => ({ kind: "trade", date: new Date(h.closedAt ?? h.openedAt).getTime(), trade: h }));
+    const tradeRows: HistoryRow[] = historyLines(history, histRange).map((line) => ({ kind: "trade", date: new Date(line.at).getTime(), line }));
     const fundsRows: HistoryRow[] = fundsHistory
       .filter((f) => f.status === "COMPLETED")
       .map((f) => ({ kind: "funds", date: new Date(f.createdAt).getTime(), funds: f }));
     return [...tradeRows, ...fundsRows].sort((a, b) => b.date - a.date);
-  }, [history, fundsHistory]);
+  }, [history, fundsHistory, histRange]);
 
   // "Switch account"/"Logout" — log out, then show the login screen again.
   // Desktop (bundled shell): the document is local content with no
@@ -4879,7 +4891,7 @@ export default function WebTrader({
                       {allSymbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
                     </select>
                     <div className="history-summary">
-                      {history.length > 0 ? <>{history.length} trades · Total <span className={TONE_CSS[tone(historyTotal(history))]}>{money(historyTotal(history))}</span></> : null}
+                      {historyTotals.closes > 0 ? <>{historyTotals.closes} {historyTotals.closes === 1 ? "close" : "closes"} · Total <span className={TONE_CSS[tone(historyTotals.pnl)]}>{money(historyTotals.pnl)}</span></> : null}
                     </div>
                   </div>
                   {histPeriod === "custom" ? (
@@ -4898,23 +4910,54 @@ export default function WebTrader({
                       </div>
                       {historyRows.map((row) => {
                         if (row.kind === "trade") {
-                          const h = row.trade;
-                          const pnl = h.realizedPnl ? parseFloat(h.realizedPnl) : 0;
+                          const { line } = row;
+                          const h = line.trade;
                           const voided = h.status === "VOIDED";
+                          const open = line.group && openHistoryGroups.has(h.id);
+                          const when = (iso: string | null) => (iso ? `${new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "");
+                          const toggle = () => setOpenHistoryGroups((prev) => { const next = new Set(prev); if (next.has(h.id)) next.delete(h.id); else next.add(h.id); return next; });
                           return (
-                            <div className="history-row" key={h.id} style={voided ? { opacity: 0.45 } : undefined} title={voided ? "Voided: this trade's result was reversed" : undefined}>
-                              <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.id.slice(-8)}</span>
-                              <span className="pos-cell pos-symbol">{h.symbol.name}</span>
-                              <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
-                              <span className="pos-cell mono">{formatVolume(h.closedVolume ?? h.volume)}</span>
-                              <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
-                              <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : ""}</span>
-                              <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                              <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</span>
-                              <span className="pos-cell pos-swap mono">{formatSigned(viewAmount("swap", h.swap, "client"))}</span>
-                              <span className="pos-cell pos-commission mono">{formatSigned(viewAmount("commission", h.commission, "client"))}</span>
-                              <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(pnl)]}`}>{formatSigned(pnl)}</span>
-                            </div>
+                            <Fragment key={line.key}>
+                              <div className={`history-row${line.group ? " history-group" : ""}`} style={voided ? { opacity: 0.45 } : undefined} title={voided ? "Voided: this trade's result was reversed" : undefined} onClick={line.group ? toggle : undefined}>
+                                <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>
+                                  {line.group ? <span className={`wl-category-chevron${open ? "" : " collapsed"}`}>›</span> : null}
+                                  {h.ticket ? `#${h.ticket}` : h.id.slice(-8)}
+                                </span>
+                                <span className="pos-cell pos-symbol">{h.symbol.name}</span>
+                                <span className="pos-cell">
+                                  <span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span>
+                                  {line.partial ? <span className="history-tag">Partial</span> : null}
+                                </span>
+                                <span className="pos-cell mono">{formatVolume(line.lots)}</span>
+                                <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
+                                <span className="pos-cell mono">{line.closePrice ? fmt(parseFloat(line.closePrice), h.symbol.digits) : ""}</span>
+                                <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{when(h.openedAt)}</span>
+                                <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{when(line.at)}</span>
+                                <span className="pos-cell pos-swap mono">{formatSigned(viewAmount("swap", line.swap, "client"))}</span>
+                                <span className="pos-cell pos-commission mono">{formatSigned(viewAmount("commission", line.commission, "client"))}</span>
+                                <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(line.pnl)]}`}>{formatSigned(line.pnl)}</span>
+                              </div>
+                              {open
+                                ? line.children.map((c, i) => {
+                                    const pnl = Number(c.pnl);
+                                    return (
+                                      <div className="history-row history-child" key={`${line.key}:${i}`} style={voided ? { opacity: 0.45 } : undefined}>
+                                        <span className="pos-cell" />
+                                        <span className="pos-cell" />
+                                        <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{c.closedByTicket ? `Close by #${c.closedByTicket}` : ""}</span>
+                                        <span className="pos-cell mono">{c.volume ? `${formatVolume(c.volume)} of ${formatVolume(line.lots)}` : ""}</span>
+                                        <span className="pos-cell" />
+                                        <span className="pos-cell mono">{c.price ? fmt(parseFloat(c.price), h.symbol.digits) : ""}</span>
+                                        <span className="pos-cell" />
+                                        <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{when(c.at)}</span>
+                                        <span className="pos-cell" />
+                                        <span className="pos-cell" />
+                                        <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(pnl)]}`}>{formatSigned(pnl)}</span>
+                                      </div>
+                                    );
+                                  })
+                                : null}
+                            </Fragment>
                           );
                         }
                         const f = row.funds;
@@ -4944,7 +4987,7 @@ export default function WebTrader({
 
               {activeBottomTab === "analytics" ? (
                 <div className="panel-body">
-                  <AnalyticsGrid trades={history} />
+                  <AnalyticsGrid trades={history.filter((h) => h.status !== "OPEN")} />
                 </div>
               ) : null}
 
@@ -6100,7 +6143,3 @@ function AnalyticsGrid({ trades }: { trades: ApiPosition[] }) {
   );
 }
 
-/** The history total: a voided trade's result was reversed (Batch D), so it is listed greyed but not counted. */
-function historyTotal(rows: { status: string; realizedPnl: string | null }[]): number {
-  return rows.reduce((s, h) => s + (h.status !== "VOIDED" && h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0);
-}
