@@ -684,7 +684,10 @@ pub async fn account_thresholds(pool: &PgPool, account_id: &str) -> Result<Optio
 /// simulated close applies in memory. ONE function, so a would-close in shadow cannot drift from a real close.
 /// Stage 2 F1 (credit Model A, = lib/position-close.ts): a loss that takes the BALANCE below zero is paid from
 /// CREDIT next, up to the shortfall; only what credit cannot cover reaches negative-balance protection
-/// (`protect_nbp` = the broker's negativeBalanceProtection), which floors the balance at 0.
+/// (`protect_nbp` = the broker's negativeBalanceProtection), which floors the balance at 0 -- and only on the close that
+/// leaves the account with no open position (`last_position`, owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md): while
+/// other positions stay open the balance may stay negative (equity still decides stop-out), and the one write-off at the
+/// end covers the whole deficit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CloseMoney {
     /// balance + realized P&L, before credit and any floor (the TRADE_PNL row's balanceAfter)
@@ -697,7 +700,7 @@ pub struct CloseMoney {
     pub write_off: Option<Decimal>,
 }
 
-pub fn close_money(balance_before: Decimal, credit_before: Decimal, realized_pnl: Decimal, protect_nbp: bool) -> CloseMoney {
+pub fn close_money(balance_before: Decimal, credit_before: Decimal, realized_pnl: Decimal, protect_nbp: bool, last_position: bool) -> CloseMoney {
     let raw_balance_after = balance_before + realized_pnl;
     let mut after_credit = raw_balance_after;
     let mut final_credit = credit_before;
@@ -710,7 +713,7 @@ pub fn close_money(balance_before: Decimal, credit_before: Decimal, realized_pnl
     }
     let mut final_balance = after_credit;
     let mut write_off = None;
-    if after_credit < Decimal::ZERO && protect_nbp {
+    if after_credit < Decimal::ZERO && protect_nbp && last_position {
         write_off = Some(-after_credit);
         final_balance = Decimal::ZERO;
     }
@@ -890,9 +893,20 @@ pub async fn close_position_full(
         }
     }
     // the money rules live in close_money (shared with the Stage 5 shadow's simulated close); the broker's
-    // negative-balance protection flag is read only when the result would go below zero, as before
-    let unprotected = close_money(balance_before, credit_before, realized_pnl, false);
-    let protect = if unprotected.after_credit < Decimal::ZERO {
+    // negative-balance protection flag is read only when the result would go below zero, as before. NBP only on the
+    // close that empties the account: counted here, after this position's UPDATE and with the account row locked, so
+    // two concurrent closes of the last two positions serialize and only the second one sees zero left.
+    let unprotected = close_money(balance_before, credit_before, realized_pnl, false, false);
+    let last_position = if unprotected.after_credit < Decimal::ZERO {
+        let (open_left,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Position" WHERE "accountId" = $1 AND status = 'OPEN'"#)
+            .bind(&account_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        open_left == 0
+    } else {
+        false
+    };
+    let protect = if last_position {
         let (protect,): (bool,) = sqlx::query_as(r#"SELECT "negativeBalanceProtection" FROM "Broker" WHERE id = $1"#)
             .bind(&broker_id)
             .fetch_one(&mut **tx)
@@ -902,7 +916,7 @@ pub async fn close_position_full(
         false
     };
     let CloseMoney { raw_balance_after, after_credit, final_balance, final_credit, credit_used, write_off } =
-        close_money(balance_before, credit_before, realized_pnl, protect);
+        close_money(balance_before, credit_before, realized_pnl, protect, last_position);
 
     sqlx::query(r#"UPDATE "Account" SET balance = $1, credit = $2, "updatedAt" = now() WHERE id = $3"#)
         .bind(final_balance)
@@ -1208,11 +1222,18 @@ pub enum MarginCallEdge {
 
 /// Whether the account's margin-call edge is currently set ("Account"."marginCallNotifiedAt").
 pub async fn margin_call_notified(pool: &PgPool, account_id: &str) -> Result<bool, sqlx::Error> {
-    let row: Option<(bool,)> = sqlx::query_as(r#"SELECT "marginCallNotifiedAt" IS NOT NULL FROM "Account" WHERE id = $1"#)
-        .bind(account_id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|(b,)| b).unwrap_or(false))
+    Ok(margin_call_started_ms(pool, account_id).await?.is_some())
+}
+
+/// The open margin-call episode's start ("Account"."marginCallNotifiedAt", epoch ms); None = no episode open. The
+/// hysteresis (monitor.rs margin_call_edge) needs its age.
+pub async fn margin_call_started_ms(pool: &PgPool, account_id: &str) -> Result<Option<i64>, sqlx::Error> {
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as(r#"SELECT (extract(epoch from "marginCallNotifiedAt") * 1000)::bigint FROM "Account" WHERE id = $1"#)
+            .bind(account_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(ms,)| ms))
 }
 
 /// The margin-call notice, edge-triggered on "Account"."marginCallNotifiedAt" exactly as the web does it: entering
@@ -1412,5 +1433,109 @@ mod price_source_tests {
         assert_eq!(fx_quote_from_ticks(&cache, "EURUSD", now), None, "older than 72 h: no rate");
         set(24 * 10);
         assert_eq!(fx_quote_from_ticks(&cache, "EURUSD", now), None, "10 days (the stale Neon copy): no rate");
+    }
+}
+
+/// Negative-balance protection on the last close only (owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md): the 50005696
+/// sequence of 2026-10-22 replayed through close_money, from the fixture the web test and tests/nbp_replay_db.rs share.
+#[cfg(test)]
+mod nbp_last_close_tests {
+    use super::close_money;
+    use rust_decimal::Decimal;
+    use std::collections::BTreeSet;
+    use std::str::FromStr;
+
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/nbp-50005696-2026-10-22.json");
+
+    fn d(v: &serde_json::Value) -> Decimal {
+        Decimal::from_str(v.as_str().expect("decimal string")).unwrap()
+    }
+
+    struct Replay {
+        balance: Decimal,
+        min_balance: Decimal,
+        write_offs: Vec<(u64, Decimal)>,
+        nbp_rows_after_real_steps: usize,
+        balance_after_real_steps: Decimal,
+    }
+
+    /// `last_rule` = how a close decides "last position": the new rule (nothing else open) or the old one (always).
+    fn replay(old_rule: bool) -> Replay {
+        let fx: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+        let mut open: BTreeSet<u64> = fx["openAtStart"].as_array().unwrap().iter().map(|p| p["ticket"].as_u64().unwrap()).collect();
+        let nbp = fx["account"]["negativeBalanceProtection"].as_bool().unwrap();
+        let mut credit = d(&fx["account"]["credit"]);
+        let mut r = Replay { balance: d(&fx["account"]["balance"]), min_balance: Decimal::MAX, write_offs: vec![], nbp_rows_after_real_steps: 0, balance_after_real_steps: Decimal::ZERO };
+        let mut close = |r: &mut Replay, open: &mut BTreeSet<u64>, ticket: u64, pnl: Decimal| {
+            assert!(open.remove(&ticket), "ticket {ticket} not open");
+            let money = close_money(r.balance, credit, pnl, nbp, old_rule || open.is_empty());
+            r.balance = money.final_balance;
+            credit = money.final_credit;
+            r.min_balance = r.min_balance.min(r.balance);
+            if let Some(w) = money.write_off {
+                r.write_offs.push((ticket, w));
+            }
+        };
+        for s in fx["steps"].as_array().unwrap() {
+            let ticket = s["ticket"].as_u64().unwrap();
+            match s["kind"].as_str().unwrap() {
+                "close" => close(&mut r, &mut open, ticket, d(&s["pnl"])),
+                "open" => {
+                    assert!(open.insert(ticket));
+                    r.balance += d(&s["commission"]); // the open's COMMISSION row: no floor, as today
+                    r.min_balance = r.min_balance.min(r.balance);
+                }
+                k => panic!("unknown step {k}"),
+            }
+        }
+        r.nbp_rows_after_real_steps = r.write_offs.len();
+        r.balance_after_real_steps = r.balance;
+        let last = &fx["syntheticFinalCloses"];
+        for t in last["tickets"].as_array().unwrap() {
+            close(&mut r, &mut open, t.as_u64().unwrap(), d(&last["pnl"]));
+        }
+        assert!(open.is_empty());
+        r
+    }
+
+    #[test]
+    fn the_old_rule_reproduces_production_14_write_offs() {
+        let fx: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+        let r = replay(true);
+        assert_eq!(r.nbp_rows_after_real_steps as u64, fx["expect"]["oldRuleNbpRows"].as_u64().unwrap());
+        let total: Decimal = r.write_offs.iter().map(|(_, w)| *w).sum();
+        assert_eq!(total, d(&fx["expect"]["oldRuleWriteOffTotal"]));
+    }
+
+    #[test]
+    fn the_new_rule_writes_off_once_when_the_last_position_closes() {
+        let fx: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+        let e = &fx["expect"];
+        let r = replay(false);
+        assert_eq!(r.nbp_rows_after_real_steps as u64, e["afterRealStepsNbpRows"].as_u64().unwrap(), "no write-off while positions stay open");
+        assert_eq!(r.balance_after_real_steps, d(&e["afterRealStepsBalance"]));
+        assert!(r.min_balance < Decimal::ZERO, "the balance goes below zero while positions are open");
+        assert_eq!(r.write_offs, vec![(e["finalWriteOffTicket"].as_u64().unwrap(), d(&e["finalWriteOff"]))]);
+        assert_eq!(r.balance, d(&e["finalBalance"]));
+    }
+
+    #[test]
+    fn last_position_only_and_never_without_protection() {
+        let dec = |s: &str| Decimal::from_str(s).unwrap();
+        // others still open: the balance goes negative, nothing written off
+        let m = close_money(dec("10"), Decimal::ZERO, dec("-50"), true, false);
+        assert_eq!((m.final_balance, m.write_off), (dec("-40"), None));
+        // the last close: the whole deficit, once
+        let m = close_money(dec("-40"), Decimal::ZERO, dec("-5"), true, true);
+        assert_eq!((m.final_balance, m.write_off), (Decimal::ZERO, Some(dec("45"))));
+        // a profitable last close that leaves the balance negative still writes the rest off
+        let m = close_money(dec("-40"), Decimal::ZERO, dec("15"), true, true);
+        assert_eq!((m.final_balance, m.write_off), (Decimal::ZERO, Some(dec("25"))));
+        // protection off: never
+        let m = close_money(dec("-40"), Decimal::ZERO, dec("-5"), false, true);
+        assert_eq!((m.final_balance, m.write_off), (dec("-45"), None));
+        // credit still pays first, per close (Model A unchanged)
+        let m = close_money(dec("10"), dec("30"), dec("-50"), true, false);
+        assert_eq!((m.final_balance, m.final_credit, m.credit_used, m.write_off), (dec("-10"), Decimal::ZERO, Some(dec("30")), None));
     }
 }

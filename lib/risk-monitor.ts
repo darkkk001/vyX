@@ -9,7 +9,7 @@ import { cancelPendingClose } from "@/lib/queued-close";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
-import { DEFAULT_HEDGED_MARGIN_PCT, hedgedUsedMargin, liveUsedMarginFor, type MarginLeg } from "@/lib/margin";
+import { DEFAULT_HEDGED_MARGIN_PCT, hedgedUsedMargin, liveUsedMarginFor, marginCallEpisodeMayEnd, type MarginLeg } from "@/lib/margin";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
@@ -379,7 +379,7 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
           // Batch 5: the trader's terminal and the broker's backoffice learn at once (MarginCall, both streams)
           await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "margin_call" }).catch(() => {});
         }
-      } else if (!inMarginCall && latestAccount.marginCallNotifiedAt) {
+      } else if (!inMarginCall && latestAccount.marginCallNotifiedAt && marginCallEpisodeMayEnd(marginLevel, marginCallLevel, latestAccount.marginCallNotifiedAt, new Date())) {
         const body = `Account ${latestAccount.accountNumber}'s margin level is ${marginLevel.toFixed(2)}%, back above the ${marginCallLevel}% margin-call level.`;
         if (await clearMarginCall(accountId, latestAccount.brokerId, body)) {
           await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "cleared" }).catch(() => {});

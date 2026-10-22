@@ -275,6 +275,15 @@ impl Recorder {
     /// Record a margin-call edge only when it CHANGES from the last one recorded for the account (the shadow sees
     /// "in margin call" on every pass of an episode). The first sighting of an account records In but not Out:
     /// an account that was never in a call has no edge to leave.
+    /// The shadow's own open margin-call episode for this account: its start in epoch ms (an "in" edge's episode number
+    /// IS its start time, see record_edge), None when the last edge was "out" or there was none.
+    pub fn episode_started_ms(&self, account_id: &str) -> Option<i64> {
+        match self.edges.lock().unwrap().get(account_id) {
+            Some((Kind::MarginCallIn, ep)) => Some(*ep as i64),
+            _ => None,
+        }
+    }
+
     pub async fn record_edge(&self, d: Decision) {
         let episode = {
             let mut edges = self.edges.lock().unwrap();

@@ -28,6 +28,7 @@
 //! top of an Account.balance it never wrote.
 
 use crate::book;
+use chrono::Utc;
 use crate::calc::{equity, floating_pnl, load_book_state, position_close_price, used_margin, AccountState};
 use crate::db;
 use margin::{evaluate, MonitorAction};
@@ -161,9 +162,11 @@ async fn apply_close(
             Ok(Applied::Closed(outcome.final_balance, outcome.final_credit)) // after any credit use and negative-balance floor
         }
         Mode::Shadow(recorder) => {
-            // the broker's negative-balance protection is read only when it can matter, as in the real close
-            let unprotected = book::close_money(state.effective_balance, state.credit, pnl, false);
-            let protect = if unprotected.after_credit < Decimal::ZERO {
+            // the broker's negative-balance protection is read only when it can matter, as in the real close, and
+            // applies only when this close leaves the account with no open position (book::close_money)
+            let unprotected = book::close_money(state.effective_balance, state.credit, pnl, false, false);
+            let last_position = !state.positions.iter().any(|p| p.id != position.id && !ov.closed.contains(&p.id));
+            let protect = if unprotected.after_credit < Decimal::ZERO && last_position {
                 if let Some(a) = pass.and_then(|pb| pb.account(account_id)) {
                     a.nbp
                 } else {
@@ -178,7 +181,7 @@ async fn apply_close(
             } else {
                 false
             };
-            let money = book::close_money(state.effective_balance, state.credit, pnl, protect);
+            let money = book::close_money(state.effective_balance, state.credit, pnl, protect, last_position);
             ov.closed.insert(position.id.clone());
             ov.funds = Some((money.final_balance, money.final_credit));
             let (kind, level) = match reason {
@@ -642,8 +645,8 @@ async fn evaluate_account_checked(
     // may have changed this account since our copy was taken, and clearing the edge on stale numbers would make the
     // next pass notify the same episode twice (caught by the load harness with 2 walkers). Steady state costs one
     // cheap read of the column instead of an UPDATE per account per pass.
-    let mut edge = margin_call_edge(&state, thresholds);
     if let Mode::Shadow(recorder) = mode {
+        let edge = margin_call_edge(&state, thresholds, recorder.episode_started_ms(account_id), Utc::now().timestamp_millis());
         // shadow: its OWN edge per account (the web's flag moves with the web's decisions, not ours); recorded on
         // change only, nothing written to the book. An SL / TP snapshot pin looks at a PAST moment: it decides the
         // SL / TP (and any stop-out) of that moment but records no margin-call edge, which would reorder the account's
@@ -674,7 +677,9 @@ async fn evaluate_account_checked(
     }
     // live only (the shadow keeps its own edge above and never reads the web's flag: 2026-10-05, one statement per
     // account per shadow pass saved)
-    let notified = book::margin_call_notified(pool, account_id).await?;
+    let started = book::margin_call_started_ms(pool, account_id).await?;
+    let notified = started.is_some();
+    let mut edge = margin_call_edge(&state, thresholds, started, Utc::now().timestamp_millis());
     let transition = |e: Option<book::MarginCallEdge>| match e {
         Some(book::MarginCallEdge::In { .. }) => !notified,
         Some(book::MarginCallEdge::Out) => notified,
@@ -683,7 +688,7 @@ async fn evaluate_account_checked(
     if transition(edge) {
         if let Some(fresh) = load_book_state(pool, account_id).await? {
             state = fresh;
-            edge = margin_call_edge(&state, thresholds);
+            edge = margin_call_edge(&state, thresholds, started, Utc::now().timestamp_millis());
         }
     }
     if let Some(e) = edge.filter(|e| transition(Some(*e))) {
@@ -698,18 +703,32 @@ async fn evaluate_account_checked(
     Ok(Some(report))
 }
 
-/// Where the account stands against its margin-call level (None: open positions but no level, nothing changes).
-fn margin_call_edge(state: &AccountState, thresholds: margin::MarginThresholds) -> Option<book::MarginCallEdge> {
+/// Margin-call hysteresis (owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md section 3; = lib/risk-monitor.ts): an
+/// episode ends only once the level is this many points above the call level ...
+pub const MARGIN_CALL_CLEAR_MARGIN_POINTS: i64 = 10;
+/// ... AND the episode is at least this old. Before both hold the flag stays set: no "over" notice, no new notice.
+pub const MARGIN_CALL_MIN_EPISODE_SECS: i64 = 60;
+
+/// Where the account stands against its margin-call level. None = nothing changes: open positions but no level, or a
+/// level above the call level that has not yet earned the end of the episode (`episode_started_ms` = the open
+/// episode's start, None when none is open). An account with nothing left open ends its episode at once.
+fn margin_call_edge(state: &AccountState, thresholds: margin::MarginThresholds, episode_started_ms: Option<i64>, now_ms: i64) -> Option<book::MarginCallEdge> {
     if state.positions.is_empty() {
         return Some(book::MarginCallEdge::Out);
     }
-    risk::margin_level(equity(state), used_margin(state)).map(|level| {
-        if level <= thresholds.call_level {
-            book::MarginCallEdge::In { margin_level: level, call_level: thresholds.call_level }
-        } else {
-            book::MarginCallEdge::Out
-        }
-    })
+    risk::margin_level(equity(state), used_margin(state)).and_then(|level| margin_call_edge_at(level, thresholds.call_level, episode_started_ms, now_ms))
+}
+
+fn margin_call_edge_at(level: Decimal, call_level: Decimal, episode_started_ms: Option<i64>, now_ms: i64) -> Option<book::MarginCallEdge> {
+    if level <= call_level {
+        return Some(book::MarginCallEdge::In { margin_level: level, call_level });
+    }
+    let Some(started) = episode_started_ms else {
+        return Some(book::MarginCallEdge::Out); // no episode open: nothing to end, and no transition either
+    };
+    let recovered = level >= call_level + Decimal::from(MARGIN_CALL_CLEAR_MARGIN_POINTS);
+    let old_enough = now_ms - started >= MARGIN_CALL_MIN_EPISODE_SECS * 1000;
+    (recovered && old_enough).then_some(book::MarginCallEdge::Out)
 }
 
 async fn publish_best_effort(nats: Option<&async_nats::Client>, event: &TradingEvent) {
@@ -1213,5 +1232,40 @@ mod tests {
         p.bid = None;
         p.ask = None;
         assert!(sl_tp_trigger(&p).is_none());
+    }
+}
+
+/// Margin-call hysteresis (owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md section 3).
+#[cfg(test)]
+mod margin_call_hysteresis_tests {
+    use super::{margin_call_edge_at, MARGIN_CALL_MIN_EPISODE_SECS};
+    use crate::book::MarginCallEdge;
+    use rust_decimal_macros::dec;
+
+    const START: i64 = 1_000_000;
+    const OLD: i64 = START + MARGIN_CALL_MIN_EPISODE_SECS * 1000;
+
+    #[test]
+    fn at_or_below_the_call_level_is_in() {
+        assert!(matches!(margin_call_edge_at(dec!(100), dec!(100), None, START), Some(MarginCallEdge::In { .. })));
+        assert!(matches!(margin_call_edge_at(dec!(95.70), dec!(100), Some(START), OLD), Some(MarginCallEdge::In { .. })));
+    }
+
+    #[test]
+    fn an_open_episode_ends_only_10_points_above_and_after_60_s() {
+        // 103.28% three seconds in (50005696, 20:17:19): held, no "over" notice
+        assert_eq!(margin_call_edge_at(dec!(103.28), dec!(100), Some(START), START + 3_000), None);
+        // 10 points above but too young: held
+        assert_eq!(margin_call_edge_at(dec!(110), dec!(100), Some(START), OLD - 1), None);
+        // old enough but under +10: held
+        assert_eq!(margin_call_edge_at(dec!(109.99), dec!(100), Some(START), OLD), None);
+        // both: ends
+        assert_eq!(margin_call_edge_at(dec!(110), dec!(100), Some(START), OLD), Some(MarginCallEdge::Out));
+        assert_eq!(margin_call_edge_at(dec!(147.22), dec!(100), Some(START), OLD + 1), Some(MarginCallEdge::Out));
+    }
+
+    #[test]
+    fn with_no_episode_open_above_the_level_is_out() {
+        assert_eq!(margin_call_edge_at(dec!(100.01), dec!(100), None, START), Some(MarginCallEdge::Out));
     }
 }

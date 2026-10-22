@@ -182,9 +182,16 @@ export async function closePositionInTx(
   // plus an AuditLog entry, rather than either silently capping the
   // TRADE_PNL row itself (which would misstate the real trade P&L) or
   // leaving the client ledger negative.
+  //
+  // 2026-10-23 (owner, docs/NBP-LAST-CLOSE-DESIGN.md): only on the close that leaves the account with NO open position.
+  // While others stay open the balance may stay negative (equity still decides stop-out); the one write-off at the end
+  // covers the whole deficit. Counted after this position's update and with the account row locked above, so two
+  // concurrent closes of the last two positions serialize and only the second sees zero left. A partial close leaves
+  // this position open, so it never writes off. = engine/order-management/src/book.rs close_money(last_position).
   let finalBalance = afterCredit;
   let writeOffAmount: Prisma.Decimal | null = null;
-  if (afterCredit.isNegative()) {
+  const lastPosition = afterCredit.isNegative() && (await tx.position.count({ where: { accountId: position.accountId, status: "OPEN" } })) === 0;
+  if (lastPosition) {
     const broker = await tx.broker.findUniqueOrThrow({ where: { id: position.brokerId }, select: { negativeBalanceProtection: true } });
     if (broker.negativeBalanceProtection) {
       writeOffAmount = afterCredit.neg();

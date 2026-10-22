@@ -196,6 +196,19 @@ export function liveUsedMarginFor(params: {
   return requiredMarginFor(params.volume, params.contractSize, price, params.leverage);
 }
 
+// Margin-call hysteresis (owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md section 3; = engine/order-management/src/monitor.rs
+// margin_call_edge_at): an open episode ends only once the level is MARGIN_CALL_CLEAR_MARGIN_POINTS above the call
+// level AND the episode is at least MARGIN_CALL_MIN_EPISODE_SECS old. Until then the flag stays set: no "over" notice
+// and no new notice -- one notification per episode. (Nothing left open ends the episode at once; the caller decides.)
+export const MARGIN_CALL_CLEAR_MARGIN_POINTS = 10;
+export const MARGIN_CALL_MIN_EPISODE_SECS = 60;
+export function marginCallEpisodeMayEnd(marginLevel: Prisma.Decimal, marginCallLevel: Prisma.Decimal, episodeStartedAt: Date, now: Date): boolean {
+  return (
+    marginLevel.gte(marginCallLevel.add(MARGIN_CALL_CLEAR_MARGIN_POINTS)) &&
+    now.getTime() - episodeStartedAt.getTime() >= MARGIN_CALL_MIN_EPISODE_SECS * 1000
+  );
+}
+
 // Same "would this order push the account below its margin-call level"
 // gate as engine/risk/src/lib.rs's check_free_margin -- at
 // marginCallLevel=100 (Group.marginCallLevel's own default) this reduces
