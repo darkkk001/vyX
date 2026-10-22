@@ -43,7 +43,7 @@ two positions serialize on that lock: the first sees the other still open (no wr
 - **Close-by**: two closes in one transaction; the second leg sees the first closed -> one write-off at most.
 - **A new position opens while the last one closes**: the open does not take the account lock before the close counts,
   so the close may write off with a brand-new position open. The same can happen today; MT5 behaves alike. Not changed.
-- **Accounts that end with zero positions and a negative balance without a close** (a VOID/DELETE of an open position,
+- **VOID of an open position** applies the same single write-off (owner 2026-10-23, `writeOffIfFlatInTx`); a DELETE never takes an open position. **Accounts that reach a negative balance with nothing open by other means** (
   an admin debit): not reached by this rule; nothing writes off today either. Out of scope, listed for the owner.
 - **Pre-trade margin gate** (`lib/margin.ts`) already uses balance + credit + floating, so a negative balance with
   positions open is refused new orders exactly when free margin is not positive.
