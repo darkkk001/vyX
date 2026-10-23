@@ -57,6 +57,8 @@ export async function GET() {
       status: b.status,
       executionEngine: b.executionEngine,
       pricingEngineEnabled: b.pricingEngineEnabled,
+      orderBurst: b.orderBurst,
+      orderPerMinute: b.orderPerMinute,
       staffTwoFactorRequired: b.requireAdmin2fa,
       trialEndsAt: b.trialEndsAt ? b.trialEndsAt.toISOString() : null,
       nextInvoiceAt: b.nextInvoiceAt ? b.nextInvoiceAt.toISOString() : null,

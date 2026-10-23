@@ -12,6 +12,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { PLAN_PRICING, formatUsd } from "@/lib/billing";
 import EngineSwitch from "./EngineSwitch";
 import PricingEngineSwitch from "./PricingEngineSwitch";
+import OrderRateLimit from "./OrderRateLimit";
 import StaffTwoFactorPolicy from "./StaffTwoFactorPolicy";
 
 export type BrokerRow = {
@@ -25,6 +26,8 @@ export type BrokerRow = {
   status: "TRIAL" | "ACTIVE" | "SUSPENDED" | "DISABLED";
   executionEngine: "LEGACY" | "RUST";
   pricingEngineEnabled: boolean;
+  orderBurst: number | null;
+  orderPerMinute: number | null;
   staffTwoFactorRequired: boolean;
   trialEndsAt: string | null;
   createdAt: string;
@@ -845,6 +848,20 @@ export default function BrokersManager() {
                 diffs before enabling for a real broker.
               </p>
               <PricingEngineSwitch brokerId={detailTarget.id} initialEnabled={detailTarget.pricingEngineEnabled} onSaved={reload} />
+            </ModalSection>
+
+            <ModalSection label="Order rate limit">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                Per trading account: up to Burst orders back to back, then Per minute keep coming. A client over it is told to wait a
+                moment; the dealer FEED shows it once. Empty = default (100 / 600). 0 in either = no limit for this broker.
+              </p>
+              <OrderRateLimit
+                key={detailTarget.id}
+                brokerId={detailTarget.id}
+                initialBurst={detailTarget.orderBurst}
+                initialPerMinute={detailTarget.orderPerMinute}
+                onSaved={reload}
+              />
             </ModalSection>
 
             {detailError ? <p className="text-sm text-[var(--sell)]">{detailError}</p> : null}

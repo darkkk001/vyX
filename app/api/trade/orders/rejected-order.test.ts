@@ -165,6 +165,9 @@ describe("rejected-order trace under attack (live DB)", () => {
   it("flood: one account sending 150 refused orders in a minute writes at most 60 rows (and 60 events); the trader still gets every 400", async () => {
     if (!dbReachable) return;
     const fx = await createFixture();
+    // the order rate limit (below) would stop this flood at 100; this test is about the trace's own cap
+    await prisma.broker.update({ where: { id: fx.brokerId }, data: { orderBurst: 0 } });
+    (await import("@/lib/order-rate-limit")).resetOrderLimitsCache();
     const { publishTradingEvent } = await import("@/lib/nats");
     vi.mocked(publishTradingEvent).mockClear();
     const statuses = new Set<number>();
@@ -173,4 +176,50 @@ describe("rejected-order trace under attack (live DB)", () => {
     expect(await prisma.rejectedOrder.count({ where: { accountId: fx.accountId } })).toBe(60);
     expect(vi.mocked(publishTradingEvent).mock.calls.filter(([t]) => t === "OrderRejectedPreTrade")).toHaveLength(60);
   }, 120000);
+});
+
+// Order rate limit per account (owner 2026-10-23, lib/order-rate-limit.ts), through the real route and the real Redis.
+describe("order rate limit on POST /api/trade/orders (live DB)", () => {
+  const capped = async (fx: Fixture, burst: number) => {
+    await prisma.broker.update({ where: { id: fx.brokerId }, data: { orderBurst: burst, orderPerMinute: 1 } });
+    (await import("@/lib/order-rate-limit")).resetOrderLimitsCache();
+  };
+
+  it("past the burst: 429 in plain words with Retry-After; one RejectedOrder row per episode, not one per refusal", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    await capped(fx, 3);
+    const statuses: number[] = [];
+    let last: Awaited<ReturnType<typeof placeOrder>> | null = null;
+    for (let i = 0; i < 6; i++) {
+      last = await placeOrder(fx, { side: "BUY", type: "MARKET", volume: "0.01", price: "100.10" });
+      statuses.push(last.status);
+    }
+    expect(statuses).toEqual([201, 201, 201, 429, 429, 429]);
+    expect(last!.json).toMatchObject({ error: "Too many orders in a short time. Wait a moment and try again.", code: "ORDER_RATE_LIMITED" });
+    expect(last!.json.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+    const rows = await prisma.rejectedOrder.findMany({ where: { accountId: fx.accountId } });
+    expect(rows.map((r) => r.detail)).toEqual(["ORDER_RATE_LIMITED"]);
+    expect(await prisma.order.count({ where: { accountId: fx.accountId } })).toBe(3);
+  });
+
+  it("a retry of an order already answered (same idempotencyKey) is answered, never refused", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    await capped(fx, 1);
+    const key = `rl-retry:${randomUUID()}`;
+    const first = await placeOrder(fx, { side: "BUY", type: "MARKET", volume: "0.01", price: "100.10", idempotencyKey: key });
+    expect(first.status).toBe(201);
+    const retry = await placeOrder(fx, { side: "BUY", type: "MARKET", volume: "0.01", price: "100.10", idempotencyKey: key });
+    expect(retry.status).toBe(200); // the replay answers with the existing order itself
+    expect(retry.json.id).toBe(first.json.order.id);
+    expect((await placeOrder(fx, { side: "BUY", type: "MARKET", volume: "0.01", price: "100.10" })).status).toBe(429);
+  });
+
+  it("broker setting 0 turns the cap off", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    await capped(fx, 0);
+    for (let i = 0; i < 5; i++) expect((await placeOrder(fx, { side: "BUY", type: "MARKET", volume: "0.01", price: "100.10" })).status).toBe(201);
+  });
 });
