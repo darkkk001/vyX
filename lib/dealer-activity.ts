@@ -31,7 +31,9 @@ export type DealerActivityAction =
   // a client's manual close routed to the dealer queue (docs/CLOSES-RESPECT-DEALER-MODE.md)
   | "CLOSE_REQUESTED"
   // an order request refused before any Order row was written (RejectedOrder, lib/rejected-orders.ts, 2026-10-23)
-  | "ORDER_REJECTED";
+  | "ORDER_REJECTED"
+  // the broker's liquidity bridge license expires within 30 days (owner 2026-10-23, lib/bridge-licenses.ts)
+  | "LICENSE_EXPIRING";
 
 // Per the feature spec: a dealer gets an actual notification (bell badge)
 // for the things they're responsible for reacting to -- placing a pending
@@ -55,6 +57,8 @@ function titleFor(action: DealerActivityAction): string {
       return "Dealing-group close awaiting dealer review";
     case "ORDER_REJECTED":
       return "Dealing-group order refused";
+    case "LICENSE_EXPIRING":
+      return "Liquidity bridge license expiring";
     default:
       return "Dealing-group account activity";
   }
@@ -435,8 +439,27 @@ export async function getDealerActivityFeedRows(
     })
     .filter((r): r is DealerActivityFeedRow => r !== null);
 
+  // the liquidity bridge license expiring (one entry per license, written when the 30-day window opens)
+  const expiring = await prisma.auditLog.findMany({ where: { brokerId, action: "BRIDGE_LICENSE_EXPIRING" }, orderBy: { createdAt: "desc" }, take: 5 });
+  const licenseRows: DealerActivityFeedRow[] = expiring.map((a) => {
+    const v = (a.newValue ?? {}) as { expiresAt?: string };
+    return {
+      id: `lic:${a.id}`,
+      at: a.createdAt.toISOString(),
+      accountId: "",
+      accountNumber: "",
+      accountFullName: "",
+      isDealingGroup: true, // shown on every desk view, dealing-only included
+      action: "LICENSE_EXPIRING",
+      symbol: undefined,
+      side: undefined,
+      volume: undefined,
+      values: { text: `The liquidity bridge license expires on ${(v.expiresAt ?? "").slice(0, 10)}. Ask your platform provider for a new one.`, expiresAt: v.expiresAt ?? null },
+    };
+  });
+
   // One feed, newest first, capped at `limit` across all sources.
-  return [...auditRows, ...closedRows, ...rejectedRows].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, limit);
+  return [...auditRows, ...closedRows, ...rejectedRows, ...licenseRows].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, limit);
 }
 
 export type RestingOrderRow = {
