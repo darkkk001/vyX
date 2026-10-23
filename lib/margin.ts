@@ -281,10 +281,14 @@ export async function loadAccountMarginState(
   accountId: string,
   leverage: number,
   extraQuoteCurrencies: string[] = [],
-  brokerId?: string
+  brokerId?: string,
+  /** the account's balance / credit / currency / broker when the caller has just read them (no re-read; execution latency Phase 1) */
+  knownAccount?: { balance: Prisma.Decimal; credit: Prisma.Decimal; currency: string; brokerId: string }
 ): Promise<AccountMarginState | null> {
   const [account, positions, hedgedPctKnownBroker] = await Promise.all([
-    prisma.account.findUniqueOrThrow({ where: { id: accountId }, select: { balance: true, credit: true, currency: true, brokerId: true } }),
+    knownAccount
+      ? Promise.resolve({ balance: knownAccount.balance, credit: knownAccount.credit, currency: knownAccount.currency, brokerId: knownAccount.brokerId })
+      : prisma.account.findUniqueOrThrow({ where: { id: accountId }, select: { balance: true, credit: true, currency: true, brokerId: true } }),
     prisma.position.findMany({
       where: { accountId, status: "OPEN" },
       select: { side: true, volume: true, openPrice: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },

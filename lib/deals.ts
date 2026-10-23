@@ -70,6 +70,43 @@ export async function writeOpenDealInTx(
 
 /// What a close tells closePositionInTx about itself, for its OUT / OUT_BY deal. The entry is derived there:
 /// OUT_BY when the close names the opposite leg (closeByPositionId), OUT otherwise.
+/** writeOpenDealInTx for a position this transaction has just created (the market fill, execution latency Phase 1):
+ *  the same Deal from the rows the caller holds, without reading back the Position, its Order and the commission it
+ *  just wrote. The caller sets Position.initialVolume at create. `commission`: the ONE commission row it charged, or
+ *  null (a new position has no other). The hedge hook runs exactly as in writeOpenDealInTx. */
+export async function writeOpenDealFromRowsInTx(
+  tx: Tx,
+  params: {
+    position: { id: string; brokerId: string; accountId: string; symbolId: string; side: "BUY" | "SELL"; volume: Prisma.Decimal; openPrice: Prisma.Decimal; openedAt: Date; originOrderId: string | null; groupCategoryAtOpen: Parameters<typeof hedgeDealInTx>[2] };
+    orderSource: OrderSource | null;
+    commission: { id: string; amount: Prisma.Decimal } | null;
+    reason: DealReason;
+  }
+) {
+  const { position, commission } = params;
+  const deal = await tx.deal.create({
+    data: {
+      brokerId: position.brokerId,
+      accountId: position.accountId,
+      positionId: position.id,
+      orderId: position.originOrderId,
+      symbolId: position.symbolId,
+      side: position.side,
+      entry: "IN",
+      reason: params.reason,
+      source: params.orderSource,
+      volume: position.volume,
+      price: position.openPrice,
+      commission: commission ? commission.amount : new Prisma.Decimal(0),
+      transactionId: commission ? commission.id : null,
+      adminId: null,
+      executedAt: position.openedAt,
+    },
+  });
+  await hedgeDealInTx(tx, deal, position.groupCategoryAtOpen);
+  return deal;
+}
+
 export type CloseDealInput = {
   reason: DealReason;
   source?: OrderSource | null;

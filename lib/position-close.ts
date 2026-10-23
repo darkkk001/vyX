@@ -72,6 +72,9 @@ export async function closePositionInTx(
     // Deal model step 1 (docs/POSITION-DEAL-MODEL.md): every close writes its OUT deal (OUT_BY for a close-by) next to
     // the TRADE_PNL row, in this transaction. Required, so a new close path cannot forget to say why it closed.
     deal: CloseDealInput;
+    /** the symbol's quote currency and the account's currency when the caller has just read them: the position's own
+     *  figures are then read without its Symbol / Account (one statement instead of three; execution latency Phase 1) */
+    known?: { quoteCurrency: string; accountCurrency: string };
   }
 ): Promise<ClosePositionOutcome> {
   const { position, closePrice, note } = params;
@@ -82,19 +85,18 @@ export async function closePositionInTx(
   // rate is resolved before anything is written, so a missing rate refuses the close with nothing changed
   // rather than booking JPY as if it were USD. Same-currency (every XXXUSD on a USD account) is exactly 1
   // and reads no price.
-  const ccy = await tx.position.findUniqueOrThrow({
-    where: { id: position.id },
-    select: {
-      symbolId: true,
-      symbol: { select: { quoteCurrency: true } },
-      account: { select: { currency: true } },
-      groupCategoryAtOpen: true,
-      swap: true,
-      realizedPnl: true,
-      closedVolume: true,
-      closedSwap: true,
-    },
-  });
+  const own = { symbolId: true, groupCategoryAtOpen: true, swap: true, realizedPnl: true, closedVolume: true, closedSwap: true } as const;
+  const known = params.known;
+  const ccy = known
+    ? {
+        ...(await tx.position.findUniqueOrThrow({ where: { id: position.id }, select: own })),
+        symbol: { quoteCurrency: known.quoteCurrency },
+        account: { currency: known.accountCurrency },
+      }
+    : await tx.position.findUniqueOrThrow({
+        where: { id: position.id },
+        select: { ...own, symbol: { select: { quoteCurrency: true } }, account: { select: { currency: true } } },
+      });
   const rate = await quoteToAccountRate(tx, ccy.symbol.quoteCurrency, ccy.account.currency);
   const quotePnl = computeRealizedPnl({
     side: position.side,

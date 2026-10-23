@@ -12,7 +12,7 @@ import { validateSlTp, validatePendingOrderDirection, validatePendingPriceDistan
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { withDeadlockRetry } from "@/lib/tx-retry";
-import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
+import { resolveBookType, applySpreadMarkup, pipSize, chargeCommissionDetailed } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { loadAccountMarginState, evaluatePreTradeMargin } from "@/lib/margin";
 import { runAfterResponse } from "@/lib/after-response";
@@ -25,7 +25,7 @@ import * as coverage from "@/lib/coverage";
 import { deskIsOn, orderRoute, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
 import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
-import { writeOpenDealInTx } from "@/lib/deals";
+import { writeOpenDealFromRowsInTx } from "@/lib/deals";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -329,6 +329,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
         brokerSwapLong: brokerSymbol.swapLong,
         brokerSwapShort: brokerSymbol.swapShort,
         liveBaseSpreadPips: livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits)),
+        // execution latency Phase 1: the swap-free flags of the account and its group were read just above
+        known: { accountSwapFree: account.swapFree, groupSwapFree: account.group.swapFree },
       }
     : null;
   const [riskResults, pricing, marginState] = await Promise.all([
@@ -340,7 +342,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       checkMaxDailyLoss(prisma, session.accountId, account.maxDailyLoss),
     ]),
     type === "MARKET" && pricingInput ? resolveFillPricing(prisma, pricingInput) : Promise.resolve(null),
-    loadAccountMarginState(prisma, session.accountId, account.leverage, [brokerSymbol.symbol.quoteCurrency], session.brokerId),
+    loadAccountMarginState(prisma, session.accountId, account.leverage, [brokerSymbol.symbol.quoteCurrency], session.brokerId, account),
   ]);
   const asyncRiskError = riskResults.find((e) => e != null) ?? null;
   if (asyncRiskError) return riskResponse(asyncRiskError);
@@ -718,6 +720,9 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             executionMode: "AUTO",
           },
         });
+        // execution latency Phase 1: the position is created with its commission and initial volume (no follow-up
+        // updates), and the open Deal is written from the rows in hand (no read-back) -- the same rows as before
+        const commission = fillPricing.commissionPerLot.mul(volume);
         const position = await tx.position.create({
           data: {
             brokerId: session.brokerId,
@@ -726,14 +731,17 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             originOrderId: order.id,
             side,
             volume,
+            initialVolume: volume,
             openPrice: fillPrice,
             slPrice,
             tpPrice,
             bookType,
+            ...(commission.gt(0) ? { commission } : {}),
           },
         });
-        const balanceAfter = await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: fillPricing.commissionPerLot, volume });
-        await writeOpenDealInTx(tx, { positionId: position.id, reason: "CLIENT" });
+        const charged = await chargeCommissionDetailed(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: fillPricing.commissionPerLot, volume, positionAlreadyCharged: true });
+        const balanceAfter = charged?.balanceAfter ?? null;
+        await writeOpenDealFromRowsInTx(tx, { position, orderSource: order.source, commission: charged?.transaction ?? null, reason: "CLIENT" });
         // Broker feedback items 14+15 -- the highest-volume fill path in
         // the app (immediate MARKET fill, no dealing queue involved) had
         // no audit row at all; "requested vs filled" is exactly what a
@@ -748,12 +756,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             newValue: { status: "FILLED", filledPrice: fillPrice.toString() },
           },
         });
-        const commission = fillPricing.commissionPerLot.mul(volume);
-        return {
-          order,
-          position: commission.gt(0) ? { ...position, commission: position.commission.add(commission) } : position,
-          balanceAfter,
-        };
+        return { order, position, balanceAfter };
       }));
       const dto = positionDto(result.position, brokerSymbol.symbol, orderSource);
       // the balance moves on an open only when a commission is charged; otherwise it is left out (contract)
