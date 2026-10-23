@@ -1,6 +1,6 @@
 # Order rate limit, per account (design, 2026-10-23)
 
-Status: **design only, nothing applied.** Waits for the owner's go.
+Status: **applied on this branch (owner go 2026-10-23), no bot exemption.** Web route only; the VPS gateway follows (phase 2).
 
 ## Why
 

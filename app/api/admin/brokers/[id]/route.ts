@@ -60,9 +60,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const emailFromName = hasEmailFromName ? (typeof body.emailFromName === "string" && body.emailFromName.trim() ? body.emailFromName.trim() : null) : undefined;
   const hasEmailEnabled = "emailEnabled" in (body ?? {});
   const emailEnabled = hasEmailEnabled ? body.emailEnabled === true : undefined;
+  // order rate limit (lib/order-rate-limit.ts): null = platform default, 0 = off, else a whole number up to 100000
+  const hasOrderBurst = "orderBurst" in (body ?? {});
+  const hasOrderPerMinute = "orderPerMinute" in (body ?? {});
+  const rateValue = (v: unknown) => (v === null ? null : typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 100_000 ? v : undefined);
+  const orderBurst = hasOrderBurst ? rateValue(body.orderBurst) : undefined;
+  const orderPerMinute = hasOrderPerMinute ? rateValue(body.orderPerMinute) : undefined;
+  if ((hasOrderBurst && orderBurst === undefined) || (hasOrderPerMinute && orderPerMinute === undefined)) {
+    return NextResponse.json({ error: "orderBurst and orderPerMinute must be a whole number from 0 to 100000, or null for the default" }, { status: 400 });
+  }
 
-  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor && !hasEmailFromDomain && !hasEmailFromAddress && !hasEmailFromName && !hasEmailEnabled) {
-    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, supportEmail, logoUrl, primaryColor, or an email config field is required" }, { status: 400 });
+  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor && !hasEmailFromDomain && !hasEmailFromAddress && !hasEmailFromName && !hasEmailEnabled && !hasOrderBurst && !hasOrderPerMinute) {
+    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, supportEmail, logoUrl, primaryColor, an email config field, orderBurst or orderPerMinute is required" }, { status: 400 });
   }
 
   const existing = await prisma.broker.findUnique({ where: { id } });
@@ -210,6 +219,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
 
+    if (hasOrderBurst || hasOrderPerMinute) {
+      const broker = await tx.broker.update({ where: { id }, data: { ...(hasOrderBurst ? { orderBurst } : {}), ...(hasOrderPerMinute ? { orderPerMinute } : {}) } });
+      await tx.auditLog.create({
+        data: {
+          brokerId: id,
+          actorAdminId: session!.adminId,
+          action: "BROKER_ORDER_RATE_LIMIT_CHANGED",
+          entityType: "Broker",
+          entityId: id,
+          oldValue: { orderBurst: existing.orderBurst, orderPerMinute: existing.orderPerMinute },
+          newValue: { orderBurst: broker.orderBurst, orderPerMinute: broker.orderPerMinute },
+        },
+      });
+    }
+
     return tx.broker.findUniqueOrThrow({ where: { id } });
   });
 
@@ -227,5 +251,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     emailFromAddress: updated.emailFromAddress,
     emailFromName: updated.emailFromName,
     emailEnabled: updated.emailEnabled,
+    orderBurst: updated.orderBurst,
+    orderPerMinute: updated.orderPerMinute,
   });
 }

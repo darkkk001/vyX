@@ -487,6 +487,11 @@ model Broker {
   // same "config now, enforce later, one tenant at a time" shape as
   // executionEngine above.
   pricingEngineEnabled Boolean @default(false)
+  // Order rate limit per account (lib/order-rate-limit.ts, owner 2026-10-23): a token bucket, burst = bucket size,
+  // orderPerMinute = refill. Null = platform default (100 / 600). 0 on either turns the cap off for this broker.
+  // Super Admin only.
+  orderBurst           Int?
+  orderPerMinute       Int?
 
   // Applied by POST /api/manage/accounts when the admin doesn't specify
   // currency/leverage explicitly -- System Settings page.

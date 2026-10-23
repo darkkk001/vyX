@@ -56,6 +56,7 @@ import {
   checkAccountTradingRights,
 } from "@/lib/risk";
 import { traceRejectedOrder } from "@/lib/rejected-orders";
+import { firstRefusalOfEpisode, ORDER_RATE_LIMITED_MESSAGE, orderLimitsFor, takeOrderToken } from "@/lib/order-rate-limit";
 import { requestMeta } from "@/lib/order-execution";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
@@ -84,6 +85,23 @@ async function logHotkeyOrder(brokerId: string, orderId: string) {
 // those aren't a real "order ack", so they're deliberately excluded from
 // the window). Separate from handlePlaceOrder itself so none of that
 // function's many early-return branches needed touching individually.
+// Over the account's order rate: 429 with Retry-After, unless the request retries an order already answered (same
+// idempotencyKey), which is free -- a client retrying after a timeout must get its answer, never a refusal. The first
+// refusal of a throttled episode leaves one RejectedOrder row, so the dealer's FEED shows the account hit the cap.
+async function refuseRateLimited(request: NextRequest, session: { accountId: string; brokerId: string }, requestedAt: Date, retryAfterMs: number): Promise<NextResponse | null> {
+  const body = await request.clone().json().catch(() => null);
+  const key = typeof body?.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
+  if (key && (await prisma.order.findUnique({ where: { accountId_idempotencyKey: { accountId: session.accountId, idempotencyKey: key } }, select: { id: true } }))) {
+    return null;
+  }
+  const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  const answer = { error: ORDER_RATE_LIMITED_MESSAGE, code: "ORDER_RATE_LIMITED", retryAfterSeconds };
+  if (await firstRefusalOfEpisode(session.accountId, retryAfterMs)) {
+    await runAfterResponse("rejected-order", async () => traceRejectedOrder(session, request.headers, requestedAt, body, answer));
+  }
+  return NextResponse.json(answer, { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } });
+}
+
 export async function POST(request: NextRequest) {
   const startedAt = Date.now();
   // Latency fix 1 (2026-09-26): ONE session check per request -- this wrapper used to check it again after the
@@ -91,6 +109,12 @@ export async function POST(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  }
+  // order rate limit per account (lib/order-rate-limit.ts): a refused request takes no token
+  const take = await takeOrderToken(session.accountId, await orderLimitsFor(session.brokerId));
+  if (!take.allowed) {
+    const limited = await refuseRateLimited(request, session, new Date(startedAt), take.retryAfterMs);
+    if (limited) return limited;
   }
   // rejected-order trace (lib/rejected-orders.ts): the handler consumes the body, so keep a copy for a refusal
   const probe = request.clone();
