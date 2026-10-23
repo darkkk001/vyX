@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
+import { secretMatches } from "@/lib/internal-auth";
 import { backfillClientBuildsToPostgres, getClientBuild, listClientBuilds, registerClientBuild, setClientBuildStatus } from "@/lib/client-builds";
 
 // The native-build registry (kill switch). Super admin session, or the publish scripts' shared
@@ -13,7 +13,8 @@ import { backfillClientBuildsToPostgres, getClientBuild, listClientBuilds, regis
 async function authorized(request: NextRequest): Promise<boolean> {
   const secret = (process.env.CLIENT_BUILD_REGISTRY_SECRET ?? "").trim();   // trimmed: a value pasted with a trailing newline must still match
   const provided = (request.headers.get("x-registry-secret") ?? "").trim();
-  if (secret && provided && provided.length === secret.length && timingSafeEqual(Buffer.from(provided), Buffer.from(secret))) return true;
+  // hashed constant-time compare: the old length check before timingSafeEqual told a caller the secret's length
+  if (secretMatches(provided, secret)) return true;
   const session = await getAdminSession();
   return !!session && session.role === "SUPER_ADMIN";
 }

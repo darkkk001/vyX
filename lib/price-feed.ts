@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { secretMatches } from "@/lib/internal-auth";
 import { evaluateRiskForSymbol } from "@/lib/risk-monitor";
 
 export type Tick = { symbol: string; bid: number; ask: number };
@@ -17,7 +18,7 @@ export async function ingestTicks(secret: string | null, ticksRaw: unknown) {
   if (!configuredSecret) {
     return NextResponse.json({ error: "price feed not configured" }, { status: 503 });
   }
-  if (secret !== configuredSecret) {
+  if (!secretMatches(secret, configuredSecret)) { // constant time (security re-audit 2026-10-23; was a plain !==)
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

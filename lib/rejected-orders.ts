@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { publishTradingEvent } from "@/lib/nats";
 import { requestMeta } from "@/lib/order-execution";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 // Rejected-order trace (2026-10-23, owner, SpotBrent investigation). An order request the client route refused BEFORE
 // any Order row was written left no trace: the trader saw "market closed" and the broker saw nothing. Now every such
@@ -11,6 +12,11 @@ import { requestMeta } from "@/lib/order-execution";
 // Best effort: written after the response, never fails or delays the trader's answer.
 
 type Session = { accountId: string; brokerId: string };
+
+// Per account, per minute (security re-audit 2026-10-23): the order route has no rate limit of its own, so without a cap
+// one signed-in client could write unlimited rows and flood every dealer's FEED. Past the cap the trader still gets
+// every 400; only the trace is skipped until the minute ends.
+export const REJECTED_TRACE_PER_MINUTE = 60;
 
 const SIDES = new Set(["BUY", "SELL"]);
 const TYPES = new Set(["MARKET", "LIMIT", "STOP"]);
@@ -27,6 +33,7 @@ export async function traceRejectedOrder(
   answer: Record<string, unknown> | null
 ): Promise<string | null> {
   if (!answer || answer.order != null || answer.position != null) return null;
+  if (!(await checkRateLimit(`rejected-order:${session.accountId}`, REJECTED_TRACE_PER_MINUTE, 60)).allowed) return null;
   const meta = requestMeta(headers, requestedAt);
   const platformHeader = headers.get("x-client-platform") ?? "";
   const symbol = clip(requestBody?.symbol, 40) ?? "(none)";

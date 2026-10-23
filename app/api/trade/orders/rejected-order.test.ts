@@ -119,3 +119,58 @@ describe("rejected-order trace (live DB)", () => {
     expect(row).toMatchObject({ accountNumber: fx.accountNumber, symbol: "SPOTCRUDEX", side: "SELL", volume: "1", values: { reason: r.json.error } });
   });
 });
+
+// Security re-audit 2026-10-23 (adversarial): who can write a trace, what it records from a hostile request, and how
+// many rows one account can write.
+describe("rejected-order trace under attack (live DB)", () => {
+  it("no session: 401 and no row anywhere", async () => {
+    if (!dbReachable) return;
+    const { getAccountSession } = await import("@/lib/account-auth");
+    vi.mocked(getAccountSession).mockResolvedValue(null);
+    const before = await prisma.rejectedOrder.count();
+    const { POST } = await import("./route");
+    const res = await POST(new NextRequest("https://test.local/api/trade/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ symbol: "SPOTBRENTX", side: "BUY", type: "MARKET", volume: "1" }) }));
+    expect(res.status).toBe(401);
+    expect(await prisma.rejectedOrder.count()).toBe(before);
+  });
+
+  it("spoofed IP: x-forwarded-for is never recorded; a malformed x-real-ip is stored as no IP", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    await placeOrder(fx, { symbol: "SPOTBRENTX", side: "BUY", type: "MARKET", volume: "1" }, { "x-real-ip": "", "x-forwarded-for": "6.6.6.6" });
+    await placeOrder(fx, { symbol: "SPOTBRENTX", side: "BUY", type: "MARKET", volume: "1" }, { "x-real-ip": "<script>alert(1)</script>" });
+    const rows = await prisma.rejectedOrder.findMany({ where: { accountId: fx.accountId } });
+    expect(rows.map((r) => r.clientIp)).toEqual([null, null]);
+  });
+
+  it("oversized body (1 MB strings) and non-object bodies: the route answers 400, the row is clipped, nothing throws", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const big = "X".repeat(1_000_000);
+    const r = await placeOrder(fx, { symbol: big, side: big, type: big, volume: big, price: big });
+    expect(r.status).toBe(400);
+    const row = await prisma.rejectedOrder.findFirstOrThrow({ where: { accountId: fx.accountId } });
+    expect([row.symbol.length, row.side, row.orderType, (row.volume ?? "").length]).toEqual([40, null, null, 30]);
+    expect(row.reason.length).toBeLessThanOrEqual(120);
+
+    const { getAccountSession } = await import("@/lib/account-auth");
+    vi.mocked(getAccountSession).mockResolvedValue({ accountId: fx.accountId, brokerId: fx.brokerId });
+    const { POST } = await import("./route");
+    for (const body of ['["a",1]', '"text"', "null", "{not json"]) {
+      const res = await POST(new NextRequest("https://test.local/api/trade/orders", { method: "POST", headers: { "content-type": "application/json" }, body }));
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("flood: one account sending 150 refused orders in a minute writes at most 60 rows (and 60 events); the trader still gets every 400", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const { publishTradingEvent } = await import("@/lib/nats");
+    vi.mocked(publishTradingEvent).mockClear();
+    const statuses = new Set<number>();
+    for (let i = 0; i < 150; i++) statuses.add((await placeOrder(fx, { symbol: "SPOTBRENTX", side: "BUY", type: "MARKET", volume: "1" })).status);
+    expect([...statuses]).toEqual([400]);
+    expect(await prisma.rejectedOrder.count({ where: { accountId: fx.accountId } })).toBe(60);
+    expect(vi.mocked(publishTradingEvent).mock.calls.filter(([t]) => t === "OrderRejectedPreTrade")).toHaveLength(60);
+  }, 120000);
+});

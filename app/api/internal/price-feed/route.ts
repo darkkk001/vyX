@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ingestTicks } from "@/lib/price-feed";
 
 // Ingest endpoint for the MT5 EA bridge — pushes live bid/ask ticks from a
@@ -11,10 +11,11 @@ import { ingestTicks } from "@/lib/price-feed";
 // the feed is broker-agnostic raw market data — BrokerSymbol.spreadMarkup
 // is applied on top when quoting a trader).
 //
-// Two transports exist because real-world network paths vary: POST with a
-// JSON body is the clean path; GET with query params is a fallback for
-// paths that downgrade POST to GET. Neither transport is used by the
-// current EA — see the [payload] route for why.
+// POST with a JSON body and the secret in the Authorization header is the
+// transport. The old GET form (?secret=...&data=...) is closed (security
+// re-audit 2026-10-23): a secret in a query string lands in request logs. It
+// answers 400 without reading the secret or the ticks. The current EA uses
+// neither -- see the [payload] route.
 
 export async function POST(request: NextRequest) {
   const auth = request.headers.get("authorization");
@@ -23,17 +24,9 @@ export async function POST(request: NextRequest) {
   return ingestTicks(secret, body);
 }
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const secret = searchParams.get("secret");
-  const data = searchParams.get("data");
-  let ticksRaw: unknown = null;
-  if (data) {
-    try {
-      ticksRaw = JSON.parse(data);
-    } catch {
-      ticksRaw = null;
-    }
-  }
-  return ingestTicks(secret, ticksRaw);
+export async function GET() {
+  return NextResponse.json(
+    { error: "The query-string form is closed. POST the ticks as JSON with Authorization: Bearer <secret>.", code: "QUERY_SECRET_REFUSED" },
+    { status: 400 }
+  );
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { secretMatches } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
 
 // Called by middleware.ts (Edge runtime) to look up a Broker by host, since
@@ -15,9 +16,8 @@ import { prisma } from "@/lib/prisma";
 // positions) -- a shared secret header only this app's own middleware
 // (and other trusted internal callers) can send.
 export async function GET(request: NextRequest) {
-  const internalSecretHeader = request.headers.get("x-internal-secret");
-  const expectedSecret = process.env.INTERNAL_SERVICE_SECRET ?? "";
-  if (!expectedSecret || internalSecretHeader !== expectedSecret) {
+  // constant-time compare (security re-audit 2026-10-23; was a plain !==)
+  if (!secretMatches(request.headers.get("x-internal-secret"), process.env.INTERNAL_SERVICE_SECRET)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
