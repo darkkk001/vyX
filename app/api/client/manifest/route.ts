@@ -24,8 +24,15 @@ export async function GET(request: NextRequest) {
   if (!broker) return NextResponse.json({ error: "unknown broker" }, { status: 404 });
   const rootDomain = (process.env.ROOT_DOMAIN ?? "vyxtrader.com").split(":")[0];
   const build = buildId.startsWith("dev") ? null : await getClientBuild(buildId);
+  // a bridge (app=bridge) also names its exe build: a revoked exe build stops every license running it
+  const exeBuild = (searchParams.get("exeBuild") ?? "").trim();
+  const exe = app === "bridge" && exeBuild && exeBuild !== "dev" ? await getClientBuild(exeBuild) : null;
   const devAllowed = (process.env.CLIENT_BUILD_DEV_TENANTS ?? "zzzqa").split(",").map((s) => s.trim()).includes(broker.subdomain);
-  const status: ClientManifest["status"] = buildId.startsWith("dev") ? (devAllowed ? "ACTIVE" : "UNKNOWN") : !build ? "UNKNOWN" : build.brokerId !== broker.id ? "UNKNOWN" : build.status;
+  const status: ClientManifest["status"] =
+    app === "bridge"
+      ? // a license must be a bridge row of this broker; a revoked exe build revokes it too
+        !build || build.app !== "bridge" || build.brokerId !== broker.id ? "UNKNOWN" : exe?.app === "bridge" && exe.status === "REVOKED" ? "REVOKED" : build.status
+      : buildId.startsWith("dev") ? (devAllowed ? "ACTIVE" : "UNKNOWN") : !build || build.app === "bridge" ? "UNKNOWN" : build.brokerId !== broker.id ? "UNKNOWN" : build.status;
   const now = Math.floor(Date.now() / 1000);
   const manifest: ClientManifest = { slug: broker.subdomain, apiHost: `${broker.subdomain}.${rootDomain}`, app, buildId, status, minVersion: "", iat: now, exp: now + 24 * 3600 };
   try {

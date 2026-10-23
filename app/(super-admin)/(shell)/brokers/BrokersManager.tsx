@@ -12,6 +12,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { PLAN_PRICING, formatUsd } from "@/lib/billing";
 import EngineSwitch from "./EngineSwitch";
 import PricingEngineSwitch from "./PricingEngineSwitch";
+import BridgeLicenses from "./BridgeLicenses";
 import OrderRateLimit from "./OrderRateLimit";
 import StaffTwoFactorPolicy from "./StaffTwoFactorPolicy";
 
@@ -836,6 +837,10 @@ export default function BrokersManager() {
                 initialRequired={detailTarget.staffTwoFactorRequired}
                 onSaved={reload}
               />
+            </ModalSection>
+
+            <ModalSection label="Liquidity bridge licenses">
+              <BridgeLicenses key={detailTarget.id} brokerSlug={detailTarget.subdomain} />
             </ModalSection>
 
             <ModalSection label="Pricing engine">

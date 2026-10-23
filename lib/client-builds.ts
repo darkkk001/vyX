@@ -26,7 +26,9 @@ export type ClientBuild = {
   buildId: string;
   brokerId: string;
   brokerSubdomain: string;
-  app: "terminal" | "backoffice";
+  // "bridge" = a QoreBridge license (docs/license-design.md in the qorebridge repo): buildId is the licenseId, or the
+  // bridge exe's own build id (version "exe"); revoking it is the bridge's kill switch
+  app: "terminal" | "backoffice" | "bridge";
   version: string;
   status: "ACTIVE" | "REVOKED";
   createdAt: string;
@@ -146,7 +148,8 @@ export async function checkClientBuild(brokerId: string | null, brokerSubdomain:
     return brokerSubdomain && allowed.includes(brokerSubdomain) ? { ok: true, buildId } : { ok: false, reason: "wrong-tenant", buildId };
   }
   const b = await (prefetched ?? getClientBuild(buildId));
-  if (!b) return { ok: false, reason: "unknown", buildId };
+  // a bridge license is not an installation of a native app: it never opens the client API
+  if (!b || b.app === "bridge") return { ok: false, reason: "unknown", buildId };
   if (b.status !== "ACTIVE") return { ok: false, reason: "revoked", buildId };
   if (brokerId && b.brokerId !== brokerId) return { ok: false, reason: "wrong-tenant", buildId };
   return { ok: true, buildId };
@@ -181,12 +184,19 @@ export type ClientManifest = {
 /// The private key is CLIENT_MANIFEST_PRIVATE_KEY (PKCS#8 PEM); the matching public key is compiled
 /// into the apps (Vyx.Shared ClientManifestKeys).
 export function signManifest(m: ClientManifest): { manifest: string; signature: string; keyId: string } {
+  const s = signJson(m);
+  return { manifest: s.payload, signature: s.signature, keyId: s.keyId };
+}
+
+/// Any JSON signed with the manifest key, same format: { payload (base64 of the JSON), signature (base64 r||s) }.
+/// The QoreBridge license file is exactly this (lib/bridge-licenses.ts).
+export function signJson(value: unknown): { payload: string; signature: string; keyId: string } {
   const pem = process.env.CLIENT_MANIFEST_PRIVATE_KEY;
   if (!pem) throw new Error("CLIENT_MANIFEST_PRIVATE_KEY is not set");
-  const json = Buffer.from(JSON.stringify(m), "utf8");
+  const json = Buffer.from(JSON.stringify(value), "utf8");
   const signer = createSign("SHA256");
   signer.update(json);
   const sig = signer.sign({ key: createPrivateKey(pem.replace(/\\n/g, "\n")), dsaEncoding: "ieee-p1363" });
   const keyId = createHash("sha256").update(pem).digest("hex").slice(0, 8);
-  return { manifest: json.toString("base64"), signature: sig.toString("base64"), keyId };
+  return { payload: json.toString("base64"), signature: sig.toString("base64"), keyId };
 }
