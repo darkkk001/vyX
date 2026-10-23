@@ -858,6 +858,41 @@ pub struct OpenPositionWithMarket {
     /// The account's ask rule for this symbol (market_data::ask_markup, 2026-09-26): a SELL closes, triggers and is
     /// valued at the account's marked-up ask. None = the raw ask.
     pub ask_rule: Option<market_data::ask_markup::AskRule>,
+    /// Where `bid` / `ask` came from and the tick's time (book.rs price_rows). None = unpriced, or a caller that does
+    /// not track it (the legacy order-path table, the margin trigger's measure, the parity scenarios). An engine close
+    /// records it in its POSITION_CLOSED payload as the trigger tick (book::enqueue_post_close).
+    pub quote: Option<QuoteStamp>,
+}
+
+/// Which price priced a position (OpenPositionWithMarket::quote).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteSource {
+    /// the tick a Stage 6 live fire carried (book::TickHint): the one that crossed the SL / TP or the stop-out
+    FireTick,
+    /// the engine's latest tick for the symbol (a pass, the backstop, or a symbol the fire did not carry)
+    EngineTick,
+    /// the database's LivePrice (no tick source in scope: tests and tools)
+    LivePrice,
+    /// a shadow pin's tick (never closes for real)
+    Pin,
+}
+
+impl QuoteSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuoteSource::FireTick => "fire_tick",
+            QuoteSource::EngineTick => "engine_tick",
+            QuoteSource::LivePrice => "live_price",
+            QuoteSource::Pin => "pin",
+        }
+    }
+}
+
+/// The source and time of a position's bid / ask (raw, before any ask markup).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuoteStamp {
+    pub source: QuoteSource,
+    pub tick_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// LEFT JOIN on LivePrice, same reasoning as
@@ -924,6 +959,7 @@ pub async fn get_open_positions_with_market(
                     fx_rate: Decimal::ONE, // legacy order-path table: no conversion
                     hedged_margin_pct: Decimal::from(200), // legacy order-path table: no hedged margin
                     ask_rule: None, // legacy order-path table (ENGINE_ORDER_MANAGEMENT off in production): raw ask
+                    quote: None,
                 }
             },
         )

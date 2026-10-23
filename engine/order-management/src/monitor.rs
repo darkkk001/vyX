@@ -137,7 +137,7 @@ async fn apply_close(
             let outcome = match closed {
                 book::CloseResult::Closed(outcome) => {
                     // Stage 3: the web's post-close follow-up, queued in the close's own transaction
-                    book::enqueue_post_close(&mut tx, &position.id, &outcome, reason, position.volume, close_price).await?;
+                    book::enqueue_post_close(&mut tx, &position.id, &outcome, reason, position.volume, close_price, book::TriggerTick::of(position)).await?;
                     outcome
                 }
                 book::CloseResult::Lost => {
@@ -1196,6 +1196,7 @@ mod tests {
             fx_rate: Decimal::ONE,
             hedged_margin_pct: dec!(200),
             ask_rule: None,
+            quote: None,
         }
     }
 
@@ -1289,7 +1290,7 @@ mod shadow_last_position_tests {
     fn pos(id: &str) -> OpenPositionWithMarket {
         OpenPositionWithMarket {
             id: id.into(), symbol: "XAUUSD".into(), side: protocol::OrderSide::Buy, volume: dec!(1), open_price: dec!(4000), contract_size: dec!(100),
-            bid: None, ask: None, sl_price: None, tp_price: None, fx_rate: Decimal::ONE, hedged_margin_pct: dec!(200), ask_rule: None,
+            bid: None, ask: None, sl_price: None, tp_price: None, fx_rate: Decimal::ONE, hedged_margin_pct: dec!(200), ask_rule: None, quote: None,
         }
     }
 

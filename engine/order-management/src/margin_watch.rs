@@ -222,6 +222,7 @@ pub fn measure(account: &WatchedAccount, cache: &TickCache) -> (Decimal, Decimal
                 fx_rate: rate.unwrap_or(Decimal::ONE),
                 hedged_margin_pct: p.hedged_margin_pct,
                 ask_rule: p.ask_rule,
+                quote: None,
             }
         })
         .collect();

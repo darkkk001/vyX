@@ -17,7 +17,7 @@
 //! What this module does NOT decide yet (Stage 2): the formulas (credit, live-price margin, tickAt
 //! freshness, quote-currency conversion). `realized_pnl` is the caller's, in the account's currency.
 
-use crate::db::OpenPositionWithMarket;
+use crate::db::{OpenPositionWithMarket, QuoteSource, QuoteStamp};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -165,6 +165,12 @@ fn current_tick_hint() -> Option<TickHint> {
     TICK_HINT.try_with(|h| h.clone()).ok()
 }
 
+/// Is this evaluation a Stage 6 live fire (a TickHint in scope)? A close made inside one records triggerSource "fire",
+/// any other (the pass, the backstop) "pass".
+fn in_live_fire() -> bool {
+    TICK_HINT.try_with(|_| ()).is_ok()
+}
+
 fn current_price_source() -> Result<PriceSource, sqlx::Error> {
     match PRICE_SOURCE.try_with(|s| s.clone()) {
         Ok(s) => Ok(s),
@@ -191,10 +197,19 @@ pub fn tick_time(tick: &protocol::Tick, received_at: chrono::DateTime<chrono::Ut
 }
 
 /// Fresh bid / ask from the ticks, the web's rule: tick time newer than 15 s.
+#[cfg(test)]
 fn fresh_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now: chrono::DateTime<chrono::Utc>) -> (Option<Decimal>, Option<Decimal>) {
+    fresh_tick_from_ticks(cache, symbol, now).map_or((None, None), |(b, a, _)| (Some(b), Some(a)))
+}
+
+/// fresh_from_ticks with the tick's time (the trigger tick of a close, OpenPositionWithMarket::quote).
+fn fresh_tick_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now: chrono::DateTime<chrono::Utc>) -> Option<(Decimal, Decimal, chrono::DateTime<chrono::Utc>)> {
     match cache.latest(symbol) {
-        Some((t, received)) if now - tick_time(&t, received) < chrono::Duration::seconds(15) => (Some(t.bid), Some(t.ask)),
-        _ => (None, None),
+        Some((t, received)) => {
+            let at = tick_time(&t, received);
+            (now - at < chrono::Duration::seconds(15)).then_some((t.bid, t.ask, at))
+        }
+        None => None,
     }
 }
 
@@ -379,19 +394,19 @@ fn fx_symbols_of<'a>(rows: impl IntoIterator<Item = &'a RawPosition>) -> Vec<Str
 /// 15 s) of `symbols`, and the FX quotes (tickAt under 72 h, lib/fx.ts) of `fx`. Production never runs this.
 #[derive(Default)]
 struct DbPrices {
-    fresh: std::collections::HashMap<String, (Decimal, Decimal)>,
+    fresh: std::collections::HashMap<String, (Decimal, Decimal, chrono::DateTime<chrono::Utc>)>,
     fx: std::collections::HashMap<String, (Decimal, Decimal)>,
 }
 
 async fn load_db_prices(conn: &mut sqlx::PgConnection, symbols: &[String], fx: &[String]) -> Result<DbPrices, sqlx::Error> {
     let mut out = DbPrices::default();
     if !symbols.is_empty() {
-        let q: Vec<(String, Decimal, Decimal)> =
-            sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1) AND "tickAt" > now() - interval '15 seconds'"#)
+        let q: Vec<(String, Decimal, Decimal, chrono::DateTime<chrono::Utc>)> =
+            sqlx::query_as(r#"SELECT symbol, bid, ask, "tickAt" FROM "LivePrice" WHERE symbol = ANY($1) AND "tickAt" > now() - interval '15 seconds'"#)
                 .bind(symbols)
                 .fetch_all(&mut *conn)
                 .await?;
-        out.fresh = q.into_iter().map(|(s, b, a)| (s, (b, a))).collect();
+        out.fresh = q.into_iter().map(|(s, b, a, at)| (s, (b, a, at))).collect();
     }
     if !fx.is_empty() {
         let q: Vec<(String, Decimal, Decimal)> =
@@ -421,13 +436,15 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
             // the SOURCE of bid / ask: the database's LivePrice or the engine's ticks
             // Stage 6: a live fire's own tick for this symbol, while it is still fresh (judged against `now`)
             let hinted = hint.as_ref().and_then(|h| h.ticks.get(&r.symbol)).filter(|(_, _, at)| now - *at < chrono::Duration::seconds(15));
-            let (bid, ask) = match (source, pin.and_then(|p| p.ticks.get(&r.symbol))) {
+            // the tick's time and source ride along: an engine close records them as its trigger tick
+            let stamp = |source: QuoteSource, b: Decimal, a: Decimal, tick_at| (Some(b), Some(a), Some(QuoteStamp { source, tick_at }));
+            let (bid, ask, quote) = match (source, pin.and_then(|p| p.ticks.get(&r.symbol))) {
                 // pinned: the risk hook's own tick for a touched symbol, under the web's 15 s rule at the pin's moment
-                (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => (Some(b), Some(a)),
-                (_, Some(_)) => (None, None),
-                (_, None) if hinted.is_some() => hinted.map_or((None, None), |&(b, a, _)| (Some(b), Some(a))),
-                (PriceSource::Db, None) => db.fresh.get(&r.symbol).map_or((None, None), |&(b, a)| (Some(b), Some(a))),
-                (PriceSource::Ticks(cache), None) => fresh_from_ticks(cache, &r.symbol, now),
+                (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => stamp(QuoteSource::Pin, b, a, tick_at),
+                (_, Some(_)) => (None, None, None),
+                (_, None) if hinted.is_some() => hinted.map_or((None, None, None), |&(b, a, at)| stamp(QuoteSource::FireTick, b, a, at)),
+                (PriceSource::Db, None) => db.fresh.get(&r.symbol).map_or((None, None, None), |&(b, a, at)| stamp(QuoteSource::LivePrice, b, a, at)),
+                (PriceSource::Ticks(cache), None) => fresh_tick_from_ticks(cache, &r.symbol, now).map_or((None, None, None), |(b, a, at)| stamp(QuoteSource::EngineTick, b, a, at)),
             };
             let closed = sessions
                 .get(&(broker_id.clone(), r.symbol.clone()))
@@ -451,6 +468,7 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
                 fx_rate: rate.unwrap_or(Decimal::ONE),
                 hedged_margin_pct: r.hedged_margin_pct,
                 ask_rule: r.ask_rule,
+                quote: if usable { quote } else { None },
             }
         })
         .collect()
@@ -1164,11 +1182,33 @@ impl CloseReason {
     }
 }
 
+/// The tick a close was priced at: raw bid / ask (before any ask markup; the fill is `closePrice`) and where and when
+/// that tick came from. Recorded in the POSITION_CLOSED payload for the 6.1 gate "measured touch-to-write delay and
+/// slippage" (docs/RUST-CUTOVER-PLAN.md): delay = closeWrittenAt - triggerTickAt, slippage = SL / TP level vs closePrice.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TriggerTick {
+    pub bid: Decimal,
+    pub ask: Decimal,
+    pub quote: QuoteStamp,
+}
+
+impl TriggerTick {
+    /// The tick that priced `p`, or None when it is unpriced or its caller does not stamp it.
+    pub fn of(p: &OpenPositionWithMarket) -> Option<Self> {
+        Some(Self { bid: p.bid?, ask: p.ask?, quote: p.quote? })
+    }
+}
+
 /// Rust cutover Stage 3: queues what the web must do after this close (queued-close cancel, mirror, stop-out
 /// notice, coverage, events: lib/post-close.ts) as a "PostCloseEffect" row, inside the SAME transaction as the
 /// close, so a committed close always has its follow-up recorded and a rolled-back one never does. One row per
 /// close (dedupe key = the close's TRADE_PNL row). `volume_before` is the position's volume when it was closed:
 /// the web can no longer read it from the row once the close has committed.
+///
+/// Trigger tick (owner, 2026-10-14; 6.1 gate input): `triggerSource` ("fire" inside a live fire, else "pass") and
+/// `closeWrittenAt` (the database clock, clock_timestamp() at this insert: the close's own writes are just before it
+/// in the same transaction) on every row; `triggerBid` / `triggerAsk` / `triggerTickAt` / `triggerPriceSource` when
+/// `trigger` is known. The web reads the payload by a plain cast, so these keys change nothing there.
 pub async fn enqueue_post_close(
     tx: &mut sqlx::PgTransaction<'_>,
     position_id: &str,
@@ -1176,6 +1216,7 @@ pub async fn enqueue_post_close(
     reason: CloseReason,
     volume_before: Decimal,
     close_price: Decimal,
+    trigger: Option<TriggerTick>,
 ) -> Result<(), sqlx::Error> {
     let mut payload = serde_json::json!({
         "closedLots": volume_before.normalize().to_string(),
@@ -1186,7 +1227,14 @@ pub async fn enqueue_post_close(
         "dealId": outcome.deal_id,
         "dealTicket": outcome.deal_ticket.to_string(),
         "remainingVolume": "0",
+        "triggerSource": if in_live_fire() { "fire" } else { "pass" },
     });
+    if let Some(t) = trigger {
+        payload["triggerBid"] = serde_json::Value::String(t.bid.normalize().to_string());
+        payload["triggerAsk"] = serde_json::Value::String(t.ask.normalize().to_string());
+        payload["triggerTickAt"] = serde_json::Value::String(t.quote.tick_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        payload["triggerPriceSource"] = serde_json::Value::String(t.quote.source.as_str().to_string());
+    }
     if let CloseReason::StopOut { margin_level, stop_out_level } = reason {
         // the same text lib/risk-monitor.ts passes: level to 2 dp, the threshold as configured
         payload["marginLevel"] = serde_json::Value::String(fixed2(margin_level));
@@ -1194,7 +1242,8 @@ pub async fn enqueue_post_close(
     }
     sqlx::query(
         r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", "positionId", reason, payload)
-           VALUES ($1, 'POSITION_CLOSED', $2, $3, $4, $5, $6, $7::jsonb)
+           VALUES ($1, 'POSITION_CLOSED', $2, $3, $4, $5, $6,
+                   $7::jsonb || jsonb_build_object('closeWrittenAt', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
            ON CONFLICT ("dedupeKey") DO NOTHING"#,
     )
     .bind(Uuid::new_v4().to_string())
