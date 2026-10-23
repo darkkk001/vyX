@@ -49,6 +49,10 @@ fn minute_of(at: DateTime<Utc>) -> i64 {
 struct TickEntry {
     tick: Tick,
     at: DateTime<Utc>,
+    // When the ENGINE received this tick, by its own clock (Utc::now() at `set`). NOT `at`: ingest stores a tick at its
+    // tick_ms (the feed's clock, ingest::resolve_tick_time) whenever it is plausible, so `at` is the feed's time. The
+    // touch-to-write delay of an engine close is measured from this one (order_management book.rs TriggerTick, 6.1 gate).
+    received: DateTime<Utc>,
     // Candle OHLC accumulated across ticks of the CURRENT segment: since the last
     // `take_dirty_candles`, or since the last UTC-minute rollover, whichever is later.
     // close is always `tick.bid` (the latest); open is the first tick of the segment;
@@ -118,6 +122,11 @@ impl TickCache {
     }
 
     pub fn set(&self, tick: &Tick, at: DateTime<Utc>) {
+        self.set_received(tick, at, Utc::now())
+    }
+
+    /// `set` with the engine's receive time given (`set` passes Utc::now()); tests pin it.
+    pub fn set_received(&self, tick: &Tick, at: DateTime<Utc>, received: DateTime<Utc>) {
         // Poisoning would mean some other writer panicked mid-update;
         // recovering the lock (rather than propagating the panic here)
         // is the right call for a cache -- a stale/missing entry just
@@ -166,6 +175,7 @@ impl TickCache {
                 }
                 e.tick = tick.clone();
                 e.at = at;
+                e.received = received;
                 e.live_price_dirty = true;
                 e.candle_dirty = true;
                 e.risk_dirty = true;
@@ -176,6 +186,7 @@ impl TickCache {
                     TickEntry {
                         tick: tick.clone(),
                         at,
+                        received,
                         candle_open: tick.bid,
                         candle_high: tick.bid,
                         candle_low: tick.bid,
@@ -197,14 +208,25 @@ impl TickCache {
     // pass `max_age` explicitly rather than this module hardcoding it, so
     // the two stay obviously in sync at the call site instead of by
     // coincidence.
-    /// The latest tick of `symbol` and when the engine received it, whatever its age: the entry GET
-    /// /internal/prices serves the web (order_management::book::PriceSource::Ticks reads the same one).
+    /// The latest tick of `symbol` and the time it was stored at, whatever its age: the entry GET /internal/prices serves
+    /// the web (order_management::book::PriceSource::Ticks reads the same one). That time is the one `set` was given:
+    /// from ingest the tick's own tick_ms (the feed's clock) when plausible, else its arrival; NOT necessarily when the
+    /// engine received it (`latest_received`).
     pub fn latest(&self, symbol: &str) -> Option<(Tick, DateTime<Utc>)> {
         let guard = match self.inner.read() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
         guard.get(symbol).map(|e| (e.tick.clone(), e.at))
+    }
+
+    /// `latest` plus when the engine received that tick, by its own clock (TickEntry::received).
+    pub fn latest_received(&self, symbol: &str) -> Option<(Tick, DateTime<Utc>, DateTime<Utc>)> {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.get(symbol).map(|e| (e.tick.clone(), e.at, e.received))
     }
 
     pub fn get_if_fresh(&self, symbol: &str, max_age: Duration) -> Option<Tick> {
@@ -408,6 +430,24 @@ mod tests {
 
     fn tick(symbol: &str) -> Tick {
         Tick { symbol: symbol.to_string(), bid: rust_decimal::Decimal::ONE, ask: rust_decimal::Decimal::TWO, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() }
+    }
+
+    /// Ingest stores a tick at its tick_ms (the feed's clock, ingest::resolve_tick_time): `latest` gives that time back,
+    /// `latest_received` the engine's own clock at `set` -- the start of an engine close's touch-to-write delay.
+    #[test]
+    fn a_tick_stored_at_its_feed_time_keeps_the_engines_receive_time() {
+        let cache = TickCache::new();
+        let feed_time = Utc::now() - Duration::seconds(3);
+        let before = Utc::now();
+        cache.set(&tick("EURUSD"), feed_time);
+        let after = Utc::now();
+        let (_, at) = cache.latest("EURUSD").unwrap();
+        let (_, at2, received) = cache.latest_received("EURUSD").unwrap();
+        assert_eq!((at, at2), (feed_time, feed_time));
+        assert!(received >= before && received <= after, "received {received} is the engine clock at set, not the feed time {feed_time}");
+        let pinned = Utc::now() - Duration::milliseconds(250);
+        cache.set_received(&tick("EURUSD"), feed_time, pinned);
+        assert_eq!(cache.latest_received("EURUSD").unwrap().2, pinned);
     }
 
     #[test]

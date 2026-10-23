@@ -212,9 +212,9 @@ fn fresh_tick_from_ticks(
     symbol: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<(Decimal, Decimal, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
-    match cache.latest(symbol) {
-        Some((t, received)) => {
-            let at = tick_time(&t, received);
+    match cache.latest_received(symbol) {
+        Some((t, stored_at, received)) => {
+            let at = tick_time(&t, stored_at);
             (now - at < chrono::Duration::seconds(15)).then_some((t.bid, t.ask, at, received))
         }
         None => None,

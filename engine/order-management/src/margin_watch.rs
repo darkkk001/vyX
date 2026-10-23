@@ -479,7 +479,7 @@ fn pin_for(account: &WatchedAccount, cache: &TickCache) -> crate::book::Pin {
 
 /// symbol -> when the engine received the tick pin_for prices it at (its own clock: LiveFire::received).
 fn received_for(account: &WatchedAccount, cache: &TickCache) -> HashMap<String, chrono::DateTime<chrono::Utc>> {
-    account.positions.iter().filter_map(|p| cache.latest(&p.symbol).map(|(_, received)| (p.symbol.clone(), received))).collect()
+    account.positions.iter().filter_map(|p| cache.latest_received(&p.symbol).map(|(_, _, received)| (p.symbol.clone(), received))).collect()
 }
 
 impl market_data::risk_hook::MarginWatch for MarginWatch {

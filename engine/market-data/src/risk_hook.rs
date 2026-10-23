@@ -465,7 +465,7 @@ impl RiskHook {
         // the engine's receive time of THIS tick (the cache still holds it unless a newer one arrived since the flush; then
         // this moment, which is later than the real receipt, so the delay is never understated)
         let received_at = |t: &Tick| {
-            cache.latest(&t.symbol).filter(|(c, _)| c.bid == t.bid && c.ask == t.ask && c.tick_ms == t.tick_ms).map_or(now, |(_, r)| r)
+            cache.latest_received(&t.symbol).filter(|(c, _, _)| c.bid == t.bid && c.ask == t.ask && c.tick_ms == t.tick_ms).map_or(now, |(_, _, r)| r)
         };
         let add = |list: &mut Vec<LiveFire>, account_id: &str, t: &Tick, source: FireSource| {
             let fire = match list.iter_mut().position(|f| f.account_id == account_id) {
