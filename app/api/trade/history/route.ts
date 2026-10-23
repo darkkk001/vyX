@@ -6,6 +6,7 @@ import { closeByTarget, closesOf, type CloseLeg, type ClosesOptions, type CloseT
 import { closesFromDeals, type CloseDeal } from "@/lib/deal-closes";
 import { dealReads } from "@/lib/deal-reads";
 import { loadPositionExecutions } from "@/lib/client-execution";
+import { toClientShape } from "@/lib/client-execution";
 
 export async function GET(request: NextRequest) {
   const session = await getAccountSession();
@@ -64,10 +65,10 @@ export async function GET(request: NextRequest) {
   const executions = await loadPositionExecutions(session.accountId, trades);
   if (dealReads("history")) {
     const closesFor = await dealClosesLoader(session.accountId, trades.map((t) => t.id));
-    return NextResponse.json(trades.map((t) => {
+    return NextResponse.json(toClientShape(trades.map((t) => {
       const closes = closesFor(t);
       return { ...t, ...executions.get(t.id), ...(closes ? { closes } : {}) };
-    }));
+    })));
   }
   const txRows = trades.length === 0 ? [] : await prisma.transaction.findMany({
     where: { accountId: session.accountId, type: "TRADE_PNL", referenceType: "Position", referenceId: { in: trades.map((t) => t.id) } },
@@ -82,10 +83,10 @@ export async function GET(request: NextRequest) {
     where: { accountId: session.accountId, OR: [{ id: { in: [...ids] } }, { ticket: { in: [...tickets] } }] },
     select: { id: true, ticket: true, status: true, volume: true, closePrice: true, closedAt: true },
   });
-  return NextResponse.json(trades.map((t) => {
+  return NextResponse.json(toClientShape(trades.map((t) => {
     const closes = closesOf(t, byPosition.get(t.id) ?? [], counterparts);
     return { ...t, ...executions.get(t.id), ...(closes ? { closes } : {}) };
-  }));
+  })));
 }
 
 /** `?closes=1`: the terminal's Deals view (every close at its own time; a partial appears as soon as it is made) and
@@ -158,7 +159,7 @@ async function closesView(accountId: string, sp: URLSearchParams) {
       ...executions.get(p.id),
     });
   }
-  return NextResponse.json(rows);
+  return NextResponse.json(toClientShape(rows));
 }
 
 type CloseSubject = { id: string; ticket: number; status: string; volume: Prisma.Decimal; closePrice: Prisma.Decimal | null; closedAt: Date | null };
