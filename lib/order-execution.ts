@@ -112,6 +112,9 @@ const CLIENT_SOURCES = new Set(["WEB", "DESKTOP_NATIVE", "MOBILE", "API", "EA"])
 /// backoffice). Everything else (tickets, type, status, source, times, latency, requested / filled price, platform,
 /// reject reason) as the backoffice gets it; absent fields stay absent.
 export function clientExecution(detail: Record<string, string | number>): Record<string, string | number> {
-  const { routing: _routing, executionMode: _mode, clientIp, ...rest } = detail;
-  return clientIp != null && CLIENT_SOURCES.has(String(detail.source ?? "")) ? { ...rest, clientIp } : rest;
+  const out = { ...detail };
+  delete out.routing;
+  delete out.executionMode;
+  if (!CLIENT_SOURCES.has(String(detail.source ?? ""))) delete out.clientIp;
+  return out;
 }
