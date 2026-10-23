@@ -6,6 +6,7 @@ import { closePositionsByEachOther, resolveCloseByPair } from "@/lib/close-by";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 import { clientDealSource } from "@/lib/deals";
 import { requestMeta } from "@/lib/order-execution";
+import { toClientShape } from "@/lib/client-execution";
 
 // "Close By" -- nets the smaller of two opposite-side
 // positions on the same symbol against the larger one at a single fair
@@ -98,5 +99,5 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
-  return NextResponse.json(result);
+  return NextResponse.json(toClientShape(result));
 }

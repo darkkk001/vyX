@@ -10,6 +10,7 @@ import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { getLivePriceRow } from "@/lib/live-price";
+import { toClientShape } from "@/lib/client-execution";
 
 // Edit a resting PENDING order's own entry price and/or its SL/TP -- the
 // chart's draggable entry-price line (LIMIT/STOP only) and, since broker
@@ -199,7 +200,7 @@ export async function PATCH(
     },
     orderId: id,
   });
-  return NextResponse.json(updated);
+  return NextResponse.json(toClientShape(updated));
 }
 
 // Cancel a resting PENDING order. No arbitrary status jumps — only
@@ -279,5 +280,5 @@ export async function DELETE(
     values: { requestedPrice: order.requestedPrice?.toString() ?? null, cancelledBy: "CLIENT" },
     orderId: id,
   });
-  return NextResponse.json(cancelled);
+  return NextResponse.json(toClientShape(cancelled));
 }

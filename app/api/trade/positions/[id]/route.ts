@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toClientShape } from "@/lib/client-execution";
 import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { loadAccountAskRules } from "@/lib/ask-markup";
 import { getLivePriceRow } from "@/lib/live-price";
@@ -69,5 +70,5 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
   });
   const row = { ...updated, symbol: { name: symbol!.name, digits: symbol!.digits, contractSize: symbol!.contractSize } };
   await announcePositionModified({ session, before: position, row, symbolName: symbol!.name, slPrice, tpPrice });
-  return NextResponse.json(row);
+  return NextResponse.json(toClientShape(row)); // client allow-list (lib/client-execution.ts)
 }

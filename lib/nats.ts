@@ -88,6 +88,9 @@ const SUBJECTS = {
   // refetches its KYC / LAR queue and badge.
   KycSubmitted: "dealing.kyc_submitted",
   LiveAccountRequested: "dealing.live_account_requested",
+  // Rejected-order trace (2026-10-23): an order request refused before any Order row (lib/rejected-orders.ts).
+  // Backoffice-only under dealing.>: the trader stream never subscribes it, so the trader's terminal does not refetch.
+  OrderRejectedPreTrade: "dealing.order_rejected",
 } as const satisfies Record<string, string>;
 
 export type TradingEventType = keyof typeof SUBJECTS;

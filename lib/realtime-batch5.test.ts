@@ -247,7 +247,7 @@ describe("gateway fan-out (services/api-gateway/src/ws.ts)", () => {
   it("trader stream subscribes config.> and forwards broker-wide ConfigChanged to every socket of that broker", () => {
     expect(trader).toContain('nc.subscribe("config.>")');
     expect(trader).toContain("clientsByBroker.get(parsed.broker_id)");
-    expect(trader).toContain("registerClient(ws, session.accountId, session.brokerId)");
+    expect(trader).toContain("registerClient(ws, session.accountId, session.brokerId, wantsKeepalive(url))");
   });
   it("admin stream subscribes config.> and margin.>", () => {
     expect(admin).toContain('nc.subscribe("config.>")');

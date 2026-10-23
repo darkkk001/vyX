@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toClientShape } from "@/lib/client-execution";
 import { canonicalSymbolName } from "@/lib/synthetic-symbols";
 import { isDemoTenant } from "@/lib/demo-policy";
 import { demoQuoteTimeRefusal } from "@/lib/demo-prices";
@@ -54,6 +55,7 @@ import {
   isValidMaxSlippageInput,
   checkAccountTradingRights,
 } from "@/lib/risk";
+import { traceRejectedOrder } from "@/lib/rejected-orders";
 import { requestMeta } from "@/lib/order-execution";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
@@ -90,7 +92,18 @@ export async function POST(request: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
-  const response = await handlePlaceOrder(request, session, new Date(startedAt));
+  // rejected-order trace (lib/rejected-orders.ts): the handler consumes the body, so keep a copy for a refusal
+  const probe = request.clone();
+  const raw = await handlePlaceOrder(request, session, new Date(startedAt));
+  if (raw.status === 400) {
+    const answer = raw.clone();
+    await runAfterResponse("rejected-order", async () =>
+      traceRejectedOrder(session, request.headers, new Date(startedAt), await probe.json().catch(() => null), await answer.json().catch(() => null))
+    );
+  }
+  // client allow-list (lib/client-execution.ts): every answer of this route is cut to client-safe fields, whichever
+  // branch produced it (fill, auto-reject, idempotent replay, race)
+  const response = await clientSafe(raw);
   const appMs = Date.now() - startedAt;
   response.headers.set("Server-Timing", `app;dur=${appMs}`);
   if (response.status === 201 && !(await isDemoBrokerId(session.brokerId))) {
@@ -852,5 +865,11 @@ export async function GET(request: NextRequest) {
     orderBy: { createdAt: "desc" },
     ...(showAll ? { take: ORDERS_ALL_TAKE } : {}),
   });
-  return NextResponse.json(orders);
+  return NextResponse.json(toClientShape(orders));
+}
+
+async function clientSafe(response: Response): Promise<NextResponse> {
+  const body = await response.clone().json().catch(() => undefined);
+  if (body === undefined) return response as NextResponse;
+  return NextResponse.json(toClientShape(body), { status: response.status, headers: response.headers });
 }
