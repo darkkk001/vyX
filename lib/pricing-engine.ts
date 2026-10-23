@@ -212,14 +212,17 @@ export async function resolveSymbolPricingV2(
     brokerCommissionPerLot: Prisma.Decimal;
     brokerSwapLong: Prisma.Decimal;
     brokerSwapShort: Prisma.Decimal;
+    /** the account's and its group's swapFree when the caller has just read them (no re-read; execution latency Phase 1) */
+    known?: { accountSwapFree: boolean | null; groupSwapFree: boolean | null };
   }
 ): Promise<ResolvedPricingV2> {
+  const known = params.known;
   const [account, accountSymbolConfig, group, groupSymbolConfig] = await Promise.all([
-    tx.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { swapFree: true } }),
+    known ? Promise.resolve({ swapFree: known.accountSwapFree }) : tx.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { swapFree: true } }),
     tx.accountSymbolConfig.findUnique({
       where: { accountId_symbolId: { accountId: params.accountId, symbolId: params.symbolId } },
     }),
-    params.groupId ? tx.group.findUnique({ where: { id: params.groupId }, select: { swapFree: true } }) : Promise.resolve(null),
+    !params.groupId ? Promise.resolve(null) : known ? Promise.resolve({ swapFree: known.groupSwapFree }) : tx.group.findUnique({ where: { id: params.groupId }, select: { swapFree: true } }),
     params.groupId
       ? tx.groupSymbolConfig.findUnique({ where: { groupId_symbolId: { groupId: params.groupId, symbolId: params.symbolId } } })
       : Promise.resolve(null),
@@ -275,6 +278,7 @@ export async function resolveFillPricing(
     brokerSwapLong: Prisma.Decimal;
     brokerSwapShort: Prisma.Decimal;
     liveBaseSpreadPips: Prisma.Decimal | number | string | null | undefined;
+    known?: { accountSwapFree: boolean | null; groupSwapFree: boolean | null };
   }
 ): Promise<FillPricing> {
   if (!params.pricingEngineEnabled) {
@@ -295,6 +299,7 @@ export async function resolveFillPricing(
     brokerCommissionPerLot: params.brokerCommissionPerLot,
     brokerSwapLong: params.brokerSwapLong,
     brokerSwapShort: params.brokerSwapShort,
+    known: params.known,
   });
   const { markup, warning } = resolveEffectiveSpreadMarkup(resolved.spread, params.liveBaseSpreadPips);
   return { spreadMarkup: markup, commissionPerLot: resolved.commissionPerLot, warning };

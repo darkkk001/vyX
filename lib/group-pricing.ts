@@ -110,6 +110,16 @@ export async function chargeCommission(
   params: { brokerId: string; accountId: string; positionId: string; commissionPerLot: Prisma.Decimal; volume: Prisma.Decimal }
 ): Promise<Prisma.Decimal | null> {
   // returns the balance after the charge (the row is locked, so it is exact), or null when nothing was charged
+  return (await chargeCommissionDetailed(tx, params))?.balanceAfter ?? null;
+}
+
+/** chargeCommission, also answering the COMMISSION ledger row it wrote. `positionAlreadyCharged`: the caller created the
+ *  position with this commission already on it (the market fill, execution latency Phase 1), so the Position update is
+ *  skipped; the ledger, the balance and the lock are exactly the same. */
+export async function chargeCommissionDetailed(
+  tx: Tx,
+  params: { brokerId: string; accountId: string; positionId: string; commissionPerLot: Prisma.Decimal; volume: Prisma.Decimal; positionAlreadyCharged?: boolean }
+): Promise<{ balanceAfter: Prisma.Decimal; transaction: { id: string; amount: Prisma.Decimal } } | null> {
   const amount = params.commissionPerLot.mul(params.volume);
   if (amount.lte(0)) return null;
 
@@ -117,7 +127,8 @@ export async function chargeCommission(
   const balanceAfter = balanceBefore.sub(amount);
 
   await tx.account.update({ where: { id: params.accountId }, data: { balance: balanceAfter } });
-  await tx.transaction.create({
+  const transaction = await tx.transaction.create({
+    select: { id: true, amount: true },
     data: {
       brokerId: params.brokerId,
       accountId: params.accountId,
@@ -145,9 +156,11 @@ export async function chargeCommission(
   // increment, not set: a position can be charged more than once in principle
   // (the column is cumulative, same as the ledger), and increment is also
   // safe against a retry landing twice as a set would not be.
-  await tx.position.update({
-    where: { id: params.positionId },
-    data: { commission: { increment: amount } },
-  });
-  return balanceAfter;
+  if (!params.positionAlreadyCharged) {
+    await tx.position.update({
+      where: { id: params.positionId },
+      data: { commission: { increment: amount } },
+    });
+  }
+  return { balanceAfter, transaction };
 }

@@ -136,6 +136,12 @@ describe("open paths write one IN deal", () => {
     expect([d.transactionId, d.orderId, d.accountId, d.symbolId, d.executedAt.toISOString()]).toEqual([commissionRow.id, p.originOrderId, fx.accountId, fx.symbolId, p.openedAt.toISOString()]);
     expect(d.ticket).toBeGreaterThan(BigInt(10000000));
     expect((await pos(p.id)).initialVolume?.toString()).toBe("0.5");
+    // execution latency Phase 1: the position is created with its commission (no follow-up update), the ledger row and
+    // the balance are exactly as before, and the answer carries the charged position once (not twice)
+    expect((await pos(p.id)).commission.toString()).toBe("3.5");
+    expect(await prisma.transaction.count({ where: { type: "COMMISSION", referenceId: p.id } })).toBe(1);
+    expect([commissionRow.amount.toString(), commissionRow.balanceAfter.toString(), commissionRow.balanceBefore.sub(commissionRow.balanceAfter).toString()]).toEqual(["-3.5", (await prisma.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString(), "3.5"]);
+    expect(String(r.json.position?.commission)).toBe("3.5");
   });
 
   it("no commission: IN with commission 0 and no ledger link", async () => {

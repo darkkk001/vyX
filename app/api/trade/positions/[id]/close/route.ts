@@ -89,19 +89,22 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   // instead of nested includes (one round trip per level), and the live price as soon as the symbol is known. Rows
   // read for a position that turns out not to be this account's are discarded unanswered (404 below).
   const bySymbolOfPosition = { positions: { some: { id } } };
-  const symbolRead = prisma.symbol.findFirst({ where: bySymbolOfPosition, select: { id: true, name: true, category: true, contractSize: true, digits: true } });
+  const symbolRead = prisma.symbol.findFirst({ where: bySymbolOfPosition, select: { id: true, name: true, category: true, contractSize: true, digits: true, quoteCurrency: true } });
+  const rowRead = prisma.position.findUnique({ where: { id } });
   const [row, symbol, accountRow, group, brokerSymbol, tradingSessions, broker, livePrice, askRuleFor] = await Promise.all([
-    prisma.position.findUnique({ where: { id } }),
+    rowRead,
     symbolRead,
-    prisma.account.findFirst({ where: { positions: { some: { id } } }, select: { accountNumber: true, fullName: true, status: true, tradingRights: true } }),
+    prisma.account.findFirst({ where: { positions: { some: { id } } }, select: { accountNumber: true, fullName: true, status: true, tradingRights: true, currency: true } }),
     prisma.group.findFirst({ where: { accounts: { some: { positions: { some: { id } } } } }, select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } }),
     prisma.brokerSymbol.findFirst({ where: { brokerId: session.brokerId, symbol: bySymbolOfPosition } }),
     prisma.tradingSession.findMany({ where: { brokerSymbol: { brokerId: session.brokerId, symbol: bySymbolOfPosition } } }),
     prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { subdomain: true, dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true, defaultMaxSlippagePoints: true } }),
     // S4 (docs/market-data.md §8): the engine's own in-memory tick when MARKET_DATA_PRICES=vps, Neon otherwise
     symbolRead.then((s) => (s ? getLivePriceRow(s.name) : null)),
-    // the account's ask rule for this symbol (lib/ask-markup.ts): a SELL closes at the marked-up ask a BUY opens at
-    symbolRead.then((s) => (s ? loadAccountAskRules(prisma, session.accountId, [s.id]) : null)),
+    // the account's ask rule for this symbol (lib/ask-markup.ts): a SELL closes at the marked-up ask a BUY opens at. A
+    // BUY closes at the bid and never reads it (accountClosePrice), so it is loaded for a SELL only (execution latency
+    // Phase 1: seven statements fewer on every BUY close)
+    Promise.all([rowRead, symbolRead]).then(([r, s]) => (r && s && r.side === "SELL" ? loadAccountAskRules(prisma, session.accountId, [s.id]) : null)),
   ]);
   if (!row || row.accountId !== session.accountId || !symbol || !accountRow) {
     return NextResponse.json({ error: "position not found" }, { status: 404 });
@@ -284,6 +287,8 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
       },
       closePrice,
       closeVolume,
+      // execution latency Phase 1: both currencies were read in the wave above
+      known: { quoteCurrency: symbol.quoteCurrency, accountCurrency: accountRow.currency },
       deal: {
         reason: source === "stm_bulk" ? "BULK" : "CLIENT",
         source: clientDealSource(request.headers.get("x-client-platform")),
