@@ -1,5 +1,5 @@
 // Refusal reasons, two of them (owner 2026-10-23). `reason` is the internal code with full detail: it goes to the
-// RejectedOrder trace and the backoffice FEED. `clientReason` is what a client is told, exactly one of the nine below.
+// RejectedOrder trace and the backoffice FEED. `clientReason` is what a client is told, exactly one of the eleven below (owner: 9, then TOO_MANY_REQUESTS and CLOSE_PENDING).
 // The order, close and modify routes answer a refusal with clientReason (+ a plain sentence) only; the internal text
 // never reaches a client (clientRefusal / withClientRefusals below, test: lib/client-reason.test.ts).
 
@@ -12,6 +12,8 @@ export const CLIENT_REASONS = [
   "INVALID_SLTP",
   "SYMBOL_NOT_AVAILABLE",
   "TRADING_DISABLED",
+  "TOO_MANY_REQUESTS",
+  "CLOSE_PENDING",
   "REJECTED",
 ] as const;
 export type ClientReason = (typeof CLIENT_REASONS)[number];
@@ -27,6 +29,8 @@ export const CLIENT_REASON_TEXT: Record<ClientReason, string> = {
   INVALID_SLTP: "Invalid SL or TP",
   SYMBOL_NOT_AVAILABLE: "Symbol not available",
   TRADING_DISABLED: "Trading disabled",
+  TOO_MANY_REQUESTS: "Too many requests - wait a moment",
+  CLOSE_PENDING: "Close already with the dealer",
   REJECTED: "Order rejected",
 };
 
@@ -37,6 +41,8 @@ const str = (v: unknown) => (typeof v === "string" ? v : "");
  *  schedule but not quoting is OFF_QUOTES); a price that is missing, stale or not quoting, or an LP / feed that is
  *  down, is OFF_QUOTES; anything not recognised is REJECTED. */
 export function clientReasonFor(internal: Internal): ClientReason {
+  if (str(internal.code) === "ORDER_RATE_LIMITED") return "TOO_MANY_REQUESTS";
+  if (str(internal.error) === "CLOSE_PENDING") return "CLOSE_PENDING";
   const error = str(internal.error);
   const code = str(internal.code);
   const sub = str(internal.reason);
@@ -66,10 +72,11 @@ const SAFE_EXTRAS = ["nextOpenAt", "retryAfterSeconds", "orderId", "required", "
 /** A refusal answer cut to what a client may see. CLOSE_PENDING is a state the client acts on (the close awaiting the
  *  dealer, with its order id), not a reason: it keeps its code. */
 export function clientRefusal(internal: Record<string, unknown>): Record<string, unknown> {
-  if (internal.error === "CLOSE_PENDING") return { error: "CLOSE_PENDING", clientReason: "REJECTED" satisfies ClientReason, message: "Close already awaiting the dealer", orderId: internal.orderId };
+  // owner 2026-10-23: 11 codes; CLOSE_PENDING keeps its state code + the order id, TOO_MANY_REQUESTS keeps retryAfterSeconds
+  if (internal.error === "CLOSE_PENDING") return { error: "CLOSE_PENDING", clientReason: "CLOSE_PENDING" satisfies ClientReason, message: CLIENT_REASON_TEXT.CLOSE_PENDING, orderId: internal.orderId };
   const clientReason = clientReasonFor(internal);
   // the rate limit's own sentence is already plain and says when to try again
-  const message = internal.code === "ORDER_RATE_LIMITED" && typeof internal.error === "string" ? internal.error : CLIENT_REASON_TEXT[clientReason];
+  const message = CLIENT_REASON_TEXT[clientReason];
   const out: Record<string, unknown> = {
     // MARKET_CLOSED keeps its code: installed terminals turn it (+ nextOpenAt) into "Market closed, opens ..."
     error: clientReason === "MARKET_CLOSED" ? "MARKET_CLOSED" : message,

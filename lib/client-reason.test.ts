@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CLIENT_REASONS, clientReasonFor, clientRefusal, withClientRefusals } from "@/lib/client-reason";
 
-// Two reasons (owner 2026-10-23): the internal one stays on the server, the client gets one of nine.
+// Two reasons (owner 2026-10-23): the internal one stays on the server, the client gets one of eleven.
 describe("clientReasonFor", () => {
   const cases: Array<[Record<string, unknown>, string]> = [
     [{ error: "MARKET_CLOSED", nextOpenAt: "2026-10-25T21:00:00Z" }, "MARKET_CLOSED"],
@@ -24,13 +24,13 @@ describe("clientReasonFor", () => {
     [{ error: "TRADING_HALTED" }, "TRADING_DISABLED"],
     [{ error: "account is not active" }, "TRADING_DISABLED"],
     [{ error: "DEMO_B_BOOK_ONLY" }, "TRADING_DISABLED"],
-    [{ error: "Too many orders in a short time. Wait a moment and try again.", code: "ORDER_RATE_LIMITED" }, "REJECTED"],
+    [{ error: "Too many orders in a short time. Wait a moment and try again.", code: "ORDER_RATE_LIMITED" }, "TOO_MANY_REQUESTS"],
     [{ error: "something nobody planned for" }, "REJECTED"],
   ];
   for (const [internal, want] of cases) {
     it(`${JSON.stringify(internal)} -> ${want}`, () => expect(clientReasonFor(internal)).toBe(want));
   }
-  it("always one of the nine", () => {
+  it("always one of the eleven", () => {
     for (const [internal] of cases) expect(CLIENT_REASONS).toContain(clientReasonFor(internal));
   });
 });
@@ -46,13 +46,13 @@ describe("clientRefusal: what the client may see", () => {
     expect(clientRefusal({ error: "MARKET_CLOSED", nextOpenAt: "x" })).toEqual({ error: "MARKET_CLOSED", clientReason: "MARKET_CLOSED", message: "Market closed", nextOpenAt: "x" });
     expect(clientRefusal({ error: "PRICE_STALE", nextOpenAt: "x" })).not.toHaveProperty("nextOpenAt");
   });
-  it("the rate limit keeps its own plain sentence and when to retry", () => {
+  it("the rate limit is TOO_MANY_REQUESTS and keeps when to retry", () => {
     expect(clientRefusal({ error: "Too many orders in a short time. Wait a moment and try again.", code: "ORDER_RATE_LIMITED", retryAfterSeconds: 2 })).toEqual({
-      error: "Too many orders in a short time. Wait a moment and try again.", clientReason: "REJECTED", message: "Too many orders in a short time. Wait a moment and try again.", retryAfterSeconds: 2,
+      error: "Too many requests - wait a moment", clientReason: "TOO_MANY_REQUESTS", message: "Too many requests - wait a moment", retryAfterSeconds: 2,
     });
   });
   it("CLOSE_PENDING is a state the client acts on: code and order id kept", () => {
-    expect(clientRefusal({ error: "CLOSE_PENDING", orderId: "o1" })).toMatchObject({ error: "CLOSE_PENDING", orderId: "o1" });
+    expect(clientRefusal({ error: "CLOSE_PENDING", orderId: "o1" })).toEqual({ error: "CLOSE_PENDING", clientReason: "CLOSE_PENDING", message: "Close already with the dealer", orderId: "o1" });
   });
 });
 

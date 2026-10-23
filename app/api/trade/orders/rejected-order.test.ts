@@ -197,7 +197,7 @@ describe("order rate limit on POST /api/trade/orders (live DB)", () => {
       statuses.push(last.status);
     }
     expect(statuses).toEqual([201, 201, 201, 429, 429, 429]);
-    expect(last!.json).toMatchObject({ error: "Too many orders in a short time. Wait a moment and try again.", clientReason: "REJECTED" });
+    expect(last!.json).toMatchObject({ error: "Too many requests - wait a moment", clientReason: "TOO_MANY_REQUESTS" });
     expect(last!.json.retryAfterSeconds).toBeGreaterThanOrEqual(1);
     const rows = await prisma.rejectedOrder.findMany({ where: { accountId: fx.accountId } });
     expect(rows.map((r) => r.detail)).toEqual(["ORDER_RATE_LIMITED"]);
