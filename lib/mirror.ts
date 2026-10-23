@@ -369,7 +369,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       checkAccountStatusForOpen(targetAccount) ??
       (targetAccount.group ? checkGroupCloseOnly(targetAccount.group) : null) ??
       checkSymbolTradingMode(brokerSymbol.tradingMode, mirrorSide) ??
-      checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
+      checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category, brokerSymbol.symbol.name) ??
       (await checkHedgingAllowed(db, broker, { accountId: rule.targetAccountId, symbolId: source.symbolId, side: mirrorSide }));
     if (tradabilityError) {
       await recordMirrorFailure(db, rule, tradabilityError);

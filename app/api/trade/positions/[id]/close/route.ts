@@ -132,9 +132,9 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   // genuine feed outage (market OPEN, feed down), which is what
   // checkLiveMarketPrice below still guards, now correctly scoped to only
   // that rarer case.
-  const sessionError = checkTradingSession(tradingSessions, new Date(), position.symbol.category);
+  const sessionError = checkTradingSession(tradingSessions, new Date(), position.symbol.category, position.symbol.name);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(tradingSessions, new Date(), position.symbol.category);
+    const nextOpenAt = computeNextSessionOpen(tradingSessions, new Date(), position.symbol.category, position.symbol.name);
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 

@@ -75,9 +75,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     where: { brokerId_symbolId: { brokerId, symbolId: position.symbolId } },
     include: { tradingSessions: true },
   });
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category, position.symbol.name);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category, position.symbol.name);
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 

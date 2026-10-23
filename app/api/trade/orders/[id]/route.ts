@@ -78,9 +78,9 @@ export async function PATCH(
   // could be repriced during a closed market (live-confirmed: a real
   // EURUSD order was successfully modified on a Saturday). Same
   // MARKET_CLOSED + next-open-time answer as place/close/SL-TP-modify.
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.category);
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.category, order.symbol.name);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.category);
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.category, order.symbol.name);
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 

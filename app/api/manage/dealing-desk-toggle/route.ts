@@ -170,7 +170,7 @@ async function flushDealingQueueToMarket(
       // Closes respect DEALER mode: a queued CLOSE the desk no longer wants to review executes at
       // the live close-side price (a BUY position closes at bid) -- "don't leave them stuck"
       // applies to a close exactly as to an open. Only the halt / session gate applies.
-      const closeGate = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category);
+      const closeGate = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category, order.symbol.name);
       if (closeGate) { results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: closeGate }); continue; }
       // a SELL position closes at its ACCOUNT's ask (lib/ask-markup.ts, owner decision 2026-09-26)
       const closePrice = order.side === "BUY" ? livePrice.bid : accountClosePrice("SELL", livePrice.bid, livePrice.ask, (await loadAccountAskRules(prisma, order.accountId, [order.symbolId]))(order.symbolId));
@@ -211,7 +211,7 @@ async function flushDealingQueueToMarket(
       checkTradingHalted(broker) ??
       checkCloseOnly(broker) ??
       checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) ??
-      checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category) ??
+      checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category, order.symbol.name) ??
       checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
       (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
       (order.account.group ? checkGroupMinLot(order.volume, order.account.group.minLotSize, brokerSymbol.minLot) : null) ??

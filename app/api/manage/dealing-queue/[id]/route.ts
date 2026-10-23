@@ -240,7 +240,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // at its account's ask, lib/ask-markup.ts; no further markup on top). The
     // open-side risk battery (max positions, exposure, lot rules) does not apply to a close; the
     // market must be open and trading not halted for this broker. Close-only mode allows closes.
-    const closeRiskError = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category);
+    const closeRiskError = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category, order.symbol.name);
     if (closeRiskError) {
       return NextResponse.json({ error: closeRiskError }, { status: 400 });
     }
@@ -291,7 +291,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) ??
-    checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category, order.symbol.name) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
     (order.account.group ? checkGroupMinLot(order.volume, order.account.group.minLotSize, brokerSymbol.minLot) : null) ??

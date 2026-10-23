@@ -86,9 +86,9 @@ export async function resolveCloseByPair(
     where: { brokerId_symbolId: { brokerId: params.brokerId, symbolId: a.symbolId } },
     include: { tradingSessions: true },
   });
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category);
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category, a.symbol.name);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category);
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category, a.symbol.name);
     return { ok: false as const, error: sessionError, nextOpenAt: nextOpenAt.toISOString() };
   }
 
