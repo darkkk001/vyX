@@ -351,6 +351,13 @@ html[data-mode="light"], html[data-mode="light"] body {
 .mode-toggle.live { color: var(--buy); border-color: var(--buy); }
 #modeToggleAccNum, .mode-toggle-acc-num { color: var(--text-3); font-size: 10px; }
 #modeToggleLabel, .mode-toggle-label { font-size: 9.5px; font-weight: 600; letter-spacing: .02em; }
+/* the account header: plan, client name, account number, one per line */
+.account-header { display: flex; flex-direction: column; line-height: 1.2; text-align: left; min-width: 0; }
+.account-header > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.account-header-plan { font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); }
+.account-header-name { font-size: 11.5px; color: var(--text-1); font-weight: 500; }
+.account-header-number { font-size: 10px; color: var(--text-3); }
+.mode-toggle .account-header { padding: 1px 0; }
 
 /* ---------- ICON RAIL ---------- */
 .rail {

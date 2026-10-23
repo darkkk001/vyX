@@ -27,6 +27,8 @@ export type AccountInfo = {
   marginCallLevel: string;
   // Batch 5: broker or group trading halt / close-only (halted wins). Re-read on every ConfigChanged.
   tradingState?: "open" | "close_only" | "halted";
+  // The client-facing account plan ("Standard", "Pro"...): the account header's first line. Never the backend group.
+  accountPlan?: string;
 };
 
 export type ApiSession = {
@@ -187,6 +189,9 @@ export type ApiLinkedAccount = {
   accountMode: "DEMO" | "LIVE";
   currency: string;
   balance: string;
+  // when the server sends them: the picker reads "Plan · Name · Number"
+  accountPlan?: string;
+  fullName?: string;
 };
 
 export type ApiBrokerBranding = { brokerName: string; brokerLogoUrl: string; supportEmail: string | null; primaryColor: string | null };

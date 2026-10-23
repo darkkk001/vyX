@@ -25,6 +25,8 @@ import {
   type SymbolCategory,
 } from "@/lib/market-simulator";
 import { conversionRateNum, fxLookupNum, marginInAccount, newOrderMarginInAccount, pnlInAccount, quoteCurrencyOf, type FxQuoteNum } from "@/lib/fx-client";
+import { accountPickerLabel } from "@/lib/account-header";
+import { AccountHeader } from "@/components/webtrader/AccountHeader";
 import { tradeApi, serverNow, effectiveAsk, spreadRuleFromPrice, ApiError, type SpreadRule, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
 import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import AddSymbolDialog from "./AddSymbolDialog";
@@ -3917,7 +3919,6 @@ export default function WebTrader({
             </span>
           )}
           <div className="topbar-right">
-            <span className="trader-name">{balanceHidden ? "••••••" : account?.fullName ?? ""}</span>
             <button className="eye-toggle-btn" onClick={() => setBalanceHidden((v) => !v)} title={balanceHidden ? "Show balance" : "Hide balance"}>
               {balanceHidden ? (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
@@ -3926,19 +3927,15 @@ export default function WebTrader({
               )}
             </button>
             <div className="account-switcher" ref={accountSwitcherRef}>
-              <div className={`mode-toggle${account?.accountMode === "LIVE" ? " live" : ""}`} onClick={demo ? undefined : () => setAccountDropdownOpen((v) => !v)} style={demo ? { cursor: "default" } : undefined}>
-                <span className="mono mode-toggle-acc-num">{account?.accountNumber ?? "..."}</span>
-                <span className="mode-toggle-label">{account?.accountMode ?? ""}</span>
+              <div className="mode-toggle" onClick={demo ? undefined : () => setAccountDropdownOpen((v) => !v)} style={demo ? { cursor: "default" } : undefined}>
+                {/* the account header: plan, client name, account number; nothing else */}
+                {account ? <AccountHeader plan={account.accountPlan} name={balanceHidden ? "••••••" : account.fullName} number={account.accountNumber} /> : <span className="account-header">...</span>}
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginLeft: 2 }}><path d="M6 9l6 6 6-6" /></svg>
               </div>
               {accountDropdownOpen && !demo ? (
                 <div className="account-dropdown show">
                   <div className="acc-option active">
-                    <div className="acc-option-top">
-                      <span className="acc-option-num mono">{account?.accountNumber}</span>
-                      <span className={`acc-badge ${account?.accountMode === "LIVE" ? "live" : "demo"}`}>{account?.accountMode}</span>
-                    </div>
-                    <div className="acc-option-balance mono">{balanceHidden ? "••••••" : account ? money(parseFloat(account.balance)) : ""}</div>
+                    {account ? <AccountHeader plan={account.accountPlan} name={balanceHidden ? "••••••" : account.fullName} number={account.accountNumber} /> : null}
                   </div>
                   {linkedAccounts === null ? (
                     <div className="net-pos-detail" style={{ padding: "8px 10px" }}>Loading linked accounts…</div>
@@ -3955,13 +3952,8 @@ export default function WebTrader({
                           style={{ cursor: "pointer", padding: "8px 10px" }}
                           onClick={() => { setSwitchTarget(la); setSwitchPassword(""); setSwitchError(null); setSwitchPendingToken(null); setSwitchTwoFactorCode(""); setAccountDropdownOpen(false); }}
                         >
-                          <div className="acc-option-top">
-                            <span className="acc-option-num mono">{la.accountNumber}</span>
-                            <span className={`acc-badge ${la.accountMode === "LIVE" ? "live" : "demo"}`}>{la.accountMode}</span>
-                          </div>
-                          <div className="acc-option-balance mono">
-                            {balanceHidden ? "••••••" : `${money(parseFloat(la.balance))} ${la.currency}`}
-                          </div>
+                          {/* the account picker format: "Plan · Name · Number", nothing else */}
+                          <span className="acc-option-num">{accountPickerLabel(la.accountPlan, balanceHidden ? "" : la.fullName, la.accountNumber)}</span>
                         </div>
                       ))}
                     </div>
