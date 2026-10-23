@@ -269,7 +269,9 @@ export const tradeApi = {
     // No `position` key when dealing mode queued the order for manual
     // dealer review instead of auto-filling -- see
     // app/api/trade/orders/route.ts's dealingModeAt branch.
-    call<{ order: { id: string }; position?: { id: string } }>("/api/trade/orders", {
+    // a fill answers the position as GET /api/trade/positions lists it (lib/position-dto.ts), and the balance when a
+    // commission moved it
+    call<{ order: { id: string }; position?: ApiPosition; balance?: string }>("/api/trade/orders", {
       method: "POST",
       body: JSON.stringify({ ...body, maxSlippagePips: body.maxSlippagePips ?? "unlimited" }),
     }),
