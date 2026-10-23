@@ -274,7 +274,7 @@ async fn every_combination_a_fire_for_any_account_acts_only_on_the_ones_the_engi
         // a fire for EVERY account, as if the routing cache had said "engine" for all of them (a stale cache): the evaluation
         // itself reads the database's answer and drops the accounts that are not the engine's
         for a in &w.accounts {
-            let fire = LiveFire { account_id: a.id.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), source: FireSource::Margin };
+            let fire = LiveFire { account_id: a.id.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), received: HashMap::new(), source: FireSource::Margin };
             let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_live_fire(&pool, None, fire)).await.unwrap().expect("evaluated or dropped");
             let engine_owns = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode)) == RiskOwner::Rust;
             assert_eq!(r.not_owner, !engine_owns, "{name}: {} {:?} dropped as not ours", a.mode, a.kind);
@@ -420,7 +420,7 @@ async fn the_fire_evaluates_the_accounts_current_positions_not_the_positions_at_
     let (account, first) = add_account(&pool, &w, "LIVE", dec!(1000), None, 1).await;
     w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::MarginCall, position: first[0].clone() });
     let cache = cache_at(&w.symbol_name, dec!(90));
-    let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), source: FireSource::Margin };
+    let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), received: HashMap::new(), source: FireSource::Margin };
 
     // ... then, before the evaluation runs, the account opens 20 lots 100 -> 90: equity 1000 - 210 = 790 on 1890 = 41.8 % (stop-out 50)
     let tag = Uuid::new_v4().simple().to_string()[..8].to_string();
@@ -452,6 +452,7 @@ async fn the_fire_prices_the_account_at_the_tick_it_carries() {
         let fire = LiveFire {
             account_id: account.clone(),
             ticks: HashMap::from([(w.symbol_name.clone(), (dec!(60), dec!(60), chrono::Utc::now() - chrono::Duration::seconds(carried_age_secs)))]),
+            received: HashMap::new(),
             source: FireSource::SlTp,
         };
         book::with_price_source(book::PriceSource::Ticks(cache), monitor::evaluate_live_fire(&pool, None, fire)).await.unwrap().unwrap();
@@ -464,7 +465,9 @@ async fn the_fire_prices_the_account_at_the_tick_it_carries() {
 /// CUTOVER GATE input (docs/RUST-CUTOVER-PLAN.md 6.1, owner 2026-10-14: measured touch-to-write delay and slippage): every engine
 /// close records the tick it was priced at in its POSITION_CLOSED payload -- triggerBid / triggerAsk (raw), triggerTickAt (that tick's
 /// time, to the millisecond), triggerPriceSource, triggerSource ("fire" inside a live fire, else "pass") and closeWrittenAt (the database
-/// clock at the write) -- for a stop-out, an SL and a TP, by a fire and by the pass.
+/// clock at the write) -- for a stop-out, an SL and a TP, by a fire and by the pass. The delay itself is measured on ONE clock, the
+/// engine's (owner 2026-10-23): triggerTickEngineAt (when the engine received the tick) and closeEngineAt, engineDelayMs between them.
+/// The feed's clock here runs 3 s behind the engine's, so a delay taken across clocks would come out 3 s too long.
 #[tokio::test]
 async fn every_engine_close_records_its_trigger_tick() {
     let Some(pool) = pool().await else { return };
@@ -489,14 +492,25 @@ async fn every_engine_close_records_its_trigger_tick() {
             sqlx::query(r#"UPDATE "Position" SET "tpPrice" = $1 WHERE id = $2"#).bind(tp).bind(&positions[0]).execute(&pool).await.unwrap();
         }
         w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
-        let cache_tick_at = chrono::Utc::now();
+        // the feed stamps its ticks 3 s behind the engine's clock (tick_ms); the engine received the cached one now
+        let skew = chrono::Duration::seconds(3);
+        let cache_received = chrono::Utc::now();
+        let cache_tick_at = chrono::DateTime::from_timestamp_millis((cache_received - skew).timestamp_millis()).unwrap();
         let cache = TickCache::new();
-        cache.set(&tick(&w.symbol_name, cache_bid), cache_tick_at);
+        let mut cached = tick(&w.symbol_name, cache_bid);
+        cached.tick_ms = Some(cache_tick_at.timestamp_millis());
+        cache.set(&cached, cache_received);
         let cache = Arc::new(cache);
-        let fired_at = chrono::Utc::now() - chrono::Duration::seconds(fired.map_or(0, |(_, age)| age));
+        let fired_received = chrono::Utc::now() - chrono::Duration::seconds(fired.map_or(0, |(_, age)| age));
+        let fired_at = chrono::DateTime::from_timestamp_millis((fired_received - skew).timestamp_millis()).unwrap();
         match fired {
             Some((bid, _)) => {
-                let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (bid, bid, fired_at))]), source: FireSource::SlTp };
+                let fire = LiveFire {
+                    account_id: account.clone(),
+                    ticks: HashMap::from([(w.symbol_name.clone(), (bid, bid, fired_at))]),
+                    received: HashMap::from([(w.symbol_name.clone(), fired_received)]),
+                    source: FireSource::SlTp,
+                };
                 book::with_price_source(book::PriceSource::Ticks(cache), monitor::evaluate_live_fire(&pool, None, fire)).await.unwrap().unwrap();
             }
             None => {
@@ -513,12 +527,19 @@ async fn every_engine_close_records_its_trigger_tick() {
         assert_eq!(p["triggerPriceSource"], serde_json::json!(price_source), "{label}");
         assert_eq!(p["triggerBid"], serde_json::json!(fill.normalize().to_string()), "{label}: the raw bid of the tick that priced it");
         assert_eq!(p["triggerAsk"], serde_json::json!(fill.normalize().to_string()), "{label}");
-        let tick_at = if price_source == "fire_tick" { fired_at } else { cache_tick_at };
-        assert_eq!(p["triggerTickAt"], serde_json::json!(ms(tick_at)), "{label}: that tick's own time");
+        let (tick_at, received) = if price_source == "fire_tick" { (fired_at, fired_received) } else { (cache_tick_at, cache_received) };
+        assert_eq!(p["triggerTickAt"], serde_json::json!(ms(tick_at)), "{label}: that tick's own time (the feed's clock)");
+        assert_eq!(p["triggerTickEngineAt"], serde_json::json!(ms(received)), "{label}: when the engine received it (the engine's clock)");
         let written = parse(&p["closeWrittenAt"]);
         let (db_now,): (chrono::DateTime<chrono::Utc>,) = sqlx::query_as("SELECT clock_timestamp()").fetch_one(&pool).await.unwrap();
         assert!(written <= db_now && db_now - written < chrono::Duration::seconds(10), "{label}: closeWrittenAt is the database clock at the write: {written} vs {db_now}");
-        assert!(written >= parse(&p["triggerTickAt"]) - chrono::Duration::seconds(1), "{label}: written after the tick (one host clock here)");
+        // the delay on the engine clock: closeEngineAt - triggerTickEngineAt, exact to the millisecond, and NOT the 3 s feed skew
+        let close_engine_at = parse(&p["closeEngineAt"]);
+        let delay = p["engineDelayMs"].as_i64().expect("engineDelayMs");
+        assert_eq!(delay, (close_engine_at - parse(&p["triggerTickEngineAt"])).num_milliseconds(), "{label}");
+        let max_ms = 2_000;
+        assert!((0..max_ms).contains(&delay), "{label}: engine-clock delay {delay} ms (a cross-clock delay would be ~3000 ms more)");
+        assert!((close_engine_at - parse(&p["triggerTickAt"])).num_milliseconds() >= delay + 2_900, "{label}: the feed-clock difference carries the skew");
         cleanup(&pool, &w).await;
     }
 }
@@ -693,7 +714,7 @@ async fn a_stale_heartbeat_hands_every_account_to_the_web_in_every_form_and_a_be
     let cache = cache_at(&w.symbol_name, dec!(90));
     let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
     assert!(r.not_owner && r.closed.is_empty(), "{r:?}");
-    let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), source: FireSource::Margin };
+    let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), received: HashMap::new(), source: FireSource::Margin };
     let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_live_fire(&pool, None, fire)).await.unwrap().unwrap();
     assert!(r.not_owner && r.closed.is_empty(), "{r:?}");
     assert_eq!(count(&pool, r#"SELECT count(*) FROM "Transaction" WHERE "accountId" = $1 AND type = 'TRADE_PNL'"#, &account).await, 0);
@@ -762,7 +783,7 @@ async fn an_engine_stall_the_web_stops_out_once_and_the_returning_engine_duplica
     authority::beat(&pool).await.unwrap();
     let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
     assert!(!r.not_owner, "the engine owns the account again after its beat: {r:?}");
-    let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), source: FireSource::Margin };
+    let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), received: HashMap::new(), source: FireSource::Margin };
     book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_live_fire(&pool, None, fire)).await.unwrap();
     book::with_price_source(book::PriceSource::Ticks(cache), monitor::run_pass(&pool, None, &mut monitor::PassCursor::default())).await;
 
@@ -827,7 +848,7 @@ async fn past_the_touch_gap() {
 }
 
 fn gap_fire(w: &World, account: &str) -> LiveFire {
-    LiveFire { account_id: account.to_string(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), source: FireSource::Margin }
+    LiveFire { account_id: account.to_string(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), received: HashMap::new(), source: FireSource::Margin }
 }
 
 /// The idle gate stopped the beats all weekend: the heartbeat is two days old. The first fire after the reopen gaps through a stop-out. The

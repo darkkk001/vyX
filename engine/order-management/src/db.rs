@@ -892,7 +892,10 @@ impl QuoteSource {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QuoteStamp {
     pub source: QuoteSource,
+    /// the tick's own time: the feed's clock (tick_ms), else the engine's receive time
     pub tick_at: chrono::DateTime<chrono::Utc>,
+    /// when the ENGINE received that tick, by its own clock; None for a LivePrice or pinned price
+    pub engine_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// LEFT JOIN on LivePrice, same reasoning as

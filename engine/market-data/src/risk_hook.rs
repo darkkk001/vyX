@@ -108,6 +108,9 @@ pub enum FireSource {
 pub struct LiveFire {
     pub account_id: String,
     pub ticks: HashMap<String, (Decimal, Decimal, chrono::DateTime<chrono::Utc>)>,
+    /// symbol -> when the ENGINE received that tick, by its own clock (TickCache's receive time). The tick time above is
+    /// the feed's clock; the touch-to-write delay is measured on this one (the close's closeEngineAt), with no skew.
+    pub received: HashMap<String, chrono::DateTime<chrono::Utc>>,
     pub source: FireSource,
 }
 
@@ -452,22 +455,28 @@ impl RiskHook {
     /// Stage 6: the SL / TP touches (first list) and resting-order crossings (second) of ENGINE-OWNED accounts among these
     /// ticks, one LiveFire per account and source, each carrying the tick that crossed. Empty without a live engine.
     /// The web path (touched_with_positions) skips exactly these levels, so a touch has ONE handler.
-    fn engine_touches(&self, ticks: &[Tick], now: chrono::DateTime<chrono::Utc>) -> (Vec<LiveFire>, Vec<LiveFire>) {
+    fn engine_touches(&self, ticks: &[Tick], cache: &TickCache, now: chrono::DateTime<chrono::Utc>) -> (Vec<LiveFire>, Vec<LiveFire>) {
         let mut sl_tp: Vec<LiveFire> = Vec::new();
         let mut pending: Vec<LiveFire> = Vec::new();
         if self.live.get().is_none() {
             return (sl_tp, pending);
         }
         let tick_at = |t: &Tick| t.tick_ms.and_then(chrono::DateTime::from_timestamp_millis).unwrap_or(now);
+        // the engine's receive time of THIS tick (the cache still holds it unless a newer one arrived since the flush; then
+        // this moment, which is later than the real receipt, so the delay is never understated)
+        let received_at = |t: &Tick| {
+            cache.latest(&t.symbol).filter(|(c, _)| c.bid == t.bid && c.ask == t.ask && c.tick_ms == t.tick_ms).map_or(now, |(_, r)| r)
+        };
         let add = |list: &mut Vec<LiveFire>, account_id: &str, t: &Tick, source: FireSource| {
             let fire = match list.iter_mut().position(|f| f.account_id == account_id) {
                 Some(i) => &mut list[i],
                 None => {
-                    list.push(LiveFire { account_id: account_id.to_string(), ticks: HashMap::new(), source });
+                    list.push(LiveFire { account_id: account_id.to_string(), ticks: HashMap::new(), received: HashMap::new(), source });
                     list.last_mut().unwrap()
                 }
             };
             fire.ticks.insert(t.symbol.clone(), (t.bid, t.ask, tick_at(t)));
+            fire.received.insert(t.symbol.clone(), received_at(t));
         };
         {
             let levels = self.levels.lock().unwrap();
@@ -591,7 +600,7 @@ impl RiskHook {
         }
         // Stage 6: engine-owned accounts' touches and crossings go to the engine, never to the web
         if let Some(live) = self.live.get() {
-            let (sl_tp, pending) = self.engine_touches(ticks, now);
+            let (sl_tp, pending) = self.engine_touches(ticks, cache, now);
             for fire in sl_tp {
                 if let Some(fire) = self.limit_engine_fire(fire) {
                     let _ = live.sender.send(fire);

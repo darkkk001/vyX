@@ -429,7 +429,7 @@ pub async fn evaluate_account(
 /// rest. The closes, the margin-call edge and the post-close outbox are the pass's own (apply_close, apply_margin_call_edge).
 /// Must run inside the book's price source / pricing scope, like every evaluation.
 pub async fn evaluate_live_fire(pool: &PgPool, nats: Option<&async_nats::Client>, fire: market_data::risk_hook::LiveFire) -> Result<Option<EvalReport>, sqlx::Error> {
-    let hint = book::TickHint { ticks: fire.ticks };
+    let hint = book::TickHint { ticks: fire.ticks, received: fire.received };
     book::with_tick_hint(hint, evaluate_account_checked(pool, nats, &fire.account_id, true, &Mode::Live, None, false)).await
 }
 

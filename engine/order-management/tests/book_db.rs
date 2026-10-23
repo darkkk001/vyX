@@ -251,7 +251,8 @@ async fn a_close_and_its_outbox_row_commit_or_roll_back_together() {
     assert_eq!((out.account_id.as_str(), out.broker_id.as_str()), (fx.account.as_str(), fx.broker.as_str()));
     let reason = book::CloseReason::StopOut { margin_level: dec!(9.9909), stop_out_level: dec!(50.00) };
     let tick_at = chrono::DateTime::parse_from_rfc3339("2026-10-23T10:15:30.123Z").unwrap().with_timezone(&chrono::Utc);
-    let quote = order_management::db::QuoteStamp { source: order_management::db::QuoteSource::EngineTick, tick_at };
+    let engine_at = chrono::DateTime::parse_from_rfc3339("2026-10-23T10:15:33.456Z").unwrap().with_timezone(&chrono::Utc);
+    let quote = order_management::db::QuoteStamp { source: order_management::db::QuoteSource::EngineTick, tick_at, engine_at: Some(engine_at) };
     let trigger = book::TriggerTick { bid: dec!(3995.00), ask: dec!(3995.30), quote };
     book::enqueue_post_close(&mut tx, &pos, &out, reason, dec!(1.00), dec!(3995.00), Some(trigger)).await.unwrap();
     book::enqueue_post_close(&mut tx, &pos, &out, reason, dec!(1.00), dec!(3995.00), Some(trigger)).await.unwrap(); // a replay: no second row
@@ -266,17 +267,23 @@ async fn a_close_and_its_outbox_row_commit_or_roll_back_together() {
     let (kind, key, why, status, payload) = rows[0].clone();
     assert_eq!((kind.as_str(), why.as_str(), status.as_str()), ("POSITION_CLOSED", "stop_out", "PENDING"));
     assert_eq!(key, format!("close:{pos}:{txn}"));
-    // closeWrittenAt is the database clock at the insert: checked for its shape, then compared without it
+    // closeWrittenAt (database clock) and closeEngineAt (engine clock) are "now": checked for their shape and engineDelayMs
+    // against closeEngineAt, then the rest compared exactly
     let mut payload = payload;
-    let written = payload.as_object_mut().unwrap().remove("closeWrittenAt").expect("closeWrittenAt");
+    let obj = payload.as_object_mut().unwrap();
+    let written = obj.remove("closeWrittenAt").expect("closeWrittenAt");
     let written = chrono::DateTime::parse_from_rfc3339(written.as_str().unwrap()).expect("RFC 3339");
     assert_eq!(written.offset().local_minus_utc(), 0, "UTC");
+    let close_engine_at = obj.remove("closeEngineAt").expect("closeEngineAt");
+    let close_engine_at = chrono::DateTime::parse_from_rfc3339(close_engine_at.as_str().unwrap()).expect("RFC 3339").with_timezone(&chrono::Utc);
+    let delay = obj.remove("engineDelayMs").expect("engineDelayMs").as_i64().unwrap();
+    assert_eq!(delay, (close_engine_at - engine_at).num_milliseconds(), "engineDelayMs = closeEngineAt - triggerTickEngineAt");
     assert_eq!(payload, serde_json::json!({
         "closedLots": "1", "sourceVolumeBeforeClose": "1", "closePrice": "3995", "realizedPnl": "-500",
         "marginLevel": "9.99", "stopOutLevel": "50",
         "dealId": out.deal_id, "dealTicket": out.deal_ticket.to_string(), "remainingVolume": "0",
         "triggerSource": "pass", "triggerBid": "3995", "triggerAsk": "3995.3", "triggerTickAt": "2026-10-23T10:15:30.123Z",
-        "triggerPriceSource": "engine_tick",
+        "triggerPriceSource": "engine_tick", "triggerTickEngineAt": "2026-10-23T10:15:33.456Z",
     }));
     tx.rollback().await.unwrap();
 

@@ -150,6 +150,8 @@ pub fn edges_recordable() -> bool {
 pub struct TickHint {
     /// symbol -> (bid, ask, tick time)
     pub ticks: std::collections::HashMap<String, (Decimal, Decimal, chrono::DateTime<chrono::Utc>)>,
+    /// symbol -> when the engine received that tick (its own clock: LiveFire::received)
+    pub received: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
 tokio::task_local! {
@@ -199,15 +201,21 @@ pub fn tick_time(tick: &protocol::Tick, received_at: chrono::DateTime<chrono::Ut
 /// Fresh bid / ask from the ticks, the web's rule: tick time newer than 15 s.
 #[cfg(test)]
 fn fresh_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now: chrono::DateTime<chrono::Utc>) -> (Option<Decimal>, Option<Decimal>) {
-    fresh_tick_from_ticks(cache, symbol, now).map_or((None, None), |(b, a, _)| (Some(b), Some(a)))
+    fresh_tick_from_ticks(cache, symbol, now).map_or((None, None), |(b, a, _, _)| (Some(b), Some(a)))
 }
 
-/// fresh_from_ticks with the tick's time (the trigger tick of a close, OpenPositionWithMarket::quote).
-fn fresh_tick_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now: chrono::DateTime<chrono::Utc>) -> Option<(Decimal, Decimal, chrono::DateTime<chrono::Utc>)> {
+/// fresh_from_ticks with the tick's time and the engine's receive time (the trigger tick of a close,
+/// OpenPositionWithMarket::quote).
+#[allow(clippy::type_complexity)]
+fn fresh_tick_from_ticks(
+    cache: &market_data::cache::TickCache,
+    symbol: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<(Decimal, Decimal, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
     match cache.latest(symbol) {
         Some((t, received)) => {
             let at = tick_time(&t, received);
-            (now - at < chrono::Duration::seconds(15)).then_some((t.bid, t.ask, at))
+            (now - at < chrono::Duration::seconds(15)).then_some((t.bid, t.ask, at, received))
         }
         None => None,
     }
@@ -437,14 +445,16 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
             // Stage 6: a live fire's own tick for this symbol, while it is still fresh (judged against `now`)
             let hinted = hint.as_ref().and_then(|h| h.ticks.get(&r.symbol)).filter(|(_, _, at)| now - *at < chrono::Duration::seconds(15));
             // the tick's time and source ride along: an engine close records them as its trigger tick
-            let stamp = |source: QuoteSource, b: Decimal, a: Decimal, tick_at| (Some(b), Some(a), Some(QuoteStamp { source, tick_at }));
+            let stamp = |source: QuoteSource, b: Decimal, a: Decimal, tick_at, engine_at| (Some(b), Some(a), Some(QuoteStamp { source, tick_at, engine_at }));
+            let fire_received = hint.as_ref().and_then(|h| h.received.get(&r.symbol)).copied();
             let (bid, ask, quote) = match (source, pin.and_then(|p| p.ticks.get(&r.symbol))) {
                 // pinned: the risk hook's own tick for a touched symbol, under the web's 15 s rule at the pin's moment
-                (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => stamp(QuoteSource::Pin, b, a, tick_at),
+                (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => stamp(QuoteSource::Pin, b, a, tick_at, None),
                 (_, Some(_)) => (None, None, None),
-                (_, None) if hinted.is_some() => hinted.map_or((None, None, None), |&(b, a, at)| stamp(QuoteSource::FireTick, b, a, at)),
-                (PriceSource::Db, None) => db.fresh.get(&r.symbol).map_or((None, None, None), |&(b, a, at)| stamp(QuoteSource::LivePrice, b, a, at)),
-                (PriceSource::Ticks(cache), None) => fresh_tick_from_ticks(cache, &r.symbol, now).map_or((None, None, None), |(b, a, at)| stamp(QuoteSource::EngineTick, b, a, at)),
+                (_, None) if hinted.is_some() => hinted.map_or((None, None, None), |&(b, a, at)| stamp(QuoteSource::FireTick, b, a, at, fire_received)),
+                (PriceSource::Db, None) => db.fresh.get(&r.symbol).map_or((None, None, None), |&(b, a, at)| stamp(QuoteSource::LivePrice, b, a, at, None)),
+                (PriceSource::Ticks(cache), None) => fresh_tick_from_ticks(cache, &r.symbol, now)
+                    .map_or((None, None, None), |(b, a, at, received)| stamp(QuoteSource::EngineTick, b, a, at, Some(received))),
             };
             let closed = sessions
                 .get(&(broker_id.clone(), r.symbol.clone()))
@@ -1184,7 +1194,8 @@ impl CloseReason {
 
 /// The tick a close was priced at: raw bid / ask (before any ask markup; the fill is `closePrice`) and where and when
 /// that tick came from. Recorded in the POSITION_CLOSED payload for the 6.1 gate "measured touch-to-write delay and
-/// slippage" (docs/RUST-CUTOVER-PLAN.md): delay = closeWrittenAt - triggerTickAt, slippage = SL / TP level vs closePrice.
+/// slippage" (docs/RUST-CUTOVER-PLAN.md): delay = engineDelayMs (closeEngineAt - triggerTickEngineAt, both the engine's own
+/// clock: no feed / database skew), slippage = SL / TP level vs closePrice.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TriggerTick {
     pub bid: Decimal,
@@ -1205,10 +1216,13 @@ impl TriggerTick {
 /// close (dedupe key = the close's TRADE_PNL row). `volume_before` is the position's volume when it was closed:
 /// the web can no longer read it from the row once the close has committed.
 ///
-/// Trigger tick (owner, 2026-10-14; 6.1 gate input): `triggerSource` ("fire" inside a live fire, else "pass") and
-/// `closeWrittenAt` (the database clock, clock_timestamp() at this insert: the close's own writes are just before it
-/// in the same transaction) on every row; `triggerBid` / `triggerAsk` / `triggerTickAt` / `triggerPriceSource` when
-/// `trigger` is known. The web reads the payload by a plain cast, so these keys change nothing there.
+/// Trigger tick (owner, 2026-10-14; 6.1 gate input), on every row: `triggerSource` ("fire" inside a live fire, else
+/// "pass"), `closeEngineAt` (the engine's clock at this insert) and `closeWrittenAt` (the database clock,
+/// clock_timestamp() at this insert: the close's own writes are just before it in the same transaction). When `trigger`
+/// is known: `triggerBid` / `triggerAsk` / `triggerTickAt` (the feed's clock) / `triggerPriceSource`, and when the
+/// engine's receive time of that tick is known `triggerTickEngineAt` and `engineDelayMs` = closeEngineAt -
+/// triggerTickEngineAt, ONE clock (owner 2026-10-23: the delay is measured on the engine clock; the feed and database
+/// stamps stay for reference). The web reads the payload by a plain cast, so these keys change nothing there.
 pub async fn enqueue_post_close(
     tx: &mut sqlx::PgTransaction<'_>,
     position_id: &str,
@@ -1229,11 +1243,19 @@ pub async fn enqueue_post_close(
         "remainingVolume": "0",
         "triggerSource": if in_live_fire() { "fire" } else { "pass" },
     });
+    let ms = |t: chrono::DateTime<chrono::Utc>| serde_json::Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    let close_engine_at = chrono::Utc::now();
+    payload["closeEngineAt"] = ms(close_engine_at);
     if let Some(t) = trigger {
         payload["triggerBid"] = serde_json::Value::String(t.bid.normalize().to_string());
         payload["triggerAsk"] = serde_json::Value::String(t.ask.normalize().to_string());
-        payload["triggerTickAt"] = serde_json::Value::String(t.quote.tick_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        payload["triggerTickAt"] = ms(t.quote.tick_at);
         payload["triggerPriceSource"] = serde_json::Value::String(t.quote.source.as_str().to_string());
+        if let Some(engine_at) = t.quote.engine_at {
+            payload["triggerTickEngineAt"] = ms(engine_at);
+            // from the millisecond stamps as written, so the payload is consistent with itself
+            payload["engineDelayMs"] = serde_json::Value::from(close_engine_at.timestamp_millis() - engine_at.timestamp_millis());
+        }
     }
     if let CloseReason::StopOut { margin_level, stop_out_level } = reason {
         // the same text lib/risk-monitor.ts passes: level to 2 dp, the threshold as configured
