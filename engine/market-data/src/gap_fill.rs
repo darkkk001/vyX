@@ -101,29 +101,36 @@ fn market_closed(t: DateTime<Utc>) -> bool {
     }
 }
 
-// Instruments that take a ~1-hour daily settlement break at 17:00 New York
-// (metals: gold/silver/platinum/palladium), unlike spot FX which is
-// continuous 24/5. Static match, same "no per-symbol session lookup in
-// this crate yet" constraint as is_continuously_traded -- keep in sync
-// until the real TradingSession-config lookup lands (Phase 3). Indices can
-// be added here once listed.
-fn has_daily_break(symbol: &str) -> bool {
-    matches!(symbol, "XAUUSD" | "XAGUSD" | "XPTUSD" | "XPDUSD")
+// How long an instrument's daily break lasts, in hours from the 17:00 New York anchor (0 = none). Metals
+// (gold/silver/platinum/palladium) and SpotCrude: 1 hour, 17:00 -> 18:00 New York. SpotBrent: 3 hours, 17:00 New York
+// -> 01:00 London (owner 2026-10-23, option A, from two weeks of feed data: Brent is flat 21:00-00:00 UTC in summer).
+// Spot FX is continuous 24/5. Static match, same "no per-symbol session lookup in this crate yet" constraint as
+// is_continuously_traded -- keep in sync with lib/risk.ts dailyBreakHours until the TradingSession-config lookup lands.
+fn daily_break_hours(symbol: &str) -> u32 {
+    let lower = symbol.to_ascii_lowercase();
+    if matches!(symbol, "XAUUSD" | "XAGUSD" | "XPTUSD" | "XPDUSD") || lower.starts_with("spotcrude") {
+        1
+    } else if lower.starts_with("spotbrent") {
+        3
+    } else {
+        0
+    }
 }
 
-// The daily settlement break window for has_daily_break symbols: 17:00 ->
-// 18:00 New York, i.e. the single UTC hour beginning at the same NY-17:00
-// anchor the weekend close uses (so it tracks DST identically). Weekdays
-// Mon-Thu only -- Friday 17:00 onward and the whole weekend are already
-// closed by market_closed. Without this, the nightly gold break was
-// flat-filled (and stale heartbeat resends written) as real candles --
-// exactly the "candles during a market-closed period" symptom on XAUUSD.
-fn in_daily_break(t: DateTime<Utc>) -> bool {
-    let break_hour = ny_close_hour_utc(t);
-    matches!(
-        t.weekday(),
-        Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu
-    ) && t.hour() == break_hour
+// Inside the daily break: Mon-Thu, from the same NY-17:00 anchor the weekend close uses (so it tracks DST
+// identically), for daily_break_hours. A break may run past midnight UTC (Brent in winter: 22:00 -> 01:00); the day
+// that counts is the day it began. Friday 17:00 onward and the weekend are already closed by market_closed. Without
+// this, a nightly break was flat-filled (and stale heartbeat resends written) as real candles.
+fn in_daily_break(t: DateTime<Utc>, hours: u32) -> bool {
+    if hours == 0 {
+        return false;
+    }
+    let into = (t.hour() + 24 - ny_close_hour_utc(t)) % 24;
+    if into >= hours {
+        return false;
+    }
+    let began = t - Duration::hours(i64::from(into));
+    matches!(began.weekday(), Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu)
 }
 
 // hotfix/terminal-live-bugs round 2 -- market_closed() above is a FX/
@@ -172,9 +179,9 @@ pub(crate) fn market_open(symbol: &str, t: DateTime<Utc>) -> bool {
         return false;
     }
     // An otherwise-open weekday minute is still closed if this instrument
-    // is in its daily settlement break (metals). Spot FX has no break and
+    // is in its daily break (metals, commodities). Spot FX has no break and
     // is unaffected.
-    !(has_daily_break(symbol) && in_daily_break(t))
+    !in_daily_break(t, daily_break_hours(symbol))
 }
 
 // Caps how many flat-fill bars a single tick can generate -- protects
@@ -855,5 +862,30 @@ mod tests {
         assert_eq!(plan_b.fills.len(), 2, "plan_sweep must not advance the pointer -- a failed sweep write retries the same buckets");
         t.apply_advances(&plan_a.advances);
         assert!(t.plan_sweep(now, 0).fills.is_empty(), "after apply_advances the swept buckets are behind the pointer");
+    }
+
+    // Commodity daily break (owner 2026-10-23): matches the feed and lib/risk.ts dailyBreakHours.
+    #[test]
+    fn commodity_daily_breaks_summer_and_winter() {
+        let t = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        // summer (EDT), Wednesday: Crude 21:00-22:00 UTC, Brent 21:00-00:00 UTC
+        assert!(market_open("SpotCrude", t("2026-10-21T20:59:00Z")));
+        assert!(!market_open("SpotCrude", t("2026-10-21T21:30:00Z")));
+        assert!(market_open("SpotCrude", t("2026-10-21T22:00:00Z")));
+        assert!(!market_open("SpotBrent", t("2026-10-21T21:00:00Z")));
+        assert!(!market_open("SpotBrent", t("2026-10-21T23:59:00Z")));
+        assert!(market_open("SpotBrent", t("2026-10-22T00:00:00Z")));
+        // winter (EST): an hour later, Brent across midnight
+        assert!(!market_open("SpotCrude", t("2026-11-11T22:30:00Z")));
+        assert!(market_open("SpotCrude", t("2026-11-11T23:00:00Z")));
+        assert!(!market_open("SpotBrent", t("2026-11-12T00:59:00Z")));
+        assert!(market_open("SpotBrent", t("2026-11-12T01:00:00Z")));
+        // Thursday night's Brent break runs into Friday 00:00; Friday has no break of its own
+        assert!(!market_open("SpotBrent", t("2026-10-22T23:30:00Z")));
+        assert!(market_open("SpotBrent", t("2026-10-23T00:30:00Z")));
+        // metals unchanged, FX never
+        assert!(!market_open("XAUUSD", t("2026-10-21T21:30:00Z")));
+        assert!(market_open("XAUUSD", t("2026-10-21T22:30:00Z")));
+        assert!(market_open("EURUSD", t("2026-10-21T21:30:00Z")));
     }
 }
