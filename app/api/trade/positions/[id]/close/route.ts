@@ -19,6 +19,7 @@ import { isDemoTenant } from "@/lib/demo-policy";
 import { demoQuoteTimeRefusal } from "@/lib/demo-prices";
 import { clientDealSource } from "@/lib/deals";
 import { requestMeta } from "@/lib/order-execution";
+import { toClientShape } from "@/lib/client-execution";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -361,5 +362,5 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
       positionId: position.id,
     });
   });
-  return NextResponse.json({ position: closedRow, transaction: outcome.transaction, partial: outcome.partial, balance });
+  return NextResponse.json(toClientShape({ position: closedRow, transaction: outcome.transaction, partial: outcome.partial, balance }));
 }

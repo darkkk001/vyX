@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { toClientShape } from "@/lib/client-execution";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 
@@ -24,5 +25,5 @@ export async function GET() {
     },
     orderBy: { openedAt: "desc" },
   });
-  return NextResponse.json(positions);
+  return NextResponse.json(toClientShape(positions)); // client allow-list (lib/client-execution.ts)
 }
