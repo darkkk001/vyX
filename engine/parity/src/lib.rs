@@ -308,6 +308,7 @@ fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
                 // the scenario's broker markup, no group / pricing-engine levels (market_data::ask_markup resolve with the
                 // engine off and no group config = BrokerSymbol.spreadMarkup)
                 ask_rule: sym.spread_markup.map(|markup_pips| market_data::ask_markup::AskRule::Markup { markup_pips, digits: sym.digits as i32 }),
+                quote: None,
             }
         })
         .collect();

@@ -137,7 +137,7 @@ async fn apply_close(
             let outcome = match closed {
                 book::CloseResult::Closed(outcome) => {
                     // Stage 3: the web's post-close follow-up, queued in the close's own transaction
-                    book::enqueue_post_close(&mut tx, &position.id, &outcome, reason, position.volume, close_price).await?;
+                    book::enqueue_post_close(&mut tx, &position.id, &outcome, reason, position.volume, close_price, book::TriggerTick::of(position)).await?;
                     outcome
                 }
                 book::CloseResult::Lost => {
@@ -429,7 +429,7 @@ pub async fn evaluate_account(
 /// rest. The closes, the margin-call edge and the post-close outbox are the pass's own (apply_close, apply_margin_call_edge).
 /// Must run inside the book's price source / pricing scope, like every evaluation.
 pub async fn evaluate_live_fire(pool: &PgPool, nats: Option<&async_nats::Client>, fire: market_data::risk_hook::LiveFire) -> Result<Option<EvalReport>, sqlx::Error> {
-    let hint = book::TickHint { ticks: fire.ticks };
+    let hint = book::TickHint { ticks: fire.ticks, received: fire.received };
     book::with_tick_hint(hint, evaluate_account_checked(pool, nats, &fire.account_id, true, &Mode::Live, None, false)).await
 }
 
@@ -1196,6 +1196,7 @@ mod tests {
             fx_rate: Decimal::ONE,
             hedged_margin_pct: dec!(200),
             ask_rule: None,
+            quote: None,
         }
     }
 
@@ -1289,7 +1290,7 @@ mod shadow_last_position_tests {
     fn pos(id: &str) -> OpenPositionWithMarket {
         OpenPositionWithMarket {
             id: id.into(), symbol: "XAUUSD".into(), side: protocol::OrderSide::Buy, volume: dec!(1), open_price: dec!(4000), contract_size: dec!(100),
-            bid: None, ask: None, sl_price: None, tp_price: None, fx_rate: Decimal::ONE, hedged_margin_pct: dec!(200), ask_rule: None,
+            bid: None, ask: None, sl_price: None, tp_price: None, fx_rate: Decimal::ONE, hedged_margin_pct: dec!(200), ask_rule: None, quote: None,
         }
     }
 

@@ -261,7 +261,7 @@ mod tests {
         let pos = |side: OrderSide| db::OpenPositionWithMarket {
             id: String::new(), symbol: "XAUUSD".into(), side, volume: dec!(1), open_price: dec!(4290), contract_size: dec!(100),
             bid: Some(dec!(4298.96)), ask: Some(dec!(4299.13)), sl_price: None, tp_price: None, fx_rate: Decimal::ONE,
-            hedged_margin_pct: dec!(200), ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }),
+            hedged_margin_pct: dec!(200), ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }), quote: None,
         };
         let (sell, buy) = (pos(OrderSide::Sell), pos(OrderSide::Buy));
         assert_eq!(position_close_price(&sell, dec!(4298.96), dec!(4299.13)), dec!(4299.28));
@@ -290,6 +290,7 @@ mod tests {
             fx_rate: Decimal::ONE,
             hedged_margin_pct: pct,
             ask_rule: None,
+            quote: None,
         };
         // XAU pair at 50%: BUY 2000 (bid), SELL 2000.20 (ask) at 1:100 -> (2000 + 2000.2) * 50 / 200 = 1000.05
         let state = AccountState {

@@ -222,6 +222,7 @@ pub fn measure(account: &WatchedAccount, cache: &TickCache) -> (Decimal, Decimal
                 fx_rate: rate.unwrap_or(Decimal::ONE),
                 hedged_margin_pct: p.hedged_margin_pct,
                 ask_rule: p.ask_rule,
+                quote: None,
             }
         })
         .collect();
@@ -436,6 +437,7 @@ impl MarginWatch {
                             let _ = tx.send(market_data::risk_hook::LiveFire {
                                 account_id: account.id.clone(),
                                 ticks: pin_for(account, cache).ticks,
+                                received: received_for(account, cache),
                                 source: market_data::risk_hook::FireSource::Margin,
                             });
                             continue;
@@ -473,6 +475,11 @@ fn pin_for(account: &WatchedAccount, cache: &TickCache) -> crate::book::Pin {
     // the positions this measurement counted: open at the fire by construction (book::Pin::measured)
     let measured = account.positions.iter().map(|p| p.id.clone()).collect();
     crate::book::Pin { at: chrono::Utc::now(), ticks, measured }
+}
+
+/// symbol -> when the engine received the tick pin_for prices it at (its own clock: LiveFire::received).
+fn received_for(account: &WatchedAccount, cache: &TickCache) -> HashMap<String, chrono::DateTime<chrono::Utc>> {
+    account.positions.iter().filter_map(|p| cache.latest(&p.symbol).map(|(_, received)| (p.symbol.clone(), received))).collect()
 }
 
 impl market_data::risk_hook::MarginWatch for MarginWatch {
