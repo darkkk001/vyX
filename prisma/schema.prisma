@@ -2798,3 +2798,28 @@ model ClientBuild {
 
   @@index([brokerId])
 }
+
+// Rejected-order trace (2026-10-23, owner, SpotBrent investigation): one row per order request the client route refused
+// BEFORE any Order row was written (MARKET_CLOSED, NOT_QUOTING, NO_LIVE_FEED, PRICE_STALE, symbol not available, margin,
+// slippage, ...). Written after the response by app/api/trade/orders/route.ts (lib/rejected-orders.ts) and shown in the
+// backoffice Live exposure FEED as REJECTED (GET /api/manage/live-activity). `symbol` is the name as requested (it may not
+// exist); side / volume / orderType are what the client sent, when it sent something usable.
+model RejectedOrder {
+  id          String       @id @default(cuid())
+  brokerId    String
+  accountId   String
+  symbol      String
+  side        String?
+  volume      String?
+  orderType   String?
+  reason      String // the refusal code the client got (error), e.g. MARKET_CLOSED
+  detail      String? // its sub-reason when there is one (reason / code), e.g. NOT_QUOTING
+  requestedAt DateTime     @db.Timestamptz(3)
+  platform    String?
+  clientIp    String?
+  source      OrderSource?
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerId, requestedAt])
+  @@index([accountId, requestedAt])
+}

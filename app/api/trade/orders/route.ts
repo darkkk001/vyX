@@ -54,6 +54,7 @@ import {
   isValidMaxSlippageInput,
   checkAccountTradingRights,
 } from "@/lib/risk";
+import { traceRejectedOrder } from "@/lib/rejected-orders";
 import { requestMeta } from "@/lib/order-execution";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
@@ -90,7 +91,15 @@ export async function POST(request: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
+  // rejected-order trace (lib/rejected-orders.ts): the handler consumes the body, so keep a copy for a refusal
+  const probe = request.clone();
   const response = await handlePlaceOrder(request, session, new Date(startedAt));
+  if (response.status === 400) {
+    const answer = response.clone();
+    await runAfterResponse("rejected-order", async () =>
+      traceRejectedOrder(session, request.headers, new Date(startedAt), await probe.json().catch(() => null), await answer.json().catch(() => null))
+    );
+  }
   const appMs = Date.now() - startedAt;
   response.headers.set("Server-Timing", `app;dur=${appMs}`);
   if (response.status === 201 && !(await isDemoBrokerId(session.brokerId))) {

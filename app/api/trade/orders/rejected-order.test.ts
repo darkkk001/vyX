@@ -1,0 +1,121 @@
+import "dotenv/config";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
+import { NextRequest } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+// Rejected-order trace (owner 2026-10-23, SpotBrent investigation): every order request the route refuses before any
+// Order row is written leaves a RejectedOrder row, a backoffice-only event and a REJECTED feed row.
+
+vi.mock("@/lib/account-auth", () => ({
+  getAccountSession: vi.fn(),
+}));
+vi.mock("@/lib/nats", () => ({ publishTradingEvent: vi.fn().mockResolvedValue(undefined) }));
+
+const D = (v: string | number) => new Prisma.Decimal(v);
+
+let dbReachable = false;
+beforeAll(async () => {
+  try {
+    await prisma.$queryRaw`SELECT 1 FROM "RejectedOrder" LIMIT 1`;
+    dbReachable = true;
+  } catch {
+    console.warn("rejected-order.test.ts: DB (with the RejectedOrder table) unreachable, skipping");
+  }
+});
+
+type Fixture = { brokerId: string; accountId: string; accountNumber: string; symbolName: string };
+const createdBrokerIds: string[] = [];
+
+async function createFixture(): Promise<Fixture> {
+  const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
+  const broker = await prisma.broker.create({ data: { name: `Rejected Order Test ${suffix}`, subdomain: `rotest-${suffix}` } });
+  createdBrokerIds.push(broker.id);
+  const symbol = await prisma.symbol.create({ data: { name: `RO${suffix.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "FOREX", digits: 2 } });
+  await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: symbol.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH" } });
+  await prisma.livePrice.create({ data: { symbol: symbol.name, bid: D("99.90"), ask: D("100.10") } });
+  const accountNumber = `6${suffix.slice(0, 7)}`;
+  const group = await prisma.group.create({ data: { brokerId: broker.id, name: `RO-${suffix}`, dealingMode: "AUTO" } });
+  const account = await prisma.account.create({
+    data: { groupId: group.id, brokerId: broker.id, accountNumber, email: `ro-${suffix}@test.local`, passwordHash: "x", fullName: "Rejected Order Test", accountMode: "LIVE", balance: D(1000000) },
+  });
+  return { brokerId: broker.id, accountId: account.id, accountNumber, symbolName: symbol.name };
+}
+
+async function placeOrder(fx: Fixture, body: Record<string, unknown>, headers: Record<string, string> = {}) {
+  const { getAccountSession } = await import("@/lib/account-auth");
+  vi.mocked(getAccountSession).mockResolvedValue({ accountId: fx.accountId, brokerId: fx.brokerId });
+  const { POST } = await import("./route");
+  const request = new NextRequest("https://test.local/api/trade/orders", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-real-ip": "203.0.113.7", ...headers },
+    body: JSON.stringify({ symbol: fx.symbolName, idempotencyKey: `ro-test:${randomUUID()}`, ...body }),
+  });
+  const response = await POST(request); // outside a request scope the trace is awaited inline (lib/after-response.ts)
+  return { status: response.status, json: await response.json() };
+}
+
+afterAll(async () => {
+  if (dbReachable && createdBrokerIds.length) {
+    const where = { brokerId: { in: createdBrokerIds } };
+    await prisma.rejectedOrder.deleteMany({ where });
+    await prisma.transaction.deleteMany({ where });
+    await prisma.deal.deleteMany({ where }).catch(() => {});
+    await prisma.auditLog.deleteMany({ where });
+    await prisma.position.deleteMany({ where });
+    await prisma.order.deleteMany({ where });
+    await prisma.account.deleteMany({ where });
+    await prisma.brokerSymbol.deleteMany({ where });
+    await prisma.group.deleteMany({ where }).catch(() => {});
+    await prisma.broker.deleteMany({ where: { id: { in: createdBrokerIds } } });
+  }
+  await prisma.livePrice.deleteMany({ where: { symbol: { startsWith: "RO" } } }).catch(() => {});
+  await prisma.symbol.deleteMany({ where: { name: { startsWith: "RO" } } }).catch(() => {});
+  await prisma.$disconnect();
+}, 30000);
+
+describe("rejected-order trace (live DB)", () => {
+  it("a refused request writes one RejectedOrder row with what was asked, why, when and from where; and a backoffice-only event", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const { publishTradingEvent } = await import("@/lib/nats");
+    vi.mocked(publishTradingEvent).mockClear();
+
+    const r = await placeOrder(fx, { symbol: "SPOTBRENTX", side: "BUY", type: "MARKET", volume: "0.10", price: "65.10" });
+    expect(r.status).toBe(400);
+    const rows = await prisma.rejectedOrder.findMany({ where: { accountId: fx.accountId } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ brokerId: fx.brokerId, symbol: "SPOTBRENTX", side: "BUY", volume: "0.10", orderType: "MARKET", reason: r.json.error, platform: "WebTrader", clientIp: "203.0.113.7", source: "WEB" });
+    expect(rows[0].requestedAt).toBeInstanceOf(Date);
+    const ev = vi.mocked(publishTradingEvent).mock.calls.find(([type]) => type === "OrderRejectedPreTrade");
+    expect(ev?.[1]).toMatchObject({ broker_id: fx.brokerId, account_id: fx.accountId, account_number: fx.accountNumber, symbol: "SPOTBRENTX", reason: r.json.error, rejected_order_id: rows[0].id });
+  });
+
+  it("the refusal's sub-reason (code / reason) is kept; a native terminal's source and platform are recorded", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const r = await placeOrder(fx, { side: "SELL", type: "MARKET", volume: "abc", price: "99.90" }, { "x-client-platform": "DESKTOP_NATIVE", "x-client-build": "futurixglobal-terminal-1.0.94-abc" });
+    expect(r.status).toBe(400);
+    const row = await prisma.rejectedOrder.findFirstOrThrow({ where: { accountId: fx.accountId } });
+    expect(row).toMatchObject({ symbol: fx.symbolName, side: "SELL", volume: "abc", reason: r.json.error, detail: "INVALID_VOLUME", source: "DESKTOP_NATIVE", platform: "Windows terminal 1.0.94" });
+  });
+
+  it("a filled order leaves no rejection trace", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const r = await placeOrder(fx, { side: "BUY", type: "MARKET", volume: "0.01", price: "100.10" });
+    expect(r.status).toBe(201);
+    expect(await prisma.rejectedOrder.count({ where: { accountId: fx.accountId } })).toBe(0);
+  });
+
+  it("the Live exposure feed lists the refusal as ORDER_REJECTED with its reason", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const r = await placeOrder(fx, { symbol: "SPOTCRUDEX", side: "SELL", type: "MARKET", volume: "1", price: "61.20" });
+    const { getDealerActivityFeedRows } = await import("@/lib/dealer-activity");
+    const feed = await getDealerActivityFeedRows(fx.brokerId);
+    const row = feed.find((f) => f.action === "ORDER_REJECTED");
+    expect(row).toMatchObject({ accountNumber: fx.accountNumber, symbol: "SPOTCRUDEX", side: "SELL", volume: "1", values: { reason: r.json.error } });
+  });
+});
