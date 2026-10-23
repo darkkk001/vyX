@@ -1,6 +1,7 @@
 import "server-only";
 import { createHash, createSign, createPrivateKey } from "crypto";
 import { getRedis } from "@/lib/redis";
+import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 
 // Native-client build registry + tenant binding (2026-09-15, security audit item 4/7).
@@ -9,7 +10,9 @@ import { headers } from "next/headers";
 // into the assembly, sent as X-Client-Build on every request). This module:
 //   * keeps the registry of known builds in Redis (client_build:<buildId> -> {brokerId, app, version,
 //     status, createdAt, revokedAt}) -- registered by publish-*.ps1 through /api/admin/client-builds,
-//     revoked there by a super admin (the kill switch);
+//     revoked there by a super admin (the kill switch). Every publish / revoke is written to Postgres
+//     ("ClientBuild") FIRST, then Redis (2026-10-23): Redis stays the one-GET hot path, Postgres is what
+//     a Redis that lost its keys is rebuilt from (restoreClientBuildRegistry, instrumentation.ts);
 //   * answers the signed client manifest (/api/client/manifest) the app verifies at start with the
 //     public key compiled into it (ECDSA P-256, IEEE P1363 signature), binding the build to ONE
 //     tenant host so a copied build cannot be pointed at another server;
@@ -44,20 +47,60 @@ export async function getClientBuild(buildId: string): Promise<ClientBuild | nul
   }
 }
 
+// The Postgres row <-> the Redis record (same fields; dates as ISO strings in Redis).
+type ClientBuildRow = { buildId: string; brokerId: string; brokerSubdomain: string; app: string; version: string; status: string; createdAt: Date; revokedAt: Date | null; note: string };
+function rowToRecord(r: ClientBuildRow): ClientBuild {
+  return { buildId: r.buildId, brokerId: r.brokerId, brokerSubdomain: r.brokerSubdomain, app: r.app as ClientBuild["app"], version: r.version, status: r.status as ClientBuild["status"], createdAt: r.createdAt.toISOString(), revokedAt: r.revokedAt ? r.revokedAt.toISOString() : null, note: r.note };
+}
+function recordToRow(b: ClientBuild): ClientBuildRow {
+  return { buildId: b.buildId, brokerId: b.brokerId, brokerSubdomain: b.brokerSubdomain, app: b.app, version: b.version, status: b.status, createdAt: new Date(b.createdAt), revokedAt: b.revokedAt ? new Date(b.revokedAt) : null, note: b.note ?? "" };
+}
+
+async function writeRedis(rec: ClientBuild): Promise<void> {
+  const r = getRedis();
+  await r.set(KEY(rec.buildId), JSON.stringify(rec));
+  await r.sadd(INDEX, rec.buildId);
+}
+
 export async function registerClientBuild(b: Omit<ClientBuild, "createdAt" | "revokedAt" | "status">): Promise<ClientBuild> {
   const rec: ClientBuild = { ...b, status: "ACTIVE", createdAt: new Date().toISOString(), revokedAt: null };
-  const r = getRedis();
-  await r.set(KEY(b.buildId), JSON.stringify(rec));
-  await r.sadd(INDEX, b.buildId);
+  await prisma.clientBuild.create({ data: recordToRow(rec) }); // durable first: a Redis failure cannot lose a publish
+  await writeRedis(rec);
   return rec;
 }
 
+/// The kill switch (and its undo). Postgres first, then Redis; a build only Redis knows (registered before the durable
+/// copy existed and not yet backfilled) is written to Postgres here too.
 export async function setClientBuildStatus(buildId: string, status: "ACTIVE" | "REVOKED", note?: string): Promise<ClientBuild | null> {
-  const cur = await getClientBuild(buildId);
+  const cur = (await getClientBuild(buildId)) ?? (await prisma.clientBuild.findUnique({ where: { buildId } }).then((r) => (r ? rowToRecord(r) : null)));
   if (!cur) return null;
   const rec: ClientBuild = { ...cur, status, revokedAt: status === "REVOKED" ? new Date().toISOString() : null, note: note ?? cur.note };
-  await getRedis().set(KEY(buildId), JSON.stringify(rec));
+  const row = recordToRow(rec);
+  await prisma.clientBuild.upsert({ where: { buildId }, create: row, update: { status: row.status, revokedAt: row.revokedAt, note: row.note } });
+  await writeRedis(rec);
   return rec;
+}
+
+/// Startup (instrumentation.ts): a Redis that has NO registry keys (flushed, replaced, failed over) is rebuilt from
+/// Postgres, so native clients are not all refused as BUILD_UNKNOWN. One SCARD when Redis is healthy; Postgres is read
+/// only when the index is empty. Returns the number of builds restored (0 = nothing to do).
+export async function restoreClientBuildRegistry(): Promise<number> {
+  if ((await getRedis().scard(INDEX)) > 0) return 0;
+  const rows = await prisma.clientBuild.findMany();
+  for (const r of rows) await writeRedis(rowToRecord(r));
+  if (rows.length) console.warn(`[client-builds] Redis had no build registry: restored ${rows.length} build(s) from Postgres`);
+  return rows.length;
+}
+
+/// One-time (scripts/client-builds-registry.ts backfill): every build only Redis knows gets its Postgres row. Never
+/// overwrites a row Postgres already has. Returns the number of rows written.
+export async function backfillClientBuildsToPostgres(): Promise<number> {
+  let written = 0;
+  for (const b of await listClientBuilds()) {
+    const r = await prisma.clientBuild.createMany({ data: [recordToRow(b)], skipDuplicates: true });
+    written += r.count;
+  }
+  return written;
 }
 
 export async function listClientBuilds(): Promise<ClientBuild[]> {

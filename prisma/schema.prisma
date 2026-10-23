@@ -2778,3 +2778,23 @@ model HedgeResult {
   @@index([intentId])
   @@index([liquidityProviderId, createdAt])
 }
+
+// Native-client build registry, durable copy (2026-10-23, owner): lib/client-builds.ts writes every publish / revoke
+// here AND to Redis (client_build:<buildId>, client_builds:index). Redis stays the hot read path (one GET per native
+// request); this table is the source a cold Redis is rebuilt from (instrumentation.ts -> restoreClientBuildRegistry).
+// brokerId is not a foreign key on purpose: a build record must survive whatever happens to its broker row, it is the
+// audit of what was issued.
+model ClientBuild {
+  buildId         String    @id
+  brokerId        String
+  brokerSubdomain String
+  app             String // "terminal" | "backoffice"
+  version         String
+  status          String // "ACTIVE" | "REVOKED"
+  createdAt       DateTime  @db.Timestamptz(3)
+  revokedAt       DateTime? @db.Timestamptz(3)
+  note            String    @default("")
+  updatedAt       DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+
+  @@index([brokerId])
+}

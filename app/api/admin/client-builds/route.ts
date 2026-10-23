@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
-import { getClientBuild, listClientBuilds, registerClientBuild, setClientBuildStatus } from "@/lib/client-builds";
+import { backfillClientBuildsToPostgres, getClientBuild, listClientBuilds, registerClientBuild, setClientBuildStatus } from "@/lib/client-builds";
 
 // The native-build registry (kill switch). Super admin session, or the publish scripts' shared
 // secret (x-registry-secret = CLIENT_BUILD_REGISTRY_SECRET) for registration from the build machine.
 //   GET                          -> every registered build (newest first)
 //   POST {buildId, slug, app, version, note?}   -> register (ACTIVE)
 //   PATCH {buildId, status: ACTIVE|REVOKED, note?} -> the kill switch / reinstatement
+//   PUT                          -> one-time backfill: every build only Redis knows gets its Postgres row (never overwrites)
 async function authorized(request: NextRequest): Promise<boolean> {
   const secret = (process.env.CLIENT_BUILD_REGISTRY_SECRET ?? "").trim();   // trimmed: a value pasted with a trailing newline must still match
   const provided = (request.headers.get("x-registry-secret") ?? "").trim();
@@ -46,4 +47,11 @@ export async function PATCH(request: NextRequest) {
   const rec = await setClientBuildStatus(buildId, status, typeof body?.note === "string" ? body.note.slice(0, 200) : undefined);
   if (!rec) return NextResponse.json({ error: "unknown buildId" }, { status: 404 });
   return NextResponse.json(rec);
+}
+
+export async function PUT(request: NextRequest) {
+  if (!(await authorized(request))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const written = await backfillClientBuildsToPostgres();
+  const total = (await listClientBuilds()).length;
+  return NextResponse.json({ written, registry: total });
 }
