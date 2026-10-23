@@ -1089,6 +1089,9 @@ model Group {
   brokerId           String
   broker             Broker               @relation(fields: [brokerId], references: [id])
   name               String
+  // What the CLIENT sees as their account plan (owner 2026-10-23): "Standard", "Pro"... Several groups may share one.
+  // Group.name ("Dealing", "Reverse", ...) is internal and never reaches a client; client routes send this as accountPlan.
+  displayName        String               @default("Standard")
   leverage           Int                  @default(100)
   marginCallLevel    Decimal              @default(100) @db.Decimal(6, 2)
   stopOutLevel       Decimal              @default(50) @db.Decimal(6, 2)

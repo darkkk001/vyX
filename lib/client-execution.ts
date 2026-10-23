@@ -83,7 +83,22 @@ const TRANSACTION_FIELDS = [
   "closeVolume", "closePrice", "closeSwap", "closeByPositionId",
 ] as const;
 
+// GET /api/trade/me, the account's own info (owner 2026-10-23): the group is internal. Its name ("Dealing", "Reverse"...)
+// and id never reach a client; the client-facing label is accountPlan (Group.displayName, default "Standard").
+const ACCOUNT_INFO_FIELDS = [
+  "id", "accountNumber", "accountMode", "currency", "leverage", "balance", "credit", "status", "tradingRights", "fullName",
+  "twoFactorEnabled", "tradingDayStart", "tradingWeekStart", "tradingDaySource", "marginCallLevel", "stopOutLevel",
+  "tradingState", "tradingRestriction", "accountPlan",
+] as const;
+
 type Row = Record<string, unknown>;
+
+/// /api/trade/me's answer cut to the client allow-list.
+export function clientAccountInfo(a: Row): Row {
+  const out: Row = {};
+  for (const k of ACCOUNT_INFO_FIELDS) if (k in a) out[k] = a[k];
+  return out;
+}
 
 /// A Position row (or a DTO spread from one) cut to the client allow-list.
 export function clientPosition(p: Row): Row {
