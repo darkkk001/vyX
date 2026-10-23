@@ -38,6 +38,12 @@ export function refuseModify(input: {
 }): ModifyRefusal | null {
   const { position, brokerSymbol, live } = input;
   if (position.status !== "OPEN") return { status: 409, body: { error: "position is not open" } };
+  // a level is a plain positive decimal that fits the column, Decimal(18, 5) (security re-audit 2026-10-23): "NaN" /
+  // "-Infinity" / "0x10" / " 5" and a 1e308-points TP used to pass the side checks and fail only at the column write
+  // (500); "-5" / "0" were stored as levels that never trigger
+  for (const [kind, v] of [["SL", input.slPrice], ["TP", input.tpPrice]] as const) {
+    if (typeof v === "string" && !(/^\d+(\.\d+)?$/.test(v) && Number(v) > 0 && Number(v) < 1e13)) return { status: 400, body: { error: `${kind} must be a positive price` } };
+  }
   const now = input.now ?? new Date();
   const sessions = brokerSymbol?.tradingSessions ?? [];
   const category = brokerSymbol?.symbol.category ?? "FOREX";

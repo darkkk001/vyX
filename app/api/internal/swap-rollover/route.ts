@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { bearerMatches } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
 import { runSwapRollover } from "@/lib/swap-rollover";
 
@@ -15,10 +16,8 @@ import { runSwapRollover } from "@/lib/swap-rollover";
 // one run processes every broker's due positions in a single pass, not
 // just one broker's.
 export async function GET(request: NextRequest) {
-  const expectedSecret = process.env.CRON_SECRET ?? "";
-  const auth = request.headers.get("authorization");
-  const provided = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (!expectedSecret || provided !== expectedSecret) {
+  // constant-time compare (security re-audit 2026-10-23; was a plain !==)
+  if (!bearerMatches(request.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

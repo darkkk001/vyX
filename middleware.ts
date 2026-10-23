@@ -151,6 +151,17 @@ export async function middleware(request: NextRequest) {
   return response;
 }
 
+// The broker comes only from the host (resolved below) or the session, never from the client (security re-audit
+// 2026-10-23): every request forwarded to a page or route starts from these headers, with any client-sent x-broker-*
+// and x-pathname removed, on every branch -- root, Super Admin, broker-not-found and broker hosts alike.
+function trustedHeaders(request: NextRequest): Headers {
+  const headers = new Headers(request.headers);
+  for (const name of [...headers.keys()]) {
+    if (name.startsWith("x-broker-") || name === "x-pathname") headers.delete(name);
+  }
+  return headers;
+}
+
 async function route(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (!schemaGuardExempt(pathname) && (await schemaGate.isBehind(() => askSchemaBehind(request)))) {
@@ -226,7 +237,7 @@ async function route(request: NextRequest) {
     // both read x-pathname to know the current page; the broker-resolution
     // path below sets it, but this branch returns first, so set it here too or
     // the forced-2FA redirect (matching on /security) would loop.
-    const adminHeaders = new Headers(request.headers);
+    const adminHeaders = trustedHeaders(request);
     adminHeaders.set("x-pathname", effectivePathname);
     return NextResponse.next({ request: { headers: adminHeaders } });
   }
@@ -270,7 +281,7 @@ async function route(request: NextRequest) {
   } catch {
     // No broker and no stale-but-recent entry to fall back on (the resolver
     // already tried that, see the brokerResolver comment above).
-    return NextResponse.rewrite(new URL("/broker-not-found", request.url));
+    return NextResponse.rewrite(new URL("/broker-not-found", request.url), { request: { headers: trustedHeaders(request) } });
   }
 
   // 2026-09-08 TEMPORARY REVERSAL -- see the top-of-function comment.
@@ -345,7 +356,7 @@ async function route(request: NextRequest) {
     }
   }
 
-  const requestHeaders = new Headers(request.headers);
+  const requestHeaders = trustedHeaders(request);
   requestHeaders.set("x-broker-id", broker.id);
   requestHeaders.set("x-broker-slug", broker.subdomain);
   requestHeaders.set("x-broker-tier", broker.tier);
