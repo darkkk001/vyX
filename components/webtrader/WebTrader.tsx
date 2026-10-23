@@ -1129,6 +1129,21 @@ export default function WebTrader({
   // audit trail, but good enough for which sound to play.
   const prevPositionsRef = useRef<Map<string, ApiPosition>>(new Map());
   const positionsLoadedRef = useRef(false);
+  // Execution latency Phase 1 (item 3): the trader's own fill / full close is drawn from the order's answer at once;
+  // the positions / account / history reads that follow only reconcile in the background (they used to be awaited
+  // first, one more round trip before the position appeared). The answer carries the same row GET /positions lists.
+  const applyOwnFill = useCallback((pos: ApiPosition, balance?: string) => {
+    prevPositionsRef.current.set(pos.id, pos);
+    setPositions((prev) => [pos, ...prev.filter((x) => x.id !== pos.id)]);
+    if (balance != null) setAccount((a) => (a ? { ...a, balance } : a));
+  }, []);
+  const applyOwnFullClose = useCallback((id: string, balance?: string) => {
+    // gone from the diff's memory too, so the background read does not play the close sound a second time
+    prevPositionsRef.current.delete(id);
+    setPositions((prev) => prev.filter((x) => x.id !== id));
+    if (balance != null) setAccount((a) => (a ? { ...a, balance } : a));
+  }, []);
+
   const refreshPositions = useCallback(async () => {
     const fresh = await tradeApi.positions().catch(() => []);
     if (positionsLoadedRef.current) {
@@ -2609,7 +2624,8 @@ export default function WebTrader({
         // what just happened.
         playSound("orderFilled", chartSettingsRef.current);
         pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${activeSymbol} @ ${fmt(refPrice, m.def.digits)}`);
-        await Promise.all([refreshPositions(), refreshAccount()]);
+        applyOwnFill(result.position, result.balance);
+        void Promise.all([refreshPositions(), refreshAccount()]);
       } else {
         pushToast(`${activeSymbol} order submitted, awaiting dealer approval`);
         await refreshOrders();
@@ -2662,11 +2678,18 @@ export default function WebTrader({
     const price = closeRefFor(p.side, p.symbol.name, mm);
     try {
       const res = await tradeApi.closePosition(id, price);
-      const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
+      const answer = res as { transaction: { amount: string }; partial?: boolean; balance?: string };
+      const pnl = parseFloat(answer.transaction.amount);
       pushToast(`Closed ${p.symbol.name}, ${formatSigned(pnl)} ${moneyCurrencyCode()}`);
-      // refreshPositions()'s own diff (see that callback) is what plays
-      // the close sound -- not duplicated here, to avoid firing twice.
-      await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
+      if (answer.partial) {
+        // refreshPositions()'s own diff (see that callback) is what plays the close sound -- not duplicated here
+        await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
+      } else {
+        // a full close leaves the table now, with its sound; the reads reconcile in the background
+        playSound("positionClosed", chartSettingsRef.current);
+        applyOwnFullClose(id, answer.balance);
+        void Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
+      }
     } catch (err) {
       if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
         const info = err.body as { nextOpenAt?: string } | null;
