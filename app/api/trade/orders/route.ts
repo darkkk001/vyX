@@ -58,6 +58,7 @@ import {
 import { traceRejectedOrder } from "@/lib/rejected-orders";
 import { firstRefusalOfEpisode, ORDER_RATE_LIMITED_MESSAGE, orderLimitsFor, takeOrderToken } from "@/lib/order-rate-limit";
 import { requestMeta } from "@/lib/order-execution";
+import { loadOrderAccount, loadOrderBrokerSymbol } from "@/lib/order-reads";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
   await prisma.auditLog.create({
@@ -211,16 +212,11 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
     // Idempotency: a duplicated submission (retry, double-click) returns the
     // already-created order instead of creating a second one.
     prisma.order.findUnique({ where: { accountId_idempotencyKey: { accountId: session.accountId, idempotencyKey } } }),
-    prisma.brokerSymbol.findFirst({
-      where: { brokerId: session.brokerId, enabled: true, symbol: { name: symbolName } },
-      include: { symbol: true, tradingSessions: true },
-    }),
+    // execution latency Phase 1: each relation level loaded at once (lib/order-reads.ts), not one after another
+    loadOrderBrokerSymbol(prisma, session.brokerId, symbolName),
     Promise.all([
       prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId } }),
-      prisma.account.findUniqueOrThrow({
-        where: { id: session.accountId },
-        include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
-      }),
+      loadOrderAccount(prisma, session.accountId),
     ]).then(
       (v): { ok: true; v: Loaded } => ({ ok: true, v: v as Loaded }),
       (err: unknown): { ok: false; err: unknown } => ({ ok: false, err })
