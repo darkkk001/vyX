@@ -97,9 +97,9 @@ describe("slippage: effective max = the smaller of the trader's value and the br
     if (!dbReachable) return;
     const w = await world({ brokerCapPips: "5" }); // 5 pips = 0.50 on 2 digits
     // the client saw 99.00; the server fills at 100.10: 1.10 away
-    expect((await buy(w, "99.00", "unlimited")).json.error).toBe("SLIPPAGE_EXCEEDED");
+    expect((await buy(w, "99.00", "unlimited")).json.clientReason).toBe("INVALID_PRICE"); // internally SLIPPAGE_EXCEEDED
     expect((await buy(w, "99.80", "unlimited")).status).toBe(201); // 0.30 away: inside the cap
-    expect((await buy(w, "99.80", "2")).json.error).toBe("SLIPPAGE_EXCEEDED"); // the trader's tighter 0.20 wins
+    expect((await buy(w, "99.80", "2")).json.clientReason).toBe("INVALID_PRICE"); // the trader's tighter 0.20 wins
   });
 
   it("client close: the same rule (the terminal now sends its value on closes too)", async () => {
@@ -112,7 +112,7 @@ describe("slippage: effective max = the smaller of the trader's value and the br
       POST(req(`/api/trade/positions/${id}/close`, "POST", { closePrice, ...(maxSlippagePips ? { maxSlippagePips } : {}) }), { params: Promise.resolve({ id }) });
     const refused = await close("101.00", "unlimited"); // server closes at bid 100.00: 1.00 away > 0.50 cap
     expect(refused.status).toBe(400);
-    expect((await refused.json()).error).toBe("SLIPPAGE_EXCEEDED");
+    expect((await refused.json()).clientReason).toBe("INVALID_PRICE");
     expect((await close("100.20")).status).toBe(200); // 0.20 away
   });
 });

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withClientRefusals } from "@/lib/client-reason";
+import { traceCloseOrModifyRefusals } from "@/lib/rejected-orders";
 import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -12,7 +14,7 @@ import { toClientShape } from "@/lib/client-execution";
 // positions on the same symbol against the larger one at a single fair
 // (midpoint) price, closing both legs in one transaction with one
 // PositionsClosed event. See lib/close-by.ts for the full reasoning.
-export async function POST(request: NextRequest) {
+async function postInner(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
@@ -100,4 +102,13 @@ export async function POST(request: NextRequest) {
     );
   }
   return NextResponse.json(toClientShape(result));
+}
+
+// Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts); close / modify refusals are traced first.
+export async function POST(request: Parameters<typeof postInner>[0]) {
+  const requestedAt = new Date();
+  const probe = request.clone();
+  const raw = await postInner(request);
+  await traceCloseOrModifyRefusals("CLOSE", raw, request.headers, requestedAt, await probe.json().then((b) => (typeof b?.positionId === "string" ? b.positionId : null)).catch(() => null));
+  return withClientRefusals(raw);
 }

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withClientRefusals } from "@/lib/client-reason";
+import { traceCloseOrModifyRefusals } from "@/lib/rejected-orders";
 import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { loadAccountAskRules } from "@/lib/ask-markup";
 import { getLivePriceRow } from "@/lib/live-price";
@@ -27,7 +29,7 @@ function parseSpec(raw: unknown, allowBreakEven: boolean): LevelSpec | undefined
 // live price -- the ones that pass are applied, and a result with the reason comes back for each position.
 // Body: { positionIds: string[], sl?: Spec, tp?: Spec } where Spec is one of
 //   { price } | { points } (MT5 points from each position's entry, sign per side) | { breakEven: true } (SL only) | { clear: true }
-export async function POST(request: NextRequest) {
+async function postInner(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) return NextResponse.json({ error: "not authenticated" }, { status: 401 });
 
@@ -97,4 +99,12 @@ export async function POST(request: NextRequest) {
     failed: results.filter((r) => !r.ok).length,
     results,
   });
+}
+
+// Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts); close / modify refusals are traced first.
+export async function POST(request: Parameters<typeof postInner>[0]) {
+  const requestedAt = new Date();
+  const raw = await postInner(request);
+  await traceCloseOrModifyRefusals("MODIFY", raw, request.headers, requestedAt, null);
+  return withClientRefusals(raw);
 }

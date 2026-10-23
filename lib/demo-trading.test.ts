@@ -112,8 +112,8 @@ describe("an order and a close are filled at the server's price", () => {
     for (const priceAt of [Date.now() - 5000, Date.now() + 10_000, undefined, "garbage"]) {
       const res = await placeOrder(g.id, demo.broker.id, marketBody({ priceAt }));
       expect(res.status).toBe(400);
-      expect(res.json.error).toBe("PRICE_CHANGED");
-      expect(res.json.reason).toBe("Price changed, try again");
+      expect(res.json.clientReason).toBe("INVALID_PRICE"); // internally PRICE_CHANGED
+      expect(res.json).not.toHaveProperty("reason"); // the internal sentence stays server-side
     }
     expect(await prisma.order.count({ where: { accountId: g.id } })).toBe(0);
     // just inside the window is fine
@@ -168,7 +168,7 @@ describe("an order and a close are filled at the server's price", () => {
     const pos = await prisma.position.findFirstOrThrow({ where: { accountId: g.id } });
     const res = await closeVia(g.id, demo.broker.id, pos.id, { closePrice: "4440", priceAt: Date.now() - 9000, maxSlippagePips: "unlimited" });
     expect(res.status).toBe(400);
-    expect(res.json.error).toBe("PRICE_CHANGED");
+    expect(res.json.clientReason).toBe("INVALID_PRICE"); // internally PRICE_CHANGED
     expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).status).toBe("OPEN");
   });
 
@@ -189,7 +189,7 @@ describe("an order and a close are filled at the server's price", () => {
     const res = await placeOrder(g.id, demo.broker.id, marketBody());
     await prisma.group.update({ where: { id: demo.group.id }, data: { category: "B_BOOK" } });
     expect(res.status).toBe(400);
-    expect(res.json.error).toBe("DEMO_B_BOOK_ONLY");
+    expect(res.json.clientReason).toBe("TRADING_DISABLED"); // internally DEMO_B_BOOK_ONLY
     expect(await prisma.order.count({ where: { accountId: g.id } })).toBe(0);
   });
 

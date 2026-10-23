@@ -105,7 +105,7 @@ describe("client close is priced by the server, never by the client", () => {
     // instead of the real (100.00 - 90) = 10.00.
     const res = await clientClose(fx, pos.id, { closePrice: "101.90", maxSlippagePips: "5" });
     expect(res.status).toBe(400);
-    expect(res.json.error).toBe("SLIPPAGE_EXCEEDED");
+    expect(res.json.clientReason).toBe("INVALID_PRICE"); // internally SLIPPAGE_EXCEEDED (lib/client-reason.ts)
     expect(res.json.serverPrice).toBe("100");
     const after = await prisma.position.findUniqueOrThrow({ where: { id: pos.id } });
     expect(after.status).toBe("OPEN");
@@ -173,13 +173,14 @@ describe("client close is priced by the server, never by the client", () => {
     await prisma.livePrice.update({ where: { symbol: fx.symbolName }, data: { tickAt: new Date(Date.now() - 60_000) } });
     const res = await clientClose(fx, pos.id, { closePrice: "100.00" });
     expect(res.status).toBe(400);
-    expect(res.json.error).toBe("NO_LIVE_FEED");
+    expect(res.json.clientReason).toBe("OFF_QUOTES");
     expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).status).toBe("OPEN");
   });
 
   // 2026-09-25: the schedule says open but THIS market has not ticked (reopen after a break, holiday) while the feed is
-  // alive (another enabled symbol ticks): that is a closed market to the trader, not a "feed gap".
-  it("no tick on this symbol while another ticks = MARKET_CLOSED (not quoting), nothing moves", async () => {
+  // alive (another enabled symbol ticks). 2026-10-23 (owner, the USDX trace): that is NOT_QUOTING internally and "off
+  // quotes" to the trader -- never "market closed", which is reserved for a schedule close.
+  it("no tick on this symbol while another ticks = off quotes (not quoting), never market closed; nothing moves", async () => {
     if (!dbReachable) return;
     const fx = await createFixture();
     const pos = await openPosition(fx, "BUY", "90.00");
@@ -191,8 +192,8 @@ describe("client close is priced by the server, never by the client", () => {
     const before = await balance(fx);
     const res = await clientClose(fx, pos.id, { closePrice: "100.00" });
     expect(res.status).toBe(400);
-    expect(res.json.error).toBe("MARKET_CLOSED");
-    expect(res.json.reason).toBe("NOT_QUOTING");
+    expect(res.json.clientReason).toBe("OFF_QUOTES");
+    expect(JSON.stringify(res.json)).not.toMatch(/MARKET_CLOSED|NOT_QUOTING/);
     expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).status).toBe("OPEN");
     expect((await balance(fx)).equals(before)).toBe(true);
   });

@@ -86,10 +86,10 @@ describe("rejected-order trace (live DB)", () => {
     expect(r.status).toBe(400);
     const rows = await prisma.rejectedOrder.findMany({ where: { accountId: fx.accountId } });
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ brokerId: fx.brokerId, symbol: "SPOTBRENTX", side: "BUY", volume: "0.10", orderType: "MARKET", reason: r.json.error, platform: "WebTrader", clientIp: "203.0.113.7", source: "WEB" });
+    expect(rows[0]).toMatchObject({ brokerId: fx.brokerId, symbol: "SPOTBRENTX", side: "BUY", volume: "0.10", orderType: "MARKET", reason: "symbol not available for this broker", clientReason: "SYMBOL_NOT_AVAILABLE", platform: "WebTrader", clientIp: "203.0.113.7", source: "WEB" });
     expect(rows[0].requestedAt).toBeInstanceOf(Date);
     const ev = vi.mocked(publishTradingEvent).mock.calls.find(([type]) => type === "OrderRejectedPreTrade");
-    expect(ev?.[1]).toMatchObject({ broker_id: fx.brokerId, account_id: fx.accountId, account_number: fx.accountNumber, symbol: "SPOTBRENTX", reason: r.json.error, rejected_order_id: rows[0].id });
+    expect(ev?.[1]).toMatchObject({ broker_id: fx.brokerId, account_id: fx.accountId, account_number: fx.accountNumber, symbol: "SPOTBRENTX", reason: "symbol not available for this broker", rejected_order_id: rows[0].id });
   });
 
   it("the refusal's sub-reason (code / reason) is kept; a native terminal's source and platform are recorded", async () => {
@@ -98,7 +98,7 @@ describe("rejected-order trace (live DB)", () => {
     const r = await placeOrder(fx, { side: "SELL", type: "MARKET", volume: "abc", price: "99.90" }, { "x-client-platform": "DESKTOP_NATIVE", "x-client-build": "futurixglobal-terminal-1.0.94-abc" });
     expect(r.status).toBe(400);
     const row = await prisma.rejectedOrder.findFirstOrThrow({ where: { accountId: fx.accountId } });
-    expect(row).toMatchObject({ symbol: fx.symbolName, side: "SELL", volume: "abc", reason: r.json.error, detail: "INVALID_VOLUME", source: "DESKTOP_NATIVE", platform: "Windows terminal 1.0.94" });
+    expect(row).toMatchObject({ symbol: fx.symbolName, side: "SELL", volume: "abc", reason: "invalid volume", detail: "INVALID_VOLUME", clientReason: "INVALID_VOLUME", source: "DESKTOP_NATIVE", platform: "Windows terminal 1.0.94" });
   });
 
   it("a filled order leaves no rejection trace", async () => {
@@ -116,7 +116,8 @@ describe("rejected-order trace (live DB)", () => {
     const { getDealerActivityFeedRows } = await import("@/lib/dealer-activity");
     const feed = await getDealerActivityFeedRows(fx.brokerId);
     const row = feed.find((f) => f.action === "ORDER_REJECTED");
-    expect(row).toMatchObject({ accountNumber: fx.accountNumber, symbol: "SPOTCRUDEX", side: "SELL", volume: "1", values: { reason: r.json.error } });
+    expect(row).toMatchObject({ accountNumber: fx.accountNumber, symbol: "SPOTCRUDEX", side: "SELL", volume: "1", values: { reason: "symbol not available for this broker" } });
+    expect(r.json).toMatchObject({ clientReason: "SYMBOL_NOT_AVAILABLE" }); // the client gets the code only
   });
 });
 
@@ -196,7 +197,7 @@ describe("order rate limit on POST /api/trade/orders (live DB)", () => {
       statuses.push(last.status);
     }
     expect(statuses).toEqual([201, 201, 201, 429, 429, 429]);
-    expect(last!.json).toMatchObject({ error: "Too many orders in a short time. Wait a moment and try again.", code: "ORDER_RATE_LIMITED" });
+    expect(last!.json).toMatchObject({ error: "Too many orders in a short time. Wait a moment and try again.", clientReason: "REJECTED" });
     expect(last!.json.retryAfterSeconds).toBeGreaterThanOrEqual(1);
     const rows = await prisma.rejectedOrder.findMany({ where: { accountId: fx.accountId } });
     expect(rows.map((r) => r.detail)).toEqual(["ORDER_RATE_LIMITED"]);

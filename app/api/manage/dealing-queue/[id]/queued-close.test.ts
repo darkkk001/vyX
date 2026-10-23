@@ -366,7 +366,7 @@ describe("closes respect DEALER mode (live DB)", () => {
     const pos2 = await openPosition(fx, { openPrice: "90.00" });
     const refused = await clientClose(fx, pos2.id, { closePrice: "100.00" });
     expect(refused.status).toBeGreaterThanOrEqual(400);
-    expect(String(refused.json.error ?? "")).toContain("read-only");
+    expect(refused.json.clientReason).toBe("TRADING_DISABLED"); // internally the read-only sentence
   });
 
   it("with dealer mode OFF the same close executes immediately, as before", async () => {

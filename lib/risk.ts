@@ -531,6 +531,24 @@ export async function checkLiveMarketPrice(
 // price-moved retry toast specifically for this code.
 const FILL_PRICE_MAX_AGE_MS = 3_000;
 
+// Closes (owner 2026-10-23): how old a tick may be for a close to fill on it, per category. Quieter markets tick less
+// often, so a 3 s rule refused indices and energies that were quoting normally.
+export function closePriceMaxAgeMs(category: SymbolCategory): number {
+  switch (category) {
+    case "INDICES":
+    case "COMMODITIES":
+      return 10_000;
+    case "CRYPTO":
+      return 5_000;
+    default:
+      return 3_000; // FX, metals, stocks
+  }
+}
+/** A symbol with no tick for this long, while the feed is alive elsewhere, is not quoting (not merely slow). */
+export const NOT_QUOTING_AFTER_MS = 60_000;
+/** A close on a tick older than its category's limit (but under NOT_QUOTING_AFTER_MS) waits this long for a fresh one. */
+export const CLOSE_FRESH_TICK_WAIT_MS = 1_500;
+
 // tick timestamp follow-up -- reads LivePrice.tickAt (the real last-tick
 // time engine/market-data/src/ingest.rs's resolve_tick_time computes),
 // NOT updatedAt. The incident this closes: updatedAt bumps on every row

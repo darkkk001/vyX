@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withClientRefusals } from "@/lib/client-reason";
+import { traceCloseOrModifyRefusals } from "@/lib/rejected-orders";
 import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -18,7 +20,7 @@ const SCOPES: BulkCloseScope[] = ["ALL", "PROFIT", "LOSS", "SYMBOL"];
 // the feed ticked between calls. This is one request, one transaction,
 // one price snapshot per symbol -- see lib/bulk-close.ts for the shared
 // logic this shares with the backoffice's own "close all for account".
-export async function POST(request: NextRequest) {
+async function postInner(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
@@ -150,4 +152,12 @@ export async function POST(request: NextRequest) {
     failed: results.filter((r) => !r.closed).length,
     results,
   });
+}
+
+// Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts); close / modify refusals are traced first.
+export async function POST(request: Parameters<typeof postInner>[0]) {
+  const requestedAt = new Date();
+  const raw = await postInner(request);
+  await traceCloseOrModifyRefusals("CLOSE", raw, request.headers, requestedAt, null);
+  return withClientRefusals(raw);
 }

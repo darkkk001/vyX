@@ -430,7 +430,18 @@ export async function getDealerActivityFeedRows(
         symbol: r.symbol,
         side: r.side ?? undefined,
         volume: r.volume ?? undefined,
-        values: { reason: r.reason, ...(r.detail ? { detail: r.detail } : {}), ...(r.orderType ? { orderType: r.orderType } : {}), ...(r.platform ? { platform: r.platform } : {}) },
+        // kind OPEN / CLOSE / MODIFY, the client's reason and the last tick's age (2026-10-23): staff see what the client was
+        // told next to the full internal reason
+        values: {
+          reason: r.reason,
+          ...(r.detail ? { detail: r.detail } : {}),
+          ...(r.orderType ? { orderType: r.orderType } : {}),
+          ...(r.platform ? { platform: r.platform } : {}),
+          kind: r.kind,
+          ...(r.positionId ? { positionId: r.positionId } : {}),
+          ...(r.clientReason ? { clientReason: r.clientReason } : {}),
+          ...(r.lastTickAgeMs != null ? { lastTickAgeMs: r.lastTickAgeMs } : {}),
+        },
       };
     })
     .filter((r): r is DealerActivityFeedRow => r !== null);

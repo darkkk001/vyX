@@ -143,7 +143,7 @@ describe("a suspended / closed account opens nothing (DB)", () => {
       trader(f.acc.id, f.brokerId);
       const r = await call(POST, "/api/trade/orders", "POST", limitOrder(f.symbolName));
       expect(r.status).toBe(400);
-      expect(String(r.json.error)).toContain(status === "SUSPENDED" ? "suspended" : "closed");
+      expect(r.json.clientReason).toBe("TRADING_DISABLED"); // the internal sentence ("suspended" / "closed") stays server-side
       expect(await prisma.order.count({ where: { accountId: f.acc.id } })).toBe(0);
     }
     const ok = await fixture();

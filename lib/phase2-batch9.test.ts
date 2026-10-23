@@ -67,7 +67,7 @@ describe("270: a pending entry must respect the stop level at placement", () => 
     const w = await world(50); // 50 points x 0.01 = 0.50 away from the market
     const tooClose = await place(w.symbol, "LIMIT", "BUY", "100.05");
     expect(tooClose.status).toBe(400);
-    expect(tooClose.json.error).toMatch(/at least 0\.5/);
+    expect(tooClose.json.clientReason).toBe("INVALID_PRICE"); // the internal sentence ("at least 0.5 ...") stays server-side
     expect(await prisma.order.count({ where: { accountId: w.accountId } })).toBe(0);
     const ok = await place(w.symbol, "LIMIT", "BUY", "99.50");
     expect(ok.status).toBe(201);

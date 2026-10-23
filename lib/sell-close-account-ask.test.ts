@@ -117,7 +117,7 @@ describe("a SELL closes at the account's ask, a BUY at the raw bid", () => {
     const { POST } = await import("@/app/api/trade/positions/[id]/close/route");
     const res = await POST(req(`/api/trade/positions/${pos.id}/close`, "POST", { closePrice: "99.50", maxSlippagePips: "1" }), { params: Promise.resolve({ id: pos.id }) });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("SLIPPAGE_EXCEEDED");
+    expect((await res.json()).clientReason).toBe("INVALID_PRICE");
   });
 
   it("BUY close stays at the raw bid", async () => {
