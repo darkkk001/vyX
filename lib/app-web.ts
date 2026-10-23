@@ -20,9 +20,10 @@ export function isAppWebOrigin(origin: string | null | undefined): boolean {
   return !!origin && appWebOrigins().includes(origin);
 }
 
-/** The routes the web app calls: the trader API and the public broker directory. */
+/** The routes the web app calls: the trader API, the public broker directory, and the public liveness route (it asks
+ *  the VPS execution endpoint's /api/health before sending orders there; execution latency Phase 1). */
 export function isAppWebPath(pathname: string): boolean {
-  return pathname.startsWith("/api/trade/") || pathname === "/api/public/brokers";
+  return pathname.startsWith("/api/trade/") || pathname === "/api/public/brokers" || pathname === "/api/health";
 }
 
 /** CORS headers for an allowed web app origin on its routes; null for anything else. */

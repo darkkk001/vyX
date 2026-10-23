@@ -61,6 +61,9 @@ describe("app-web helpers", () => {
     expect(h["Access-Control-Allow-Headers"]).toContain("Authorization");
     expect(h).not.toHaveProperty("Access-Control-Allow-Credentials");
     expect(appWebCorsHeaders(APP, "/api/public/brokers")).not.toBeNull();
+    // execution latency Phase 1: the web app reads the VPS execution endpoint's liveness before sending orders there
+    expect(appWebCorsHeaders(APP, "/api/health")).not.toBeNull();
+    expect(appWebCorsHeaders(EVIL, "/api/health")).toBeNull();
     expect(appWebCorsHeaders(APP, "/api/manage/accounts")).toBeNull();
     expect(appWebCorsHeaders(APP, "/api/admin/brokers")).toBeNull();
     expect(appWebCorsHeaders(EVIL, "/api/trade/orders")).toBeNull();
