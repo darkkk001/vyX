@@ -106,5 +106,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261021120000_execution_capture_hidden_ledger",
   "20261021125000_deal_close_capture",
   "20261021130000_hedge_intent_result",
-  "20261021140000_hedge_escalation_notify"
+  "20261021140000_hedge_escalation_notify",
+  "20261023090000_client_build_registry",
+  "20261023100000_rejected_order"
 ];

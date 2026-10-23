@@ -29,7 +29,9 @@ export type DealerActivityAction =
   | "POSITION_OPENED"
   | "POSITION_CLOSED"
   // a client's manual close routed to the dealer queue (docs/CLOSES-RESPECT-DEALER-MODE.md)
-  | "CLOSE_REQUESTED";
+  | "CLOSE_REQUESTED"
+  // an order request refused before any Order row was written (RejectedOrder, lib/rejected-orders.ts, 2026-10-23)
+  | "ORDER_REJECTED";
 
 // Per the feature spec: a dealer gets an actual notification (bell badge)
 // for the things they're responsible for reacting to -- placing a pending
@@ -51,6 +53,8 @@ function titleFor(action: DealerActivityAction): string {
       return "Dealing-group pending order triggered";
     case "CLOSE_REQUESTED":
       return "Dealing-group close awaiting dealer review";
+    case "ORDER_REJECTED":
+      return "Dealing-group order refused";
     default:
       return "Dealing-group account activity";
   }
@@ -400,8 +404,39 @@ export async function getDealerActivityFeedRows(
     })
     .filter((r): r is DealerActivityFeedRow => r !== null);
 
-  // One feed, newest first, capped at `limit` across both sources.
-  return [...auditRows, ...closedRows].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, limit);
+  // Refused order requests (RejectedOrder, 2026-10-23): what the client asked for and why it was refused
+  const rejected = await prisma.rejectedOrder.findMany({ where: { brokerId }, orderBy: { requestedAt: "desc" }, take: limit });
+  const rejectedAccounts = rejected.length
+    ? await prisma.account.findMany({
+        where: { brokerId, id: { in: [...new Set(rejected.map((r) => r.accountId))] } },
+        select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } },
+      })
+    : [];
+  const rejectedAccount = new Map(rejectedAccounts.map((a) => [a.id, a]));
+  const rejectedRows = rejected
+    .map((r): DealerActivityFeedRow | null => {
+      const account = rejectedAccount.get(r.accountId);
+      if (!account) return null;
+      const isDealingGroup = isDealingManagedAccount({ group: account.group, deskOn: !dealingDeskAutoFillOn });
+      if (opts.dealingOnly && !isDealingGroup) return null;
+      return {
+        id: `rej:${r.id}`,
+        at: r.requestedAt.toISOString(),
+        accountId: account.id,
+        accountNumber: account.accountNumber,
+        accountFullName: account.fullName,
+        isDealingGroup,
+        action: "ORDER_REJECTED",
+        symbol: r.symbol,
+        side: r.side ?? undefined,
+        volume: r.volume ?? undefined,
+        values: { reason: r.reason, ...(r.detail ? { detail: r.detail } : {}), ...(r.orderType ? { orderType: r.orderType } : {}), ...(r.platform ? { platform: r.platform } : {}) },
+      };
+    })
+    .filter((r): r is DealerActivityFeedRow => r !== null);
+
+  // One feed, newest first, capped at `limit` across all sources.
+  return [...auditRows, ...closedRows, ...rejectedRows].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, limit);
 }
 
 export type RestingOrderRow = {
