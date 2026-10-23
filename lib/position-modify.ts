@@ -47,8 +47,8 @@ export function refuseModify(input: {
   const now = input.now ?? new Date();
   const sessions = brokerSymbol?.tradingSessions ?? [];
   const category = brokerSymbol?.symbol.category ?? "FOREX";
-  const sessionError = checkTradingSession(sessions, now, category);
-  if (sessionError) return { status: 400, body: { error: sessionError, nextOpenAt: computeNextSessionOpen(sessions, now, category).toISOString() } };
+  const sessionError = checkTradingSession(sessions, now, category, input.symbolName);
+  if (sessionError) return { status: 400, body: { error: sessionError, nextOpenAt: computeNextSessionOpen(sessions, now, category, input.symbolName).toISOString() } };
   // what the position closes / triggers at: a BUY at the raw bid, a SELL at its account's ask (lib/ask-markup.ts)
   const serverClosePrice = brokerSymbol && live ? accountClosePrice(position.side, live.bid, live.ask, input.askRuleFor?.(position.symbolId)).toString() : null;
   if (!serverClosePrice) {

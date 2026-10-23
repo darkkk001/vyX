@@ -68,7 +68,7 @@ export async function placeCoveragePendingOrder(p: CoveragePendingParams): Promi
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
     checkSymbolTradingMode(bs.tradingMode, p.side) ??
-    checkTradingSession(bs.tradingSessions, new Date(), bs.symbol.category) ??
+    checkTradingSession(bs.tradingSessions, new Date(), bs.symbol.category, bs.symbol.name) ??
     checkLotStep(p.volume, bs.minLot, bs.lotStep) ??
     (account.group ? checkGroupMaxLot(p.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupMinLot(p.volume, account.group.minLotSize, bs.minLot) : null) ??

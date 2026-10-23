@@ -80,8 +80,8 @@ export async function selectBulkCloseTargets(
   const now = new Date();
   const nextOpenBySymbolName = new Map<string, string>();
   for (const bs of brokerSymbols) {
-    if (checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null) {
-      nextOpenBySymbolName.set(bs.symbol.name, computeNextSessionOpen(bs.tradingSessions, now, bs.symbol.category).toISOString());
+    if (checkTradingSession(bs.tradingSessions, now, bs.symbol.category, bs.symbol.name) != null) {
+      nextOpenBySymbolName.set(bs.symbol.name, computeNextSessionOpen(bs.tradingSessions, now, bs.symbol.category, bs.symbol.name).toISOString());
     }
   }
 

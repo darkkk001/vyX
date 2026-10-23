@@ -122,7 +122,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Accepting a requote on a queued CLOSE: close the position at the dealer's offered price
     // (no markup; the market must be open and trading not halted -- the open-side battery does
     // not apply to a close).
-    const closeRiskError = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
+    const closeRiskError = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category, brokerSymbol.symbol.name);
     if (closeRiskError) {
       return NextResponse.json({ error: closeRiskError }, { status: 400 });
     }
@@ -165,7 +165,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) ??
-    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category, brokerSymbol.symbol.name) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupMinLot(order.volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??

@@ -241,13 +241,32 @@ function isContinuouslyTraded(category: SymbolCategory): boolean {
 // TradingSession rows always win, break included.
 // usEasternIsDst / nyCloseHourUtc live in lib/market-week.ts (the one weekly rule), re-exported here for existing callers
 export { usEasternIsDst, nyCloseHourUtc } from "@/lib/market-week";
-export function hasDailyBreak(category: SymbolCategory): boolean {
-  return category === "METALS";
+// Commodities (owner 2026-10-23, option A, from two weeks of feed data): SpotCrude pauses exactly like the metals (17:00
+// to 18:00 New York); SpotBrent pauses 3 hours from the same anchor (17:00 New York to 01:00 London, 21:00-00:00 UTC in
+// summer). In the one week a year when London has left summer time and New York has not, Brent's real reopen is an
+// hour later than this rule; that hour reads as a stale price, not as closed. engine/market-data gap_fill.rs mirrors it.
+export function dailyBreakHours(category: SymbolCategory, symbolName?: string | null): number {
+  if (category === "METALS") return 1;
+  if (category === "COMMODITIES") return (symbolName ?? "").toLowerCase().startsWith("spotbrent") ? 3 : 1;
+  return 0;
 }
-export function isInDailyBreak(now: Date, category: SymbolCategory): boolean {
-  if (!hasDailyBreak(category)) return false;
-  const day = now.getUTCDay();
-  return day >= 1 && day <= 4 && now.getUTCHours() === nyCloseHourUtc(now);
+export function hasDailyBreak(category: SymbolCategory, symbolName?: string | null): boolean {
+  return dailyBreakHours(category, symbolName) > 0;
+}
+/** The UTC instant the current daily break began, or null outside one. A break starts Mon-Thu at New York 17:00 and may
+ *  run past midnight UTC (Brent in winter: 22:00-01:00). */
+export function dailyBreakStart(now: Date, category: SymbolCategory, symbolName?: string | null): Date | null {
+  const hours = dailyBreakHours(category, symbolName);
+  if (hours === 0) return null;
+  const into = (now.getUTCHours() - nyCloseHourUtc(now) + 24) % 24; // whole hours since today's (or last night's) anchor
+  if (into >= hours) return null;
+  const start = new Date(now.getTime() - into * 3_600_000);
+  start.setUTCMinutes(0, 0, 0);
+  const day = start.getUTCDay();
+  return day >= 1 && day <= 4 ? start : null;
+}
+export function isInDailyBreak(now: Date, category: SymbolCategory, symbolName?: string | null): boolean {
+  return dailyBreakStart(now, category, symbolName) !== null;
 }
 
 // The standard global FX/metals weekend close every major venue observes,
@@ -284,12 +303,13 @@ export function isDefaultFxSessionClosed(now: Date): boolean {
 export function checkTradingSession(
   sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
   now: Date,
-  category: SymbolCategory
+  category: SymbolCategory,
+  symbolName?: string | null // the commodity daily break depends on the symbol (dailyBreakHours)
 ): string | null {
   if (isContinuouslyTraded(category)) return null;
 
   if (sessions.length === 0) {
-    return isDefaultFxSessionClosed(now) || isInDailyBreak(now, category) ? "MARKET_CLOSED" : null;
+    return isDefaultFxSessionClosed(now) || isInDailyBreak(now, category, symbolName) ? "MARKET_CLOSED" : null;
   }
 
   const day = now.getUTCDay();
@@ -336,16 +356,13 @@ export function sessionCovers(s: { dayOfWeek: number; openTime: string; closeTim
 export function computeNextSessionOpen(
   sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
   now: Date,
-  category?: SymbolCategory
+  category?: SymbolCategory,
+  symbolName?: string | null
 ): Date {
   if (sessions.length === 0) {
-    // a metals daily break reopens at the top of the next hour (18:00 New York)
-    if (category && isInDailyBreak(now, category) && !isDefaultFxSessionClosed(now)) {
-      const reopen = new Date(now);
-      reopen.setUTCMinutes(0, 0, 0);
-      reopen.setUTCHours(reopen.getUTCHours() + 1);
-      return reopen;
-    }
+    // a daily break reopens when it ends: 18:00 New York for metals and SpotCrude, 3 hours after the anchor for SpotBrent
+    const breakStart = category && !isDefaultFxSessionClosed(now) ? dailyBreakStart(now, category, symbolName) : null;
+    if (breakStart && category) return new Date(breakStart.getTime() + dailyBreakHours(category, symbolName) * 3_600_000);
     return nextWeeklyReopen(now); // Sunday 17:00 New York: 21:00 UTC in summer, 22:00 UTC in winter
   }
   const toMinutes = (hhmm: string) => {

@@ -48,7 +48,7 @@ export async function GET(request: Request) {
   });
   const now = new Date();
   const closedByName = new Map(
-    brokerSymbols.map((bs) => [bs.symbol.name, checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null])
+    brokerSymbols.map((bs) => [bs.symbol.name, checkTradingSession(bs.tradingSessions, now, bs.symbol.category, bs.symbol.name) != null])
   );
 
   // S4 (docs/market-data.md §8): the engine's tick cache when

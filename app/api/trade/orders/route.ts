@@ -275,7 +275,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
     // MARKET_CLOSED carries the next session open, exactly like the close / modify routes, so the
     // terminal can say "XAUUSD market is closed, opens Monday 22:00 UTC" instead of a bare code.
     if (riskError === "MARKET_CLOSED") {
-      const nextOpenAt = computeNextSessionOpen(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
+      const nextOpenAt = computeNextSessionOpen(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category, brokerSymbol.symbol.name);
       return NextResponse.json({ error: riskError, symbol: symbolName, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
     }
     // the lot-step / group-max-lot rules are volume rejections too: same code for the sound
@@ -288,7 +288,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
-    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category, brokerSymbol.symbol.name) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupMinLot(volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??

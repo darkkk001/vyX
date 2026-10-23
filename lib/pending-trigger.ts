@@ -169,7 +169,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) ??
-    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category, brokerSymbol.symbol.name) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     evaluateLiveMarketPrice(livePrice, brokerSymbol.symbol.name, triggerPrice) ??
     checkPriceFreshness(livePrice) ??

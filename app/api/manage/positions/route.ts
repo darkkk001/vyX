@@ -333,7 +333,7 @@ export async function POST(request: NextRequest) {
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
-    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category, brokerSymbol.symbol.name) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupMinLot(volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??

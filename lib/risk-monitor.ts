@@ -108,7 +108,7 @@ async function loadMarketBook(accountIds: string[]): Promise<Map<string, OpenPos
   const key = (brokerId: string, symbol: string) => `${brokerId}|${symbol}`;
   const closedSymbols = new Set(
     brokerSymbols
-      .filter((bs) => checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null)
+      .filter((bs) => checkTradingSession(bs.tradingSessions, now, bs.symbol.category, bs.symbol.name) != null)
       .map((bs) => key(bs.brokerId, bs.symbol.name))
   );
 
