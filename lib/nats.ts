@@ -91,6 +91,9 @@ const SUBJECTS = {
   // Rejected-order trace (2026-10-23): an order request refused before any Order row (lib/rejected-orders.ts).
   // Backoffice-only under dealing.>: the trader stream never subscribes it, so the trader's terminal does not refetch.
   OrderRejectedPreTrade: "dealing.order_rejected",
+  // The Liquidity screen's bridge badge changed (CONNECTED / DEGRADED / NOT_CONNECTED, lib/bridge-status.ts).
+  // Backoffice-only under dealing.>.
+  BridgeStatusChanged: "dealing.bridge_status",
 } as const satisfies Record<string, string>;
 
 export type TradingEventType = keyof typeof SUBJECTS;

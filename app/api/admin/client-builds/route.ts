@@ -29,7 +29,8 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const buildId = typeof body?.buildId === "string" ? body.buildId.trim() : "";
   const slug = typeof body?.slug === "string" ? body.slug.trim().toLowerCase() : "";
-  const app = body?.app === "terminal" || body?.app === "backoffice" ? body.app : null;
+  // "bridge": a QoreBridge exe build (version "exe"); its licenses are issued through /api/admin/bridge-licenses
+  const app = body?.app === "terminal" || body?.app === "backoffice" || body?.app === "bridge" ? body.app : null;
   const version = typeof body?.version === "string" ? body.version.trim() : "";
   if (!buildId || !slug || !app || !version) return NextResponse.json({ error: "buildId, slug, app, version are required" }, { status: 400 });
   if (await getClientBuild(buildId)) return NextResponse.json({ error: "buildId already registered" }, { status: 409 });
