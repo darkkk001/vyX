@@ -21,7 +21,12 @@ export type BridgeReport = {
   lpsTotal: number;
   intake: "ok" | "degraded" | "down" | "off";
   feed: "ok" | "degraded" | "off";
+  /** The license's expiry (ms), when known: within 30 days the badge is Degraded with the date. */
+  licenseExpiresAt?: number | null;
 };
+
+const EXPIRY_WARNING_MS = 30 * 86_400_000;
+const expiring = (r: BridgeReport, now: number) => r.licenseExpiresAt != null && r.licenseExpiresAt - now <= EXPIRY_WARNING_MS;
 
 const REPORT = (brokerId: string) => `bridge-status:${brokerId}`;
 const SINCE = (brokerId: string) => `bridge-status-since:${brokerId}`;
@@ -29,7 +34,7 @@ const SINCE = (brokerId: string) => `bridge-status-since:${brokerId}`;
 /** The badge for a report (or none). */
 export function badgeFor(r: BridgeReport | null, now: number): BridgeBadge {
   if (!r || now - r.receivedAt > BRIDGE_REPORT_FRESH_MS) return "NOT_CONNECTED";
-  if (r.lpsTotal > 0 && r.lpsReady === r.lpsTotal && r.intake === "ok" && r.feed !== "degraded") return "CONNECTED";
+  if (r.lpsTotal > 0 && r.lpsReady === r.lpsTotal && r.intake === "ok" && r.feed !== "degraded" && !expiring(r, now)) return "CONNECTED";
   // reporting, but an LP is down, the intake is unhealthy, or there is no hedging lane at all
   return "DEGRADED";
 }
@@ -55,7 +60,10 @@ export async function storeBridgeReport(brokerId: string, r: BridgeReport): Prom
 }
 
 /** The badge now, with when it last changed. A bridge that stopped reporting turns NOT_CONNECTED here, at read time. */
-export async function bridgeStatus(brokerId: string, now = Date.now()): Promise<{ badge: BridgeBadge; text: string; since: string | null; lastReportAt: string | null }> {
+export async function bridgeStatus(
+  brokerId: string,
+  now = Date.now()
+): Promise<{ badge: BridgeBadge; text: string; since: string | null; lastReportAt: string | null; licenseExpiresAt: string | null }> {
   const r = await readBridgeReport(brokerId);
   const badge = badgeFor(r, now);
   const redis = getRedis();
@@ -71,5 +79,13 @@ export async function bridgeStatus(brokerId: string, now = Date.now()): Promise<
     since = badge === "NOT_CONNECTED" && r ? r.receivedAt + BRIDGE_REPORT_FRESH_MS : now;
     await redis.set(SINCE(brokerId), JSON.stringify({ badge, since }), "EX", 30 * 86_400);
   }
-  return { badge, text: BRIDGE_BADGE_TEXT[badge], since: new Date(since).toISOString(), lastReportAt: r ? new Date(r.receivedAt).toISOString() : null };
+  // owner 2026-10-23: 30 days before expiry the badge says so, in plain words
+  const text = badge === "DEGRADED" && r && expiring(r, now) ? `License expires on ${new Date(r.licenseExpiresAt!).toISOString().slice(0, 10)}` : BRIDGE_BADGE_TEXT[badge];
+  return {
+    badge,
+    text,
+    since: new Date(since).toISOString(),
+    lastReportAt: r ? new Date(r.receivedAt).toISOString() : null,
+    licenseExpiresAt: r?.licenseExpiresAt != null ? new Date(r.licenseExpiresAt).toISOString() : null,
+  };
 }

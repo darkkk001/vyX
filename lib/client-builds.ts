@@ -174,7 +174,7 @@ export type ClientManifest = {
   apiHost: string;
   app: string;
   buildId: string;
-  status: "ACTIVE" | "REVOKED" | "UNKNOWN";
+  status: "ACTIVE" | "REVOKED" | "UNKNOWN" | "EXPIRED";
   minVersion: string;
   iat: number;
   exp: number;

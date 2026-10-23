@@ -40,6 +40,29 @@ export function bridgeReportSignatureOk(licenseId: string, body: string, signatu
   return timingSafeEqual(want, Buffer.from(signatureHex, "hex"));
 }
 
+/** Days before expiry the platform starts warning (badge Degraded, a dealer FEED entry, Super Admin card). */
+export const BRIDGE_LICENSE_WARNING_DAYS = 30;
+
+/** Each license's expiry (ms), from its BRIDGE_LICENSE_ISSUED audit row (the license file itself stays on the bridge). */
+export async function bridgeLicenseExpiries(licenseIds: string[]): Promise<Map<string, number>> {
+  if (licenseIds.length === 0) return new Map();
+  const rows = await prisma.auditLog.findMany({ where: { action: "BRIDGE_LICENSE_ISSUED", entityId: { in: licenseIds } }, select: { entityId: true, newValue: true } });
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    const v = r.newValue as { expiresAt?: unknown } | null;
+    const t = typeof v?.expiresAt === "string" ? Date.parse(v.expiresAt) : NaN;
+    if (r.entityId && Number.isFinite(t)) out.set(r.entityId, t);
+  }
+  return out;
+}
+
+/** "expired" | "expiring" (within BRIDGE_LICENSE_WARNING_DAYS) | "ok" | null (expiry unknown). */
+export function expiryState(expiresAt: number | null | undefined, now = Date.now()): "expired" | "expiring" | "ok" | null {
+  if (expiresAt == null) return null;
+  if (now >= expiresAt) return "expired";
+  return expiresAt - now <= BRIDGE_LICENSE_WARNING_DAYS * 86_400_000 ? "expiring" : "ok";
+}
+
 export class BridgeLicenseError extends Error {
   constructor(message: string, readonly status = 400) {
     super(message);

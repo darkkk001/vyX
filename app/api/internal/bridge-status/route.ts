@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getClientBuild } from "@/lib/client-builds";
-import { bridgeReportSignatureOk } from "@/lib/bridge-licenses";
+import { bridgeLicenseExpiries, bridgeReportSignatureOk, expiryState } from "@/lib/bridge-licenses";
+import { prisma } from "@/lib/prisma";
 import { storeBridgeReport, type BridgeReport } from "@/lib/bridge-status";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -35,7 +36,23 @@ export async function POST(request: NextRequest) {
     lpsTotal: lps.length,
     intake: pick(body.intake, ["ok", "degraded", "down", "off"] as const, "off"),
     feed: pick(body.feed, ["ok", "degraded", "off"] as const, "off"),
+    licenseExpiresAt: (await bridgeLicenseExpiries([licenseId])).get(licenseId) ?? null,
   };
+  // 30 days before expiry: one dealer FEED entry per license (the badge says it on every report)
+  if (expiryState(report.licenseExpiresAt) === "expiring") {
+    const already = await prisma.auditLog.count({ where: { action: "BRIDGE_LICENSE_EXPIRING", entityId: licenseId } });
+    if (already === 0) {
+      await prisma.auditLog.create({
+        data: {
+          brokerId: license.brokerId,
+          action: "BRIDGE_LICENSE_EXPIRING",
+          entityType: "ClientBuild",
+          entityId: licenseId,
+          newValue: { licenseId, expiresAt: new Date(report.licenseExpiresAt!).toISOString() },
+        },
+      });
+    }
+  }
   const { before, after } = await storeBridgeReport(license.brokerId, report);
   // the backoffice refreshes the badge at once on a change (admin stream only: dealing.>)
   if (before !== after) await publishTradingEvent("BridgeStatusChanged", { broker_id: license.brokerId, status: after }).catch(() => {});

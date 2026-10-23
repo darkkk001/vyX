@@ -8,7 +8,16 @@ import { Input } from "@/components/ui/Input";
 // QoreBridge licenses for one broker (owner 2026-10-23, lib/bridge-licenses.ts). Issue: the broker's server id (what
 // `qorebridge.exe --machine-id` prints there), the features, an expiry; the signed file downloads as qorebridge.license
 // and goes next to the bridge's config. Revoke = the kill switch: the bridge stops hedging at its next check (5 min).
-type Row = { buildId: string; brokerSubdomain: string; status: "ACTIVE" | "REVOKED"; createdAt: string; version: string; note: string };
+type Row = {
+  buildId: string;
+  brokerSubdomain: string;
+  status: "ACTIVE" | "REVOKED";
+  createdAt: string;
+  version: string;
+  note: string;
+  expiresAt: string | null;
+  expiry: "expired" | "expiring" | "ok" | null;
+};
 
 export default function BridgeLicenses({ brokerSlug }: { brokerSlug: string }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -74,6 +83,9 @@ export default function BridgeLicenses({ brokerSlug }: { brokerSlug: string }) {
           <code className="mono">{r.buildId}</code>
           <Badge tone={r.status === "ACTIVE" ? "success" : "danger"}>{r.status === "ACTIVE" ? "ACTIVE" : "REVOKED"}</Badge>
           <span className="text-[var(--text-3)]">{r.createdAt.slice(0, 10)}</span>
+          {r.expiresAt ? <span className="text-[var(--text-3)]">expires {r.expiresAt.slice(0, 10)}</span> : null}
+          {r.expiry === "expiring" ? <Badge tone="warning">Expires within 30 days: issue a new license</Badge> : null}
+          {r.expiry === "expired" ? <Badge tone="danger">Expired</Badge> : null}
           {r.status === "ACTIVE" ? (
             <Button size="sm" variant="danger" onClick={() => setStatus(r, "REVOKED")}>
               Revoke

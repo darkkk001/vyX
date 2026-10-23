@@ -124,7 +124,7 @@ describe("the kill switch: /api/client/manifest?app=bridge", () => {
     await registerClientBuild({ buildId: term, brokerId: b.id, brokerSubdomain: b.subdomain, app: "terminal", version: "1.0.0", note: "" });
     expect((await manifest(b.subdomain, term)).status).toBe("UNKNOWN");
     const { GET } = await import("@/app/api/client/manifest/route");
-    const asTerminal = await (await GET(new NextRequest(`https://t/api/client/manifest?slug=${b.subdomain}&app=terminal&buildId=${json.licenseId}`, { headers: { "x-forwarded-for": "10.8.0.1" } }))).json();
+    const asTerminal = await (await GET(new NextRequest(`https://t/api/client/manifest?slug=${b.subdomain}&app=terminal&buildId=${json.licenseId}`, { headers: { "x-forwarded-for": `10.8.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}` } }))).json();
     expect(JSON.parse(Buffer.from(asTerminal.manifest, "base64").toString("utf8")).status).toBe("UNKNOWN");
   });
 
@@ -194,5 +194,51 @@ describe("the CONNECTED badge", () => {
     const later = await bridgeStatus(b.id, Date.now() + 50_000);
     expect(later.badge).toBe("NOT_CONNECTED");
     expect(later.lastReportAt).not.toBeNull();
+  });
+});
+
+describe("license expiry (owner 2026-10-23)", () => {
+  const signedReport = async (licenseId: string) => {
+    const raw = JSON.stringify({ lps: [{ id: "lp1", status: "Ready" }], intake: "ok", feed: "off" });
+    const k = createHmac("sha256", "report-secret-for-tests").update(`bridge-report:${licenseId}`).digest();
+    const { POST } = await import("@/app/api/internal/bridge-status/route");
+    return POST(new NextRequest("https://t/api/internal/bridge-status", { method: "POST", headers: { "x-bridge-license": licenseId, "x-bridge-signature": createHmac("sha256", k).update(raw).digest("hex") }, body: raw }));
+  };
+
+  it("a year left: Connected, no warning; 10 days left: Degraded 'License expires on <date>', one FEED entry, warning on the card", async () => {
+    if (!ready) return;
+    const far = await broker();
+    const long = await issue(far.subdomain, { expiresDays: 365 });
+    await signedReport(long.json.licenseId);
+    const { bridgeStatus } = await import("@/lib/bridge-status");
+    expect((await bridgeStatus(far.id)).badge).toBe("CONNECTED");
+
+    const b = await broker();
+    const soon = await issue(b.subdomain, { expiresDays: 10 });
+    await signedReport(soon.json.licenseId);
+    await signedReport(soon.json.licenseId);
+    const date = new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10);
+    const s = await bridgeStatus(b.id);
+    expect(s.badge).toBe("DEGRADED");
+    expect(s.text).toBe(`License expires on ${date}`);
+    expect(await prisma.auditLog.count({ where: { action: "BRIDGE_LICENSE_EXPIRING", entityId: soon.json.licenseId } })).toBe(1); // once, not per report
+    const { getDealerActivityFeedRows } = await import("@/lib/dealer-activity");
+    const feed = await getDealerActivityFeedRows(b.id, { dealingOnly: true });
+    expect(feed.find((f) => f.action === "LICENSE_EXPIRING")?.values.text).toContain(date);
+
+    await asRole("SUPER_ADMIN");
+    const { GET } = await import("@/app/api/admin/bridge-licenses/route");
+    const rows = (await (await GET()).json()) as { buildId: string; expiry: string; expiresAt: string }[];
+    expect(rows.find((r) => r.buildId === soon.json.licenseId)).toMatchObject({ expiry: "expiring", expiresAt: expect.stringContaining(date) });
+    expect(rows.find((r) => r.buildId === long.json.licenseId)?.expiry).toBe("ok");
+  });
+
+  it("past its expiry the manifest answers EXPIRED (the bridge's hard stop)", async () => {
+    if (!ready) return;
+    const b = await broker();
+    const { json } = await issue(b.subdomain, { expiresDays: 1 });
+    expect((await manifest(b.subdomain, json.licenseId)).status).toBe("ACTIVE");
+    await prisma.auditLog.updateMany({ where: { action: "BRIDGE_LICENSE_ISSUED", entityId: json.licenseId }, data: { newValue: { licenseId: json.licenseId, expiresAt: new Date(Date.now() - 1000).toISOString() } } });
+    expect((await manifest(b.subdomain, json.licenseId)).status).toBe("EXPIRED");
   });
 });

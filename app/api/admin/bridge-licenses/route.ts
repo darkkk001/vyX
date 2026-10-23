@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { listClientBuilds } from "@/lib/client-builds";
-import { BridgeLicenseError, issueBridgeLicense } from "@/lib/bridge-licenses";
+import { bridgeLicenseExpiries, BridgeLicenseError, expiryState, issueBridgeLicense } from "@/lib/bridge-licenses";
 
 // QoreBridge licenses, Super Admin only (owner 2026-10-23).
 //   GET                                            -> every bridge license (newest first); revoke / reinstate with
@@ -12,8 +12,14 @@ import { BridgeLicenseError, issueBridgeLicense } from "@/lib/bridge-licenses";
 export async function GET() {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["SUPER_ADMIN"])) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  const all = await listClientBuilds();
-  return NextResponse.json(all.filter((b) => b.app === "bridge"));
+  const all = (await listClientBuilds()).filter((b) => b.app === "bridge");
+  const expiries = await bridgeLicenseExpiries(all.map((b) => b.buildId));
+  return NextResponse.json(
+    all.map((b) => {
+      const at = expiries.get(b.buildId) ?? null;
+      return { ...b, expiresAt: at != null ? new Date(at).toISOString() : null, expiry: expiryState(at) };
+    })
+  );
 }
 
 export async function POST(request: NextRequest) {

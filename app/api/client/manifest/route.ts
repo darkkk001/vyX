@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getClientBuild, signManifest, type ClientManifest } from "@/lib/client-builds";
+import { bridgeLicenseExpiries, expiryState } from "@/lib/bridge-licenses";
 
 // GET /api/client/manifest?slug=<broker subdomain>&app=terminal|backoffice&buildId=<id>
 // Public (no session yet -- the app calls it before sign-in), rate-limited. Returns the signed tenant
@@ -33,8 +34,10 @@ export async function GET(request: NextRequest) {
       ? // a license must be a bridge row of this broker; a revoked exe build revokes it too
         !build || build.app !== "bridge" || build.brokerId !== broker.id ? "UNKNOWN" : exe?.app === "bridge" && exe.status === "REVOKED" ? "REVOKED" : build.status
       : buildId.startsWith("dev") ? (devAllowed ? "ACTIVE" : "UNKNOWN") : !build || build.app === "bridge" ? "UNKNOWN" : build.brokerId !== broker.id ? "UNKNOWN" : build.status;
+  // a bridge license past its expiry: EXPIRED (the bridge stops; owner 2026-10-23)
+  const expiredBridge = app === "bridge" && status === "ACTIVE" && expiryState((await bridgeLicenseExpiries([buildId])).get(buildId)) === "expired";
   const now = Math.floor(Date.now() / 1000);
-  const manifest: ClientManifest = { slug: broker.subdomain, apiHost: `${broker.subdomain}.${rootDomain}`, app, buildId, status, minVersion: "", iat: now, exp: now + 24 * 3600 };
+  const manifest: ClientManifest = { slug: broker.subdomain, apiHost: `${broker.subdomain}.${rootDomain}`, app, buildId, status: expiredBridge ? "EXPIRED" : status, minVersion: "", iat: now, exp: now + 24 * 3600 };
   try {
     return NextResponse.json(signManifest(manifest), { headers: { "cache-control": "no-store" } });
   } catch (err) {

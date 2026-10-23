@@ -28,6 +28,7 @@ export const ACTIVITY_ACTION_LABEL: Record<DealerActivityAction, string> = {
   POSITION_CLOSED: "Position closed",
   CLOSE_REQUESTED: "Close awaiting dealer",
   ORDER_REJECTED: "Order rejected",
+  LICENSE_EXPIRING: "License expiring",
 };
 
 // The only color per row now lives here, on the action label itself
@@ -43,6 +44,7 @@ export const ACTIVITY_ACTION_TONE: Record<DealerActivityAction, "accent" | "warn
   POSITION_CLOSED: "neutral",
   CLOSE_REQUESTED: "accent",
   ORDER_REJECTED: "danger",
+  LICENSE_EXPIRING: "warning",
 };
 
 function fmt(v: unknown): string | null {
