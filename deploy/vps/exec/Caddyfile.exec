@@ -1,0 +1,25 @@
+# Execution latency Phase 1 (deploy/vps/exec/README.md): the order / close / modify routes served by the web build that
+# runs on this VPS (nssm service vyx-exec, [::1]:3200 = localhost), so a trader's order no longer goes through Vercel's edge.
+#
+#   https://feed.<root>/exec/<broker host>/api/trade/...   ->   [::1]:3200/api/trade/... with Host: <broker host>
+#
+# The broker comes from that host exactly as on Vercel (middleware.ts resolves it, getAccountSession refuses a session
+# of another broker), so the per-broker binding is the same code. Only these paths pass; anything else under /exec/ is
+# a 404 here and never reaches the app. Import it INSIDE each feed site block, BEFORE that block's other handlers:
+#
+#   import vyx_exec
+
+(vyx_exec) {
+	@vyx_exec path_regexp exec ^/exec/([a-z0-9-]+\.(?:vyxtrader|qoretrader)\.com)(/api/(?:health|trade/orders|trade/orders/[A-Za-z0-9_-]+|trade/orders/[A-Za-z0-9_-]+/requote-response|trade/positions/close-bulk|trade/positions/modify-bulk|trade/positions/[A-Za-z0-9_-]+|trade/positions/[A-Za-z0-9_-]+/close))$
+	handle @vyx_exec {
+		rewrite * {re.exec.2}
+		reverse_proxy [::1]:3200 {
+			header_up Host {re.exec.1}
+			header_up X-Forwarded-Host {re.exec.1}
+			header_up X-Forwarded-Proto https
+		}
+	}
+	handle /exec/* {
+		respond 404
+	}
+}

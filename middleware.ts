@@ -131,10 +131,18 @@ const PATH_ALIASES: Record<string, string> = {
 // Startup schema guard (lib/schema-guard.ts): while the database is behind this build, refuse everything with a 503.
 const schemaGate = createSchemaGate();
 
+// Execution latency Phase 1: the VPS execution server (deploy/vps/exec) runs this same build; its internal lookups go to
+// that same process (MIDDLEWARE_INTERNAL_ORIGIN=http://127.0.0.1:3200), not out through the broker's public host, which
+// is Vercel. Unset (Vercel) = the request's own origin, as always.
+function internalUrl(path: string, request: NextRequest): URL {
+  const origin = process.env.MIDDLEWARE_INTERNAL_ORIGIN ?? "";
+  return new URL(path, origin.length > 0 ? origin : request.url);
+}
+
 async function askSchemaBehind(request: NextRequest): Promise<boolean> {
   const secret = process.env.INTERNAL_SERVICE_SECRET ?? "";
   if (!secret) return false;
-  const res = await fetch(new URL("/api/internal/schema-status", request.url), {
+  const res = await fetch(internalUrl("/api/internal/schema-status", request), {
     headers: { "x-internal-request": "middleware", "x-internal-secret": secret },
   });
   if (!res.ok) return false;
@@ -251,7 +259,7 @@ async function route(request: NextRequest) {
 
   try {
     broker = await brokerResolver.resolve(hostname, async () => {
-      const lookupUrl = new URL("/api/internal/resolve-broker", request.url);
+      const lookupUrl = internalUrl("/api/internal/resolve-broker", request);
       if (subdomain) {
         lookupUrl.searchParams.set("subdomain", subdomain);
       } else {
