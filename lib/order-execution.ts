@@ -95,3 +95,23 @@ export function dealExecutionDetail(d: ExecDeal, digits: number, bookType: strin
   if (d.executionMode) out.executionMode = d.executionMode;
   return out;
 }
+
+// ---- D-4 (owner 2026-10-23): the CLIENT's execution detail (terminal Fill details, /api/trade/history and /api/trade/deals) ----
+
+/// The Order columns executionDetail reads (the backoffice deals route selects the same).
+export const EXEC_ORDER_SELECT = {
+  ticket: true, type: true, source: true, status: true, requestedAt: true, executedAt: true, clientIp: true, platform: true, routing: true,
+  executionMode: true, requestedPrice: true, filledPrice: true, rejectionReason: true,
+} as const;
+
+/// Sources a client itself places from; ADMIN is staff.
+const CLIENT_SOURCES = new Set(["WEB", "DESKTOP_NATIVE", "MOBILE", "API", "EA"]);
+
+/// The subset of an executionDetail / dealExecutionDetail a client may see: never the broker's book (routing) or desk
+/// mode (executionMode), and the IP only for a leg the client placed itself (a staff member's IP never leaves the
+/// backoffice). Everything else (tickets, type, status, source, times, latency, requested / filled price, platform,
+/// reject reason) as the backoffice gets it; absent fields stay absent.
+export function clientExecution(detail: Record<string, string | number>): Record<string, string | number> {
+  const { routing: _routing, executionMode: _mode, clientIp, ...rest } = detail;
+  return clientIp != null && CLIENT_SOURCES.has(String(detail.source ?? "")) ? { ...rest, clientIp } : rest;
+}

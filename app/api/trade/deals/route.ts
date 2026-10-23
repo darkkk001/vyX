@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { loadDealExecutions } from "@/lib/client-execution";
 
 // GET /api/trade/deals: the account's deals, MT5 "Deals" view (deal model step 4, docs/POSITION-DEAL-MODEL.md 3.4).
 // One row per execution: the opening IN, every OUT (partial or final close), both OUT_BY legs of a close-by, and the
@@ -45,11 +46,13 @@ export async function GET(request: NextRequest) {
 
   const positionIds = [...new Set(deals.flatMap((d) => (d.byPositionId ? [d.positionId, d.byPositionId] : [d.positionId])))];
   const [positions, symbols] = await Promise.all([
-    prisma.position.findMany({ where: { id: { in: positionIds }, accountId: session.accountId }, select: { id: true, ticket: true, deletedAt: true } }),
+    prisma.position.findMany({ where: { id: { in: positionIds }, accountId: session.accountId }, select: { id: true, ticket: true, deletedAt: true, bookType: true } }),
     prisma.symbol.findMany({ where: { id: { in: [...new Set(deals.map((d) => d.symbolId))] } }, select: { id: true, name: true, digits: true } }),
   ]);
   const pos = new Map(positions.map((p) => [p.id, p]));
   const sym = new Map(symbols.map((s) => [s.id, s]));
+  // D-4 (owner 2026-10-23): each deal's execution, the client's subset (lib/client-execution.ts)
+  const executionOf = await loadDealExecutions(session.accountId, deals, (id) => sym.get(id)?.digits ?? 2, (id) => pos.get(id)?.bookType ?? null);
   const rows = [];
   for (const d of deals) {
     const p = pos.get(d.positionId);
@@ -72,6 +75,7 @@ export async function GET(request: NextRequest) {
       executedAt: d.executedAt.toISOString(),
       byPositionTicket: d.byPositionId ? pos.get(d.byPositionId)?.ticket ?? null : null,
       status: d.voidedAt ? "VOIDED" : "FILLED",
+      ...(() => { const e = executionOf(d); return e ? { execution: e } : {}; })(),
     });
   }
   return NextResponse.json(rows);

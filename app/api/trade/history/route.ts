@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { closeByTarget, closesOf, type CloseLeg, type ClosesOptions, type CloseTx, type Counterpart } from "@/lib/history-closes";
 import { closesFromDeals, type CloseDeal } from "@/lib/deal-closes";
 import { dealReads } from "@/lib/deal-reads";
+import { loadPositionExecutions } from "@/lib/client-execution";
 
 export async function GET(request: NextRequest) {
   const session = await getAccountSession();
@@ -59,11 +60,13 @@ export async function GET(request: NextRequest) {
   // carries `closes` -- one entry per close (volume, price, P/L, time, the ticket it was closed against). Derived from the
   // TRADE_PNL transactions that reference the position (lib/history-closes.ts); absent on a plain single close.
   // DEAL_READS=history: the same `closes` from the Deal table (lib/deal-closes.ts).
+  // D-4 (owner 2026-10-23): each trade carries openExecution / closeExecution, the client's subset (lib/client-execution.ts)
+  const executions = await loadPositionExecutions(session.accountId, trades);
   if (dealReads("history")) {
     const closesFor = await dealClosesLoader(session.accountId, trades.map((t) => t.id));
     return NextResponse.json(trades.map((t) => {
       const closes = closesFor(t);
-      return closes ? { ...t, closes } : t;
+      return { ...t, ...executions.get(t.id), ...(closes ? { closes } : {}) };
     }));
   }
   const txRows = trades.length === 0 ? [] : await prisma.transaction.findMany({
@@ -81,7 +84,7 @@ export async function GET(request: NextRequest) {
   });
   return NextResponse.json(trades.map((t) => {
     const closes = closesOf(t, byPosition.get(t.id) ?? [], counterparts);
-    return closes ? { ...t, closes } : t;
+    return { ...t, ...executions.get(t.id), ...(closes ? { closes } : {}) };
   }));
 }
 
@@ -133,6 +136,7 @@ async function closesView(accountId: string, sp: URLSearchParams) {
     include: { symbol: { select: { name: true, digits: true } }, originOrder: { select: { source: true } } },
   });
   const byId = new Map(positions.map((p) => [p.id, p]));
+  const executions = await loadPositionExecutions(accountId, positions); // D-4
   const rows = [];
   for (const id of ids) {
     const p = byId.get(id);
@@ -151,6 +155,7 @@ async function closesView(accountId: string, sp: URLSearchParams) {
       closedPnl: closes.reduce((s, c) => s.add(c.pnl), zero).toString(),
       avgClosePrice: avg ? avg.toDecimalPlaces(p.symbol.digits).toString() : null,
       lastCloseAt: closes.length > 0 ? closes[closes.length - 1].at : null,
+      ...executions.get(p.id),
     });
   }
   return NextResponse.json(rows);
