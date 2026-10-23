@@ -499,7 +499,8 @@ async fn every_engine_close_records_its_trigger_tick() {
         let cache = TickCache::new();
         let mut cached = tick(&w.symbol_name, cache_bid);
         cached.tick_ms = Some(cache_tick_at.timestamp_millis());
-        cache.set(&cached, cache_received);
+        // as ingest stores it: at its feed time (ingest::resolve_tick_time), received by the engine's clock
+        cache.set_received(&cached, cache_tick_at, cache_received);
         let cache = Arc::new(cache);
         let fired_received = chrono::Utc::now() - chrono::Duration::seconds(fired.map_or(0, |(_, age)| age));
         let fired_at = chrono::DateTime::from_timestamp_millis((fired_received - skew).timestamp_millis()).unwrap();

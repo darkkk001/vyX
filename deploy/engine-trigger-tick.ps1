@@ -158,6 +158,7 @@ $must = @(
   @("order-management\src\db.rs", 'pub struct QuoteStamp', "price source and tick time per position (trigger-tick capture)"),
   @("order-management\src\monitor.rs", 'received: fire.received', "a live fire hands its receive times to the evaluation (trigger-tick capture)"),
   @("market-data\src\risk_hook.rs", 'pub received: HashMap', "a live fire carries the engine's receive time (trigger-tick capture)"),
+  @("market-data\src\cache.rs", 'pub fn latest_received', "the tick cache keeps the engine's own receive time, not the feed's (trigger-tick receive-time fix)"),
   # live today, must not be lost: NBP on the last close + margin-call hysteresis (2026-10-22), deal model, Stage 6, 10-05
   @("order-management\src\book.rs", 'protect_nbp: bool, last_position: bool', "NBP only on the last close (2026-10-22)"),
   @("order-management\src\monitor.rs", 'fn margin_call_edge_at', "margin-call hysteresis (2026-10-22)"),
