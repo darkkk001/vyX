@@ -86,6 +86,22 @@ describe("account plan, never the group (live DB)", () => {
     expect(JSON.stringify(list)).not.toContain(SECRET_NAME);
   });
 
+  it("linked accounts: each carries accountPlan and fullName (Plan · Name · Number), never the group's name or id", async () => {
+    if (!ready) return;
+    const { broker, group, account } = await fixture("Pro");
+    const other = await prisma.group.create({ data: { brokerId: broker.id, name: `${SECRET_NAME}-2`, displayName: "Raw Spread", dealingMode: "AUTO" } as never });
+    await prisma.account.create({ data: { brokerId: broker.id, groupId: other.id, accountNumber: `${account.accountNumber.slice(0, 7)}9`, email: account.email, passwordHash: "x", fullName: "AP Second", accountMode: "DEMO", balance: D(500) } });
+    const { GET } = await import("@/app/api/trade/linked-accounts/route");
+    const list = (await (await GET()).json()) as Record<string, unknown>[];
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ accountPlan: "Raw Spread", fullName: "AP Second", accountMode: "DEMO" });
+    expect(list[0]).not.toHaveProperty("group");
+    const t = JSON.stringify(list);
+    expect(t).not.toContain(SECRET_NAME);
+    expect(t).not.toContain(other.id);
+    expect(t).not.toContain(group.id);
+  });
+
   it("history, positions, orders, deals and summary never carry the group's name or id", async () => {
     if (!ready) return;
     const { group } = await fixture("Pro");
