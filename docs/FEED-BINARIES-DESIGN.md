@@ -1,6 +1,11 @@
 # Native update feeds out of git (design, 2026-10-23)
 
-Status: **design only, nothing changed.** Waits for the owner's go.
+Status: owner go 2026-10-24 for steps 1-5, in order. Step 2 done 2026-10-24: all 327 live binaries (7.35 GB) in bucket
+`vyx-feeds`, byte-checked over S3 (327/327 = git, 315 also = releases.win.json; the 12 others are Setup/portable).
+Open from step 1: `feeds.vyxtrader.com` still resolves to Vercel (the `*` wildcard), not to the bucket; the public
+byte check repeats once it serves from R2. Steps 3-5 after Sunday's web deploy and QoreTrader terminal 1.0.95, cutover and
+gateway sessions told first, the redirect proven on an installed QoreTrader backoffice before any other domain.
+Futurix feeds stay held until the owner's test.
 
 ## Today
 
@@ -80,6 +85,23 @@ are still there.
 
 **Rollback** at any step: remove the redirect and restore the binaries to `public/` from git (they stay in history until
 step 6). The same URLs then serve from Vercel again.
+
+## Cleanup rule (owner 2026-10-24)
+
+Per broker and app, R2 keeps the **newest 5 Full packages**. Also kept: Delta packages newer than the oldest kept Full
+(an older delta only upgrades from a version that is no longer offered), and Setup / portable (one name each, replaced
+by every publish). `tools/feeds/prune-r2.mjs` applies it:
+
+1. dry run (no flag): prints, per feed, what stays and what goes;
+2. `--index`: drops the pruned packages from `releases.win.json` and `RELEASES`, then the usual web commit, push,
+   deploy, so no client is ever offered a package that is about to disappear;
+3. `--r2`: deletes from R2 only what the **live** index on www no longer lists (re-read per feed right before the
+   deletes), so running it before the index deploy deletes nothing.
+
+Runs after each publish once a feed is on R2 (step 5); Futurix only in an owner-approved window. Dry run on
+2026-10-24: about 6.3 GB would go across the 4 feeds (Futurix terminal 104 packages, QoreTrader terminal 18, Futurix
+backoffice 153, QoreTrader backoffice 20). Nothing is applied before step 5. Deleting from R2 does not touch git
+history (step 6).
 
 ## Step 6, separate decision: history
 
