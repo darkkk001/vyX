@@ -17,6 +17,12 @@ import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 // once up front -- so 30 positions in the same symbol all close at
 // exactly the same price, not 30 slightly-different ticks 500ms apart.
 
+/** The ledger note of a bulk-closed position: the symbol itself for a by-symbol close ("Bulk close (XAUUSD)"), the
+ *  scope otherwise. Owner 2026-10-26: the literal "Bulk close (SYMBOL)" reached the ledger. */
+export function bulkCloseNote(scope: BulkCloseScope, symbolName: string): string {
+  return `Bulk close (${scope === "SYMBOL" ? symbolName : scope})`;
+}
+
 export type BulkCloseScope = "ALL" | "PROFIT" | "LOSS" | "SYMBOL";
 
 export type BulkClosePositionResult = {
@@ -174,7 +180,7 @@ export async function closeBulkForAccount(
           symbol: { contractSize: p.symbol.contractSize },
         },
         closePrice,
-        note: `Bulk close (${scope})`,
+        note: bulkCloseNote(scope, p.symbol.name),
         deal: { reason: "BULK", source: params.dealSource ?? null, adminId: params.adminId ?? null, capture: { ...params.capture, routing: p.bookType, executionMode: params.adminId ? "DEALER" : "AUTO" } },
       });
       if (!outcome.closed) {

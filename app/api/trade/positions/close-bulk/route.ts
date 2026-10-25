@@ -4,7 +4,7 @@ import { traceCloseOrModifyRefusals } from "@/lib/rejected-orders";
 import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { closeBulkForAccount, selectBulkCloseTargets, type BulkCloseScope, type BulkClosePositionResult } from "@/lib/bulk-close";
+import { bulkCloseNote, closeBulkForAccount, selectBulkCloseTargets, type BulkCloseScope, type BulkClosePositionResult } from "@/lib/bulk-close";
 import { closePriceFor } from "@/lib/trading";
 import { clientDealSource } from "@/lib/deals";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
@@ -99,7 +99,7 @@ async function postInner(request: NextRequest) {
             capture: requestMeta(request.headers),
             symbolName: p.symbol.name,
             accountNumber: account.accountNumber,
-            note: `Bulk close (${scope})`,
+            note: bulkCloseNote(scope, p.symbol.name),
           })
         );
         await afterCloseQueued(prisma, {
