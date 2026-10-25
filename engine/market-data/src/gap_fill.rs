@@ -117,10 +117,13 @@ fn daily_break_hours(symbol: &str) -> u32 {
     }
 }
 
-// Inside the daily break: Mon-Thu, from the same NY-17:00 anchor the weekend close uses (so it tracks DST
+// Inside the daily break: Sun-Thu, from the same NY-17:00 anchor the weekend close uses (so it tracks DST
 // identically), for daily_break_hours. A break may run past midnight UTC (Brent in winter: 22:00 -> 01:00); the day
-// that counts is the day it began. Friday 17:00 onward and the weekend are already closed by market_closed. Without
-// this, a nightly break was flat-filled (and stale heartbeat resends written) as real candles.
+// that counts is the day it began. Friday 17:00 onward and the rest of the weekend are already closed by
+// market_closed. Sunday counts too: a break symbol's week opens at the anchor PLUS its break (metals and SpotCrude
+// 18:00 New York), not at the FX open (2026-10-25: XAUUSD got flat bars at Friday's 3998.07 from 21:35 to 21:48 UTC,
+// before its 22:00 open). Without this, a nightly break was flat-filled (and stale heartbeat resends written) as real
+// candles.
 fn in_daily_break(t: DateTime<Utc>, hours: u32) -> bool {
     if hours == 0 {
         return false;
@@ -130,7 +133,7 @@ fn in_daily_break(t: DateTime<Utc>, hours: u32) -> bool {
         return false;
     }
     let began = t - Duration::hours(i64::from(into));
-    matches!(began.weekday(), Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu)
+    matches!(began.weekday(), Weekday::Sun | Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu)
 }
 
 // hotfix/terminal-live-bugs round 2 -- market_closed() above is a FX/
@@ -887,5 +890,32 @@ mod tests {
         assert!(!market_open("XAUUSD", t("2026-10-21T21:30:00Z")));
         assert!(market_open("XAUUSD", t("2026-10-21T22:30:00Z")));
         assert!(market_open("EURUSD", t("2026-10-21T21:30:00Z")));
+    }
+
+    #[test]
+    fn a_break_symbol_opens_on_sunday_after_its_break_not_at_the_fx_open() {
+        let t = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        // summer (EDT): FX opens Sun 21:00 UTC; metals and SpotCrude one hour later, SpotBrent three hours later
+        assert!(market_open("EURUSD", t("2026-10-25T21:30:00Z")));
+        for sym in ["XAUUSD", "XAGUSD", "XPTUSD", "SpotCrude"] {
+            assert!(!market_open(sym, t("2026-10-25T21:00:00Z")), "{sym} Sun 21:00");
+            assert!(!market_open(sym, t("2026-10-25T21:35:00Z")), "{sym} Sun 21:35 (the flat bars of 2026-10-25)");
+            assert!(!market_open(sym, t("2026-10-25T21:59:00Z")), "{sym} Sun 21:59");
+            assert!(market_open(sym, t("2026-10-25T22:00:00Z")), "{sym} Sun 22:00");
+        }
+        assert!(!market_open("SpotBrent", t("2026-10-25T23:59:00Z")));
+        assert!(market_open("SpotBrent", t("2026-10-26T00:00:00Z")));
+        // winter (EST): FX opens Sun 22:00 UTC; metals 23:00; SpotBrent Mon 01:00
+        assert!(market_open("EURUSD", t("2026-11-08T22:30:00Z")));
+        assert!(!market_open("XAUUSD", t("2026-11-08T22:30:00Z")));
+        assert!(market_open("XAUUSD", t("2026-11-08T23:00:00Z")));
+        assert!(!market_open("SpotBrent", t("2026-11-09T00:59:00Z")));
+        assert!(market_open("SpotBrent", t("2026-11-09T01:00:00Z")));
+        // before the anchor it is still the weekend for everyone; crypto never closes
+        assert!(!market_open("EURUSD", t("2026-10-25T20:59:00Z")));
+        assert!(market_open("BTCUSD", t("2026-10-25T21:35:00Z")));
+        // weekday breaks unchanged
+        assert!(!market_open("XAUUSD", t("2026-10-21T21:30:00Z")));
+        assert!(market_open("XAUUSD", t("2026-10-21T22:00:00Z")));
     }
 }
