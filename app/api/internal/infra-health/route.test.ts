@@ -33,7 +33,7 @@ const KEYS = ["INTERNAL_SERVICE_SECRET", "OPS_ALERT_EMAIL", "TRADING_CORE_URL", 
 const send = vi.mocked(sendPlatformEmail);
 
 async function clearKeys() {
-  await getRedis().del("infra-health:caddy", "infra-health:caddy:state");
+  await getRedis().del("infra-health:caddy", "infra-health:caddy:state", "infra-health:qorebridge", "infra-health:qorebridge:state");
 }
 beforeEach(async () => {
   for (const k of KEYS) saved[k] = process.env[k];
@@ -84,6 +84,25 @@ describe("validation", () => {
     expect((await post({ ...report(true), checkedAt: "yesterday" })).status).toBe(400);
     expect((await post({ ...report(false), reasons: Array.from({ length: 21 }, () => "x") })).status).toBe(400);
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("qorebridge (owner 2026-10-26: the VPS bridge health task got 400)", () => {
+  it("a qorebridge report is stored and read on its own, separate from caddy; an unknown component is still 400", async () => {
+    const res = await post({ ...report(true), component: "qorebridge", checks: { service: "Running", health: "ok" } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ stored: true, state: "OK", alerted: null });
+    expect(await getRedis().get("infra-health:qorebridge")).not.toBeNull();
+    expect(await getRedis().get("infra-health:caddy")).toBeNull();
+    expect((await readInfraSummary("qorebridge")).state).toBe("OK");
+    expect((await readInfraSummary("caddy")).state).toBe("NO_REPORT");
+    expect((await post({ ...report(true), component: "qorebridge-x" })).status).toBe(400);
+  });
+  it("its failure alert names the bridge runbook", async () => {
+    await post({ ...report(true), component: "qorebridge" });
+    const r = await (await post({ ...report(false, ["service Stopped"]), component: "qorebridge" })).json();
+    expect(r).toMatchObject({ state: "FAIL", alerted: "FAIL" });
+    expect(send.mock.calls[0][0].text).toContain("deploy/qorebridge-vps-runbook.md");
   });
 });
 
