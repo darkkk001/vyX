@@ -2,8 +2,8 @@
 
 Status: owner go 2026-10-24 for steps 1-5, in order. Step 2 done 2026-10-24: all 327 live binaries (7.35 GB) in bucket
 `vyx-feeds`, byte-checked over S3 (327/327 = git, 315 also = releases.win.json; the 12 others are Setup/portable).
-Open from step 1: `feeds.vyxtrader.com` still resolves to Vercel (the `*` wildcard), not to the bucket; the public
-byte check repeats once it serves from R2. Steps 3-5 after Sunday's web deploy and QoreTrader terminal 1.0.95, cutover and
+Step 1 done 2026-10-26: `feeds.vyxtrader.com` is the bucket's R2 custom domain; the public byte check passed
+327/327 (served by Cloudflare from R2, no listing: the root and unknown keys answer 404). Steps 3-5 after Sunday's web deploy and QoreTrader terminal 1.0.95, cutover and
 gateway sessions told first, the redirect proven on an installed QoreTrader backoffice before any other domain.
 Futurix feeds stay held until the owner's test.
 
