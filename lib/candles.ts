@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { fetchVpsCandles, isVpsSymbol } from "@/lib/market-data-client";
+import { fetchVpsCandles, isVpsSymbol, priceReadRetryDelayMs } from "@/lib/market-data-client";
 
 // Shared OHLC history read used by BOTH the account-authed trade chart
 // (app/api/trade/candles) and the admin-authed backoffice Dealing chart
@@ -37,7 +37,10 @@ export function candleBeforeFrom(raw: string | null): Date | null | "invalid" {
   return Number.isNaN(d.getTime()) ? "invalid" : d;
 }
 
-export type CandleSource = "vps" | "neon" | "neon-fallback";
+// "vps-unavailable": the NEWEST page of a VPS symbol that the engine did not answer (after one retry). It is never
+// served from Neon: Neon's candles for a VPS symbol stopped on 2026-09-14, so a fallback there opened the chart on bars
+// weeks old. The routes answer 503 + Retry-After, and the client keeps what it shows and asks again.
+export type CandleSource = "vps" | "neon" | "neon-fallback" | "vps-unavailable";
 
 /**
  * Newest-300 OHLC bars for a symbol/timeframe, returned oldest-first so a
@@ -59,6 +62,15 @@ export async function fetchCandleHistory(
   if (vpsSymbol) {
     const vps = await fetchVpsCandles(symbol, timeframe, limit, before);
     if (vps) return { candles: vps, source: "vps" };
+    // owner 2026-10-26: the newest page is never served from Neon (frozen for VPS symbols since 2026-09-14). One retry,
+    // then "unavailable"; only a scroll-back page (`before`) may fall back to Neon's older history (past the VPS
+    // retention: M1 30 days, M5 180 days)
+    if (!before) {
+      await new Promise((r) => setTimeout(r, priceReadRetryDelayMs()));
+      const again = await fetchVpsCandles(symbol, timeframe, limit, null);
+      if (again) return { candles: again, source: "vps" };
+      return { candles: [], source: "vps-unavailable" };
+    }
   }
 
   const candles = await prisma.candle.findMany({

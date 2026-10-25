@@ -28,7 +28,8 @@ afterEach(() => {
   process.env.MARKET_DATA_URL = ENV.MARKET_DATA_URL;
   process.env.MARKET_DATA_READ_SECRET = ENV.MARKET_DATA_READ_SECRET;
   process.env.MARKET_DATA_VPS_SYMBOLS = ENV.MARKET_DATA_VPS_SYMBOLS;
-  for (const k of ["MARKET_DATA_URL", "MARKET_DATA_READ_SECRET", "MARKET_DATA_VPS_SYMBOLS"]) if (ENV[k] === undefined) delete process.env[k];
+  process.env.PRICE_READ_RETRY_DELAY_MS = ENV.PRICE_READ_RETRY_DELAY_MS;
+  for (const k of ["MARKET_DATA_URL", "MARKET_DATA_READ_SECRET", "MARKET_DATA_VPS_SYMBOLS", "PRICE_READ_RETRY_DELAY_MS"]) if (ENV[k] === undefined) delete process.env[k];
 });
 
 const T0 = Date.UTC(2026, 8, 20, 10, 0); // 2026-09-20 10:00 UTC
@@ -112,5 +113,64 @@ describe("GET /api/trade/candles with paging", () => {
     expect((await get(`symbol=${sym}&tf=M1&limit=1500`, s)).json).toHaveLength(1500);
     expect((await get(`symbol=${sym}&tf=M1&limit=5000`, s)).json).toHaveLength(1500);
     expect((await get(`symbol=${sym}&tf=M1`, s)).json).toHaveLength(300);
+  });
+});
+
+// Owner 2026-10-26: the NEWEST page of a VPS symbol is never served from Neon (its candles there stopped on
+// 2026-09-14). One retry, then "vps-unavailable" (503 from the routes); only a scroll-back page may use Neon.
+describe("newest page of a VPS symbol: never from Neon", () => {
+  const engineRow = (sym: string, ms: number) => ({ symbol: sym, timeframe: "M1", bucketStart: new Date(ms).toISOString(), open: "1", high: "2", low: "1", close: "1.5", updatedAt: new Date(ms).toISOString() });
+  function vpsAnswers(sym: string, answers: (unknown[] | "error")[]) {
+    process.env.MARKET_DATA_URL = "https://feed.test.local";
+    process.env.MARKET_DATA_READ_SECRET = "test-secret";
+    process.env.MARKET_DATA_VPS_SYMBOLS = sym;
+    process.env.PRICE_READ_RETRY_DELAY_MS = "0";
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      const a = answers[Math.min(urls.length - 1, answers.length - 1)];
+      if (a === "error") return new Response("down", { status: 502 });
+      return new Response(JSON.stringify(a), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    return urls;
+  }
+
+  it("the engine misses twice (error, then empty): unavailable, no Neon bars even though Neon has some", async () => {
+    if (!ready) return;
+    const sym = `NV${randomUUID().slice(0, 6).toUpperCase()}`;
+    await seedNeon(sym, 10); // stale Neon history that used to open the chart
+    const urls = vpsAnswers(sym, ["error", []]);
+    const r = await fetchCandleHistory(sym, "M1", 300);
+    expect({ source: r.source, n: r.candles.length, calls: urls.length }).toEqual({ source: "vps-unavailable", n: 0, calls: 2 });
+  });
+
+  it("the engine misses once, answers on the retry: the VPS bars", async () => {
+    if (!ready) return;
+    const sym = `NR${randomUUID().slice(0, 6).toUpperCase()}`;
+    await seedNeon(sym, 10);
+    const urls = vpsAnswers(sym, ["error", [engineRow(sym, T0 + 60 * 60_000)]]);
+    const r = await fetchCandleHistory(sym, "M1", 300);
+    expect({ source: r.source, at: iso(r.candles), calls: urls.length }).toEqual({ source: "vps", at: [new Date(T0 + 60 * 60_000).toISOString()], calls: 2 });
+  });
+
+  it("a scroll-back page (`before`) still falls back to Neon's older history, without a retry", async () => {
+    if (!ready) return;
+    const sym = `NB${randomUUID().slice(0, 6).toUpperCase()}`;
+    await seedNeon(sym, 10);
+    const urls = vpsAnswers(sym, [[]]);
+    const r = await fetchCandleHistory(sym, "M1", 2, new Date(T0 + 5 * 60_000));
+    expect({ source: r.source, n: r.candles.length, calls: urls.length }).toEqual({ source: "neon-fallback", n: 2, calls: 1 });
+  });
+
+  it("the trade route answers 503 + Retry-After for an unavailable newest page (the client keeps its chart)", async () => {
+    if (!ready) return;
+    const sym = `NT${randomUUID().slice(0, 6).toUpperCase()}`;
+    await seedNeon(sym, 10);
+    vpsAnswers(sym, ["error"]);
+    const { getAccountSession } = await import("@/lib/account-auth");
+    vi.mocked(getAccountSession).mockResolvedValue({ accountId: "acc", brokerId: "brk" } as never);
+    const { GET } = await import("@/app/api/trade/candles/route");
+    const res = await GET(new NextRequest(`https://t.local/api/trade/candles?symbol=${sym}&tf=M1`));
+    expect([res.status, res.headers.get("retry-after"), res.headers.get("x-market-data-source"), (await res.json()).error]).toEqual([503, "2", "vps-unavailable", "CANDLES_UNAVAILABLE"]);
   });
 });

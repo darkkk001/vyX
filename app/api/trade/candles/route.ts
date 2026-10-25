@@ -44,5 +44,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(list.map((c) => ({ symbol, timeframe, bucketStart: new Date(c.bucketStart).toISOString(), open: c.open, high: c.high, low: c.low, close: c.close })), { headers: { "x-market-data-source": "demo" } });
   }
   const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, candleLimitFrom(searchParams.get("limit")), before);
+  if (source === "vps-unavailable") {
+    // the newest page of a VPS symbol the engine did not answer: never stale Neon bars; the client keeps its chart and asks again
+    return NextResponse.json({ error: "CANDLES_UNAVAILABLE" }, { status: 503, headers: { "Retry-After": "2", "x-market-data-source": source, "Cache-Control": "no-store" } });
+  }
   return NextResponse.json(candles, { headers: { "x-market-data-source": source } });
 }
