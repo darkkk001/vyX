@@ -159,6 +159,21 @@ describe("metals daily break", () => {
     // Friday's NY-17:00 hour is the weekend close, not a break; Sunday's is the reopen
     expect(isInDailyBreak(new Date(Date.UTC(2026, 8, 18, 21, 30)), "METALS")).toBe(false);
   });
+  it("Sunday: a break symbol opens after its break, not at the FX open (owner 2026-10-26)", () => {
+    const sun2130 = new Date(Date.UTC(2026, 9, 25, 21, 30)); // Sun 25 Oct 2026, EDT: FX open since 21:00 UTC
+    expect(checkTradingSession([], sun2130, "METALS", "XAUUSD")).toBe("MARKET_CLOSED");
+    expect(checkTradingSession([], sun2130, "FOREX", "EURUSD")).toBeNull();
+    expect(checkTradingSession([], sun2130, "COMMODITIES", "SpotCrude")).toBe("MARKET_CLOSED");
+    expect(checkTradingSession([], sun2130, "CRYPTO", "BTCUSD")).toBeNull();
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 9, 25, 22, 0)), "METALS", "XAUUSD")).toBeNull();
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 9, 25, 23, 30)), "COMMODITIES", "SpotBrent")).toBe("MARKET_CLOSED");
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 9, 26, 0, 0)), "COMMODITIES", "SpotBrent")).toBeNull();
+    expect(computeNextSessionOpen([], sun2130, "METALS", "XAUUSD").toISOString()).toBe("2026-10-25T22:00:00.000Z");
+    // winter (EST): FX opens 22:00 UTC, gold 23:00
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 10, 8, 22, 30)), "METALS", "XAUUSD")).toBe("MARKET_CLOSED");
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 10, 8, 22, 30)), "FOREX", "EURUSD")).toBeNull();
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 10, 8, 23, 0)), "METALS", "XAUUSD")).toBeNull();
+  });
   it("reopens at the top of the next hour, not next Sunday", () => {
     const reopen = computeNextSessionOpen([], new Date(Date.UTC(2026, 8, 16, 21, 30)), "METALS");
     expect(reopen.toISOString()).toBe("2026-09-16T22:00:00.000Z");

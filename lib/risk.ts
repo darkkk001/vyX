@@ -253,8 +253,10 @@ export function dailyBreakHours(category: SymbolCategory, symbolName?: string | 
 export function hasDailyBreak(category: SymbolCategory, symbolName?: string | null): boolean {
   return dailyBreakHours(category, symbolName) > 0;
 }
-/** The UTC instant the current daily break began, or null outside one. A break starts Mon-Thu at New York 17:00 and may
- *  run past midnight UTC (Brent in winter: 22:00-01:00). */
+/** The UTC instant the current daily break began, or null outside one. A break starts Sun-Thu at New York 17:00 and may
+ *  run past midnight UTC (Brent in winter: 22:00-01:00). Sunday counts (owner 2026-10-26): a break symbol's week opens
+ *  at the anchor PLUS its break (gold 22:00 UTC in summer), not at the FX open; before this an XAUUSD order at Sun
+ *  21:30 UTC was accepted against Friday's frozen price. engine/market-data gap_fill.rs has the same rule. */
 export function dailyBreakStart(now: Date, category: SymbolCategory, symbolName?: string | null): Date | null {
   const hours = dailyBreakHours(category, symbolName);
   if (hours === 0) return null;
@@ -263,7 +265,7 @@ export function dailyBreakStart(now: Date, category: SymbolCategory, symbolName?
   const start = new Date(now.getTime() - into * 3_600_000);
   start.setUTCMinutes(0, 0, 0);
   const day = start.getUTCDay();
-  return day >= 1 && day <= 4 ? start : null;
+  return day >= 0 && day <= 4 ? start : null;
 }
 export function isInDailyBreak(now: Date, category: SymbolCategory, symbolName?: string | null): boolean {
   return dailyBreakStart(now, category, symbolName) !== null;
