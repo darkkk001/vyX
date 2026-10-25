@@ -8,11 +8,13 @@ import { withDeadlockRetry } from "@/lib/tx-retry";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, resolveWantsDealingQueue } from "@/lib/dealing-routing";
-import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, effectiveMaxSlippagePips, isValidMaxSlippageInput, traderSlippagePoints, brokerSlippageCapPoints } from "@/lib/risk";
+import { checkLotStep, checkSlippage, closePriceMaxAgeMs, CLOSE_FRESH_TICK_WAIT_MS, NOT_QUOTING_AFTER_MS, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, effectiveMaxSlippagePips, isValidMaxSlippageInput, traderSlippagePoints, brokerSlippageCapPoints } from "@/lib/risk";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
-import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
+import { classifyMissingPrice, getLivePriceRow, waitForFreshTick } from "@/lib/live-price";
+import { withClientRefusals } from "@/lib/client-reason";
+import { traceCloseOrModifyRefusals } from "@/lib/rejected-orders";
 import { afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 import { runAfterResponse } from "@/lib/after-response";
 import { isDemoTenant } from "@/lib/demo-policy";
@@ -47,7 +49,10 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const startedAt = Date.now();
-  const res = await handleClose(request, params, new Date(startedAt));
+  const raw = await handleClose(request, params, new Date(startedAt));
+  // a refusal is traced with its internal reason, then cut to clientReason for the client (lib/client-reason.ts)
+  await traceCloseOrModifyRefusals("CLOSE", raw, request.headers, new Date(startedAt), (await params).id);
+  const res = await withClientRefusals(raw);
   res.headers.set("Server-Timing", `app;dur=${Date.now() - startedAt}`);
   return res;
 }
@@ -90,7 +95,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   // read for a position that turns out not to be this account's are discarded unanswered (404 below).
   const bySymbolOfPosition = { positions: { some: { id } } };
   const symbolRead = prisma.symbol.findFirst({ where: bySymbolOfPosition, select: { id: true, name: true, category: true, contractSize: true, digits: true } });
-  const [row, symbol, accountRow, group, brokerSymbol, tradingSessions, broker, livePrice, askRuleFor] = await Promise.all([
+  const [row, symbol, accountRow, group, brokerSymbol, tradingSessions, broker, livePriceRead, askRuleFor] = await Promise.all([
     prisma.position.findUnique({ where: { id } }),
     symbolRead,
     prisma.account.findFirst({ where: { positions: { some: { id } } }, select: { accountNumber: true, fullName: true, status: true, tradingRights: true } }),
@@ -144,17 +149,29 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     return NextResponse.json({ error: "PRICE_CHANGED", reason: "Price changed, try again", symbol: position.symbol.name }, { status: 400 });
   }
 
-  // evaluateLiveMarketPrice keeps the client's reference honest (NO_LIVE_FEED / too far from market) and
-  // checkPriceFreshness gates staleness at the fill threshold, both exactly as the open path does. The fill price
-  // itself is derived below from this read and nothing else.
-  const priceError = evaluateLiveMarketPrice(livePrice, position.symbol.name, clientReferencePrice) ?? checkPriceFreshness(livePrice);
-  if (priceError || !livePrice) {
-    const code = priceError ?? "NO_LIVE_FEED";
-    // schedule OPEN but no fresh tick: feed alive elsewhere = this market is not quoting (see classifyMissingPrice)
-    if ((code === "NO_LIVE_FEED" || code === "PRICE_STALE") && (await classifyMissingPrice(session.brokerId, position.symbol.name)) === "MARKET_CLOSED") {
-      return NextResponse.json({ error: "MARKET_CLOSED", reason: "NOT_QUOTING", nextOpenAt: null, symbol: position.symbol.name, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
-    }
-    return NextResponse.json({ error: code, symbol: position.symbol.name, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
+  // Price age (owner 2026-10-23, the USDX trace): each category has its own limit (closePriceMaxAgeMs). A tick a little
+  // too old is not a refusal yet: wait up to CLOSE_FRESH_TICK_WAIT_MS for a fresh one. Only then:
+  //   older than NOT_QUOTING_AFTER_MS while the feed is alive elsewhere -> NOT_QUOTING (this market is not quoting);
+  //   no tick at all / the feed is down                                  -> NO_LIVE_FEED;
+  //   otherwise                                                          -> PRICE_STALE.
+  // Never MARKET_CLOSED here: the schedule was checked above, and an open market without quotes is "off quotes" to the
+  // client (lib/client-reason.ts). evaluateLiveMarketPrice still keeps the client's reference honest on a fresh tick.
+  const maxAgeMs = closePriceMaxAgeMs(position.symbol.category);
+  const ageOf = (p: { tickAt: Date } | null) => (p ? Date.now() - p.tickAt.getTime() : null);
+  let livePrice = livePriceRead;
+  const firstAge = ageOf(livePrice);
+  if (livePrice && firstAge !== null && firstAge > maxAgeMs && firstAge <= NOT_QUOTING_AFTER_MS) {
+    livePrice = (await waitForFreshTick(position.symbol.name, maxAgeMs, CLOSE_FRESH_TICK_WAIT_MS)) ?? livePrice;
+  }
+  const lastTickAgeMs = ageOf(livePrice);
+  if (!livePrice || lastTickAgeMs === null || lastTickAgeMs > maxAgeMs) {
+    const feedAlive = !livePrice || (lastTickAgeMs ?? 0) > NOT_QUOTING_AFTER_MS ? (await classifyMissingPrice(session.brokerId, position.symbol.name)) === "MARKET_CLOSED" : true;
+    const code = livePrice && (lastTickAgeMs ?? 0) <= NOT_QUOTING_AFTER_MS ? "PRICE_STALE" : feedAlive ? "NOT_QUOTING" : "NO_LIVE_FEED";
+    return NextResponse.json({ error: code, symbol: position.symbol.name, lastTickAt: livePrice?.tickAt?.toISOString() ?? null, lastTickAgeMs }, { status: 400 });
+  }
+  const referenceError = evaluateLiveMarketPrice(livePrice, position.symbol.name, clientReferencePrice);
+  if (referenceError) {
+    return NextResponse.json({ error: referenceError, symbol: position.symbol.name, lastTickAgeMs }, { status: 400 });
   }
   // Owner decision (2026-09-26): a BUY closes at the raw bid, a SELL at this account's ask (lib/ask-markup.ts)
   const closePrice = accountClosePrice(position.side, livePrice.bid, livePrice.ask, askRuleFor?.(position.symbol.id));

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withClientRefusals } from "@/lib/client-reason";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { triggerPendingOrder } from "@/lib/pending-trigger";
@@ -8,7 +9,7 @@ import { triggerPendingOrder } from "@/lib/pending-trigger";
 // terminal no longer calls this. Kept for installed older builds: it runs the very same routine, so the order is
 // claimed once (a server trigger and this POST can never both fill it), and a lasting failure REJECTS the order --
 // which also ends an old terminal's re-POST-every-tick loop (it gets 409 "cannot fill an order in status REJECTED").
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function postInner(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
@@ -40,4 +41,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     case "skipped":
       return NextResponse.json({ error: `cannot fill: ${r.reason}` }, { status: 409 });
   }
+}
+
+// Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts).
+export async function POST(request: Parameters<typeof postInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  const raw = await postInner(request, ctx);
+  return withClientRefusals(raw);
 }

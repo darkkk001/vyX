@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withClientRefusals } from "@/lib/client-reason";
 import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -24,7 +25,7 @@ import { toClientShape } from "@/lib/client-execution";
 // "stopLevel relative to the entry price" rule item 13 asked for, and
 // it's what makes this correct for an order sitting miles from the
 // current market on purpose.
-export async function PATCH(
+async function patchInner(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -205,7 +206,7 @@ export async function PATCH(
 
 // Cancel a resting PENDING order. No arbitrary status jumps — only
 // PENDING -> CANCELLED is allowed here.
-export async function DELETE(
+async function deleteInner(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -281,4 +282,16 @@ export async function DELETE(
     orderId: id,
   });
   return NextResponse.json(toClientShape(cancelled));
+}
+
+// Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts).
+export async function PATCH(request: Parameters<typeof patchInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  const raw = await patchInner(request, ctx);
+  return withClientRefusals(raw);
+}
+
+// Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts).
+export async function DELETE(request: Parameters<typeof deleteInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  const raw = await deleteInner(request, ctx);
+  return withClientRefusals(raw);
 }

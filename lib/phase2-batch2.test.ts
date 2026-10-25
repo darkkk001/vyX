@@ -74,8 +74,9 @@ async function marketBuy(brokerId: string, accountId: string, symbolName: string
   const res = await POST(new NextRequest("https://t.local/api/trade/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ symbol: symbolName, side: "BUY", type: "MARKET", volume: "0.1", price: "100.10", idempotencyKey: randomUUID() }) }));
   return { status: res.status, json: await res.json() };
 }
-const outcome = (r: { status: number; json: { position?: unknown; order?: { status: string }; code?: string } }) =>
-  r.status === 201 && r.json.position ? "FILLED" : r.status === 201 && r.json.order?.status === "PENDING" ? "QUEUED" : `REFUSED ${r.json.code}`;
+// a refusal answers with clientReason only (lib/client-reason.ts): SYSTEM_ACCOUNT reaches the client as TRADING_DISABLED
+const outcome = (r: { status: number; json: { position?: unknown; order?: { status: string }; clientReason?: string } }) =>
+  r.status === 201 && r.json.position ? "FILLED" : r.status === 201 && r.json.order?.status === "PENDING" ? "QUEUED" : `REFUSED ${r.json.clientReason}`;
 
 describe("market orders by category and desk switch", () => {
   it.each([
@@ -86,7 +87,7 @@ describe("market orders by category and desk switch", () => {
     ["DEALING", false, true, "QUEUED"], // desk off + "Always send to dealer"
     ["REVERSAL", true, false, "FILLED"],
     ["A_BOOK", true, false, "FILLED"], // fill first, then hedge (QoreBridge M5): the deal leaves a HedgeIntent
-    ["COVERAGE", true, false, "REFUSED SYSTEM_ACCOUNT"],
+    ["COVERAGE", true, false, "REFUSED TRADING_DISABLED"],
   ] as const)("%s, desk on=%s, always-to-dealer=%s -> %s", async (category, deskOn, force, expected) => {
     if (!dbReachable) return;
     const b = await broker(deskOn);

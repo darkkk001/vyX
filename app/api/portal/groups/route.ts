@@ -44,7 +44,8 @@ export async function GET(request: Request) {
     },
     select: {
       id: true,
-      name: true,
+      // the group's own name is internal ("Dealing", "Reverse"...): the client chooses by its account plan (owner 2026-10-23)
+      displayName: true,
       leverage: true,
       swapFree: true,
       isDefault: true,
@@ -53,13 +54,13 @@ export async function GET(request: Request) {
         orderBy: { symbol: { name: "asc" } },
       },
     },
-    orderBy: [{ isDefault: "desc" }, { name: "asc" }],
+    orderBy: [{ isDefault: "desc" }, { displayName: "asc" }, { leverage: "asc" }],
   });
 
   return NextResponse.json(
     groups.map((g) => ({
       id: g.id,
-      name: g.name,
+      accountPlan: g.displayName,
       leverage: g.leverage,
       swapFree: g.swapFree === true,
       isDefault: g.isDefault,

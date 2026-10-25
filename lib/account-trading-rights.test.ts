@@ -165,7 +165,7 @@ describe("trading rights on the trader routes (DB)", () => {
       trader(f.acc.id, f.brokerId);
       const r = await call(POST, "/api/trade/orders", "POST", limitOrder(f.symbolName));
       expect(r.status).toBe(400);
-      expect(String(r.json.error)).toContain(rights === "CLOSE_ONLY" ? "close-only" : "read-only");
+      expect(r.json.clientReason).toBe("TRADING_DISABLED"); // the internal sentence (close-only / read-only) stays server-side
       expect(await prisma.order.count({ where: { accountId: f.acc.id } })).toBe(0);
     }
     const ok = await fixture();
@@ -181,7 +181,7 @@ describe("trading rights on the trader routes (DB)", () => {
     const { POST } = await import("@/app/api/trade/orders/route");
     const r = await call(POST, "/api/trade/orders", "POST", limitOrder(f.symbolName));
     expect(r.status).toBe(400);
-    expect(String(r.json.error)).toContain("suspended");
+    expect(r.json.clientReason).toBe("TRADING_DISABLED");
     expect(await prisma.order.count({ where: { accountId: f.acc.id } })).toBe(0);
   });
 
@@ -193,9 +193,9 @@ describe("trading rights on the trader routes (DB)", () => {
     const p1 = await openPosition(ro.brokerId, ro.acc.id, ro.symbolId);
     trader(ro.acc.id, ro.brokerId);
     const refusedClose = await call(close, "/x", "POST", { closePrice: "100.00" }, { id: p1.id });
-    expect(refusedClose).toMatchObject({ status: 403, json: { code: "TRADING_RIGHTS" } });
+    expect(refusedClose).toMatchObject({ status: 403, json: { clientReason: "TRADING_DISABLED" } });
     const refusedSl = await call(modify, "/x", "PATCH", { slPrice: "90.00" }, { id: p1.id });
-    expect(refusedSl).toMatchObject({ status: 403, json: { code: "TRADING_RIGHTS" } });
+    expect(refusedSl).toMatchObject({ status: 403, json: { clientReason: "TRADING_DISABLED" } });
     expect((await prisma.position.findUniqueOrThrow({ where: { id: p1.id } })).status).toBe("OPEN");
 
     const co = await fixture({ rights: "CLOSE_ONLY" });

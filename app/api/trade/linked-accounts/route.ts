@@ -29,9 +29,11 @@ export async function GET() {
       id: { not: session.accountId },
       status: "ACTIVE",
     },
-    select: { accountNumber: true, accountMode: true, currency: true, balance: true },
+    // every account picker reads "Plan · Name · Number" (owner 2026-10-23): the plan is the group's client-facing
+    // displayName, never the group's own name
+    select: { accountNumber: true, accountMode: true, currency: true, balance: true, fullName: true, group: { select: { displayName: true } } },
     orderBy: { accountNumber: "asc" },
   });
 
-  return NextResponse.json(linked);
+  return NextResponse.json(linked.map(({ group, ...a }) => ({ ...a, accountPlan: group?.displayName ?? "Standard" })));
 }

@@ -150,7 +150,7 @@ describe("orders route (DB)", () => {
     }
     const bad = await call(POST, "/api/trade/orders", "POST", order(fx, "0.07"));
     expect(bad.status).toBe(400);
-    expect(bad.json).toMatchObject({ code: "INVALID_VOLUME", error: "volume must be a multiple of 0.05 lots for this account" });
+    expect(bad.json).toMatchObject({ clientReason: "INVALID_VOLUME" }); // the internal sentence stays in the trace
     const big = await call(POST, "/api/trade/orders", "POST", order(fx, "0.55"));
     expect(big.status).toBe(400);
     expect(await prisma.order.count({ where: { accountId: acc.id } })).toBe(2);

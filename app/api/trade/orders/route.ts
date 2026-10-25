@@ -56,6 +56,7 @@ import {
   checkAccountTradingRights,
 } from "@/lib/risk";
 import { traceRejectedOrder } from "@/lib/rejected-orders";
+import { withClientRefusals } from "@/lib/client-reason";
 import { firstRefusalOfEpisode, ORDER_RATE_LIMITED_MESSAGE, orderLimitsFor, takeOrderToken } from "@/lib/order-rate-limit";
 import { requestMeta } from "@/lib/order-execution";
 
@@ -114,7 +115,7 @@ export async function POST(request: NextRequest) {
   const take = await takeOrderToken(session.accountId, await orderLimitsFor(session.brokerId));
   if (!take.allowed) {
     const limited = await refuseRateLimited(request, session, new Date(startedAt), take.retryAfterMs);
-    if (limited) return limited;
+    if (limited) return withClientRefusals(limited);
   }
   // rejected-order trace (lib/rejected-orders.ts): the handler consumes the body, so keep a copy for a refusal
   const probe = request.clone();
@@ -127,7 +128,8 @@ export async function POST(request: NextRequest) {
   }
   // client allow-list (lib/client-execution.ts): every answer of this route is cut to client-safe fields, whichever
   // branch produced it (fill, auto-reject, idempotent replay, race)
-  const response = await clientSafe(raw);
+  // refusals answer with clientReason only (lib/client-reason.ts); the trace above kept the internal reason
+  const response = await withClientRefusals(await clientSafe(raw));
   const appMs = Date.now() - startedAt;
   response.headers.set("Server-Timing", `app;dur=${appMs}`);
   if (response.status === 201 && !(await isDemoBrokerId(session.brokerId))) {

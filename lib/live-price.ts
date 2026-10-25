@@ -240,6 +240,19 @@ export async function classifyMissingPrice(brokerId: string, symbolName: string)
   return fresh.size > 0 ? "MARKET_CLOSED" : "NO_LIVE_FEED";
 }
 
+/** Re-reads the symbol's live price every 250 ms for up to `waitMs`, until its tick is at most `maxAgeMs` old. The newest
+ *  row read (fresh or not) is returned; null when none could be read. Used by the close route (owner 2026-10-23). */
+export async function waitForFreshTick(symbolName: string, maxAgeMs: number, waitMs: number, read: (s: string) => Promise<LivePrice | null> = (s) => getLivePriceRow(s)): Promise<LivePrice | null> {
+  const until = Date.now() + waitMs;
+  let last: LivePrice | null = null;
+  for (;;) {
+    last = (await read(symbolName)) ?? last;
+    if (last && Date.now() - last.tickAt.getTime() <= maxAgeMs) return last;
+    if (Date.now() + 250 > until) return last;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 export async function getFreshPrice(symbolName: string): Promise<FreshPrice | null> {
   const map = await getFreshPrices([symbolName]);
   return map.get(symbolName) ?? null;

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { tradingDayStart, tradingWeekStart } from "@/lib/trading-day";
+import { clientAccountInfo } from "@/lib/client-execution";
 
 export async function GET() {
   const session = await getAccountSession();
@@ -28,11 +29,9 @@ export async function GET() {
       // configured level (Group.marginCallLevel). Null group = ungrouped
       // account, same 100 fallback Group.marginCallLevel's own schema
       // default already uses everywhere else (lib/margin.ts, lib/risk-monitor.ts).
-      // `name` added alongside it for the native terminal's own account-
-      // strip pill (v2 redesign's "Standard · 1:500" -- Group.name IS
-      // "Standard" for a broker's default group, but this must read the
-      // real value, never assume every broker names it that).
-      group: { select: { marginCallLevel: true, stopOutLevel: true, name: true, tradingHaltedAt: true, closeOnlyAt: true, tradingRestriction: true } },
+      // displayName = the client-facing account plan (owner 2026-10-23). Group.name is internal ("Dealing", "Reverse"...)
+      // and is never selected here: the account strip shows accountPlan.
+      group: { select: { marginCallLevel: true, stopOutLevel: true, displayName: true, tradingHaltedAt: true, closeOnlyAt: true, tradingRestriction: true } },
       broker: { select: { tradingHaltedAt: true, closeOnlyAt: true } },
     },
   });
@@ -53,7 +52,7 @@ export async function GET() {
   // Phase 2 batch 9 (issue 363, owner decision): the broker's trading day / week start (the charts' D1 boundary), so the
   // terminal's DAY P/L and WEEK P/L are counted from the same instants the server and the charts use
   const day = await tradingDayStart();
-  return NextResponse.json({ ...rest, tradingDayStart: day.start.toISOString(), tradingWeekStart: tradingWeekStart(day.start).toISOString(), tradingDaySource: day.source, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), groupName: group?.name ?? null, tradingState,
+  return NextResponse.json(clientAccountInfo({ ...rest, tradingDayStart: day.start.toISOString(), tradingWeekStart: tradingWeekStart(day.start).toISOString(), tradingDaySource: day.source, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), accountPlan: group?.displayName ?? "Standard", tradingState,
     // Phase 2 batch 3: the group's side restriction (BOTH / BUY_ONLY / SELL_ONLY), so the ticket disables the side the server refuses
-    tradingRestriction: group?.tradingRestriction ?? "BOTH" });
+    tradingRestriction: group?.tradingRestriction ?? "BOTH" }));
 }

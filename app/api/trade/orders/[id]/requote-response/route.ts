@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withClientRefusals } from "@/lib/client-reason";
 import { prisma } from "@/lib/prisma";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { getAccountSession } from "@/lib/account-auth";
@@ -41,7 +42,7 @@ import {
 // fresh order submission runs (state may have changed since the dealer
 // requoted), then fill at the requoted price. Reject: cancel, no
 // Position ever created.
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function postInner(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
@@ -275,4 +276,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     throw error;
   }
+}
+
+// Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts).
+export async function POST(request: Parameters<typeof postInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  const raw = await postInner(request, ctx);
+  return withClientRefusals(raw);
 }

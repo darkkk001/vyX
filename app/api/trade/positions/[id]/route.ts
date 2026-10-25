@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withClientRefusals } from "@/lib/client-reason";
+import { traceCloseOrModifyRefusals } from "@/lib/rejected-orders";
 import { toClientShape } from "@/lib/client-execution";
 import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { loadAccountAskRules } from "@/lib/ask-markup";
@@ -9,7 +11,7 @@ import { announcePositionModified, refuseModify } from "@/lib/position-modify";
 
 // Inline SL/TP edit on an open position — side-aware validated against the
 // client-reported current price, same rule as order placement.
-export async function PATCH(
+async function patchInner(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -71,4 +73,12 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
   const row = { ...updated, symbol: { name: symbol!.name, digits: symbol!.digits, contractSize: symbol!.contractSize } };
   await announcePositionModified({ session, before: position, row, symbolName: symbol!.name, slPrice, tpPrice });
   return NextResponse.json(toClientShape(row)); // client allow-list (lib/client-execution.ts)
+}
+
+// Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts); close / modify refusals are traced first.
+export async function PATCH(request: Parameters<typeof patchInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  const requestedAt = new Date();
+  const raw = await patchInner(request, ctx);
+  await traceCloseOrModifyRefusals("MODIFY", raw, request.headers, requestedAt, (await ctx.params).id);
+  return withClientRefusals(raw);
 }
