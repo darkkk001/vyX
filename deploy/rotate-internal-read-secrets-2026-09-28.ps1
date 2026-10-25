@@ -3,16 +3,54 @@
 # Run on the VPS in an elevated PowerShell. NEVER PRINTS A SECRET: the new values are pasted at hidden prompts, the old
 # ones are read from the .cmd files, and the checks print HTTP codes only.
 #
-#   -Phase Overlap : pulls main, builds the engine (engine\build-tmp) and the gateway that accept *_PREVIOUS, then in
-#                    ONE restart of each: new values current, old values kept as *_PREVIOUS. Checks OLD and NEW are
-#                    both accepted. Next: Caddy (read matcher OLD or NEW, header_up NEW; caddy reload), then Vercel.
+#   -Phase Overlap : builds the engine (engine\build-tmp) and the gateway that accept *_PREVIOUS FROM THE PINNED COMMIT
+#                    (below), then in ONE restart of each: new values current, old values kept as *_PREVIOUS. Checks
+#                    OLD and NEW are both accepted. Next: Caddy (read matcher OLD or NEW, header_up NEW; caddy reload),
+#                    then Vercel.
 #   -Phase Finish  : once Vercel runs on the new values AND caddy-rotate-secrets-2026-09-28.ps1 -Phase Finish has run
 #                    (it reads the OLD values from the *_PREVIOUS lines this phase removes): *_PREVIOUS removed, engine
-#                    + gateway restarted. Checks OLD is refused and NEW accepted.
+#                    + gateway restarted. Checks OLD is refused and NEW accepted. Builds nothing.
 # Each engine restart is ~10-20 s with no price reads (no Neon fallback any more): run both phases in the daily break.
-param([Parameter(Mandatory)][ValidateSet("Overlap", "Finish")][string]$Phase)
+#
+# Overlap is PINNED (owner 2026-10-26, like engine-trigger-tick.ps1): it never pulls main. It builds exactly the checked-out
+# commit, and refuses (one line, exit 1, nothing touched) unless ALL of these hold:
+#   - -Branch, -Commit and -OwnerGo are all given; -Commit is the full 40-character sha;
+#   - -OwnerGo is exactly "<Branch>@<Commit>" (case-sensitive): the owner's explicit go for that exact code;
+#   - the checked-out HEAD equals -Commit, and -Commit is on -Branch (an ancestor of the local or any remote's branch);
+#   - no tracked file differs from that commit.
+#   cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <full sha>
+#   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\rotate-internal-read-secrets-2026-09-28.ps1 -Phase Overlap -Branch main -Commit <full sha> -OwnerGo "main@<full sha>"
+# After the restart the engine must report that commit (/health x-vyx-engine-commit, builds since 8abdda9); otherwise a
+# check is WRONG and the ROLLBACK at the bottom applies.
+param(
+  [Parameter(Mandatory)][ValidateSet("Overlap", "Finish")][string]$Phase,
+  [string]$Branch = "",
+  [string]$Commit = "",
+  [string]$OwnerGo = "",
+  [string]$RepoPath = "C:\vyxtrader\repo"
+)
 $ErrorActionPreference = "Stop"
 $Nssm = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH: always the full path
+
+# ---- GATE (Overlap): the owner's explicit go for exactly this branch + commit, before anything is read or written ----
+function Refuse([string]$Reason) { Write-Host "REFUSED: $Reason. Nothing touched."; exit 1 }
+if ($Phase -eq "Overlap") {
+  if (-not $Branch -or -not $Commit -or -not $OwnerGo) { Refuse "-Phase Overlap needs -Branch, -Commit and -OwnerGo (OwnerGo = '<Branch>@<full commit sha>')" }
+  if ($Commit -cnotmatch '^[0-9a-f]{40}$') { Refuse "-Commit must be the full 40-character lower-case sha" }
+  if ($OwnerGo -cne "$Branch@$Commit") { Refuse "-OwnerGo does not equal '<Branch>@<Commit>': the owner's go is missing or for other code" }
+  if (-not (Test-Path "$RepoPath\.git")) { Refuse "$RepoPath is not a git checkout" }
+  $headSha = (& git -C $RepoPath rev-parse HEAD 2>$null) -join ""
+  if ($headSha -cne $Commit) { Refuse "checked-out HEAD ($(if ($headSha) { $headSha.Substring(0, [Math]::Min(7, $headSha.Length)) } else { 'unknown' })) is not -Commit ($($Commit.Substring(0, 7))): git checkout --detach <sha> first" }
+  $onBranch = $false
+  foreach ($ref in @(& git -C $RepoPath for-each-ref --format="%(refname)" "refs/heads/$Branch" "refs/remotes/*/$Branch" 2>$null)) {
+    & git -C $RepoPath merge-base --is-ancestor $Commit $ref 2>$null
+    if ($LASTEXITCODE -eq 0) { $onBranch = $true; break }
+  }
+  if (-not $onBranch) { Refuse "commit $($Commit.Substring(0, 7)) is not on branch '$Branch' (git fetch --all first?)" }
+  $dirty = (& git -C $RepoPath status --porcelain --untracked-files=no 2>$null) -join ""
+  if ($dirty) { Refuse "tracked files in $RepoPath differ from $($Commit.Substring(0, 7)): the build would not be that commit" }
+  "owner go accepted: $Branch@$($Commit.Substring(0, 7)), HEAD equals it, tree clean"
+}
 
 # Windows PowerShell 5.1 turns a redirected native program's stderr into error records, which "Stop" makes fatal
 # (cargo and npm write progress to stderr). Relax it per call; the caller checks $LASTEXITCODE.
@@ -76,7 +114,7 @@ function Wait-Health([string]$Url) {
   return $false
 }
 
-$Repo     = "C:\vyxtrader\repo"
+$Repo     = $RepoPath
 $Engine   = "C:\vyxtrader\scripts\start-engine.cmd"
 $Gateway  = "C:\vyxtrader\scripts\start-gateway.cmd"
 $LiveExe  = "$Repo\engine\target\release\trading-core-server.exe"
@@ -100,15 +138,13 @@ if ($Phase -eq "Overlap") {
   if ($newInternal -eq $newRead) { throw "the two new values are the same -- nothing touched" }
   if ($newInternal -eq $oldInternal -or $newRead -eq $oldRead) { throw "a new value equals the old one -- nothing touched" }
 
-  # ---- code: main must carry the *_PREVIOUS support in both services ----
+  # ---- code: the PINNED commit (the gate above), never a pull; it must carry the *_PREVIOUS support in both services ----
   Set-Location $Repo
-  Invoke-Native { git fetch --all }
-  Invoke-Native { git checkout main }
-  Invoke-Native { git pull --ff-only }
-  if ($LASTEXITCODE -ne 0) { throw "git pull --ff-only failed -- nothing touched" }
-  Invoke-Native { git log --oneline -3 }
-  if (-not (Select-String -Path "$Repo\engine\server\src\main.rs" -Pattern "INTERNAL_SERVICE_SECRET_PREVIOUS" -Quiet)) { throw "main's engine has no *_PREVIOUS support yet -- nothing touched" }
-  if (-not (Test-Path "$Repo\services\api-gateway\src\internal-secret.ts")) { throw "main's gateway has no internal-secret.ts yet -- nothing touched" }
+  $head = (Invoke-Native { git rev-parse HEAD }) -join ""
+  if ($head -cne $Commit) { throw "HEAD $($head.Substring(0,7)) is no longer the pinned commit $($Commit.Substring(0,7)) -- nothing touched" }
+  Invoke-Native { git log --oneline -1 }
+  if (-not (Select-String -Path "$Repo\engine\server\src\main.rs" -Pattern "INTERNAL_SERVICE_SECRET_PREVIOUS" -Quiet)) { throw "the pinned commit's engine has no *_PREVIOUS support -- nothing touched" }
+  if (-not (Test-Path "$Repo\services\api-gateway\src\internal-secret.ts")) { throw "the pinned commit's gateway has no internal-secret.ts -- nothing touched" }
 
   # ---- build both while the old ones keep serving ----
   Copy-Item $LiveExe "$Bk\trading-core-server.pre.exe"
@@ -152,6 +188,11 @@ if ($Phase -eq "Overlap") {
   Invoke-Native { & $Nssm restart vyxtrader-gateway }
   if (-not (Wait-Health "http://127.0.0.1:8080/health")) { "  <<< gateway /health not 200 after 30 s -- see ROLLBACK" }
 
+  # the running engine must be the pinned build (/health x-vyx-engine-commit; a build before 8abdda9 has no stamp)
+  $served = ""
+  try { $served = "$((Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8081/health" -TimeoutSec 5).Headers["x-vyx-engine-commit"])" } catch { }
+  if ($served -cne $Commit) { $script:Bad++ }
+  "  {0,-52} {1}  {2}" -f "engine build commit (x-vyx-engine-commit)", $(if ($served) { $served.Substring(0, [Math]::Min(12, $served.Length)) } else { "none" }), $(if ($served -ceq $Commit) { "OK" } else { "<<< WRONG (want $($Commit.Substring(0,12)))" })
   "Overlap checks (both values must be accepted):"
   Check "engine feed-stats  NEW internal" "http://127.0.0.1:8081/internal/feed-stats" "x-internal-secret" $newInternal 200
   Check "engine feed-stats  OLD internal" "http://127.0.0.1:8081/internal/feed-stats" "x-internal-secret" $oldInternal 200

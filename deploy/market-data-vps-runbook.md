@@ -314,10 +314,14 @@ current caller. During a rotation the engine and the gateway accept `INTERNAL_SE
 1. **Admin PC:** generate two 48-hex values into a file OUTSIDE the repo; never echo them.
 2. **VPS, Overlap** (elevated PowerShell):
    ```powershell
-   cd C:\vyxtrader\repo; git pull --ff-only
-   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\rotate-internal-read-secrets-2026-09-28.ps1 -Phase Overlap
+   cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <full sha>
+   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\rotate-internal-read-secrets-2026-09-28.ps1 -Phase Overlap -Branch main -Commit <full sha> -OwnerGo "main@<full sha>"
    powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\caddy-rotate-secrets-2026-09-28.ps1 -Phase Overlap
    ```
+   Pinned (owner 2026-10-26): Overlap never pulls main. It builds exactly the checked-out commit, and refuses with nothing
+   touched unless `-OwnerGo` is `main@<that sha>`, HEAD is that sha, the sha is on main and no tracked file differs. After
+   the restart it checks that the engine reports that commit (`/health` header `x-vyx-engine-commit`). In the flip window
+   the sha is the flip build (8abdda9 or the owner's later one).
    The first builds the engine (engine\build-tmp) and the gateway, prompts for the two NEW values (hidden), writes NEW
    as current and OLD as `*_PREVIOUS` into both .cmd files, and restarts each service once. Its checks: OLD and NEW
    accepted on both. The second edits the Caddyfile by value (`header_up` -> NEW internal; the read matcher gains a NEW
