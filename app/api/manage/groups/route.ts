@@ -90,6 +90,7 @@ export async function GET() {
     groups.map((g) => ({
       id: g.id,
       name: g.name,
+      displayName: g.displayName,
       leverage: g.leverage,
       marginCallLevel: g.marginCallLevel.toString(),
       stopOutLevel: g.stopOutLevel.toString(),
@@ -143,6 +144,12 @@ async function postHandler(request: NextRequest) {
   const name = typeof body?.name === "string" ? body.name.trim() : "";
   if (!name) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });
+  }
+  // client-facing account plan (owner 2026-10-23): absent = "Standard" (the column default), else 1-40 characters
+  const hasDisplayName = typeof body?.displayName === "string";
+  const displayName = hasDisplayName ? body.displayName.trim().slice(0, 40) : "";
+  if (hasDisplayName && !displayName) {
+    return NextResponse.json({ error: "displayName (the client-facing account plan) cannot be empty" }, { status: 400 });
   }
 
   const leverage = parseLeverage(body?.leverage);
@@ -221,7 +228,7 @@ async function postHandler(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
+        data: { brokerId, name, ...(hasDisplayName ? { displayName } : {}), leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -257,6 +264,7 @@ async function postHandler(request: NextRequest) {
       {
         id: group.id,
         name: group.name,
+        displayName: group.displayName,
         leverage: group.leverage,
         marginCallLevel: group.marginCallLevel.toString(),
         stopOutLevel: group.stopOutLevel.toString(),

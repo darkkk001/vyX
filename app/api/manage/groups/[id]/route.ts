@@ -41,6 +41,12 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   if (!name) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });
   }
+  // client-facing account plan (owner 2026-10-23): absent = keep, else 1-40 characters
+  const hasDisplayName = typeof body?.displayName === "string";
+  const displayName = hasDisplayName ? body.displayName.trim().slice(0, 40) : "";
+  if (hasDisplayName && !displayName) {
+    return NextResponse.json({ error: "displayName (the client-facing account plan) cannot be empty" }, { status: 400 });
+  }
   const leverage = parseLeverage(body?.leverage);
   if (leverage == null) {
     return NextResponse.json({ error: `leverage must be ${LEVERAGE_RULE}` }, { status: 400 });
@@ -150,7 +156,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
+        data: { name, ...(hasDisplayName ? { displayName } : {}), leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -161,6 +167,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
           entityId: id,
           oldValue: {
             name: existing.name,
+            displayName: existing.displayName,
             leverage: existing.leverage,
             marginCallLevel: existing.marginCallLevel.toString(),
             stopOutLevel: existing.stopOutLevel.toString(),
@@ -179,6 +186,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             isClientSelectable: existing.isClientSelectable,
           },
           newValue: {
+            displayName: updated.displayName,
             name,
             leverage,
             marginCallLevel: marginCallLevel.toString(),
@@ -213,6 +221,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({
       id: group.id,
       name: group.name,
+      displayName: group.displayName,
       leverage: group.leverage,
       marginCallLevel: group.marginCallLevel.toString(),
       stopOutLevel: group.stopOutLevel.toString(),
