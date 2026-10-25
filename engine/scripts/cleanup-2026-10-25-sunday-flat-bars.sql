@@ -1,139 +1,203 @@
 -- Sunday 2026-10-25 flat bars of the 5 break symbols (owner 2026-10-26: plan, then apply only on the owner's go).
 --
--- What happened: before the gap_fill Sunday-reopen fix (engine/gap-fill-sunday-reopen 2581f9f), a break symbol
--- counted as open from the NY-17:00 anchor (Sun 21:00 UTC, EDT) instead of anchor + its break (metals / SpotCrude
--- 22:00 UTC, SpotBrent 00:00 UTC). Friday's frozen price was written as real bars in that hour (XAUUSD 3998.07,
--- 21:35-21:48 UTC). Higher buckets that contain those minutes may carry it as their OPEN / HIGH / LOW.
+-- What happened: before the gap_fill Sunday-reopen fix (in flip build 0371664), a break symbol counted as open from the
+-- NY-17:00 anchor (Sun 21:00 UTC, EDT) instead of anchor + its break, so Friday's frozen price was written as real
+-- bars after 21:00 UTC (XAUUSD 3998.07). Higher buckets containing those minutes may carry it as OPEN / HIGH / LOW.
 --
--- Owner rules: (1) a bar is removed only by VALUE: open = high = low = close = that symbol's own last close before the
--- weekend, and only inside its closed window; (2) the 5 symbols XAUUSD XAGUSD XPTUSD SpotCrude SpotBrent; (3) if any
--- bar inside a closed window is NOT flat (open <> close, or high <> low) or flat at another price, the whole
--- transaction aborts (ROLLBACK): nothing is changed.
+-- Owner rules (2026-10-26, from the VPS dry run of the first version):
+--   1. The data is in UTC: the closed hours below are UTC (Sun 21:00-22:00; SpotBrent 21:00-00:00).
+--   2. Each symbol's window is its ACTUAL contiguous flat run: from the first M1 in the closed hours that is flat at
+--      that symbol's own Friday close (open = high = low = close = the last M1 close before 21:00), to the first M1
+--      after it that is not. Real bars are never inside a run (SpotBrent's real trading inside its hours stays).
+--   3. Only buckets that overlap a run are touched: rebuilt from their remaining real M1 bars. A bucket with no real
+--      M1 left is skipped, except an M5 / M15 / M30 / H1 bar that is itself flat at the Friday close (removed, like the
+--      M1s). H4 / D1 / W1 are never deleted. MN1 / Y1 stay (the Friday close is a real price inside their range).
+--   4. Abort (ROLLBACK, nothing changed) if a run runs more than 10 minutes past its closed hours, or its Friday
+--      close is unknown.
+-- Literals are pinned to +00 ("bucketStart" is timestamptz; the psql session's time zone must not shift them).
 --
--- Literals are pinned to +00: "bucketStart" is timestamptz and the engine stores the server's wall clock as UTC, so
--- the psql session's own time zone must not shift them.
--- Clock: the engine buckets by the broker server's time (New York close = UTC+3 in summer), so the closed windows
--- below are in SERVER time: Mon 2026-10-26 00:00 -> 01:00 (03:00 for SpotBrent) = Sun 21:00 -> 22:00 (00:00) UTC.
--- Step 0 shows both clocks; if the flat bars sit at 21:xx instead, the data is in UTC: subtract 3 hours from every
--- window below (all three places say WINDOWS) and run Step 0 again.
---
--- Where: the VPS engine's own Postgres (table "Candle"), run by the VPS session with psql -v ON_ERROR_STOP=1.
+-- Where: the VPS engine's own Postgres (table "Candle"), psql -v ON_ERROR_STOP=1, by the VPS session.
 -- When: Step 0 any time (read only). Backup + Step 1 inside the engine deploy with the market-data engine STOPPED
 -- (its in-memory current buckets would flush the old OPEN/HIGH/LOW back), then start the fixed engine.
---
--- Tested 2026-10-26 on a synthetic copy of "Candle" (scratch Postgres, session time zone Asia/Karachi): flat bars
--- removed, Friday and real bars kept, H4 / D1 / W1 rebuilt, XAGUSD and BTCUSD untouched; a non-flat bar and a flat
--- bar at another price inside a window each abort Step 1 with the table byte-identical.
+-- Tested 2026-10-26 on a synthetic "Candle" built from the VPS dry-run findings (session time zone Asia/Karachi).
 
 -- ============================================================ Step 0: dry run (read only) ======================
 BEGIN READ ONLY;
--- WINDOWS
-WITH w(symbol, w_from, w_to) AS (VALUES
-  ('XAUUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('XAGUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('XPTUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('SpotCrude', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('SpotBrent', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 03:00+00')
+-- 0a. each symbol's flat run (a symbol without one is not listed)
+-- RUNS: each symbol's flat run, derived from the data (one definition, used by Step 0 and Step 1).
+-- outer = the closed hours in UTC (only used to find where a run STARTS); fri_close = the last M1 close before them;
+-- run_from = the first M1 in the closed hours that is flat at fri_close; run_end = the first M1 after it that is NOT
+-- (the reopen); run_to = the last flat M1 before run_end + 1 minute.
+WITH outer_w(symbol, o_from, o_to) AS (VALUES
+  ('XAUUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('XAGUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('XPTUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('SpotCrude', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('SpotBrent', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-26 00:00+00')
 ), fri AS (
-  SELECT w.*, (SELECT c.close FROM "Candle" c WHERE c.symbol = w.symbol AND c.timeframe = 'M1' AND c."bucketStart" < w.w_from
+  SELECT o.*, (SELECT c.close FROM "Candle" c WHERE c.symbol = o.symbol AND c.timeframe = 'M1' AND c."bucketStart" < o.o_from
                ORDER BY c."bucketStart" DESC LIMIT 1) AS fri_close
-  FROM w
+  FROM outer_w o
+), starts AS (
+  SELECT f.*, (SELECT min(c."bucketStart") FROM "Candle" c WHERE c.symbol = f.symbol AND c.timeframe = 'M1'
+                 AND c."bucketStart" >= f.o_from AND c."bucketStart" < f.o_to
+                 AND c.open = f.fri_close AND c.high = f.fri_close AND c.low = f.fri_close AND c.close = f.fri_close) AS run_from
+  FROM fri f
+), ends AS (
+  SELECT s.*, (SELECT min(c."bucketStart") FROM "Candle" c WHERE c.symbol = s.symbol AND c.timeframe = 'M1'
+                 AND c."bucketStart" > s.run_from
+                 AND NOT (c.open = s.fri_close AND c.high = s.fri_close AND c.low = s.fri_close AND c.close = s.fri_close)) AS run_end
+  FROM starts s
+), runs AS (
+  SELECT e.symbol, e.o_from, e.o_to, e.fri_close, e.run_from, e.run_end,
+         (SELECT max(c."bucketStart") FROM "Candle" c WHERE c.symbol = e.symbol AND c.timeframe = 'M1'
+            AND c."bucketStart" >= e.run_from AND c."bucketStart" < coalesce(e.run_end, 'infinity')) + interval '1 minute' AS run_to,
+         (SELECT count(*) FROM "Candle" c WHERE c.symbol = e.symbol AND c.timeframe = 'M1'
+            AND c."bucketStart" >= e.run_from AND c."bucketStart" < coalesce(e.run_end, 'infinity')) AS n_flat
+  FROM ends e WHERE e.run_from IS NOT NULL
 )
-SELECT f.symbol, f.fri_close, c.timeframe,
-       count(*) FILTER (WHERE c.open = c.high AND c.high = c.low AND c.low = c.close AND c.close = f.fri_close) AS flat_at_friday_close,
-       count(*) FILTER (WHERE NOT (c.open = c.high AND c.high = c.low AND c.low = c.close AND c.close = f.fri_close)) AS other_bars_MUST_BE_0,
-       min(c."bucketStart") AS first_bar, max(c."bucketStart") AS last_bar
-FROM fri f JOIN "Candle" c ON c.symbol = f.symbol AND c.timeframe IN ('M1', 'M5', 'M15', 'M30', 'H1')
-  AND c."bucketStart" >= f.w_from AND c."bucketStart" < f.w_to
-GROUP BY f.symbol, f.fri_close, c.timeframe ORDER BY f.symbol, c.timeframe;
--- the same 5 symbols, one clock earlier (UTC reading): non-zero here means the data is in UTC, see "Clock" above
-SELECT symbol, count(*) AS m1_bars_sun_21_to_22_utc FROM "Candle"
-WHERE symbol IN ('XAUUSD', 'XAGUSD', 'XPTUSD', 'SpotCrude', 'SpotBrent') AND timeframe = 'M1'
-  AND "bucketStart" >= '2026-10-25 21:00+00' AND "bucketStart" < '2026-10-26 00:00+00'
-GROUP BY symbol ORDER BY symbol;
--- WINDOWS
--- the H4 / D1 / W1 buckets that contain a window, now vs rebuilt from their real M1 bars (what Step 1 will write)
-WITH w(symbol, w_from, w_to) AS (VALUES
-  ('XAUUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('XAGUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('XPTUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('SpotCrude', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('SpotBrent', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 03:00+00')
-), b AS (
-  SELECT w.symbol, w.w_from, w.w_to, c.timeframe, c."bucketStart", c.open, c.high, c.low, c.close,
-         CASE c.timeframe::text WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END AS len
-  FROM w JOIN "Candle" c ON c.symbol = w.symbol AND c.timeframe IN ('H4', 'D1', 'W1') AND c."bucketStart" <= w.w_from
-  WHERE c."bucketStart" + CASE c.timeframe::text WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END > w.w_from
+SELECT symbol, fri_close, run_from, run_to, n_flat, run_end AS first_real_bar,
+       (SELECT open FROM "Candle" c WHERE c.symbol = runs.symbol AND c.timeframe = 'M1' AND c."bucketStart" = runs.run_end) AS first_real_open,
+       CASE WHEN fri_close IS NULL THEN 'ABORT: no Friday close' WHEN run_to > o_to + interval '10 minutes' THEN 'ABORT: run too long'
+            ELSE 'ok' END AS check
+FROM runs ORDER BY symbol;
+-- 0b. every bucket the cleanup would touch, now vs after, and the action
+-- RUNS: each symbol's flat run, derived from the data (one definition, used by Step 0 and Step 1).
+-- outer = the closed hours in UTC (only used to find where a run STARTS); fri_close = the last M1 close before them;
+-- run_from = the first M1 in the closed hours that is flat at fri_close; run_end = the first M1 after it that is NOT
+-- (the reopen); run_to = the last flat M1 before run_end + 1 minute.
+WITH outer_w(symbol, o_from, o_to) AS (VALUES
+  ('XAUUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('XAGUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('XPTUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('SpotCrude', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('SpotBrent', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-26 00:00+00')
+), fri AS (
+  SELECT o.*, (SELECT c.close FROM "Candle" c WHERE c.symbol = o.symbol AND c.timeframe = 'M1' AND c."bucketStart" < o.o_from
+               ORDER BY c."bucketStart" DESC LIMIT 1) AS fri_close
+  FROM outer_w o
+), starts AS (
+  SELECT f.*, (SELECT min(c."bucketStart") FROM "Candle" c WHERE c.symbol = f.symbol AND c.timeframe = 'M1'
+                 AND c."bucketStart" >= f.o_from AND c."bucketStart" < f.o_to
+                 AND c.open = f.fri_close AND c.high = f.fri_close AND c.low = f.fri_close AND c.close = f.fri_close) AS run_from
+  FROM fri f
+), ends AS (
+  SELECT s.*, (SELECT min(c."bucketStart") FROM "Candle" c WHERE c.symbol = s.symbol AND c.timeframe = 'M1'
+                 AND c."bucketStart" > s.run_from
+                 AND NOT (c.open = s.fri_close AND c.high = s.fri_close AND c.low = s.fri_close AND c.close = s.fri_close)) AS run_end
+  FROM starts s
+), runs AS (
+  SELECT e.symbol, e.o_from, e.o_to, e.fri_close, e.run_from, e.run_end,
+         (SELECT max(c."bucketStart") FROM "Candle" c WHERE c.symbol = e.symbol AND c.timeframe = 'M1'
+            AND c."bucketStart" >= e.run_from AND c."bucketStart" < coalesce(e.run_end, 'infinity')) + interval '1 minute' AS run_to,
+         (SELECT count(*) FROM "Candle" c WHERE c.symbol = e.symbol AND c.timeframe = 'M1'
+            AND c."bucketStart" >= e.run_from AND c."bucketStart" < coalesce(e.run_end, 'infinity')) AS n_flat
+  FROM ends e WHERE e.run_from IS NOT NULL
 )
-SELECT b.symbol, b.timeframe, b."bucketStart", b.open AS open_now, b.high AS high_now, b.low AS low_now,
-       (array_agg(x.open ORDER BY x."bucketStart"))[1] AS open_rebuilt, max(x.high) AS high_rebuilt, min(x.low) AS low_rebuilt,
-       count(x.*) AS real_m1_bars
-FROM b LEFT JOIN "Candle" x ON x.symbol = b.symbol AND x.timeframe = 'M1' AND x."bucketStart" >= b."bucketStart"
-  AND x."bucketStart" < b."bucketStart" + b.len AND NOT (x."bucketStart" >= b.w_from AND x."bucketStart" < b.w_to)
-GROUP BY b.symbol, b.timeframe, b."bucketStart", b.open, b.high, b.low ORDER BY b.symbol, b.timeframe;
+SELECT r.symbol, c.timeframe, c."bucketStart", c.open AS open_now, c.high AS high_now, c.low AS low_now, c.close AS close_now,
+       (array_agg(x.open ORDER BY x."bucketStart"))[1] AS open_new, max(x.high) AS high_new, min(x.low) AS low_new,
+       (array_agg(x.close ORDER BY x."bucketStart" DESC))[1] AS close_new, count(x.*) AS real_m1_bars,
+       CASE WHEN count(x.*) > 0 THEN 'rebuild'
+            WHEN c.timeframe::text IN ('M5', 'M15', 'M30', 'H1')
+                 AND c.open = r.fri_close AND c.high = r.fri_close AND c.low = r.fri_close AND c.close = r.fri_close THEN 'delete'
+            ELSE 'skip' END AS action
+FROM runs r
+JOIN "Candle" c ON c.symbol = r.symbol AND c.timeframe IN ('M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1')
+  AND c."bucketStart" < r.run_to AND c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END > r.run_from
+LEFT JOIN "Candle" x ON x.symbol = r.symbol AND x.timeframe = 'M1'
+  AND x."bucketStart" >= c."bucketStart" AND x."bucketStart" < c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END
+  AND NOT (x."bucketStart" >= r.run_from AND x."bucketStart" < r.run_to)
+GROUP BY r.symbol, r.fri_close, c.timeframe, c."bucketStart", c.open, c.high, c.low, c.close
+ORDER BY r.symbol, c.timeframe, c."bucketStart";
 COMMIT;
 
 -- The owner sees Step 0 and says go. Then, engine stopped, back up the rows this can touch:
 --   \copy (SELECT * FROM "Candle" WHERE symbol IN ('XAUUSD','XAGUSD','XPTUSD','SpotCrude','SpotBrent')
---          AND "bucketStart" >= '2026-10-19+00' AND "bucketStart" < '2026-10-27+00') TO 'C:\vyxtrader\backup\candle-2026-10-25-sunday.csv' CSV HEADER
+--          AND "bucketStart" >= '2026-10-17+00' AND "bucketStart" < '2026-10-27+00') TO 'C:\vyxtrader\backup\candle-2026-10-25-sunday.csv' CSV HEADER
 
 -- ============================================================ Step 1: apply (engine stopped) ==================
 BEGIN;
--- WINDOWS
-CREATE TEMP TABLE cleanup_w ON COMMIT DROP AS
-SELECT w.*, (SELECT c.close FROM "Candle" c WHERE c.symbol = w.symbol AND c.timeframe = 'M1' AND c."bucketStart" < w.w_from
-             ORDER BY c."bucketStart" DESC LIMIT 1) AS fri_close
-FROM (VALUES
-  ('XAUUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('XAGUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('XPTUSD', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('SpotCrude', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 01:00+00'),
-  ('SpotBrent', timestamptz '2026-10-26 00:00+00', timestamptz '2026-10-26 03:00+00')
-) AS w(symbol, w_from, w_to);
+CREATE TEMP TABLE cleanup_runs ON COMMIT DROP AS
+-- RUNS: each symbol's flat run, derived from the data (one definition, used by Step 0 and Step 1).
+-- outer = the closed hours in UTC (only used to find where a run STARTS); fri_close = the last M1 close before them;
+-- run_from = the first M1 in the closed hours that is flat at fri_close; run_end = the first M1 after it that is NOT
+-- (the reopen); run_to = the last flat M1 before run_end + 1 minute.
+WITH outer_w(symbol, o_from, o_to) AS (VALUES
+  ('XAUUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('XAGUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('XPTUSD', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('SpotCrude', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-25 22:00+00'),
+  ('SpotBrent', timestamptz '2026-10-25 21:00+00', timestamptz '2026-10-26 00:00+00')
+), fri AS (
+  SELECT o.*, (SELECT c.close FROM "Candle" c WHERE c.symbol = o.symbol AND c.timeframe = 'M1' AND c."bucketStart" < o.o_from
+               ORDER BY c."bucketStart" DESC LIMIT 1) AS fri_close
+  FROM outer_w o
+), starts AS (
+  SELECT f.*, (SELECT min(c."bucketStart") FROM "Candle" c WHERE c.symbol = f.symbol AND c.timeframe = 'M1'
+                 AND c."bucketStart" >= f.o_from AND c."bucketStart" < f.o_to
+                 AND c.open = f.fri_close AND c.high = f.fri_close AND c.low = f.fri_close AND c.close = f.fri_close) AS run_from
+  FROM fri f
+), ends AS (
+  SELECT s.*, (SELECT min(c."bucketStart") FROM "Candle" c WHERE c.symbol = s.symbol AND c.timeframe = 'M1'
+                 AND c."bucketStart" > s.run_from
+                 AND NOT (c.open = s.fri_close AND c.high = s.fri_close AND c.low = s.fri_close AND c.close = s.fri_close)) AS run_end
+  FROM starts s
+), runs AS (
+  SELECT e.symbol, e.o_from, e.o_to, e.fri_close, e.run_from, e.run_end,
+         (SELECT max(c."bucketStart") FROM "Candle" c WHERE c.symbol = e.symbol AND c.timeframe = 'M1'
+            AND c."bucketStart" >= e.run_from AND c."bucketStart" < coalesce(e.run_end, 'infinity')) + interval '1 minute' AS run_to,
+         (SELECT count(*) FROM "Candle" c WHERE c.symbol = e.symbol AND c.timeframe = 'M1'
+            AND c."bucketStart" >= e.run_from AND c."bucketStart" < coalesce(e.run_end, 'infinity')) AS n_flat
+  FROM ends e WHERE e.run_from IS NOT NULL
+)
+SELECT * FROM runs;
 
--- 1a. the guard (owner rule 3): any bar inside a closed window that is not flat at the Friday close aborts everything
+-- 1a. the guard (rule 4): an implausible run aborts everything
 DO $$
-DECLARE bad integer;
+DECLARE bad text;
 BEGIN
-  SELECT count(*) INTO bad
-  FROM cleanup_w w JOIN "Candle" c ON c.symbol = w.symbol AND c.timeframe IN ('M1', 'M5', 'M15', 'M30', 'H1')
-    AND c."bucketStart" >= w.w_from AND c."bucketStart" < w.w_to
-  WHERE w.fri_close IS NULL OR NOT (c.open = c.high AND c.high = c.low AND c.low = c.close AND c.close = w.fri_close);
-  IF bad > 0 THEN
-    RAISE EXCEPTION 'cleanup refused: % bar(s) inside a closed window are not flat at the Friday close (open <> close or another price); nothing changed', bad;
+  SELECT string_agg(symbol || CASE WHEN fri_close IS NULL THEN ' (no Friday close)' ELSE ' (run ends ' || run_to || ', past ' || o_to || ' + 10 min)' END, ', ')
+    INTO bad FROM cleanup_runs WHERE fri_close IS NULL OR run_to > o_to + interval '10 minutes';
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'cleanup refused: %; nothing changed', bad;
   END IF;
 END $$;
 
--- 1b. the flat bars inside the closed windows: removed (the market was closed, there is no real bar to keep)
-DELETE FROM "Candle" c USING cleanup_w w
-WHERE c.symbol = w.symbol AND c.timeframe IN ('M1', 'M5', 'M15', 'M30', 'H1')
-  AND c."bucketStart" >= w.w_from AND c."bucketStart" < w.w_to
-  AND c.open = w.fri_close AND c.high = w.fri_close AND c.low = w.fri_close AND c.close = w.fri_close;
+-- 1b. the plan, computed before anything changes (same query as Step 0's 0b)
+CREATE TEMP TABLE cleanup_plan ON COMMIT DROP AS
+WITH runs AS (SELECT * FROM cleanup_runs)
+SELECT r.symbol, c.timeframe, c."bucketStart", c.open AS open_now, c.high AS high_now, c.low AS low_now, c.close AS close_now,
+       (array_agg(x.open ORDER BY x."bucketStart"))[1] AS open_new, max(x.high) AS high_new, min(x.low) AS low_new,
+       (array_agg(x.close ORDER BY x."bucketStart" DESC))[1] AS close_new, count(x.*) AS real_m1_bars,
+       CASE WHEN count(x.*) > 0 THEN 'rebuild'
+            WHEN c.timeframe::text IN ('M5', 'M15', 'M30', 'H1')
+                 AND c.open = r.fri_close AND c.high = r.fri_close AND c.low = r.fri_close AND c.close = r.fri_close THEN 'delete'
+            ELSE 'skip' END AS action
+FROM runs r
+JOIN "Candle" c ON c.symbol = r.symbol AND c.timeframe IN ('M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1')
+  AND c."bucketStart" < r.run_to AND c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END > r.run_from
+LEFT JOIN "Candle" x ON x.symbol = r.symbol AND x.timeframe = 'M1'
+  AND x."bucketStart" >= c."bucketStart" AND x."bucketStart" < c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END
+  AND NOT (x."bucketStart" >= r.run_from AND x."bucketStart" < r.run_to)
+GROUP BY r.symbol, r.fri_close, c.timeframe, c."bucketStart", c.open, c.high, c.low, c.close;
 
--- 1c. H4 / D1 / W1 buckets that contain a window: open / high / low rebuilt from the bucket's remaining real M1 bars
---     (close is the latest real value already). A bucket with no real M1 left is deleted (it only held the flat bars).
---     MN1 / Y1 stay: each symbol's Friday close is a real price inside its month's and year's range.
-CREATE TEMP TABLE cleanup_b ON COMMIT DROP AS
-SELECT c.symbol, c.timeframe, c."bucketStart",
-       (array_agg(x.open ORDER BY x."bucketStart"))[1] AS open, max(x.high) AS high, min(x.low) AS low, count(x.*) AS n
-FROM cleanup_w w
-JOIN "Candle" c ON c.symbol = w.symbol AND c.timeframe IN ('H4', 'D1', 'W1') AND c."bucketStart" <= w.w_from
-  AND c."bucketStart" + CASE c.timeframe::text WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END > w.w_from
-LEFT JOIN "Candle" x ON x.symbol = c.symbol AND x.timeframe = 'M1' AND x."bucketStart" >= c."bucketStart"
-  AND x."bucketStart" < c."bucketStart" + CASE c.timeframe::text WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END
-GROUP BY c.symbol, c.timeframe, c."bucketStart";
-UPDATE "Candle" c SET open = b.open, high = b.high, low = b.low, "updatedAt" = now()
-FROM cleanup_b b WHERE b.n > 0 AND c.symbol = b.symbol AND c.timeframe = b.timeframe AND c."bucketStart" = b."bucketStart";
-DELETE FROM "Candle" c USING cleanup_b b
-WHERE b.n = 0 AND c.symbol = b.symbol AND c.timeframe = b.timeframe AND c."bucketStart" = b."bucketStart";
+-- 1c. the flat M1 bars of each run: removed (the market was closed)
+DELETE FROM "Candle" c USING cleanup_runs r
+WHERE c.symbol = r.symbol AND c.timeframe = 'M1' AND c."bucketStart" >= r.run_from AND c."bucketStart" < r.run_to
+  AND c.open = r.fri_close AND c.high = r.fri_close AND c.low = r.fri_close AND c.close = r.fri_close;
+-- 1d. the coarser buckets: rebuilt from their real M1 bars, or removed when they are a flat M5-H1 bar, or left alone
+DELETE FROM "Candle" c USING cleanup_plan p
+WHERE p.action = 'delete' AND c.symbol = p.symbol AND c.timeframe = p.timeframe AND c."bucketStart" = p."bucketStart";
+UPDATE "Candle" c SET open = p.open_new, high = p.high_new, low = p.low_new, close = p.close_new, "updatedAt" = now()
+FROM cleanup_plan p
+WHERE p.action = 'rebuild' AND c.symbol = p.symbol AND c.timeframe = p.timeframe AND c."bucketStart" = p."bucketStart";
 
--- 1d. what changed, for the record (check it, then COMMIT; anything unexpected: ROLLBACK)
-SELECT symbol, timeframe, "bucketStart", open, high, low, close FROM "Candle" c
-WHERE (symbol, timeframe::text, "bucketStart") IN (SELECT symbol, timeframe::text, "bucketStart" FROM cleanup_b)
-ORDER BY symbol, timeframe;
+-- 1e. what changed, for the record: check it, then COMMIT; anything unexpected: ROLLBACK
+SELECT p.symbol, p.timeframe, p."bucketStart", p.action, c.open, c.high, c.low, c.close
+FROM cleanup_plan p LEFT JOIN "Candle" c ON c.symbol = p.symbol AND c.timeframe = p.timeframe AND c."bucketStart" = p."bucketStart"
+ORDER BY p.symbol, p.timeframe, p."bucketStart";
 -- COMMIT;
 
 -- ============================================================ Step 2: verify ==================================
--- 2a. Step 0's first query again: no rows (nothing left inside the closed windows)
--- 2b. H4 / D1 / W1: open = the first real M1 at or after the window's end, high / low = over the real M1s
--- 2c. after the fixed engine starts: each symbol's chart around Sunday 22:00 UTC shows no flat line at Friday's close
+-- 2a. Step 0 again: 0a lists no run (no flat bar left at a Friday close in the closed hours), 0b no bucket
+-- 2b. each symbol's chart around Sunday 21:00-22:00 UTC: no flat line at Friday's close; the first bar is the reopen
