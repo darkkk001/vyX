@@ -304,8 +304,13 @@ impl From<PlaceMarketOrderOutcome> for PlaceMarketOrderResponse {
     }
 }
 
-async fn health() -> &'static str {
-    "ok"
+/// The git commit this binary was built from (build.rs; "unknown" outside a checkout, "-dirty" with local edits).
+pub const ENGINE_COMMIT: &str = env!("VYX_GIT_COMMIT");
+
+/// Body stays the plain "ok" every check already reads; the build is in the x-vyx-engine-commit header
+/// (owner 2026-10-26: the running build on the VPS is read directly).
+async fn health() -> ([(&'static str, &'static str); 1], &'static str) {
+    ([("x-vyx-engine-commit", ENGINE_COMMIT)], "ok")
 }
 
 // EA clock-sync handshake target (2nd Contabo-audit follow-up on the tick
@@ -1431,6 +1436,7 @@ async fn spawn_alert_hot_reload(
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    tracing::info!(commit = ENGINE_COMMIT, "engine build: commit {ENGINE_COMMIT}");
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
@@ -2041,5 +2047,35 @@ mod secret_rotation_tests {
         assert!(!secret_matches(None, "new", Some("old")), "no header: refused");
         assert!(!secret_matches(Some(""), "", None), "an empty expected value never opens a route");
         assert!(!secret_matches(Some(""), "new", Some("")), "an empty previous never matches an empty header");
+    }
+}
+
+#[cfg(test)]
+mod build_commit_tests {
+    use super::*;
+
+    #[test]
+    fn the_build_commit_is_stamped() {
+        assert!(!ENGINE_COMMIT.is_empty());
+        // a checkout build: a 40-hex sha, optionally "-dirty"; the stamp is never silently empty
+        let sha = ENGINE_COMMIT.trim_end_matches("-dirty");
+        assert!(ENGINE_COMMIT == "unknown" || (sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())), "{ENGINE_COMMIT}");
+    }
+
+    #[tokio::test]
+    async fn health_answers_ok_with_the_commit_header() {
+        let app = axum::Router::new().route("/health", axum::routing::get(health));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"GET /health HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").await.unwrap();
+        let mut raw = String::new();
+        conn.read_to_string(&mut raw).await.unwrap();
+        let lower = raw.to_ascii_lowercase();
+        assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+        assert!(lower.contains(&format!("x-vyx-engine-commit: {}", ENGINE_COMMIT.to_ascii_lowercase())), "{raw}");
+        assert!(raw.ends_with("\r\n\r\nok"), "the body every health check reads is unchanged: {raw}");
     }
 }

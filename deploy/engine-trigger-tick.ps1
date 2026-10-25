@@ -158,6 +158,7 @@ $must = @(
   @("order-management\src\db.rs", 'pub struct QuoteStamp', "price source and tick time per position (trigger-tick capture)"),
   @("order-management\src\monitor.rs", 'received: fire.received', "a live fire hands its receive times to the evaluation (trigger-tick capture)"),
   @("market-data\src\risk_hook.rs", 'pub received: HashMap', "a live fire carries the engine's receive time (trigger-tick capture)"),
+  @("server\src\main.rs", 'engine build: commit', "the engine logs and serves its build commit (owner 2026-10-26)"),
   @("market-data\src\cache.rs", 'pub fn latest_received', "the tick cache keeps the engine's own receive time, not the feed's (trigger-tick receive-time fix)"),
   # live today, must not be lost: NBP on the last close + margin-call hysteresis (2026-10-22), deal model, Stage 6, 10-05
   @("order-management\src\book.rs", 'protect_nbp: bool, last_position: bool', "NBP only on the last close (2026-10-22)"),
@@ -220,6 +221,11 @@ Invoke-Native { & $Nssm start vyxtrader-engine } | Out-Null
 $healthy = $false
 foreach ($i in 1..30) { if ((Get-Code "http://127.0.0.1:8081/health") -eq 200) { $healthy = $true; break }; Start-Sleep 1 }
 if (-not $healthy) { Restore "the new engine did not answer /health within 30 s" }
+# the running engine says which commit it was built from (x-vyx-engine-commit): it must be exactly the approved one
+$served = ""
+try { $served = (Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8081/health" -TimeoutSec 8).Headers["x-vyx-engine-commit"] } catch { }
+if ("$served" -cne $Fix) { Restore "the running engine reports commit '$served', not the approved $Fix" }
+"  OK  /health x-vyx-engine-commit = $($Fix.Substring(0,7)) (the approved commit)"
 "engine up: /health 200 (sha256 $($newHash.Substring(0,16)))"
 
 # ---- STEP 4: the heartbeat is fresh again (the web hands the RUST accounts back to the engine) ----
@@ -233,7 +239,7 @@ if (-not $fresh) { Restore "no fresh risk heartbeat from the new engine within 3
 Start-Sleep 10
 
 # ---- STEP 5: the startup log (this start only): RISK MODE ACTIVE and its lines, nothing of shadow / legacy / refusal ----
-$pattern = 'risk mode:|RISK MODE|risk heartbeat|post-close outbox dispatcher|post-close dispatcher|order management|SHADOW REFUSED|shadow reconciler|risk hook|risk trigger loop|pricing cache|WARNING: ENGINE_ORDER_MANAGEMENT|flip marker|idle gate'
+$pattern = 'engine build: commit|risk mode:|RISK MODE|risk heartbeat|post-close outbox dispatcher|post-close dispatcher|order management|SHADOW REFUSED|shadow reconciler|risk hook|risk trigger loop|pricing cache|WARNING: ENGINE_ORDER_MANAGEMENT|flip marker|idle gate'
 $found = @()
 foreach ($f in $logFiles) {
   $all = @(Get-Content $f); $from = if ($all.Count -ge $startAt[$f]) { $startAt[$f] } else { 0 }   # a rotated (shorter) file is read whole
@@ -261,6 +267,7 @@ $checks = [ordered]@{
   "risk trigger loop decoupled"           = 'risk trigger loop: decoupled from the LivePrice write'
   "pricing cache loaded"                  = 'pricing cache loaded'
   "pricing cache reload on change"        = 'pricing cache: reload on change subscribed'
+  "build commit = the approved commit"    = "engine build: commit $Fix"
 }
 foreach ($k in $checks.Keys) {
   if ($found -match $checks[$k]) { "  OK  $k" } else { Restore "missing in the startup log: $k" }
