@@ -172,7 +172,7 @@ describe("client accepting a dealer requote runs the pre-trade margin gate", () 
     const order = await queuedOrder(fx, acc.id, { status: "REQUOTED" });
     const { status, json } = await requoteAccept(fx, acc.id, order.id);
     expect(status).toBe(400);
-    expect(["INSUFFICIENT_MARGIN", "INSUFFICIENT_BALANCE"]).toContain(json.error);
+    expect(json.clientReason).toBe("NOT_ENOUGH_MARGIN"); // the client's requote answer: clientReason only
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("REQUOTED");
     expect(await prisma.position.count({ where: { accountId: acc.id } })).toBe(0);
   });

@@ -371,7 +371,7 @@ describe("LIMIT / STOP placement runs the margin gate", () => {
     };
     const r1 = await place(poor.id);
     expect(r1.status).toBe(400);
-    expect(["INSUFFICIENT_MARGIN", "INSUFFICIENT_BALANCE"]).toContain(r1.json.error);
+    expect(r1.json.clientReason).toBe("NOT_ENOUGH_MARGIN"); // internally INSUFFICIENT_MARGIN / _BALANCE
     expect(await prisma.order.count({ where: { accountId: poor.id } })).toBe(0);
     const r2 = await place(rich.id);
     expect(r2.status).toBe(201);

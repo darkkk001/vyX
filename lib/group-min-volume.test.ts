@@ -152,7 +152,7 @@ describe("refused below the group minimum at every open path (DB)", () => {
     for (const type of ["MARKET", "LIMIT"] as const) {
       const r = await call(POST, "/api/trade/orders", "POST", order(fx, "0.49", type));
       expect(r.status).toBe(400);
-      expect(r.json).toMatchObject({ code: "GROUP_MIN_VOLUME", error: MESSAGE });
+      expect(r.json).toMatchObject({ clientReason: "INVALID_VOLUME" }); // internally GROUP_MIN_VOLUME + MESSAGE
     }
     expect(await prisma.order.count({ where: { accountId: acc.id } })).toBe(0);
     expect((await call(POST, "/api/trade/orders", "POST", order(fx, "0.50"))).status).toBe(201);
@@ -197,7 +197,7 @@ describe("refused below the group minimum at every open path (DB)", () => {
     const { POST } = await import("@/app/api/trade/orders/[id]/requote-response/route");
     const r = await call(POST, `/api/trade/orders/${o.id}/requote-response`, "POST", { accept: true }, { id: o.id });
     expect(r.status).toBe(400);
-    expect(r.json.code).toBe("GROUP_MIN_VOLUME");
+    expect(r.json.clientReason).toBe("INVALID_VOLUME");
     expect((await prisma.order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe("REQUOTED");
     expect(await prisma.position.count({ where: { accountId: acc.id } })).toBe(0);
   });
