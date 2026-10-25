@@ -565,7 +565,7 @@ RETURNING "brokerId", action, "newValue";
 $web | psql -X -q -d $Live
 ```
 
-Demo-only back on (step 9's undo): the 9.2 statement with `'riskAuthorityDemoOnly' = true`. If the owner needs the fastest possible fallback and psql is not at hand: `UPDATE "Broker" SET "riskAuthority" = 'WEB' WHERE subdomain = 'futurixglobal';` from any SQL console (no audit row: write one by hand afterwards).
+Demo-only back on (step 9's undo): the 9.2 statement. If the owner needs the fastest possible fallback and psql is not at hand: `UPDATE "Broker" SET "riskAuthority" = 'WEB' WHERE subdomain = 'futurixglobal';` from any SQL console (no audit row: write one by hand afterwards).
 
 ## 9. Later: `riskAuthorityDemoOnly = false` (the engine owns Futurix's LIVE accounts too)
 
@@ -577,6 +577,17 @@ Demo-only back on (step 9's undo): the 9.2 statement with `'riskAuthorityDemoOnl
 * [ ] The final 7-path sweep (10.2) is clean on the build that is running now.
 * [ ] The stale-heartbeat ops alert (plan 14.3, built 2026-10-07) fired once and recovered once in the 7.B drill, and `OPS_ALERT_EMAIL` is set on Vercel production.
 * [ ] The 1-minute `risk-fallback` cron (owner decision (b), 2026-10-06; plan 14.2) is registered on Vercel and answered `ran: true` during the 7.B drill.
+* [ ] The final 7-path sweep (10.2) was re-run on the engine build that is running (75d4113 or later; a new engine build needs a new sweep).
+* [ ] Both cutover gates of `docs/RUST-CUTOVER-PLAN.md` 6.1 that name this step are signed off by the owner: position / deal model, and measured touch-to-write delay and slippage.
+* [ ] The demo-week numbers (owner, 2026-10-26), from `scripts/report/trigger-tick-daily.sql` over at least one full trading week of the running build (a Friday close and a Sunday reopen included):
+  * every engine close since the deploy carries the trigger tick (`missing` = 0);
+  * at least 30 engine SL / TP closes (the drill account of 7.0 may make them);
+  * `fire` closes: `engineDelayMs` p50 <= 100 ms, p95 <= 500 ms, max <= 2000 ms;
+  * SL / TP closes taken by the pass / backstop (`triggerSource` = `pass`) <= 5 % of all engine SL / TP closes;
+  * every SL / TP fill is the trigger tick's own bid / ask; adverse slippage past the level p95 <= 0.50 on XAUUSD (the owner sets each other symbol's limit);
+  * the post-flip checks are 0: engine TRADE_PNL rows with a null close field (`RUST-CUTOVER-PLAN.md` 6.1), duplicate TRADE_PNL per position, TRADE_PNL without its deal.
+
+Target (owner, 2026-10-26): Wednesday 4 November 2026, about 22:05 UTC, only if every box above is ticked. After the US DST change (1 November) the metals' daily break is 22:00-23:00 UTC: the flip lands inside it, and the 23:00 reopen gap is the first live test of the engine; keep watching until 23:30. Run 7.B again on the first day.
 
 ### 9.1 The statement
 
@@ -595,7 +606,27 @@ $all | psql -X -q -d $Live
 ```
 
 **Verify:** one row; the 5.4 ownership query now says `ENGINE` for DEMO and LIVE; repeat 5.5 and section 6: every automatic close of the broker is now `ENGINE`. Run 7.B once more on the first day (LIVE accounts now fall back to the web on a stale heartbeat as well).
-**Undo:** section 8 ("demo-only back on", or WEB).
+**Undo:** section 8 ("demo-only back on" = 9.2, or WEB).
+
+### 9.2 Demo-only back on (the undo of 9.1)
+
+The engine keeps Futurix's DEMO accounts and hands the LIVE accounts back to the web: `riskAuthorityDemoOnly = true`, `riskAuthority` stays `RUST`. Seconds, no restart; a transaction the engine has in flight on a LIVE account finishes first (the owner is re-read inside every risk transaction), everything after is the web's. Audited like 9.1:
+
+```powershell
+$demo = @'
+WITH old AS (SELECT id, "riskAuthority"::text AS authority, "riskAuthorityDemoOnly" AS demo_only FROM "Broker" WHERE subdomain = 'futurixglobal' AND "riskAuthority" = 'RUST' AND NOT "riskAuthorityDemoOnly" FOR UPDATE),
+     upd AS (UPDATE "Broker" b SET "riskAuthorityDemoOnly" = true FROM old WHERE b.id = old.id RETURNING b.id)
+INSERT INTO "AuditLog" (id, "brokerId", action, "entityType", "entityId", "oldValue", "newValue", "createdAt")
+SELECT 'stage6-' || replace(gen_random_uuid()::text, '-', ''), old.id, 'RISK_AUTHORITY_CHANGE', 'Broker', old.id,
+       jsonb_build_object('riskAuthority', old.authority, 'riskAuthorityDemoOnly', old.demo_only),
+       jsonb_build_object('riskAuthority', 'RUST', 'riskAuthorityDemoOnly', true, 'runbook', 'STAGE6-RUNBOOK-FUTURIX-DEMO 9.2'), now()
+FROM old JOIN upd ON upd.id = old.id
+RETURNING "brokerId", action, "newValue";
+'@
+$demo | psql -X -q -d $Live
+```
+
+**Verify:** one row (none = the broker was not RUST with demo-only off: nothing changed, check before anything else); the 5.4 ownership query says `ENGINE` for DEMO and `WEB` for LIVE; the next automatic close on a LIVE account is `closed_by = WEB` (5.5). If the engine itself is the problem, use the WEB statement of section 8 instead: it takes DEMO away from the engine as well.
 
 ## 10. The final 7-path sweep on the exact cutover build, RUST mode
 
