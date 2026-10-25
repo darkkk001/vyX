@@ -1,6 +1,20 @@
 import type { NextConfig } from "next";
 
+// Native update feeds (docs/FEED-BINARIES-DESIGN.md, owner go 2026-10-24): the packages, Setup and portable of these
+// broker slugs live in R2 behind feeds.vyxtrader.com, at the same paths. Installed apps keep their compiled-in
+// www.vyxtrader.com/native-<app>-updates/<slug>/ URL; this redirect (302, before public/ files) sends the binaries
+// to R2. The index files (releases.win.json, RELEASES, assets.win.json) stay here, under git review. A slug is added
+// only after its binaries are byte-checked in R2 and an installed copy updated through the redirect.
+const R2_FEED_SLUGS = ["qoretrader"];
+
 const nextConfig: NextConfig = {
+  async redirects() {
+    return R2_FEED_SLUGS.map((slug) => ({
+      source: `/native-:app(terminal|backoffice)-updates/${slug}/:file(.+\\.(?:nupkg|exe|zip))`,
+      destination: `https://feeds.vyxtrader.com/native-:app-updates/${slug}/:file`,
+      statusCode: 302 as const,
+    }));
+  },
   // Security/branding audit -- the production build (`next build
   // --turbopack`, see package.json's own build script) was emitting a
   // full .js.map next to every client chunk, each one embedding the
