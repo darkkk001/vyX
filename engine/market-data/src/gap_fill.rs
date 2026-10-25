@@ -102,13 +102,14 @@ fn market_closed(t: DateTime<Utc>) -> bool {
 }
 
 // How long an instrument's daily break lasts, in hours from the 17:00 New York anchor (0 = none). Metals
-// (gold/silver/platinum/palladium) and SpotCrude: 1 hour, 17:00 -> 18:00 New York. SpotBrent: 3 hours, 17:00 New York
+// (gold/silver/platinum/palladium, gold in euros XAUEUR included: the web gives every METALS symbol the break) and
+// SpotCrude: 1 hour, 17:00 -> 18:00 New York. SpotBrent: 3 hours, 17:00 New York
 // -> 01:00 London (owner 2026-10-23, option A, from two weeks of feed data: Brent is flat 21:00-00:00 UTC in summer).
 // Spot FX is continuous 24/5. Static match, same "no per-symbol session lookup in this crate yet" constraint as
 // is_continuously_traded -- keep in sync with lib/risk.ts dailyBreakHours until the TradingSession-config lookup lands.
 fn daily_break_hours(symbol: &str) -> u32 {
     let lower = symbol.to_ascii_lowercase();
-    if matches!(symbol, "XAUUSD" | "XAGUSD" | "XPTUSD" | "XPDUSD") || lower.starts_with("spotcrude") {
+    if matches!(symbol, "XAUUSD" | "XAUEUR" | "XAGUSD" | "XPTUSD" | "XPDUSD") || lower.starts_with("spotcrude") {
         1
     } else if lower.starts_with("spotbrent") {
         3
@@ -917,5 +918,19 @@ mod tests {
         // weekday breaks unchanged
         assert!(!market_open("XAUUSD", t("2026-10-21T21:30:00Z")));
         assert!(market_open("XAUUSD", t("2026-10-21T22:00:00Z")));
+    }
+
+    #[test]
+    fn xaueur_takes_the_gold_break_like_the_web_does() {
+        // owner 2026-10-26: XAUEUR is a METALS symbol on the platform (lib/risk.ts dailyBreakHours: 1 h), but this
+        // crate's list named only the USD metals, so its break hour was candled as open
+        let t = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        assert!(!market_open("XAUEUR", t("2026-10-21T21:30:00Z")), "weekday break, summer");
+        assert!(market_open("XAUEUR", t("2026-10-21T22:00:00Z")));
+        assert!(!market_open("XAUEUR", t("2026-11-11T22:30:00Z")), "weekday break, winter");
+        assert!(market_open("XAUEUR", t("2026-11-11T23:00:00Z")));
+        assert!(!market_open("XAUEUR", t("2026-10-25T21:30:00Z")), "Sunday reopen after the break");
+        assert!(market_open("XAUEUR", t("2026-10-25T22:00:00Z")));
+        assert!(market_open("XAUEUR", t("2026-10-21T12:00:00Z")), "ordinary trading hours");
     }
 }
