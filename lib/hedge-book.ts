@@ -10,6 +10,7 @@ import { ensureCoverageAccount } from "@/lib/coverage";
 import { hedgeRouteOf } from "@/lib/hedge-route";
 import { writeOpenDealInTx } from "@/lib/deals";
 import { publishTradingEvent } from "@/lib/nats";
+import { bookPnlFloating, bookPnlRealized } from "@/lib/book-pnl";
 
 // The hedge book per symbol (Dealing redesign D8 / D10, owner 2026-10-26). One server answer behind the Dealing HEDGE
 // MANAGER and the hedge account panel, so their counts and tables never disagree, and the per-symbol Hedge action.
@@ -196,4 +197,44 @@ export async function hedgeBySymbol(brokerId: string, adminId: string | null, sy
     results.push({ symbol, side, clients: made.clients, lots: lots(made.volume), legTicket: made.leg.ticket, price: fillPrice.toString(), error: null });
   }
   return results;
+}
+
+/** The Dealing screen's DEALER P/L card (owner 2026-10-26), per currency, over a range (lib/dash-range.ts):
+ *   bookPnl          = the client book reversed: Book P/L realized in the range + floating now (lib/book-pnl.ts, the
+ *                      Dashboard's Broker P/L definition, so the two screens agree);
+ *   hedgeAccountPnl  = the hedge account's legs: realized closes in the range (their OUT / OUT_BY deals, not voided) +
+ *                      floating now (the margin pass's valuation);
+ *   dealerPnl        = bookPnl + hedgeAccountPnl;
+ *   closedClientTrades = client positions with a close in the range (Book P/L's count). */
+export async function dealerPnl(brokerId: string, range: { from: Date; to: Date | null }) {
+  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
+  const scope = { brokerId, coverageAccountId: broker.coverageAccountId };
+  const end = range.to ?? new Date("9999-12-31T00:00:00Z");
+  const [bookRealized, bookFloating, legRealized, legs] = await Promise.all([
+    bookPnlRealized(prisma, scope, range.from, range.to),
+    bookPnlFloating(prisma, scope),
+    broker.coverageAccountId
+      ? prisma.$queryRaw<{ currency: string; total: Prisma.Decimal | null }[]>`
+          SELECT a.currency, SUM(d.profit) AS total FROM "Deal" d JOIN "Account" a ON a.id = d."accountId"
+          WHERE d."accountId" = ${broker.coverageAccountId} AND d.entry IN ('OUT', 'OUT_BY') AND d."voidedAt" IS NULL
+            AND d."executedAt" >= ${range.from} AND d."executedAt" < ${end}
+          GROUP BY 1`
+      : Promise.resolve([]),
+    broker.coverageAccountId ? prisma.position.findMany({ where: { accountId: broker.coverageAccountId, status: "OPEN", deletedAt: null }, select: SELECT }) : Promise.resolve([]),
+  ]);
+  const legFloat = await floating(legs);
+  const ccys = new Set<string>();
+  const add = (m: Map<string, Prisma.Decimal>, ccy: string, v: Prisma.Decimal.Value) => { ccys.add(ccy); m.set(ccy, (m.get(ccy) ?? D0()).add(v)); };
+  const book = new Map<string, Prisma.Decimal>(), hedge = new Map<string, Prisma.Decimal>(), closed = new Map<string, number>();
+  for (const r of bookRealized) { add(book, r.currency, r.amount); closed.set(r.currency, (closed.get(r.currency) ?? 0) + r.count); }
+  for (const r of bookFloating.byCurrency) add(book, r.currency, r.amount);
+  for (const r of legRealized) add(hedge, r.currency, r.total ?? 0);
+  for (const l of legs) add(hedge, l.account.currency, legFloat.get(l.id) ?? 0);
+  return {
+    byCurrency: [...ccys].sort().map((currency) => {
+      const b = book.get(currency) ?? D0(), h = hedge.get(currency) ?? D0();
+      return { currency, dealerPnl: b.add(h).toFixed(2), bookPnl: b.toFixed(2), hedgeAccountPnl: h.toFixed(2), closedClientTrades: closed.get(currency) ?? 0 };
+    }),
+    unpriced: bookFloating.unpriced + legs.filter((l) => legFloat.get(l.id) == null).length,
+  };
 }

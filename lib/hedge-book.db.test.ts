@@ -30,7 +30,7 @@ afterAll(async () => {
 describe("hedge book per symbol (D8 / D10)", () => {
   it("one leg per side, A-book and demo left out, shared legs shrink by each client's lots and release every client", async () => {
     if (!dbReachable) return;
-    const { hedgeBook, hedgeBySymbol } = await import("@/lib/hedge-book");
+    const { hedgeBook, hedgeBySymbol, dealerPnl } = await import("@/lib/hedge-book");
     const { onClose } = await import("@/lib/coverage");
     const s = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
     brokerId = (await prisma.broker.create({ data: { name: `HB ${s}`, subdomain: `hb-${s.toLowerCase()}`, dealingModeAt: null } })).id;
@@ -75,6 +75,14 @@ describe("hedge book per symbol (D8 / D10)", () => {
     expect(after).toMatchObject({ hedgedLots: "0.25", unhedgedLots: "0.00", hedgeAccount: { buyLots: "0.20", sellLots: "0.05", netLots: "0.15" } });
     expect(after.hedgeAccount.legs.map((l) => [l.side, l.lots, l.clients])).toEqual([["BUY", "0.20", 2], ["SELL", "0.05", 5]]);
     const sellLeg = after.hedgeAccount.legs.find((l) => l.side === "SELL")!;
+    // DEALER P/L: the book and the hedge legs per currency; the legs' floating at bid 1.10000 / ask 1.10020: BUY 0.20
+    // opened at 1.10020 closes at the bid (-0.0002 x 0.20 x 100000 = -4.00), SELL 0.05 opened at 1.10000 closes at the ask
+    // (-0.0002 x 0.05 x 100000 = -1.00)
+    const pnl = await dealerPnl(brokerId, { from: new Date(Date.now() - 86_400_000), to: null });
+    const usd = pnl.byCurrency.find((r) => r.currency === "USD")!;
+    expect(usd.hedgeAccountPnl).toBe("-5.00");
+    expect(new Prisma.Decimal(usd.dealerPnl).eq(new Prisma.Decimal(usd.bookPnl).add(usd.hedgeAccountPnl))).toBe(true);
+    expect(usd.closedClientTrades).toBe(0);
     const buyLeg = after.hedgeAccount.legs.find((l) => l.side === "BUY")!;
 
     // a client closes in full: the shared SELL leg shrinks by exactly its 0.01

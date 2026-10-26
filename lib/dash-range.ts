@@ -1,6 +1,6 @@
 // The range chips of the backoffice cards (bo 1.0.96, owner 2026-10-27: Dashboard and Deposits cards follow the range
 // dropdown). One definition so every card of every screen means the same window:
-//   ?range=TODAY | 3D | 7D | 30D | 90D | 1Y   -> whole broker trading days ending with today's (lib/trading-day.ts):
+//   ?range=TODAY | 3D | 5D | 7D | 30D | 90D | 1Y (aliases 1D, 1M) -> whole broker trading days ending with today's (lib/trading-day.ts):
 //                                               TODAY = from today's day start; nD = from the start of the day n-1 days
 //                                               before today's (so 7D = today + the 6 trading days before it)
 //   ?from=&to=  (ISO, the app's CUSTOM)       -> [from, to); no to = up to now
@@ -9,11 +9,13 @@
 
 const DAY_MS = 86_400_000;
 
-export const RANGE_KEYS = ["TODAY", "3D", "7D", "30D", "90D", "1Y"] as const;
+export const RANGE_KEYS = ["TODAY", "3D", "5D", "7D", "30D", "90D", "1Y"] as const;
 export type RangeKey = (typeof RANGE_KEYS)[number] | "CUSTOM";
 export type DashRange = { key: RangeKey; from: Date; to: Date | null };
 
-const DAYS: Record<(typeof RANGE_KEYS)[number], number> = { TODAY: 1, "3D": 3, "7D": 7, "30D": 30, "90D": 90, "1Y": 365 };
+const DAYS: Record<(typeof RANGE_KEYS)[number], number> = { TODAY: 1, "3D": 3, "5D": 5, "7D": 7, "30D": 30, "90D": 90, "1Y": 365 };
+// the Dealing card's chips (bo 1.0.96): 1D = TODAY, 1M = 30D
+const ALIASES: Record<string, (typeof RANGE_KEYS)[number]> = { "1D": "TODAY", "1M": "30D" };
 
 /** Pure: the window of a range key, given the start of today's trading day. */
 export function rangeFromKey(key: (typeof RANGE_KEYS)[number], dayStart: Date): DashRange {
@@ -32,8 +34,9 @@ export function parseDashRange(sp: URLSearchParams, dayStart: Date, fallback: (t
     if (to && to <= from) return { error: "to must be later than from" };
     return { key: "CUSTOM", from, to };
   }
-  const raw = sp.get("range")?.trim().toUpperCase();
-  if (!raw) return rangeFromKey(fallback, dayStart);
+  const given = sp.get("range")?.trim().toUpperCase();
+  if (!given) return rangeFromKey(fallback, dayStart);
+  const raw = ALIASES[given] ?? given;
   if (!(RANGE_KEYS as readonly string[]).includes(raw)) return { error: `range must be one of ${RANGE_KEYS.join(", ")}` };
   return rangeFromKey(raw as (typeof RANGE_KEYS)[number], dayStart);
 }
