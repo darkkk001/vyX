@@ -898,13 +898,17 @@ async fn ingest_history(
     let mut misaligned = 0usize;
     let mut first_misaligned_ms: Option<i64> = None;
 
+    let now = Utc::now();
     for bar in &bars {
-        let Some(bucket_start) = Utc.timestamp_millis_opt(bar.bucket_start_ms).single() else {
+        // owner 2026-10-26: the EA converts every bar with TODAY's offset; a broker-calendar bar (H4 / D1 / W1 / MN1)
+        // of the other season is re-based to its own season's offset, so it lands on the row the engine writes
+        let start_ms = market_data::rebase_bar_start_ms(timeframe, bar.bucket_start_ms, body.server_offset_sec.unwrap_or(0), now);
+        let Some(bucket_start) = Utc.timestamp_millis_opt(start_ms).single() else {
             continue; // malformed timestamp -- skip just this bar
         };
-        if !market_data::bucket_is_aligned(timeframe, bar.bucket_start_ms) {
+        if !market_data::bucket_is_aligned(timeframe, start_ms) {
             misaligned += 1;
-            first_misaligned_ms.get_or_insert(bar.bucket_start_ms);
+            first_misaligned_ms.get_or_insert(start_ms);
             continue;
         }
         let update = CandleUpdate {

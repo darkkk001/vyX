@@ -36,7 +36,7 @@ fn nth_sunday_of_month(year: i32, month: u32, nth: u32) -> NaiveDate {
 // nearest real Friday/Sunday boundary this function is ever evaluated
 // against is always at least several days from either transition date,
 // so date-level precision is exact for this use, not just close enough.
-fn us_eastern_is_dst(t: DateTime<Utc>) -> bool {
+pub(crate) fn us_eastern_is_dst(t: DateTime<Utc>) -> bool {
     let year = t.year();
     let dst_start = nth_sunday_of_month(year, 3, 2); // 2nd Sunday of March
     let dst_end = nth_sunday_of_month(year, 11, 1); // 1st Sunday of November

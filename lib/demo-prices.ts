@@ -219,12 +219,12 @@ export function demoPointSize(name: string): number {
 
 export type DemoTimeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
 const FIXED_TF_MS: Record<string, number> = { M1: 60_000, M5: 300_000, M15: 900_000, M30: 1_800_000, H1: 3_600_000, H4: 14_400_000, D1: 86_400_000, W1: 604_800_000 };
-/** the same alignment lib/market-simulator.ts bucketStartMs uses (UTC; W1 starts Monday) */
+/** the same alignment lib/market-simulator.ts bucketStartMs uses (UTC; W1 starts Sunday, like MT5 and the engine) */
 export function demoBucketStart(tf: DemoTimeframe, tMs: number): number {
   if (tf === "W1") {
     const d = new Date(tMs);
-    const sinceMonday = (d.getUTCDay() + 6) % 7;
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - sinceMonday);
+    const sinceSunday = d.getUTCDay();
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - sinceSunday);
   }
   const fixed = FIXED_TF_MS[tf];
   if (fixed) return Math.floor(tMs / fixed) * fixed;

@@ -247,7 +247,7 @@ export function spreadFor(def: SymbolDef): number {
 }
 
 // M1..D1 are fixed-duration and bucket cleanly by floor-division. W1/MN1/Y1
-// aren't — weeks don't align to the epoch at a Monday boundary, and
+// aren't — weeks don't align to the epoch at a Sunday boundary, and
 // months/years vary in length — so those need real calendar math instead
 // of a fixed millisecond divisor. Mirrors lib/price-feed.ts's server-side
 // bucketing exactly, so client-simulated and server-fed candles for the
@@ -314,8 +314,9 @@ export function bucketStartMs(tf: Timeframe, now: number): number {
 
   const d = new Date(now);
   if (tf === "W1") {
-    const daysSinceMonday = (d.getUTCDay() + 6) % 7; // getUTCDay: 0=Sun..6=Sat
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - daysSinceMonday);
+    // the week starts Sunday, like MT5's W1 bars and the engine's (owner 2026-10-26)
+    const daysSinceSunday = d.getUTCDay(); // getUTCDay: 0=Sun..6=Sat
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - daysSinceSunday);
   }
   if (tf === "MN1") return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
   return Date.UTC(d.getUTCFullYear(), 0, 1); // Y1

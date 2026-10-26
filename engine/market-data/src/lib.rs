@@ -5,7 +5,7 @@
 //! and a synchronous read path for the Execution module — see
 //! ../../docs/market-data.md §2).
 
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
 use protocol::{BrokerBar, Tick};
 
 pub mod activity;
@@ -160,6 +160,39 @@ pub(crate) fn fixed_ms(tf: Timeframe) -> Option<i64> {
 /// offset (e.g. a genuine UTC+X:30 trade-server clock) would reopen this
 /// for H1 and below too -- no such broker has been observed in this
 /// codebase's history, so that's flagged, not fixed, here.
+/// The UTC offset a New-York-close broker server (UTC+2 in winter, UTC+3 while New York is on daylight time) has at
+/// instant `t`.
+fn ny_close_server_offset_sec(t: DateTime<Utc>) -> i64 {
+    if crate::gap_fill::us_eastern_is_dst(t) { 3 * 3600 } else { 2 * 3600 }
+}
+
+/// The broker server's offset in effect at the broker-LOCAL calendar boundary `local` (a week, month or year start),
+/// given the offset it reports now (owner 2026-10-26). A bucket of a period that began in the other season belongs at
+/// THAT season's offset, not today's: Y1 2026 starts 2026-01-01 00:00 server = 2025-12-31 22:00 UTC (winter, +2)
+/// whether the tick or bar comes in January or July. Only a New-York-close server is shifted (one whose offset now is
+/// the +2/+3 that New York's daylight time implies); any other offset, 0 included, is used unchanged.
+pub fn offset_at_local(local: NaiveDateTime, current_offset_sec: i64, now: DateTime<Utc>) -> i64 {
+    if current_offset_sec != ny_close_server_offset_sec(now) {
+        return current_offset_sec;
+    }
+    // the instant just before the boundary at the winter offset: on a transition Sunday the server's midnight is still
+    // on the old side (New York changes at 02:00 local, hours later)
+    ny_close_server_offset_sec(Utc.from_utc_datetime(&local) - chrono::Duration::hours(2))
+}
+
+/// A broker bar's bucket start re-based to the offset in effect at its own period start (`offset_at_local`). The EA
+/// converts every MqlRates.time with TODAY's BrokerOffsetSec, so its W1 / MN1 bars of a period that began in the other
+/// season, and its D1 / H4 history from the other season, would land an hour off this engine's buckets and become a
+/// second row. Fixed-grid timeframes (M1-H1) are returned unchanged.
+pub fn rebase_bar_start_ms(tf: Timeframe, bucket_start_ms: i64, sent_offset_sec: i64, now: DateTime<Utc>) -> i64 {
+    if !matches!(tf, Timeframe::H4 | Timeframe::D1 | Timeframe::W1 | Timeframe::Mn1 | Timeframe::Y1) {
+        return bucket_start_ms;
+    }
+    let local_ms = bucket_start_ms + sent_offset_sec * 1000;
+    let Some(local) = chrono::DateTime::from_timestamp_millis(local_ms).map(|d| d.naive_utc()) else { return bucket_start_ms };
+    local_ms - offset_at_local(local, sent_offset_sec, now) * 1000
+}
+
 pub fn bucket_start(tf: Timeframe, now: DateTime<Utc>, broker_offset_sec: i64) -> DateTime<Utc> {
     if let Some(ms) = fixed_ms(tf) {
         if tf != Timeframe::D1 && tf != Timeframe::H4 {
@@ -171,19 +204,22 @@ pub fn bucket_start(tf: Timeframe, now: DateTime<Utc>, broker_offset_sec: i64) -
     match tf {
         Timeframe::D1 => broker_day_start(now, broker_offset_sec),
         Timeframe::H4 => broker_period_start(now, broker_offset_sec, fixed_ms(Timeframe::H4).unwrap()),
+        // owner 2026-10-26: the week starts SUNDAY 00:00 server time, like MT5's own W1 bars (the EA backfills them;
+        // a Monday start made a second W1 row every week). Week, month and year start at the offset in effect at that
+        // start (offset_at_local), so a period that began in the other season keeps one row.
         Timeframe::W1 => {
             let shifted = now + chrono::Duration::seconds(broker_offset_sec);
-            let days_since_monday = shifted.weekday().num_days_from_monday();
-            let monday_local = (shifted - chrono::Duration::days(days_since_monday as i64))
+            let days_since_sunday = shifted.weekday().num_days_from_sunday();
+            let sunday_local = (shifted - chrono::Duration::days(days_since_sunday as i64))
                 .date_naive()
                 .and_hms_opt(0, 0, 0)
                 .unwrap();
-            Utc.from_utc_datetime(&monday_local) - chrono::Duration::seconds(broker_offset_sec)
+            Utc.from_utc_datetime(&sunday_local) - chrono::Duration::seconds(offset_at_local(sunday_local, broker_offset_sec, now))
         }
         Timeframe::Mn1 => {
             let shifted = now + chrono::Duration::seconds(broker_offset_sec);
             let first_of_month_local = shifted.date_naive().with_day(1).unwrap().and_hms_opt(0, 0, 0).unwrap();
-            Utc.from_utc_datetime(&first_of_month_local) - chrono::Duration::seconds(broker_offset_sec)
+            Utc.from_utc_datetime(&first_of_month_local) - chrono::Duration::seconds(offset_at_local(first_of_month_local, broker_offset_sec, now))
         }
         Timeframe::Y1 => {
             let shifted = now + chrono::Duration::seconds(broker_offset_sec);
@@ -191,7 +227,7 @@ pub fn bucket_start(tf: Timeframe, now: DateTime<Utc>, broker_offset_sec: i64) -
                 .unwrap()
                 .and_hms_opt(0, 0, 0)
                 .unwrap();
-            Utc.from_utc_datetime(&first_of_year_local) - chrono::Duration::seconds(broker_offset_sec)
+            Utc.from_utc_datetime(&first_of_year_local) - chrono::Duration::seconds(offset_at_local(first_of_year_local, broker_offset_sec, now))
         }
         _ => unreachable!("fixed_ms (minus D1 and H4, handled above) covers every other variant"),
     }
@@ -342,7 +378,7 @@ pub struct BrokerBarsOutcome {
 /// broker's value into the wrong bucket would be worse than the sampled open.
 /// Y1 (no MT5 period) and any unknown timeframe name are left untouched.
 /// Empty `bars` (an EA build before v1.40) is a no-op: today's behavior.
-pub fn apply_broker_bars(updates: &mut [CandleUpdate], bars: &[BrokerBar]) -> BrokerBarsOutcome {
+pub fn apply_broker_bars(updates: &mut [CandleUpdate], bars: &[BrokerBar], broker_offset_sec: i64, now: DateTime<Utc>) -> BrokerBarsOutcome {
     let mut outcome = BrokerBarsOutcome::default();
     for bar in bars {
         let Some(tf) = timeframe_from_str(&bar.tf) else {
@@ -355,7 +391,7 @@ pub fn apply_broker_bars(updates: &mut [CandleUpdate], bars: &[BrokerBar]) -> Br
         // zeroed struct) or an inverted range can't be a real bar; treat it
         // like a mismatch rather than seeding a zero open.
         let plausible = bar.o > rust_decimal::Decimal::ZERO && bar.l > rust_decimal::Decimal::ZERO && bar.h >= bar.l;
-        if !plausible || update.bucket_start.timestamp_millis() != bar.t {
+        if !plausible || update.bucket_start.timestamp_millis() != rebase_bar_start_ms(tf, bar.t, broker_offset_sec, now) {
             outcome.mismatched += 1;
             continue;
         }
@@ -425,7 +461,7 @@ mod tests {
         // The sampled window: first pushed tick 2402.5 (MT5 actually opened at 2402.0, 40ms earlier).
         let tick = bars_tick(dec!(2402.5), vec![bar("M1", m1, "2402.0", "2402.5", "2401.8")]);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
-        let outcome = apply_broker_bars(&mut updates, &tick.bars);
+        let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
         assert_eq!(outcome, BrokerBarsOutcome { applied: 1, mismatched: 0 });
         let u = by_tf(&updates, Timeframe::M1);
         assert_eq!((u.open, u.high, u.low, u.close), (dec!(2402.0), dec!(2402.7), dec!(2401.8), dec!(2402.5)), "open = broker's; high keeps the wider sampled 2402.7; low takes the broker's 2401.8; close is the tick");
@@ -443,7 +479,7 @@ mod tests {
         let stale_m1 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(); // the EA read bar 0 before its 12:01 tick was applied
         let tick = bars_tick(dec!(2402.5), vec![bar("M1", stale_m1, "2399.0", "2402.6", "2398.0")]);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.5), dec!(2402.5));
-        let outcome = apply_broker_bars(&mut updates, &tick.bars);
+        let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
         assert_eq!(outcome, BrokerBarsOutcome { applied: 0, mismatched: 1 });
         let u = by_tf(&updates, Timeframe::M1);
         assert_eq!((u.open, u.high, u.low), (dec!(2402.5), dec!(2402.5), dec!(2402.5)), "a 12:00 bar must never be written into the 12:01 bucket");
@@ -460,7 +496,7 @@ mod tests {
             bar("M5", at, "2402.0", "2401.0", "2402.5"), // inverted range (h < l), and 12:01 is not an M5 bucket either
         ]);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.5), dec!(2402.5));
-        let outcome = apply_broker_bars(&mut updates, &tick.bars);
+        let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
         assert_eq!(outcome, BrokerBarsOutcome { applied: 0, mismatched: 2 }, "the zero bar and the inverted/misaligned M5 count; the unknown name is silently skipped");
         assert!(updates.iter().all(|u| !u.open_authoritative && u.open == dec!(2402.5)));
         assert_eq!(by_tf(&updates, Timeframe::Y1).open, dec!(2402.5), "Y1 has no MT5 period: always the sampled open");
@@ -472,8 +508,8 @@ mod tests {
         // 2026-08-12 (Wed) 22:30:15 UTC = 01:30:15 server (UTC+3). MT5's own bar-0
         // open times (server) -> UTC: M1 01:30 -> 22:30; M5 01:30 -> 22:30;
         // M15 01:30 -> 22:30; M30 01:30 -> 22:30; H1 01:00 -> 22:00; H4 00:00
-        // -> 21:00; D1 Thu 13 00:00 -> Wed 12 21:00; W1 Mon 10 00:00 -> Sun 9
-        // 21:00; MN1 Aug 1 00:00 -> Jul 31 21:00. Exactly what the EA sends as
+        // -> 21:00; D1 Thu 13 00:00 -> Wed 12 21:00; W1 Sun 9 00:00 -> Sat 8
+        // 21:00 (MT5's week starts Sunday; owner 2026-10-26); MN1 Aug 1 00:00 -> Jul 31 21:00. Exactly what the EA sends as
         // (MqlRates.time - BrokerOffsetSec) * 1000, and exactly what
         // bucket_start must agree with for every bar to be applied.
         let at = Utc.with_ymd_and_hms(2026, 8, 12, 22, 30, 15).unwrap();
@@ -486,12 +522,12 @@ mod tests {
             bar("H1", utc(12, 22, 0), "1", "2", "1"),
             bar("H4", utc(12, 21, 0), "1", "2", "1"),
             bar("D1", utc(12, 21, 0), "1", "2", "1"),
-            bar("W1", utc(9, 21, 0), "1", "2", "1"),
+            bar("W1", utc(8, 21, 0), "1", "2", "1"),
             bar("MN1", Utc.with_ymd_and_hms(2026, 7, 31, 21, 0, 0).unwrap(), "1", "2", "1"),
         ];
         let tick = bars_tick(dec!(1.5), bars);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(1.5), dec!(1.5), dec!(1.5));
-        let outcome = apply_broker_bars(&mut updates, &tick.bars);
+        let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
         assert_eq!(outcome, BrokerBarsOutcome { applied: 9, mismatched: 0 }, "every MT5-served timeframe lines up with this engine's broker-offset bucketing");
         assert_eq!(updates.iter().filter(|u| u.open_authoritative).count(), 9);
         assert!(!by_tf(&updates, Timeframe::Y1).open_authoritative);
@@ -503,7 +539,7 @@ mod tests {
         let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap();
         let tick = bars_tick(dec!(2402.5), vec![]);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 0, dec!(2402.5), dec!(2402.5), dec!(2402.5));
-        assert_eq!(apply_broker_bars(&mut updates, &tick.bars), BrokerBarsOutcome::default());
+        assert_eq!(apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now()), BrokerBarsOutcome::default());
         assert!(updates.iter().all(|u| !u.open_authoritative));
     }
 
@@ -515,12 +551,70 @@ mod tests {
     }
 
     #[test]
-    fn week_starts_monday() {
-        // 2026-08-13 is a Thursday.
+    fn week_starts_sunday() {
+        // 2026-08-13 is a Thursday; MT5's W1 bar (and now this engine's) starts the Sunday before.
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let start = bucket_start(Timeframe::W1, now, 0);
-        assert_eq!(start.weekday(), Weekday::Mon);
-        assert_eq!(start, Utc.with_ymd_and_hms(2026, 8, 10, 0, 0, 0).unwrap());
+        assert_eq!(start.weekday(), Weekday::Sun);
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 8, 9, 0, 0, 0).unwrap());
+    }
+
+    /// owner 2026-10-26: W1 / MN1 / Y1 on MT5's grid (Sunday 00:00 server time) at the offset in effect when the period
+    /// began, for a New-York-close server (+3 summer, +2 winter). These are the rows the EA backfills.
+    #[test]
+    fn broker_periods_start_at_the_offset_of_their_own_start() {
+        let summer = 3 * 3600;
+        let winter = 2 * 3600;
+        let utc = |y, m, d, h| Utc.with_ymd_and_hms(y, m, d, h, 0, 0).unwrap();
+        // a summer week: Sunday 2026-10-25 00:00 server = Saturday 10-24 21:00 UTC (the EA's isodow-6 series)
+        let thu = utc(2026, 10, 29, 12);
+        assert_eq!(bucket_start(Timeframe::W1, thu, summer), utc(2026, 10, 24, 21));
+        // the week New York leaves daylight time: Sunday 11-01 00:00 server is still +3 (NY changes at 02:00 local)
+        assert_eq!(bucket_start(Timeframe::W1, utc(2026, 11, 3, 12), winter), utc(2026, 10, 31, 21));
+        // the next one is a winter week
+        assert_eq!(bucket_start(Timeframe::W1, utc(2026, 11, 10, 12), winter), utc(2026, 11, 7, 22));
+        // the week daylight time starts (Sunday 2027-03-14 server midnight still +2)
+        assert_eq!(bucket_start(Timeframe::W1, utc(2027, 3, 16, 12), summer), utc(2027, 3, 13, 22));
+        // Y1 2026 began in winter: one row at 2025-12-31 22:00 UTC, in July as in January
+        assert_eq!(bucket_start(Timeframe::Y1, utc(2026, 7, 15, 12), summer), utc(2025, 12, 31, 22));
+        assert_eq!(bucket_start(Timeframe::Y1, utc(2026, 1, 15, 12), winter), utc(2025, 12, 31, 22));
+        // MN1: March 2026 began in winter (+2) though most of it is summer; November begins in summer (+3)
+        assert_eq!(bucket_start(Timeframe::Mn1, utc(2026, 3, 20, 12), summer), utc(2026, 2, 28, 22));
+        assert_eq!(bucket_start(Timeframe::Mn1, utc(2026, 11, 20, 12), winter), utc(2026, 10, 31, 21));
+        // any other offset is used as is (0 = no offset reported)
+        assert_eq!(bucket_start(Timeframe::Y1, utc(2026, 7, 15, 12), 0), utc(2026, 1, 1, 0));
+        assert_eq!(bucket_start(Timeframe::W1, thu, 3600), utc(2026, 10, 24, 23));
+    }
+
+    /// The EA converts every bar with TODAY's offset; re-based, a bar of a period that began in the other season lands
+    /// on this engine's bucket instead of an hour beside it.
+    #[test]
+    fn broker_bars_are_rebased_to_their_own_season() {
+        let summer = 3 * 3600;
+        let winter = 2 * 3600;
+        let utc = |y, m, d, h| Utc.with_ymd_and_hms(y, m, d, h, 0, 0).unwrap();
+        let ms = |t: DateTime<Utc>| t.timestamp_millis();
+        // in July (+3) the EA sends Y1 2026 as 2025-12-31 21:00 UTC; it belongs at 22:00
+        let july = utc(2026, 7, 15, 12);
+        assert_eq!(rebase_bar_start_ms(Timeframe::Y1, ms(utc(2025, 12, 31, 21)), summer, july), ms(utc(2025, 12, 31, 22)));
+        // in December (+2) the EA re-sends a summer D1 (server 2026-08-10 00:00) as 08-09 22:00; it belongs at 21:00
+        let december = utc(2026, 12, 2, 12);
+        assert_eq!(rebase_bar_start_ms(Timeframe::D1, ms(utc(2026, 8, 9, 22)), winter, december), ms(utc(2026, 8, 9, 21)));
+        // a bar of the current season is unchanged, so is every fixed-grid timeframe and any non-NY offset
+        assert_eq!(rebase_bar_start_ms(Timeframe::W1, ms(utc(2026, 10, 24, 21)), summer, utc(2026, 10, 26, 12)), ms(utc(2026, 10, 24, 21)));
+        assert_eq!(rebase_bar_start_ms(Timeframe::H1, ms(utc(2025, 12, 31, 21)), summer, july), ms(utc(2025, 12, 31, 21)));
+        assert_eq!(rebase_bar_start_ms(Timeframe::Y1, ms(utc(2025, 12, 31, 23)), 3600, july), ms(utc(2025, 12, 31, 23)));
+        // and the tick path applies it: a summer tick carrying the EA's Y1 bar seeds the Y1 bucket's open
+        let tick: protocol::Tick = serde_json::from_value(serde_json::json!({
+            "symbol": "XAUUSD", "bid": "4000", "ask": "4000.3",
+            "bars": [{ "tf": "W1", "t": ms(utc(2026, 7, 11, 21)), "o": "3990", "h": "4010", "l": "3980", "c": "4000" }]
+        })).unwrap();
+        let now = utc(2026, 7, 15, 12);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, now, summer, rust_decimal_macros::dec!(4000), rust_decimal_macros::dec!(4000), rust_decimal_macros::dec!(4000));
+        let w1 = updates.iter().find(|u| u.timeframe == Timeframe::W1).unwrap().bucket_start;
+        assert_eq!(w1, utc(2026, 7, 11, 21), "W1 of Wed 2026-07-15 = Sunday 07-12 00:00 server (+3)");
+        let outcome = apply_broker_bars(&mut updates, &tick.bars, summer, now);
+        assert_eq!(outcome.applied, 1, "the EA's W1 bar matches the engine's bucket now: {outcome:?}");
     }
 
     #[test]
@@ -736,13 +830,13 @@ mod tests {
     #[test]
     fn w1_and_mn1_use_the_broker_local_date_with_a_nonzero_offset() {
         // 2026-08-13 08:00 UTC = 2026-08-13 11:00 broker-local (UTC+3) --
-        // still Thursday broker-side, so this week's Monday is 2026-08-10,
-        // and its broker-midnight is 2026-08-09 21:00 UTC.
+        // still Thursday broker-side, so this week's Sunday is 2026-08-09
+        // (MT5's W1 start), and its broker-midnight is 2026-08-08 21:00 UTC.
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 8, 0, 0).unwrap();
         let offset_sec = 3 * 3600;
         assert_eq!(
             bucket_start(Timeframe::W1, now, offset_sec),
-            Utc.with_ymd_and_hms(2026, 8, 9, 21, 0, 0).unwrap()
+            Utc.with_ymd_and_hms(2026, 8, 8, 21, 0, 0).unwrap()
         );
 
         // 2026-08-31 22:30 UTC = 2026-09-01 01:30 broker-local (UTC+3) --
