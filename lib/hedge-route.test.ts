@@ -30,6 +30,11 @@ describe("hedgeRouteOf: one route per position, whatever its stamps say", () => 
       });
     }
   }
+  it("a position on the hedge account is a hedge leg: never hedged again, whatever its stamps say", () => {
+    for (const groupCategoryAtOpen of CATEGORIES) for (const bookType of BOOK_TYPES) {
+      expect(hedgeRouteOf({ groupCategoryAtOpen, bookType, onHedgeAccount: true })).toBe("NONE");
+    }
+  });
   it("the plain cases", () => {
     expect(hedgeRouteOf({ groupCategoryAtOpen: "A_BOOK", bookType: "A_BOOK" })).toBe("LIQUIDITY_PROVIDER");
     expect(hedgeRouteOf({ groupCategoryAtOpen: "A_BOOK", bookType: "B_BOOK" })).toBe("LIQUIDITY_PROVIDER"); // group changed mid-order
@@ -149,5 +154,40 @@ describe("no double hedge on the real paths (live DB)", () => {
     expect(await prisma.hedgeIntent.count({ where: { brokerId: w.brokerId } })).toBe(0);
     // booking again is refused: one leg per position
     expect(await bookNow(pos.id)).not.toBe(200);
+  });
+});
+
+// owner 2026-10-26: the hedge account's legs showed as "A-book". Whatever group the hedge account sits in, its legs never
+// write a HedgeIntent (QoreBridge would hedge the hedge); an ordinary A-book client in the same broker still does.
+describe("a hedge-account leg never reaches QoreBridge (live DB)", () => {
+  it("hedge account inside an A-book group: its leg's open and void write no intent; the client's open does", async () => {
+    if (!dbReachable) return;
+    const w = await world("A_BOOK");
+    // a second account in the same A-book group, made the broker's hedge account (the misconfiguration this guards)
+    const client = await prisma.account.findUniqueOrThrow({ where: { id: w.accountId } });
+    const n = `6${randomUUID().replace(/\D/g, "").slice(0, 7).padEnd(7, "5")}`;
+    const hedgeAcc = await prisma.account.create({ data: { groupId: client.groupId, brokerId: w.brokerId, accountNumber: n, email: `hr-h-${n}@test.local`, passwordHash: "x", fullName: "Hedge", accountMode: "LIVE", balance: D(100000), leverage: 100 } });
+    await prisma.broker.update({ where: { id: w.brokerId }, data: { coverageAccountId: hedgeAcc.id } });
+    const { writeOpenDealInTx } = await import("@/lib/deals");
+    const { hedgeVoidInTx } = await import("@/lib/hedge");
+    const leg = await openPosition({ ...w, accountId: hedgeAcc.id }, "A_BOOK");
+    expect((await prisma.position.findUniqueOrThrow({ where: { id: leg.id } })).groupCategoryAtOpen).toBe("A_BOOK"); // the stamp alone would bridge it
+    // any deal reason, not only COVERAGE: the account decides
+    await prisma.$transaction((tx) => writeOpenDealInTx(tx, { positionId: leg.id, reason: "CLIENT" }));
+    await prisma.$transaction((tx) => hedgeVoidInTx(tx, { id: leg.id, brokerId: w.brokerId, accountId: hedgeAcc.id, side: "BUY", volume: D(1) }));
+    expect(await prisma.hedgeIntent.count({ where: { positionId: leg.id } })).toBe(0);
+    // control: the client's own A-book open still leaves its intent
+    const mine = await openPosition(w, "A_BOOK");
+    await prisma.$transaction((tx) => writeOpenDealInTx(tx, { positionId: mine.id, reason: "CLIENT" }));
+    expect(await prisma.hedgeIntent.count({ where: { positionId: mine.id } })).toBe(1);
+  });
+
+  it("hedge account in a COVERAGE group (as provisioned): no intent either, also without the broker pointer", async () => {
+    if (!dbReachable) return;
+    const w = await world("COVERAGE");
+    const { writeOpenDealInTx } = await import("@/lib/deals");
+    const leg = await openPosition(w, "A_BOOK");
+    await prisma.$transaction((tx) => writeOpenDealInTx(tx, { positionId: leg.id, reason: "COVERAGE" }));
+    expect(await prisma.hedgeIntent.count({ where: { positionId: leg.id } })).toBe(0);
   });
 });

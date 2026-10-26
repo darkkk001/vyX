@@ -1,6 +1,7 @@
 import "server-only";
 import { after } from "next/server";
-import { Prisma, type Deal, type OrderSide, type RoutingCategory } from "@prisma/client";
+import { Prisma, type BookType, type Deal, type OrderSide, type RoutingCategory } from "@prisma/client";
+import { hedgeRouteOf } from "@/lib/hedge-route";
 import { publishBridgeNudge } from "@/lib/nats";
 
 type Tx = Prisma.TransactionClient;
@@ -24,16 +25,24 @@ export function isHedgedCategory(category: RoutingCategory | null | undefined): 
   return category === "A_BOOK";
 }
 
+// what hedgeRouteOf needs from a position, read in the same query as the intent's own fields
+const HEDGE_ROUTE_SELECT = { groupCategoryAtOpen: true, bookType: true, accountId: true, broker: { select: { coverageAccountId: true } } } as const;
+type RouteRow = { groupCategoryAtOpen: RoutingCategory | null; bookType: BookType; accountId: string; broker: { coverageAccountId: string | null }; account: { group: { category: RoutingCategory } | null } };
+const routeOf = (p: RouteRow) =>
+  hedgeRouteOf({ groupCategoryAtOpen: p.groupCategoryAtOpen, bookType: p.bookType, onHedgeAccount: p.accountId === p.broker.coverageAccountId || p.account.group?.category === "COVERAGE" });
+
 /** One intent for a deal just written in this transaction, when its position is A-book client flow. `categoryAtOpen`
  *  is the position's groupCategoryAtOpen when the caller already read it: anything but A_BOOK returns at once, so a
  *  B-book deal costs no query. Idempotent per deal (dealId is unique). Returns whether an intent was written. */
 export async function hedgeDealInTx(tx: Tx, deal: HedgeDeal, categoryAtOpen?: RoutingCategory | null): Promise<boolean> {
   if (categoryAtOpen !== undefined && !isHedgedCategory(categoryAtOpen)) return false;
+  // a hedge leg is never hedged again (lib/hedge-route.ts), whichever group its account sits in
+  if (deal.reason === "COVERAGE") return false;
   const position = await tx.position.findUniqueOrThrow({
     where: { id: deal.positionId },
-    select: { groupCategoryAtOpen: true, account: { select: { groupId: true } }, symbol: { select: { name: true } } },
+    select: { ...HEDGE_ROUTE_SELECT, account: { select: { groupId: true, group: { select: { category: true } } } }, symbol: { select: { name: true } } },
   });
-  if (!isHedgedCategory(position.groupCategoryAtOpen)) return false;
+  if (routeOf(position) !== "LIQUIDITY_PROVIDER") return false;
   // INOUT is reserved for netting accounts, which no A-book group has: refuse loudly rather than hedge the wrong way
   if (deal.entry === "INOUT") throw new Error(`hedge: INOUT deal ${deal.id} on an A-book position is not supported`);
   const written = await tx.hedgeIntent.createMany({
@@ -64,9 +73,9 @@ export async function hedgeDealInTx(tx: Tx, deal: HedgeDeal, categoryAtOpen?: Ro
 export async function hedgeVoidInTx(tx: Tx, position: { id: string; brokerId: string; accountId: string; side: OrderSide; volume: Prisma.Decimal }): Promise<boolean> {
   const p = await tx.position.findUniqueOrThrow({
     where: { id: position.id },
-    select: { groupCategoryAtOpen: true, account: { select: { groupId: true } }, symbol: { select: { name: true } } },
+    select: { ...HEDGE_ROUTE_SELECT, account: { select: { groupId: true, group: { select: { category: true } } } }, symbol: { select: { name: true } } },
   });
-  if (!isHedgedCategory(p.groupCategoryAtOpen)) return false;
+  if (routeOf(p) !== "LIQUIDITY_PROVIDER") return false;
   await tx.hedgeIntent.create({
     data: {
       brokerId: position.brokerId,

@@ -15,9 +15,13 @@ import type { BookType, RoutingCategory } from "@prisma/client";
 // A_BOOK with bookType B_BOOK is still LIQUIDITY_PROVIDER (its intents are written), so the hedge account must refuse it. bookType
 // A_BOOK under any other category is NONE: QoreBridge does not see it and the hedge account must not take it either.
 // A position from before the category stamp (null) is judged by its bookType alone, as before.
+// A position ON the broker's hedge account is a hedge leg, whatever its stamps say (owner 2026-10-26): its legs carry
+// bookType A_BOOK, and an account sitting in an A-book group would otherwise send its legs to QoreBridge, hedging the
+// hedge. `onHedgeAccount` (the account is Broker.coverageAccountId, or its group is COVERAGE) wins over everything.
 export type HedgeRoute = "LIQUIDITY_PROVIDER" | "HEDGE_ACCOUNT" | "NONE";
 
-export function hedgeRouteOf(position: { groupCategoryAtOpen: RoutingCategory | null; bookType: BookType }): HedgeRoute {
+export function hedgeRouteOf(position: { groupCategoryAtOpen: RoutingCategory | null; bookType: BookType; onHedgeAccount?: boolean }): HedgeRoute {
+  if (position.onHedgeAccount) return "NONE";
   if (position.groupCategoryAtOpen === "A_BOOK") return "LIQUIDITY_PROVIDER";
   if (position.groupCategoryAtOpen === "COVERAGE" || position.bookType !== "B_BOOK") return "NONE";
   return "HEDGE_ACCOUNT";
