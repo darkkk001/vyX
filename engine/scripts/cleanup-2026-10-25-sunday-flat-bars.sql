@@ -143,9 +143,11 @@ SELECT a.timeframe, count(*) AS pairs, min(a."bucketStart") AS first, max(a."buc
  GROUP BY 1 ORDER BY 1;
 COMMIT;
 
--- The owner sees Step 0 and says go. Then, engine stopped, back up the rows this can touch:
+-- The owner sees Step 0 and says go. Then, engine stopped, back up the rows this can touch (both lines: part 2 rewrites
+-- W1 rows of EVERY symbol and week, which the first line does not cover):
 --   \copy (SELECT * FROM "Candle" WHERE symbol IN ('XAUUSD','XAGUSD','XPTUSD','SpotCrude','SpotBrent')
 --          AND "bucketStart" >= '2026-10-17+00' AND "bucketStart" < '2026-10-27+00') TO 'C:\vyxtrader\backup\candle-2026-10-25-sunday.csv' CSV HEADER
+--   \copy (SELECT * FROM "Candle" WHERE timeframe = 'W1') TO 'C:\vyxtrader\backup\candle-w1-all.csv' CSV HEADER
 
 -- ============================================================ Step 1: apply (engine stopped) ==================
 BEGIN;
