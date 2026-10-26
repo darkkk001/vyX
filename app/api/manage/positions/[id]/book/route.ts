@@ -7,6 +7,7 @@ import { getFreshPrice } from "@/lib/live-price";
 import { ensureCoverageAccount } from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
 import { writeOpenDealInTx } from "@/lib/deals";
+import { hedgeRouteOf } from "@/lib/hedge-route";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -60,6 +61,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // position is already market-facing (LP or coverage) -- nothing to book.
   if (position.bookType !== "B_BOOK") {
     return NextResponse.json({ error: "only a B-book position can be booked" }, { status: 400 });
+  }
+  // one hedge route per position (lib/hedge-route.ts): an A-book group's position is hedged through QoreBridge, so a
+  // hedge-account leg would hedge it twice
+  if (hedgeRouteOf(position) !== "HEDGE_ACCOUNT") {
+    return NextResponse.json({ error: "this position is hedged through QoreBridge (A-book), not the hedge account" }, { status: 409 });
   }
 
   const coverage = await ensureCoverageAccount(brokerId, session.adminId);

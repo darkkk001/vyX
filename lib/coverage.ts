@@ -13,6 +13,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 import { isDemoBrokerId } from "@/lib/demo";
 import { writeOpenDealInTx } from "@/lib/deals";
+import { autoHedgesOnFill, hedgeRouteOf } from "@/lib/hedge-route";
 
 // Dealer coverage (B-book hedging). A broker hedges a client's B-book
 // position by clicking BOOK NOW (app/api/manage/positions/[id]/book),
@@ -428,9 +429,11 @@ export async function onFillAutoHedge(
   // dealing screen treats as the desk's book (DealingScreen SDM / GRP / panic). Was DEALING type only.
   // Owner decision (2026-09-26, Phase 2 batch 3): auto-hedge covers DEALING DESK groups only -- not B_BOOK, not
   // REVERSAL (it used to key off the legacy groupType, which is DEALING for all three). Manual BOOK NOW is unchanged.
-  if (position.account.group?.category !== "DEALING") return;
+  if (!autoHedgesOnFill(position.account.group?.category)) return;
   // a coverage leg is A_BOOK and lives on the coverage account: never hedge the hedge
   if (position.bookType !== "B_BOOK") return;
+  // and never a position QoreBridge hedges: the group can have changed between the order and this fill (lib/hedge-route.ts)
+  if (hedgeRouteOf(position) !== "HEDGE_ACCOUNT") return;
   if (broker.coverageAccountId && position.accountId === broker.coverageAccountId) return;
 
   try {

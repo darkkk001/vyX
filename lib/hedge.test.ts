@@ -334,6 +334,8 @@ describe("backoffice: GET /api/manage/hedges and the escalation notice", () => {
     expect([r.json.unhedged, r.json.waiting, r.json.needsAttention]).toEqual([true, 0, 1]);
     expect(JSON.stringify(r.json)).not.toMatch(/no liquidity|FIX|ClOrdID|bridge/i);
     expect(byId.get(ia.id)!.positionTicket).toBe(a.ticket.toString());
+    // owner 2026-10-26: the Liquidity screen's line per group, which way its positions are hedged
+    expect((r.json.routes as { category: string; route: string }[]).map((g) => [g.category, g.route])).toEqual([["A_BOOK", "LIQUIDITY_PROVIDER"]]);
 
     const notices = await prisma.notification.findMany({ where: { brokerId: fx.brokerId, type: "HEDGE_ESCALATED" } });
     expect(notices.map((n) => [n.title, n.entityId])).toEqual([["Hedge not completed", b.id]]);

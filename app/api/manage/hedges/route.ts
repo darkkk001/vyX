@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hedgeExposure, hedgeOutcome, type HedgeOutcome } from "@/lib/hedge-view";
+import { autoHedgesOnFill, hedgeRouteOfCategory } from "@/lib/hedge-route";
 
 // QoreBridge M5: the backoffice Liquidity tab's HEDGES view and its UNHEDGED EXPOSURE indicator. Plain outcomes only
 // (brokers never see LP / FIX / bridge internals; a leg's technical reason stays in HedgeResult.reason for
@@ -13,6 +14,8 @@ import { hedgeExposure, hedgeOutcome, type HedgeOutcome } from "@/lib/hedge-view
 //             self-corrects (an open that was never hedged and then closed nets to zero on the client side, and the
 //             LP's leftover shows as unhedged until a dealer acts).
 //   hedges    the newest intents (one per client deal), each with its outcome, filled lots, LP price and slippage.
+//   routes    per group, which way its positions are hedged (owner 2026-10-26, the Liquidity screen's line per group):
+//             LIQUIDITY_PROVIDER (A-book) or HEDGE_ACCOUNT (hand hedge; plus automatic when autoHedge), never both.
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 1000;
 
@@ -24,7 +27,7 @@ export async function GET(req: NextRequest) {
   const brokerId = session!.brokerId!;
   const limit = Math.min(Math.max(Number(req.nextUrl.searchParams.get("limit")) || DEFAULT_LIMIT, 1), MAX_LIMIT);
 
-  const [clientRows, lpRows, waiting, intents] = await Promise.all([
+  const [clientRows, lpRows, waiting, intents, groups, broker] = await Promise.all([
     prisma.$queryRaw<{ symbol: string; net: Prisma.Decimal }[]>`
       SELECT s."name" AS symbol, SUM(CASE WHEN p."side" = 'BUY' THEN p."volume" ELSE -p."volume" END) AS net
       FROM "Position" p JOIN "Symbol" s ON s."id" = p."symbolId"
@@ -37,7 +40,14 @@ export async function GET(req: NextRequest) {
       GROUP BY h."symbol"`,
     prisma.hedgeIntent.count({ where: { brokerId, status: { in: ["PENDING", "CLAIMED"] } } }),
     prisma.hedgeIntent.findMany({ where: { brokerId }, orderBy: { seq: "desc" }, take: limit }),
+    prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true, category: true }, orderBy: { name: "asc" } }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { autoHedgeAt: true, dealingDeskAutoFillAt: true } }),
   ]);
+  // auto-hedge runs only while it is on and the desk auto-fills (lib/coverage.ts onFillAutoHedge)
+  const autoHedgeOn = Boolean(broker?.autoHedgeAt && broker.dealingDeskAutoFillAt);
+  const routes = groups
+    .filter((g) => g.category !== "COVERAGE")
+    .map((g) => ({ groupId: g.id, name: g.name, category: g.category, route: hedgeRouteOfCategory(g.category), autoHedge: autoHedgeOn && autoHedgesOnFill(g.category) }));
 
   const ids = intents.map((i) => i.id);
   const [legs, positions, accounts] = await Promise.all([
@@ -85,5 +95,6 @@ export async function GET(req: NextRequest) {
     needsAttention: hedges.filter((h) => h.outcome === "NOT_HEDGED" || h.outcome === "PART_HEDGED" || h.outcome === "NEEDS_ATTENTION").length,
     exposure,
     hedges,
+    routes,
   });
 }
