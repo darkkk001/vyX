@@ -24,6 +24,7 @@ import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { deskIsOn, orderRoute, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
+import { effectiveCapPoints, slippageVerdict, symbolSlippageCapPoints } from "@/lib/slippage-cap";
 import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
 import { writeOpenDealInTx } from "@/lib/deals";
 import {
@@ -47,11 +48,8 @@ import {
   checkMaxDailyLoss,
   evaluateLiveMarketPrice,
   checkPriceFreshness,
-  checkSlippage,
   computeNextSessionOpen,
-  effectiveMaxSlippagePips,
   traderSlippagePoints,
-  brokerSlippageCapPoints,
   isValidMaxSlippageInput,
   checkAccountTradingRights,
 } from "@/lib/risk";
@@ -446,6 +444,51 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
     }
   }
 
+  // Slippage cap (owner 2026-10-26, lib/slippage-cap.ts): the smaller of the trader's own SLIPPAGE MAX and this symbol's
+  // cap; only a fill WORSE than the client's price counts. Over it: requote at the live price or refuse (broker setting).
+  const slippageCapPoints = livePrice
+    ? effectiveCapPoints(
+        traderSlippagePoints(body, brokerSymbol.symbol.digits),
+        symbolSlippageCapPoints(broker, { name: symbolName, digits: brokerSymbol.symbol.digits, maxSlippagePoints: brokerSymbol.maxSlippagePoints }, side === "BUY" ? livePrice.ask : livePrice.bid)
+      )
+    : null;
+  const overCap = (fill: Prisma.Decimal) =>
+    slippageVerdict({ side: side as "BUY" | "SELL", requested: price, fill, digits: brokerSymbol.symbol.digits, capPoints: slippageCapPoints });
+  // An order over the cap: REQUOTE = the order waits as REQUOTED at the live price (the raw market price, like a dealer's
+  // requote; requote-response adds the markup when the client accepts); REJECT = refused. `existing` is the queued
+  // order (Smart Dealer path); without one (the direct fill), REQUOTE writes a new REQUOTED order and REJECT returns
+  // null, so the caller answers SLIPPAGE_EXCEEDED before any row exists.
+  const answerOverCap = async (existing: { id: string } | null, liveRaw: Prisma.Decimal, fill: Prisma.Decimal, verdict: { adversePoints: Prisma.Decimal; capPoints: Prisma.Decimal }) => {
+    const detail = { requestedPrice: price, livePrice: liveRaw.toString(), fillPrice: fill.toString(), adversePoints: verdict.adversePoints.toString(), capPoints: verdict.capPoints.toString() };
+    if (broker.slippageAction === "REJECT") {
+      if (!existing) return null;
+      const reason = `SLIPPAGE_EXCEEDED: ${verdict.adversePoints} points against the client, cap ${verdict.capPoints}`;
+      const rejected = await prisma.$transaction(async (tx) => {
+        const o = await tx.order.update({ where: { id: existing.id }, data: { status: "REJECTED", rejectionReason: reason, executedAt: new Date(), executionMode: "AUTO" } });
+        await tx.auditLog.create({ data: { brokerId: session.brokerId, action: "ORDER_SLIPPAGE_REJECTED", entityType: "Order", entityId: o.id, newValue: detail } });
+        return o;
+      });
+      await runAfterResponse("publish OrderRejected", () =>
+        publishTradingEvent("OrderRejected", { order_id: rejected.id, account_id: session.accountId, broker_id: session.brokerId, reason })
+      );
+      return rejected;
+    }
+    const requoted = await prisma.$transaction(async (tx) => {
+      const data = { status: "REQUOTED" as const, requotedPrice: liveRaw, executedAt: new Date(), executionMode: "AUTO" };
+      const o = existing
+        ? await tx.order.update({ where: { id: existing.id }, data })
+        : await tx.order.create({
+            data: { brokerId: session.brokerId, accountId: session.accountId, symbolId: brokerSymbol.symbolId, side, type, volume, requestedPrice: price, slPrice, tpPrice, idempotencyKey, source: orderSource, ...capture, ...data },
+          });
+      await tx.auditLog.create({ data: { brokerId: session.brokerId, action: "ORDER_SLIPPAGE_REQUOTED", entityType: "Order", entityId: o.id, newValue: detail } });
+      return o;
+    });
+    await runAfterResponse("publish OrderRequoted", () =>
+      publishTradingEvent("OrderRequoted", { order_id: requoted.id, account_id: session.accountId, broker_id: session.brokerId, requoted_price: liveRaw.toString() })
+    );
+    return requoted;
+  };
+
   const dealerActivityBase = {
     brokerId: session.brokerId,
     accountId: session.accountId,
@@ -529,6 +572,12 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
           // actual fill price, not to the accept/reject threshold check.
           logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, pricing.warning);
           const fillPrice = applySpreadMarkup({ side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+          // the slippage cap comes before any auto-accept: over it, the order is requoted or refused, never auto-filled
+          const verdict = overCap(fillPrice);
+          if (verdict.over) {
+            const answered = await answerOverCap(order, liveRef, fillPrice, verdict);
+            return NextResponse.json({ order: answered }, { status: 201 });
+          }
           const bookType = resolveBookType(account.group.category);
           // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- an
           // auto-accept that would open a position the account can't
@@ -680,15 +729,12 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, fillPricing.warning);
       const serverRef = side === "BUY" ? livePrice!.ask : livePrice!.bid;
       const fillPrice = applySpreadMarkup({ side, price: serverRef, spreadMarkup: fillPricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
-      const slippageError = checkSlippage({
-        clientReferencePrice: price,
-        serverFillPrice: fillPrice,
-        // the smaller of the trader's value and the broker's cap, in POINTS (owner 2026-09-30; lib/risk.ts)
-        maxSlippagePoints: effectiveMaxSlippagePips(traderSlippagePoints(body, brokerSymbol.symbol.digits), brokerSlippageCapPoints(broker)),
-        digits: brokerSymbol.symbol.digits,
-      });
-      if (slippageError) {
-        return NextResponse.json({ error: slippageError }, { status: 400 });
+      // the slippage cap (lib/slippage-cap.ts): only a fill worse than the client's price counts
+      const verdict = overCap(fillPrice);
+      if (verdict.over) {
+        const requoted = await answerOverCap(null, serverRef, fillPrice, verdict);
+        if (!requoted) return NextResponse.json({ error: "SLIPPAGE_EXCEEDED" }, { status: 400 });
+        return NextResponse.json({ order: requoted }, { status: 201 });
       }
       // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- pre-trade
       // margin gate. Rejects before any Order/Position row is written --

@@ -58,13 +58,16 @@ async function world(opts: { brokerCapPips?: string | null; category?: RoutingCa
       defaultMaxSlippagePips: opts.brokerCapPips != null ? D(opts.brokerCapPips) : null,
       dealingDeskAutoFillAt: new Date(), // desk off: every category fills (this file is not about routing)
       autoHedgeAt: opts.autoHedge ? new Date() : null,
+      // the broker cap of this file's tests is the symbol's own cap (lib/slippage-cap.ts); over it = refused, as these tests expect
+      slippageCapXauPoints: null,
+      slippageAction: "REJECT",
     },
   });
   brokers.push(b.id);
   const name = `SL${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
   const s = await prisma.symbol.create({ data: { name, baseCurrency: "TST", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(1) } });
   symbols.push(name);
-  await prisma.brokerSymbol.create({ data: { brokerId: b.id, symbolId: s.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: opts.tradingMode ?? "BOTH", enabled: true } });
+  await prisma.brokerSymbol.create({ data: { brokerId: b.id, symbolId: s.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: opts.tradingMode ?? "BOTH", enabled: true, maxSlippagePoints: opts.brokerCapPips != null ? D(opts.brokerCapPips).mul(10) : null } });
   await prisma.livePrice.create({ data: { symbol: name, bid: D("100.00"), ask: D("100.10"), tickAt: new Date() } });
   const g = await prisma.group.create({ data: { brokerId: b.id, name: `G-${randomUUID().slice(0, 6)}`, leverage: 100, category: opts.category ?? "B_BOOK", tradingRestriction: opts.tradingRestriction ?? "BOTH" } });
   const n = `7${randomUUID().replace(/\D/g, "").slice(0, 7).padEnd(7, "7")}`;

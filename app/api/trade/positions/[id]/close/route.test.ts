@@ -35,7 +35,7 @@ const createdSymbolNames: string[] = [];
 async function createFixture(): Promise<Fixture> {
   const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
   // dealingModeAt null = no dealer queue: the route executes the close itself.
-  const broker = await prisma.broker.create({ data: { name: `Close Price Test ${suffix}`, subdomain: `cptest-${suffix}`, dealingModeAt: null } });
+  const broker = await prisma.broker.create({ data: { name: `Close Price Test ${suffix}`, subdomain: `cptest-${suffix}`, dealingModeAt: null, slippageCapXauPoints: null } }); // no broker cap: price authority, not the cap (lib/slippage-cap.test.ts)
   createdBrokerIds.push(broker.id);
   const symbol = await prisma.symbol.create({ data: { name: `CP${suffix.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(1) } });
   createdSymbolNames.push(symbol.name);

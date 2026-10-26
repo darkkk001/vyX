@@ -40,7 +40,7 @@ type Fx = { brokerId: string; adminId: string; groupId: string; symbolId: string
 // 1 lot = 100,000 x ~100 / 100 leverage = ~100,000 margin. A 100 balance cannot carry it; 1,000,000 can.
 async function createBroker(opts?: { groupType?: "DEALING" | "LP"; dealingMode?: "AUTO" | "INHERIT" }): Promise<Fx> {
   const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
-  const broker = await prisma.broker.create({ data: { name: `Margin Gate Test ${suffix}`, subdomain: `mgtest-${suffix}` } });
+  const broker = await prisma.broker.create({ data: { name: `Margin Gate Test ${suffix}`, subdomain: `mgtest-${suffix}`, slippageCapXauPoints: null } }); // the margin gate, not the slippage cap (lib/slippage-cap.test.ts)
   createdBrokerIds.push(broker.id);
   const admin = await prisma.adminUser.create({ data: { brokerId: broker.id, email: `mg-admin-${suffix}@test.local`, passwordHash: "x", role: "BROKER_ADMIN" } });
   const symbol = await prisma.symbol.create({ data: { name: `MG${suffix.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "FOREX", digits: 2 } });

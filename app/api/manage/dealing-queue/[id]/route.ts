@@ -8,6 +8,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { orderAuditFields } from "@/lib/order-audit";
+import { slippageVerdict, symbolSlippageCapPoints } from "@/lib/slippage-cap";
 import { resolveBookType, applySpreadMarkup } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
@@ -234,6 +235,41 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
 
+  // Slippage cap on an accept AT MARKET (owner 2026-10-26, lib/slippage-cap.ts): when the live price is worse for the
+  // client than what it sent by more than the symbol's cap, the accept becomes a requote at that live price (broker
+  // setting REQUOTE, the default) or is refused and the order stays in the queue (REJECT). An accept at the client's
+  // own price never slips. Returns the answer to send, or null to go on with the accept.
+  const marketAcceptOverCap = async (fill: Prisma.Decimal, requotePrice: Prisma.Decimal): Promise<NextResponse | null> => {
+    if (fillMode !== "MARKET" || order.requestedPrice == null || liveRefAtClick == null) return null;
+    const execSide = isClose ? (order.side === "BUY" ? "SELL" : "BUY") : order.side;
+    const capPoints = symbolSlippageCapPoints(broker, { name: order.symbol.name, digits: order.symbol.digits, maxSlippagePoints: brokerSymbol.maxSlippagePoints }, liveRefAtClick);
+    const verdict = slippageVerdict({ side: execSide, requested: order.requestedPrice, fill, digits: order.symbol.digits, capPoints });
+    if (!verdict.over) return null;
+    const detail = { requestedPrice: order.requestedPrice.toString(), fillPrice: fill.toString(), adversePoints: verdict.adversePoints.toString(), capPoints: verdict.capPoints.toString() };
+    if (broker.slippageAction === "REJECT") {
+      return NextResponse.json({ error: `over the client's slippage cap: ${verdict.adversePoints} points against the client, cap ${verdict.capPoints}`, code: "SLIPPAGE_CAP", ...detail }, { status: 409 });
+    }
+    const requoted = await prisma.$transaction(async (tx) => {
+      const r = await tx.order.updateMany({ where: { id, status: "PENDING" }, data: { status: "REQUOTED", requotedPrice: requotePrice, executedAt: new Date(), executionMode: "DEALER" } });
+      if (r.count === 0) return false;
+      await tx.auditLog.create({
+        data: {
+          brokerId,
+          actorAdminId: session.adminId,
+          action: isClose ? "DEALING_CLOSE_REQUOTED" : "DEALING_ORDER_REQUOTED",
+          entityType: "Order",
+          entityId: id,
+          oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "PENDING" },
+          newValue: { status: "REQUOTED", requotedPrice: requotePrice.toString(), reason: "SLIPPAGE_CAP", ...detail },
+        },
+      });
+      return true;
+    });
+    if (!requoted) return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
+    await publishTradingEvent("OrderRequoted", { order_id: id, account_id: order.accountId, broker_id: brokerId, requoted_price: requotePrice.toString() });
+    return NextResponse.json({ id, status: "REQUOTED", requotedPrice: requotePrice.toString(), reason: "SLIPPAGE_CAP" });
+  };
+
   if (isClose) {
     // ACCEPT on a queued CLOSE: close the position at the dealer's price -- the client's own
     // requested close price (REQUESTED, as the client sent it) or the live close-side price at click (MARKET: a SELL
@@ -248,6 +284,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (closePrice == null) {
       return NextResponse.json({ error: "no live price available to close at market" }, { status: 409 });
     }
+    // a close settles at closePrice itself (no markup), so the requote is that same price
+    const capAnswer = await marketAcceptOverCap(closePrice, closePrice);
+    if (capAnswer) return capAnswer;
     const positionVolumeBefore = order.closesPosition?.volume ?? order.volume;
     const result = await prisma.$transaction(async (tx) => {
       const r = await executeQueuedCloseInTx(tx, { order, fromStatus: "PENDING", closePrice, note: `Dealer close (${fillMode === "MARKET" ? "at market" : "at requested price"})`, adminId: session.adminId });
@@ -346,6 +385,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "no live price available to accept at market" }, { status: 409 });
   }
   const markedUpFillPrice = applySpreadMarkup({ side: order.side, price: acceptBase, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
+  // an open's requote is the raw live price: requote-response adds the markup when the client accepts
+  const capAnswer = await marketAcceptOverCap(markedUpFillPrice, acceptBase);
+  if (capAnswer) return capAnswer;
   // Audit 2026-09-24 (money): the same pre-trade margin gate as a direct fill. The margin picture can have changed
   // while the order sat in the queue; a dealer accept must not open what the client could not open themselves.
   // A close never reaches here (handled above) and an order that does not raise used margin always passes.
