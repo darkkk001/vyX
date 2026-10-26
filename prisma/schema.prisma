@@ -901,6 +901,8 @@ model Account {
   // GroupSymbolConfig already uses.
   symbolPricingOverrides AccountSymbolConfig[]
 
+  equitySnapshots AccountEquitySnapshot[]
+
   // The reverse of LiveAccountRequest.createdAccountId (a unique FK) --
   // present only for an account that was actually created by an approved
   // Live account request, not one created directly via the admin route.
@@ -2837,4 +2839,22 @@ model RejectedOrder {
 
   @@index([brokerId, requestedAt])
   @@index([accountId, requestedAt])
+}
+
+// Equity history for the backoffice balance/equity chart (bo 1.0.96 #21, owner 2026-10-27: snapshots from now on).
+// Written every 5 minutes by /api/internal/equity-snapshots (lib/equity-snapshots.ts) ONLY for an account holding an
+// open position, only when every open position had a fresh price, and only when the equity changed since the account's
+// last row. Any other moment's equity is balance + credit, built from the ledger by the equity-curve route. Kept 365 days.
+model AccountEquitySnapshot {
+  id        BigInt   @id @default(autoincrement())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  at        DateTime @db.Timestamptz(3)
+  equity    Decimal  @db.Decimal(18, 2)
+  balance   Decimal  @db.Decimal(18, 2)
+  credit    Decimal  @db.Decimal(18, 2)
+  floating  Decimal  @db.Decimal(18, 2)
+
+  @@index([accountId, at])
+  @@index([at])
 }
