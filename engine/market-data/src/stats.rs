@@ -108,6 +108,21 @@ pub struct FeedStats {
     broker_bars_applied_total: AtomicU64,
     broker_bars_mismatch_total: AtomicU64,
     warned_broker_bar_mismatch: AtomicBool,
+    // The same, per timeframe (indexed like crate::TIMEFRAMES), with the
+    // mismatch split into off-grid vs implausible and the last off-grid
+    // delta: owner 2026-10-26, the total showed 12.5% but not which
+    // timeframe or why. Each timeframe warns once on its own first off-grid bar.
+    broker_bars_by_tf: [BrokerBarsTfCounters; crate::TIMEFRAMES.len()],
+}
+
+#[derive(Default)]
+struct BrokerBarsTfCounters {
+    applied: AtomicU64,
+    off_grid: AtomicU64,
+    implausible: AtomicU64,
+    has_delta: AtomicBool,
+    last_off_grid_delta_ms: AtomicI64,
+    warned: AtomicBool,
 }
 
 impl FeedStats {
@@ -138,6 +153,7 @@ impl FeedStats {
             broker_bars_applied_total: AtomicU64::new(0),
             broker_bars_mismatch_total: AtomicU64::new(0),
             warned_broker_bar_mismatch: AtomicBool::new(false),
+            broker_bars_by_tf: Default::default(),
         }
     }
 
@@ -148,6 +164,33 @@ impl FeedStats {
     pub fn record_broker_bars(&self, symbol: &str, outcome: crate::BrokerBarsOutcome, bars: &[protocol::BrokerBar], updates: &[crate::CandleUpdate]) {
         if outcome.applied > 0 {
             self.broker_bars_applied_total.fetch_add(outcome.applied as u64, Ordering::Relaxed);
+        }
+        for (i, tf) in outcome.by_tf.iter().enumerate() {
+            let c = &self.broker_bars_by_tf[i];
+            if tf.applied > 0 {
+                c.applied.fetch_add(tf.applied as u64, Ordering::Relaxed);
+            }
+            if tf.implausible > 0 {
+                c.implausible.fetch_add(tf.implausible as u64, Ordering::Relaxed);
+            }
+            if tf.off_grid == 0 {
+                continue;
+            }
+            c.off_grid.fetch_add(tf.off_grid as u64, Ordering::Relaxed);
+            c.last_off_grid_delta_ms.store(tf.off_grid_delta_ms, Ordering::Relaxed);
+            c.has_delta.store(true, Ordering::Relaxed);
+            if c.warned.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                let timeframe = crate::db::timeframe_to_str(crate::TIMEFRAMES[i]);
+                let bar_t = bars.iter().find(|b| crate::timeframe_from_str(&b.tf) == Some(crate::TIMEFRAMES[i])).map(|b| b.t);
+                tracing::warn!(
+                    symbol,
+                    timeframe,
+                    bar_t = ?bar_t,
+                    delta_ms = tf.off_grid_delta_ms,
+                    "broker bar off this engine's {timeframe} grid: engine bucket minus the bar's rebased open time = {} ms (warned once per timeframe; counts in /internal/feed-stats broker_bars_by_tf)",
+                    tf.off_grid_delta_ms
+                );
+            }
         }
         if outcome.mismatched == 0 {
             return;
@@ -345,6 +388,18 @@ impl FeedStats {
             offset_fallback_ticks_total: self.offset_fallback_ticks_total.load(Ordering::Relaxed),
             broker_bars_applied_total: self.broker_bars_applied_total.load(Ordering::Relaxed),
             broker_bars_mismatch_total: self.broker_bars_mismatch_total.load(Ordering::Relaxed),
+            broker_bars_by_tf: crate::TIMEFRAMES
+                .iter()
+                .zip(&self.broker_bars_by_tf)
+                .map(|(tf, c)| BrokerBarsTfSnapshot {
+                    tf: crate::db::timeframe_to_str(*tf),
+                    applied: c.applied.load(Ordering::Relaxed),
+                    off_grid: c.off_grid.load(Ordering::Relaxed),
+                    implausible: c.implausible.load(Ordering::Relaxed),
+                    last_off_grid_delta_ms: c.has_delta.load(Ordering::Relaxed).then(|| c.last_off_grid_delta_ms.load(Ordering::Relaxed)),
+                })
+                .filter(|t| t.applied + t.off_grid + t.implausible > 0)
+                .collect(),
         }
     }
 }
@@ -402,6 +457,18 @@ pub struct FeedStatsSnapshot {
     // and every forming candle's open is still the sampled first tick.
     pub broker_bars_applied_total: u64,
     pub broker_bars_mismatch_total: u64,
+    // Per timeframe, only the ones that saw a bar since the start (Y1 never
+    // does: MT5 has no Y1 period). mismatch = off_grid + implausible.
+    pub broker_bars_by_tf: Vec<BrokerBarsTfSnapshot>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct BrokerBarsTfSnapshot {
+    pub tf: &'static str,
+    pub applied: u64,
+    pub off_grid: u64,
+    pub implausible: u64,
+    pub last_off_grid_delta_ms: Option<i64>,
 }
 
 #[cfg(test)]
@@ -476,13 +543,40 @@ mod tests {
         let stats = FeedStats::new();
         let snap = stats.snapshot();
         assert_eq!((snap.broker_bars_applied_total, snap.broker_bars_mismatch_total), (0, 0));
-        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 9, mismatched: 0 }, &[], &[]);
+        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 9, mismatched: 0, ..Default::default() }, &[], &[]);
         assert!(!stats.warned_broker_bar_mismatch.load(Ordering::Relaxed), "no mismatch, no warning");
-        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 8, mismatched: 1 }, &[], &[]);
+        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 8, mismatched: 1, ..Default::default() }, &[], &[]);
         assert!(stats.warned_broker_bar_mismatch.load(Ordering::Relaxed));
-        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 0, mismatched: 2 }, &[], &[]);
+        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 0, mismatched: 2, ..Default::default() }, &[], &[]);
         let snap = stats.snapshot();
         assert_eq!((snap.broker_bars_applied_total, snap.broker_bars_mismatch_total), (17, 3));
+    }
+
+    // owner 2026-10-26 -- per-timeframe split of the same counters, so a
+    // steady mismatch rate names its timeframe and how far off it is.
+    #[test]
+    fn broker_bar_counters_split_per_timeframe_and_keep_the_last_delta() {
+        let stats = FeedStats::new();
+        assert!(stats.snapshot().broker_bars_by_tf.is_empty(), "no bars yet, no rows");
+        let w1 = crate::timeframe_index(crate::Timeframe::W1);
+        let m1 = crate::timeframe_index(crate::Timeframe::M1);
+        let mut outcome = crate::BrokerBarsOutcome { applied: 1, mismatched: 2, ..Default::default() };
+        outcome.by_tf[m1] = crate::BrokerBarsTf { applied: 1, implausible: 1, ..Default::default() };
+        outcome.by_tf[w1] = crate::BrokerBarsTf { off_grid: 1, off_grid_delta_ms: 86_400_000, ..Default::default() };
+        stats.record_broker_bars("XAUUSD", outcome, &[], &[]);
+        outcome.by_tf[w1].off_grid_delta_ms = 3_600_000;
+        stats.record_broker_bars("XAUUSD", outcome, &[], &[]);
+        let snap = stats.snapshot();
+        assert_eq!((snap.broker_bars_applied_total, snap.broker_bars_mismatch_total), (2, 4));
+        assert_eq!(
+            snap.broker_bars_by_tf,
+            vec![
+                BrokerBarsTfSnapshot { tf: "M1", applied: 2, off_grid: 0, implausible: 2, last_off_grid_delta_ms: None },
+                BrokerBarsTfSnapshot { tf: "W1", applied: 0, off_grid: 2, implausible: 0, last_off_grid_delta_ms: Some(3_600_000) },
+            ]
+        );
+        assert!(stats.broker_bars_by_tf[w1].warned.load(Ordering::Relaxed));
+        assert!(!stats.broker_bars_by_tf[m1].warned.load(Ordering::Relaxed), "implausible bars do not fire the off-grid warning");
     }
 
     #[test]

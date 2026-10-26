@@ -352,6 +352,29 @@ pub fn candle_updates_for_tick_ohlc(
 pub struct BrokerBarsOutcome {
     pub applied: u32,
     pub mismatched: u32,
+    /// The same counts per timeframe, indexed like `TIMEFRAMES` (owner
+    /// 2026-10-26: the total alone could not say WHICH timeframe the 12.5%
+    /// mismatch rate came from).
+    pub by_tf: [BrokerBarsTf; TIMEFRAMES.len()],
+}
+
+/// One timeframe's share of a `BrokerBarsOutcome`. A mismatch is either
+/// `off_grid` (a plausible bar whose rebased open time is not this engine's
+/// bucket) or `implausible` (a zeroed or inverted bar). `off_grid_delta_ms`
+/// is this engine's bucket minus the bar's rebased open time for the last
+/// off-grid bar: +60 000 on M1 is the EA reading bar 0 a minute late, a
+/// whole day or week is a grid disagreement, an hour is an offset one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BrokerBarsTf {
+    pub applied: u32,
+    pub off_grid: u32,
+    pub implausible: u32,
+    pub off_grid_delta_ms: i64,
+}
+
+/// Position of `tf` in `TIMEFRAMES` (the index of the per-timeframe counters).
+pub fn timeframe_index(tf: Timeframe) -> usize {
+    TIMEFRAMES.iter().position(|t| *t == tf).expect("every Timeframe is in TIMEFRAMES")
 }
 
 /// fix/candle-open-seed -- overlays the broker's own forming bars (`Tick::bars`,
@@ -391,10 +414,20 @@ pub fn apply_broker_bars(updates: &mut [CandleUpdate], bars: &[BrokerBar], broke
         // zeroed struct) or an inverted range can't be a real bar; treat it
         // like a mismatch rather than seeding a zero open.
         let plausible = bar.o > rust_decimal::Decimal::ZERO && bar.l > rust_decimal::Decimal::ZERO && bar.h >= bar.l;
-        if !plausible || update.bucket_start.timestamp_millis() != rebase_bar_start_ms(tf, bar.t, broker_offset_sec, now) {
+        let per_tf = &mut outcome.by_tf[timeframe_index(tf)];
+        if !plausible {
+            per_tf.implausible += 1;
             outcome.mismatched += 1;
             continue;
         }
+        let delta_ms = update.bucket_start.timestamp_millis() - rebase_bar_start_ms(tf, bar.t, broker_offset_sec, now);
+        if delta_ms != 0 {
+            per_tf.off_grid += 1;
+            per_tf.off_grid_delta_ms = delta_ms;
+            outcome.mismatched += 1;
+            continue;
+        }
+        per_tf.applied += 1;
         update.open = bar.o;
         update.open_authoritative = true;
         if bar.h > update.high {
@@ -462,7 +495,7 @@ mod tests {
         let tick = bars_tick(dec!(2402.5), vec![bar("M1", m1, "2402.0", "2402.5", "2401.8")]);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
         let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
-        assert_eq!(outcome, BrokerBarsOutcome { applied: 1, mismatched: 0 });
+        assert_eq!((outcome.applied, outcome.mismatched), (1, 0));
         let u = by_tf(&updates, Timeframe::M1);
         assert_eq!((u.open, u.high, u.low, u.close), (dec!(2402.0), dec!(2402.7), dec!(2401.8), dec!(2402.5)), "open = broker's; high keeps the wider sampled 2402.7; low takes the broker's 2401.8; close is the tick");
         assert!(u.open_authoritative);
@@ -480,10 +513,31 @@ mod tests {
         let tick = bars_tick(dec!(2402.5), vec![bar("M1", stale_m1, "2399.0", "2402.6", "2398.0")]);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.5), dec!(2402.5));
         let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
-        assert_eq!(outcome, BrokerBarsOutcome { applied: 0, mismatched: 1 });
+        assert_eq!((outcome.applied, outcome.mismatched), (0, 1));
         let u = by_tf(&updates, Timeframe::M1);
         assert_eq!((u.open, u.high, u.low), (dec!(2402.5), dec!(2402.5), dec!(2402.5)), "a 12:00 bar must never be written into the 12:01 bucket");
         assert!(!u.open_authoritative);
+    }
+
+    #[test]
+    fn mismatches_are_counted_per_timeframe_with_their_delta() {
+        use rust_decimal_macros::dec;
+        let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap() + chrono::Duration::milliseconds(40);
+        let m1 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap();
+        let stale_m5 = Utc.with_ymd_and_hms(2026, 8, 12, 11, 55, 0).unwrap(); // one M5 bar behind the 12:00 bucket
+        let tick = bars_tick(dec!(2402.5), vec![
+            bar("M1", m1, "2402.0", "2402.5", "2401.8"),
+            bar("M5", stale_m5, "2399.0", "2402.6", "2398.0"),
+            bar("M15", m1, "0", "0", "0"),
+        ]);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.5), dec!(2402.5));
+        let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
+        assert_eq!((outcome.applied, outcome.mismatched), (1, 2));
+        let tf = |t| outcome.by_tf[timeframe_index(t)];
+        assert_eq!(tf(Timeframe::M1), BrokerBarsTf { applied: 1, ..Default::default() });
+        assert_eq!(tf(Timeframe::M5), BrokerBarsTf { off_grid: 1, off_grid_delta_ms: 300_000, ..Default::default() }, "engine bucket 12:00 minus bar 11:55");
+        assert_eq!(tf(Timeframe::M15), BrokerBarsTf { implausible: 1, ..Default::default() });
+        assert_eq!(tf(Timeframe::H1), BrokerBarsTf::default(), "no H1 bar was sent");
     }
 
     #[test]
@@ -497,7 +551,7 @@ mod tests {
         ]);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.5), dec!(2402.5));
         let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
-        assert_eq!(outcome, BrokerBarsOutcome { applied: 0, mismatched: 2 }, "the zero bar and the inverted/misaligned M5 count; the unknown name is silently skipped");
+        assert_eq!((outcome.applied, outcome.mismatched), (0, 2), "the zero bar and the inverted/misaligned M5 count; the unknown name is silently skipped");
         assert!(updates.iter().all(|u| !u.open_authoritative && u.open == dec!(2402.5)));
         assert_eq!(by_tf(&updates, Timeframe::Y1).open, dec!(2402.5), "Y1 has no MT5 period: always the sampled open");
     }
@@ -528,7 +582,7 @@ mod tests {
         let tick = bars_tick(dec!(1.5), bars);
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(1.5), dec!(1.5), dec!(1.5));
         let outcome = apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
-        assert_eq!(outcome, BrokerBarsOutcome { applied: 9, mismatched: 0 }, "every MT5-served timeframe lines up with this engine's broker-offset bucketing");
+        assert_eq!((outcome.applied, outcome.mismatched), (9, 0), "every MT5-served timeframe lines up with this engine's broker-offset bucketing");
         assert_eq!(updates.iter().filter(|u| u.open_authoritative).count(), 9);
         assert!(!by_tf(&updates, Timeframe::Y1).open_authoritative);
     }
