@@ -75,7 +75,7 @@ Write-StepHeader "1. Polling /internal/feed-stats for ${DurationSec}s"
 if (-not (Test-Path $StartEngine)) {
     Write-Fail "$StartEngine not found -- cannot read INTERNAL_SERVICE_SECRET, skipping the poll entirely"
 } else {
-    $secretMatch = Get-Content $StartEngine | Select-String '^\s*set\s+INTERNAL_SERVICE_SECRET\s*=\s*(.+)$'
+    $secretMatch = Get-Content $StartEngine | Select-String '^\s*set\s+"?INTERNAL_SERVICE_SECRET\s*=\s*(.*?)"?\s*$'   # both `set NAME=value` and `set "NAME=value"`
     if (-not $secretMatch) {
         Write-Fail "Could not find INTERNAL_SERVICE_SECRET in $StartEngine -- skipping the poll"
     } else {

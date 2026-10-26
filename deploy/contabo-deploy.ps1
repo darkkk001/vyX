@@ -294,7 +294,7 @@ function Set-CmdEnvVars {
     )
     $lines = Get-Content -Path $Path
     $allNames = @($SetVars.Keys) + $RemoveVarNames | ForEach-Object { [regex]::Escape($_) }
-    $removePattern = '^\s*set\s+(' + ($allNames -join '|') + ')\s*='
+    $removePattern = '^\s*set\s+"?(' + ($allNames -join '|') + ')\s*='   # the quoted `set "NAME=value"` form too, or it stays as a duplicate
     $kept = @($lines | Where-Object { $_ -notmatch $removePattern })
 
     $newLines = @()
@@ -414,7 +414,7 @@ Write-Ok "Step 6 complete -- both services restarted and verified on $TargetComm
 # =============================================================================
 Write-StepHeader "Step 8: Poll /internal/feed-stats for ${PollDurationSec}s"
 
-$secretMatch = Get-Content $StartEngine | Select-String '^\s*set\s+INTERNAL_SERVICE_SECRET\s*=\s*(.+)$'
+$secretMatch = Get-Content $StartEngine | Select-String '^\s*set\s+"?INTERNAL_SERVICE_SECRET\s*=\s*(.*?)"?\s*$'   # both `set NAME=value` and `set "NAME=value"`
 if (-not $secretMatch) {
     Write-Fail "Could not find INTERNAL_SERVICE_SECRET in $StartEngine -- skipping Step 8. The deploy itself is already verified (Step 6's health checks passed); this only affects the feed-health table below."
 } else {
