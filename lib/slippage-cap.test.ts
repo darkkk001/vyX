@@ -197,3 +197,18 @@ describe("close", () => {
     expect(await close("99.70")).toBe(200); // 30 points BETTER for the client
   });
 });
+
+describe("the backoffice reads the effective cap from the server (no app computes it)", () => {
+  it("GET /api/manage/symbols: the symbol's own cap, or the one derived from the broker base at the live price", async () => {
+    if (!dbReachable) return;
+    const w = await world();
+    const { GET } = await import("@/app/api/manage/symbols/route");
+    const row = async () => ((await (await GET()).json()) as { symbolName: string; effectiveMaxSlippagePoints: string | null; slippageCapSource: string }[]).find((r) => r.symbolName === w.symbolName)!;
+    expect(await row()).toMatchObject({ effectiveMaxSlippagePoints: "30", slippageCapSource: "symbol" });
+    await prisma.brokerSymbol.updateMany({ where: { brokerId: w.brokerId }, data: { maxSlippagePoints: null } });
+    // base 30 at gold 4000 is 0.0075 % of the price: 0.0075 points at 100.10, so the floor of one point
+    expect(await row()).toMatchObject({ effectiveMaxSlippagePoints: "1", slippageCapSource: "derived" });
+    await prisma.broker.update({ where: { id: w.brokerId }, data: { slippageCapXauPoints: null } });
+    expect(await row()).toMatchObject({ effectiveMaxSlippagePoints: null, slippageCapSource: "derived" });
+  });
+});
