@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessPermissionOrSupportReader } from "@/lib/permissions";
 import { paymentMethodName, STAFF_PSP_ADAPTER } from "@/lib/staff-funds";
+import { bookedBalanceAfter } from "@/lib/balance-after";
+import { parseDashRange, rangeJson, type DashRange } from "@/lib/dash-range";
+import { tradingDayStart } from "@/lib/trading-day";
 
 // BROKER_ADMIN by default -- same finance carve-out as balance
 // adjustment/leverage edits (AdminRole.MANAGER's own schema comment: "not
@@ -19,6 +22,9 @@ export async function GET(request: NextRequest) {
   }
   const brokerId = session!.brokerId!;
   const accountId = request.nextUrl.searchParams.get("accountId")?.trim() || null;
+  // bo 1.0.96 (owner 2026-10-27): the cards follow the range dropdown (?range= / ?from=&to=, lib/dash-range.ts; default 30D)
+  const range = parseDashRange(request.nextUrl.searchParams, (await tradingDayStart()).start, "30D");
+  if ("error" in range) return NextResponse.json({ error: range.error }, { status: 400 });
 
   const requests = await prisma.transaction.findMany({
     where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] }, ...(accountId ? { accountId } : {}) },
@@ -34,7 +40,12 @@ export async function GET(request: NextRequest) {
   });
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! }, select: { withdrawalApproval: true } });
-  const [kpis, kpisByCurrency] = await Promise.all([fundsKpis(brokerId), fundsKpisByCurrency(brokerId)]);
+  const [kpis, kpisByCurrency, cards, booked] = await Promise.all([
+    fundsKpis(brokerId),
+    fundsKpisByCurrency(brokerId),
+    fundsCardsInRange(brokerId, range),
+    bookedBalanceAfter(requests.map((t) => t.id)),
+  ]);
   return NextResponse.json({
     currentAdminId: session!.adminId,
     // D5: SINGLE = a BROKER_ADMIN's APPROVE completes a withdrawal at once; DUAL = mark + a second admin confirms
@@ -42,6 +53,9 @@ export async function GET(request: NextRequest) {
     kpis,
     // Step 2 (owner 2026-09-30): the same tiles per account currency, never summed across currencies. `kpis` stays for older clients.
     kpisByCurrency,
+    // bo 1.0.96: the NET / DEPOSITS / WITHDRAWALS / REJECTED cards over the requested range, per currency (never summed
+    // across currencies). `kpis` / `kpisByCurrency` keep their fixed 30-day shape for older clients.
+    cards,
     rows: requests.map((t) => ({
       id: t.id,
       type: t.type,
@@ -54,6 +68,8 @@ export async function GET(request: NextRequest) {
       accountNumber: t.account.accountNumber,
       accountFullName: t.account.fullName,
       currentBalance: t.account.balance.toString(),
+      // bo 1.0.96 #9: the balance right after this row moved it (lib/balance-after.ts); null = it did not (pending / rejected)
+      bookedBalanceAfter: booked.get(t.id) ?? null,
       currency: t.account.currency, // Step 2: the account's currency (amount and balance are in it)
       markedByAdminId: t.markedByAdminId,
       markedByAdminEmail: t.markedByAdmin?.email ?? null,
@@ -131,4 +147,42 @@ async function fundsKpisByCurrency(brokerId: string) {
       withdrawals30d: f(s[3]),
       avgDeposit30d: s[2].count > 0 ? s[2].sum.div(s[2].count).toFixed(2) : null,
     }));
+}
+
+// bo 1.0.96 (owner 2026-10-27): the Deposits cards over a range. Money counts when it moved: a completed deposit /
+// withdrawal at its approval (updatedAt, the account summary's rule, lib/account-summary.ts), a rejection when it was
+// decided (updatedAt). Withdrawals and rejected amounts are reported positive (money moved / refused); net is signed
+// (deposits - withdrawals). Per account currency, never summed across currencies.
+type CardRow = { currency: string; type: "DEPOSIT" | "WITHDRAWAL"; status: string; n: bigint; total: Prisma.Decimal | null };
+async function fundsCardsInRange(brokerId: string, range: DashRange) {
+  const to = range.to ?? new Date("9999-12-31T00:00:00Z");
+  const rows = await prisma.$queryRaw<CardRow[]>`
+    SELECT a.currency, t.type::text AS type, t.status::text AS status, COUNT(*)::bigint AS n, SUM(t.amount) AS total
+    FROM "Transaction" t JOIN "Account" a ON a.id = t."accountId"
+    WHERE t."brokerId" = ${brokerId} AND t.type IN ('DEPOSIT', 'WITHDRAWAL') AND t.status IN ('COMPLETED', 'REJECTED')
+      AND t."updatedAt" >= ${range.from} AND t."updatedAt" < ${to}
+    GROUP BY 1, 2, 3`;
+  const zero = () => ({ count: 0, sum: new Prisma.Decimal(0) });
+  const out = new Map<string, { deposits: ReturnType<typeof zero>; withdrawals: ReturnType<typeof zero>; rejected: ReturnType<typeof zero> }>();
+  for (const r of rows) {
+    const c = out.get(r.currency) ?? { deposits: zero(), withdrawals: zero(), rejected: zero() };
+    const slot = r.status === "REJECTED" ? c.rejected : r.type === "DEPOSIT" ? c.deposits : c.withdrawals;
+    slot.count += Number(r.n);
+    slot.sum = slot.sum.add(new Prisma.Decimal(r.total ?? 0).abs());
+    out.set(r.currency, c);
+  }
+  const f = (x: ReturnType<typeof zero>) => ({ count: x.count, amount: x.sum.toFixed(2) });
+  return {
+    range: rangeJson(range),
+    byCurrency: [...out.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([currency, c]) => ({
+        currency,
+        net: c.deposits.sum.sub(c.withdrawals.sum).toFixed(2),
+        deposits: f(c.deposits),
+        withdrawals: f(c.withdrawals),
+        rejected: f(c.rejected),
+        avgDeposit: c.deposits.count > 0 ? c.deposits.sum.div(c.deposits.count).toFixed(2) : null,
+      })),
+  };
 }
