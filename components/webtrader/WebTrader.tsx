@@ -1092,6 +1092,18 @@ export default function WebTrader({
 
 
   // ---------- data loading ----------
+  // A 401 on any account read means the session is gone (expired, revoked, signed out elsewhere): stop every poll at
+  // once and show the login screen, exactly once. A ref, so the stable ([]) refresh callbacks below can call it without
+  // re-running the effects that depend on them. (demo.qoretrader.com once kept polling /orders + /positions every 4 s
+  // with a dead session: those two reads swallowed the 401.)
+  const sessionLostRef = useRef(false);
+  const sessionExpiredRef = useRef<() => void>(() => {});
+  sessionExpiredRef.current = () => {
+    if (sessionLostRef.current) return;
+    sessionLostRef.current = true;
+    if (onSessionExpired) onSessionExpired();
+    else window.location.href = demo ? "/trade" : "/trade/login";
+  };
   const refreshAccount = useCallback(async () => {
     try {
       const me = await tradeApi.me();
@@ -1105,14 +1117,10 @@ export default function WebTrader({
       // nothing to do with their session. Every other error just logs and
       // leaves the last-known account state on screen; the next poll tries
       // again.
-      if (err instanceof ApiError && err.status === 401) {
-        if (onSessionExpired) onSessionExpired();
-        else window.location.href = demo ? "/trade" : "/trade/login";
-      } else {
-        console.error("refreshAccount failed", err);
-      }
+      if (err instanceof ApiError && err.status === 401) sessionExpiredRef.current();
+      else console.error("refreshAccount failed", err);
     }
-  }, [onSessionExpired, demo]);
+  }, []);
   // Terminal sounds need the live bid/ask at the moment a position
   // disappears from the open list (see prevPositionsRef below) --
   // refreshPositions is a stable ([]) callback, so it reads this ref
@@ -1130,7 +1138,16 @@ export default function WebTrader({
   const prevPositionsRef = useRef<Map<string, ApiPosition>>(new Map());
   const positionsLoadedRef = useRef(false);
   const refreshPositions = useCallback(async () => {
-    const fresh = await tradeApi.positions().catch(() => []);
+    if (sessionLostRef.current) return;
+    let fresh: ApiPosition[];
+    try {
+      fresh = await tradeApi.positions();
+    } catch (err) {
+      // 401: the session is gone. Anything else: keep the last list -- an empty answer would read as "every position
+      // closed" (rows vanish, close sounds play) over a network blip.
+      if (err instanceof ApiError && err.status === 401) sessionExpiredRef.current();
+      return;
+    }
     if (positionsLoadedRef.current) {
       const freshIds = new Set(fresh.map((p) => p.id));
       for (const [id, prev] of prevPositionsRef.current) {
@@ -1224,10 +1241,14 @@ export default function WebTrader({
   const prevOrderStatusRef = useRef<Map<string, string>>(new Map());
   const ordersLoadedRef = useRef(false);
   const refreshOrders = useCallback(async () => {
-    const [pending, all] = await Promise.all([
-      tradeApi.orders().catch(() => []),
-      tradeApi.allOrders().catch(() => []),
-    ]);
+    if (sessionLostRef.current) return;
+    let pending: ApiOrder[], all: ApiOrder[];
+    try {
+      [pending, all] = await Promise.all([tradeApi.orders(), tradeApi.allOrders()]);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) sessionExpiredRef.current();
+      return;
+    }
     if (ordersLoadedRef.current) {
       for (const order of all) {
         const prevStatus = prevOrderStatusRef.current.get(order.id);
@@ -1684,7 +1705,14 @@ export default function WebTrader({
   useEffect(() => {
     let cancelled = false;
     let wasConnected = true;
+    // the poll stops itself once the session is lost, so it needs the timer it runs under (set below, after the first poll)
+    const timer: { id?: ReturnType<typeof setInterval> } = {};
     async function poll() {
+      if (sessionLostRef.current) {
+        cancelled = true;
+        if (timer.id !== undefined) clearInterval(timer.id);
+        return;
+      }
       try {
         const res = await tradeApi.pricesWithFx();
         if (cancelled) return;
@@ -1767,8 +1795,8 @@ export default function WebTrader({
     }
     poll();
     pollPricesNowRef.current = () => { void poll(); };
-    const interval = setInterval(poll, demo ? DEMO_POLL_MS : 30000);
-    return () => { cancelled = true; clearInterval(interval); };
+    timer.id = setInterval(poll, demo ? DEMO_POLL_MS : 30000);
+    return () => { cancelled = true; clearInterval(timer.id); };
   }, [appendLog, refreshOrders, refreshPositions, demo]);
 
   // Pushed ticks from the API Gateway's price-tick WebSocket
