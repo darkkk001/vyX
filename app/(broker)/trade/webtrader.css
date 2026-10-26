@@ -1050,5 +1050,5 @@ html[data-mode="light"], html[data-mode="light"] body {
 }
 .demo-banner::before {
   content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 8px;
-  background: var(--brand-accent, #B06A52); vertical-align: middle;
+  background: var(--brand-accent, #F5A623); vertical-align: middle;
 }

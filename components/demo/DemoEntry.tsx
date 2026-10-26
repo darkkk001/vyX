@@ -59,7 +59,7 @@ export default function DemoEntry({ brokerName, logoUrl }: { brokerName: string;
           <button
             type="button"
             onClick={() => void enter()}
-            style={{ border: "1px solid var(--brand-accent, #B06A52)", background: "transparent", color: "inherit", padding: "9px 20px", borderRadius: 8, fontSize: 14, cursor: "pointer" }}
+            style={{ border: "1px solid var(--brand-accent, #F5A623)", background: "transparent", color: "inherit", padding: "9px 20px", borderRadius: 8, fontSize: 14, cursor: "pointer" }}
           >
             Try again
           </button>
