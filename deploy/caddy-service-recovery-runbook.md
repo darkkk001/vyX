@@ -71,8 +71,38 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\vyxtrader\scripts\caddy-h
 4. **A recovery that really needs a fresh process** = stop the service, kill EVERY caddy.exe AND any orphan nssm.exe
    that is a caddy parent but not the service's own nssm (never the engine's or gateway's nssm), start the service,
    then verify a single caddy.exe whose parent is the service's nssm process, `/health` 200, `nssm continue` if it
-   shows Paused, and the health check says OK. The two blocks above.
+   shows Paused, the health check says OK, and **`caddy-rotate-secrets-2026-09-28.ps1 -Phase Verify` says VERIFY OK**
+   (prices 200: rule 7). The two blocks above, then Verify.
 5. The periodic check (below) must stay installed; it is what tells us next time.
+6. **Secrets are `{$VAR}` placeholders (2026-10-27).** The Caddyfile holds no secret: `{$INTERNAL_SERVICE_SECRET}`,
+   `{$MARKET_DATA_READ_SECRET}` and `{$MARKET_DATA_READ_SECRET_PREVIOUS}` take their values from the `vyxtrader-caddy`
+   service's **AppEnvironmentExtra** (nssm). A placeholder is filled in when the Caddyfile is ADAPTED: at service
+   start from AppEnvironmentExtra, and at `caddy validate` / `caddy reload` from **the shell that runs them**. So
+   **never run a plain `caddy reload` (or `validate`) from a console**: it would load the placeholders EMPTY. Every
+   reload goes through `deploy/caddy-rotate-secrets-2026-09-28.ps1` (it sets exactly the service's environment for
+   the reload, never prints a value): `-Phase Reload` for a Caddyfile change, `-Phase Overlap` / `-Phase Finish`
+   for a secret rotation, `-Phase Verify` (read-only) for the checks.
+7. **After ANY Caddy restart or VPS reboot: prices 200 at once** (next section). `/health` 200 alone proves nothing
+   about the secrets: it needs no header.
+
+## After a Caddy restart or a VPS reboot: prices 200, at once (owner 2026-10-27)
+A restarted Caddy adapts the Caddyfile again from AppEnvironmentExtra. If that environment differs from what the old
+process ran with (a value changed by hand, a key missing, a rotation half done), the feed still answers `/health` 200
+while every price read the web sends is refused 401, and orders fail on `PRICE_STALE` with no Neon fallback. So,
+right after every `nssm start` / recovery block above, every reboot, and before calling it done:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\caddy-rotate-secrets-2026-09-28.ps1 -Phase Verify
+```
+Read-only. Through https://feed.vyxtrader.com: `/health` 200; `/internal/prices/XAUUSD` with the current read
+secret (taken from start-engine.cmd, never printed) **200**; a wrong value and no header 401. Then the **restart
+parity**: the Caddyfile adapted with AppEnvironmentExtra exactly as stored, compared (hashes only) with the config the
+running Caddy holds (admin endpoint, localhost). Ends `VERIFY OK` (exit 0) or `VERIFY FAILED` (exit 1).
+- Price read 401 after a restart: AppEnvironmentExtra does not hold the value the web sends. Compare by name only
+  (`nssm get vyxtrader-caddy AppEnvironmentExtra` prints values: do NOT paste it anywhere); put the right value
+  back through the script's phase that was running (Overlap / Finish), never by hand-editing and restarting.
+- Parity DIFFERENT (with prices still 200): the running Caddy is fine, but the next restart or reboot would load
+  something else. Fix AppEnvironmentExtra first, and do not restart Caddy until Verify is OK.
+- Also check the web side once: Feed health shows numbers and a terminal quote moves.
 
 ## Periodic check: "VyX Caddy health" (every 5 minutes)
 - **What runs:** the scheduled task `VyX Caddy health`, as SYSTEM, every 5 minutes, running
@@ -96,22 +126,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\vyxtrader\scripts\caddy-h
   ```
   A report `NOT delivered (HTTP 401)` means the VPS's INTERNAL_SERVICE_SECRET and Vercel's differ.
 
-## Config change procedure: ALWAYS `caddy reload` (owner, 2026-09-28)
+## Config change procedure: ALWAYS a reload, through the script (owner, 2026-09-28; {$VAR} since 2026-10-27)
 `nssm restart vyxtrader-caddy` does NOT stop the running Caddy process: the old one keeps serving the OLD config (and
-holds ports 80/443), so a Caddyfile change silently never takes effect. Every Caddyfile change goes:
+holds ports 80/443), so a Caddyfile change silently never takes effect. And since the Caddyfile holds `{$VAR}`
+placeholders, a reload from a plain console would fill them EMPTY (rule 6). Every Caddyfile change goes:
 ```powershell
 $N  = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"
-$CE = ((& $N get vyxtrader-caddy Application) -join "" -replace "`0", "").Trim()   # caddy.exe (nssm prints UTF-16: strip NULs)
 $CF = "<the Caddyfile path from: & $N get vyxtrader-caddy AppParameters>"
-Copy-Item $CF "C:\vyxtrader\backup\Caddyfile.pre-<change>-$(Get-Date -Format yyyyMMdd-HHmmss)"
-# edit $CF, then:
-& $CE validate --config $CF        # must say "Valid configuration"
-& $CE reload   --config $CF        # zero downtime: the running Caddy swaps to the new config
-curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
+Copy-Item $CF "C:\vyxtrader\backup\Caddyfile.pre-<change>-$(Get-Date -Format yyyyMMdd-HHmmss)"   # no secret inside any more
+# edit $CF (a secret is never written into it: only a {$NAME} placeholder), then:
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\caddy-rotate-secrets-2026-09-28.ps1 -Phase Reload
 ```
-Rollback = copy the backup back over `$CF` and `caddy reload` again. Secret changes in the Caddyfile go through
-`deploy/caddy-rotate-secrets-2026-09-28.ps1` (edits by value, never prints one; market-data-vps-runbook.md). (Used for the /internal/alert-stats route on
-2026-09-28: live with no downtime.)
+`-Phase Reload` = `caddy validate` + `caddy reload` with exactly the service's AppEnvironmentExtra, the checks through
+https://feed.vyxtrader.com (health 200, price with the read secret 200, wrong / no header 401) and the restart parity;
+a wrong check reloads the previous environment by itself. Rollback of the Caddyfile itself = copy the backup back over
+`$CF` and run `-Phase Reload` again. Secret changes never touch the Caddyfile: `-Phase Overlap` / `-Phase Finish`
+write AppEnvironmentExtra (market-data-vps-runbook.md, the rotation). (A by-value edit was used for the
+/internal/alert-stats route on 2026-09-28: live with no downtime.)
 
 ## Outcome (2026-09-26, run by the owner on the VPS)
 - **Cause: the `vyxtrader-caddy` service was simply paused.** Step 1 found a single caddy.exe, a child of nssm, and

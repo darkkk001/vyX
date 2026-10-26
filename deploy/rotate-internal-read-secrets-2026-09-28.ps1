@@ -208,8 +208,13 @@ if ($Phase -eq "Overlap") {
   $newRead     = Get-CmdVar $Engine "MARKET_DATA_READ_SECRET"
   $oldRead     = Get-CmdVar $Engine "MARKET_DATA_READ_SECRET_PREVIOUS"
   if (-not $oldInternal) { throw "no INTERNAL_SERVICE_SECRET_PREVIOUS in $Engine (was -Phase Overlap run?) -- nothing touched" }
-  $CaddyBk = @(Get-ChildItem "C:\vyxtrader\backup\Caddyfile.pre-rotation-Finish-*" -ErrorAction SilentlyContinue)
-  if ($CaddyBk.Count -eq 0) { throw "run caddy-rotate-secrets-2026-09-28.ps1 -Phase Finish first (it needs the *_PREVIOUS lines) -- nothing touched" }
+  # the Caddy Finish of THIS rotation must have run first (it needs the *_PREVIOUS lines): its marker (no value inside),
+  # newer than this rotation's Overlap, which wrote the *_PREVIOUS lines into start-engine.cmd. Since 2026-10-27 the
+  # Caddyfile holds {$VAR} placeholders and the Caddy script writes caddy-env-rotation-Finish-*.done; a backup left
+  # by an earlier rotation no longer counts.
+  $overlapAt = (Get-Item $Engine).LastWriteTime
+  $CaddyDone = @(Get-ChildItem "C:\vyxtrader\backup\caddy-env-rotation-Finish-*.done", "C:\vyxtrader\backup\Caddyfile.pre-rotation-Finish-*" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $overlapAt })
+  if ($CaddyDone.Count -eq 0) { throw "run caddy-rotate-secrets-2026-09-28.ps1 -Phase Finish first (it needs the *_PREVIOUS lines; no Caddy Finish newer than this rotation's Overlap) -- nothing touched" }
   foreach ($f in $Engine, $Gateway) { Remove-CmdVar $f "INTERNAL_SERVICE_SECRET_PREVIOUS" }
   Remove-CmdVar $Engine "MARKET_DATA_READ_SECRET_PREVIOUS"
   "*_PREVIOUS removed from start-engine.cmd + start-gateway.cmd (backups in $Bk)"
