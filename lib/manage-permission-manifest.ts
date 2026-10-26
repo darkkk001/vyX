@@ -132,6 +132,10 @@ export const MANIFEST: Row[] = [
   { mod: "dealing-queue/route", method: "GET", perm: "ANY_MANAGER" },
   // Phase 2 batch 1: a dealer cancels a client's resting LIMIT/STOP order
   { mod: "orders/[id]/cancel/route", method: "POST", perm: "DEALING", needsId: true, body: {} },
+  // the hedge account panel / Dealing HEDGE MANAGER (owner 2026-10-26): close legs, the per-symbol book (D10), hedge per symbol (D8)
+  { mod: "coverage/close-legs/route", method: "POST", perm: "DEALING", body: {} },
+  { mod: "coverage/book/route", method: "GET", perm: "DEALING" },
+  { mod: "coverage/hedge-symbols/route", method: "POST", perm: "DEALING", body: { symbols: ["NO_SUCH_SYMBOL"] } },
   { mod: "deals/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
   { mod: "feed-health/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "funds-requests/[id]/route", method: "PATCH", perm: "FUNDS_APPROVAL", needsId: true, body: {} },
