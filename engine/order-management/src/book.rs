@@ -1089,8 +1089,8 @@ pub const FOLLOW_UP_DEFER_SECS: i32 = 30;
 /// Stage 4.5 (ordering = the web's): true when a PENDING post-close follow-up, queued under
 /// FOLLOW_UP_DEFER_SECS ago, is still going to touch one of this account's OPEN positions:
 /// - close a mirror target (its `mirror` step not yet done);
-/// - close an auto-hedged coverage leg (its `coverage` step not yet done; a dealer-booked leg is left open for the
-///   desk on the web too, so it is not waited for);
+/// - close a coverage leg (its `coverage` step not yet done; owner 2026-10-26: every leg follows its client's close,
+///   auto-hedged or dealer-booked, so both are waited for);
 /// - release a client position its coverage leg was hedging, when that LEG was the one closed (its `coverage`
 ///   step not yet done): the web releases it, and tells the desk, while the client position is still open.
 /// The web runs all of these inside its pass, right after the close that triggers them, so by the time it
@@ -1148,7 +1148,7 @@ pub async fn pending_follow_up_state(pool: &PgPool, account_id: &str) -> Result<
              JOIN "Position" s ON s.id = e."positionId"
              JOIN "Position" leg ON leg.id = s."coveragePositionId"
              WHERE e.status = 'PENDING' AND e.kind = 'POSITION_CLOSED' AND NOT ('coverage' = ANY(e."doneSteps"))
-               AND leg."accountId" = $1 AND leg.status = 'OPEN' AND leg."autoHedged"
+               AND leg."accountId" = $1 AND leg.status = 'OPEN'
              UNION ALL
              SELECT e."createdAt" FROM "PostCloseEffect" e
              JOIN "Position" client ON client."coveragePositionId" = e."positionId"

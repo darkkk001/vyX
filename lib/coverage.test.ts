@@ -284,10 +284,11 @@ describe("lib/coverage.ts onClose -- coverage leg closed (live DB, rolled back)"
       expect(await tx.auditLog.count({ where: { entityId: client.id, action: "POSITION_COVERAGE_RELEASED" } })).toBe(0);
       expect(await tx.auditLog.count({ where: { entityId: leg.id, action: "POSITION_COVERAGE_REDUCED" } })).toBe(1);
 
-      // the client's later close still reaches the 0.6 remainder (dealer-booked: left for the desk, notified)
+      // the client's later close still reaches the 0.6 remainder and closes it (owner 2026-10-26: every leg follows)
       await tx.position.update({ where: { id: client.id }, data: { status: "CLOSED", closePrice: D("1.10050"), closedAt: new Date() } });
       await onClose(tx, { positionId: client.id, brokerId: fx.brokerId, closedLots: D(1), sourceVolumeBeforeClose: D(1), reason: "manual" });
-      expect(await tx.notification.count({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } })).toBe(1);
+      expect((await tx.position.findUniqueOrThrow({ where: { id: leg.id } })).status).toBe("CLOSED");
+      expect(await tx.notification.count({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } })).toBe(0);
     });
   });
 });
@@ -309,7 +310,7 @@ describe("lib/coverage.ts notifyStopOut (live DB, rolled back)", () => {
 });
 
 describe("lib/coverage.ts onClose -- who opened the leg decides who closes it (live DB, rolled back)", () => {
-  it("a DEALER-BOOKED leg is left open for the desk, whatever the desk is set to now", async () => {
+  it("a DEALER-BOOKED leg follows the client's close too (owner 2026-10-26), whatever the desk is set to now", async () => {
     if (!dbReachable) return;
     for (const autoFill of [false, true]) {
       await withRollback(async (tx) => {
@@ -321,13 +322,31 @@ describe("lib/coverage.ts onClose -- who opened the leg decides who closes it (l
         await onClose(tx, { positionId: client.id, brokerId: fx.brokerId, closedLots: D(1), sourceVolumeBeforeClose: D(1), reason: "manual" });
 
         const after = await tx.position.findUniqueOrThrow({ where: { id: leg.id } });
-        expect(after.status, `autoFill=${autoFill}`).toBe("OPEN");
-        expect(await tx.transaction.count({ where: { referenceId: leg.id, type: "TRADE_PNL" } })).toBe(0);
-        const n = await tx.notification.findFirstOrThrow({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } });
-        expect(n.body).toContain("You booked that hedge by hand");
-        expect(n.body).toMatch(/is at [+-]?\d+\.\d{2} against that order/);
+        expect(after.status, `autoFill=${autoFill}`).toBe("CLOSED");
+        const audit = await tx.auditLog.findFirstOrThrow({ where: { entityId: leg.id, action: "POSITION_COVERAGE_AUTO_CLOSED" } });
+        expect(audit.newValue).toMatchObject({ legOrigin: "dealer_booked", coverageClosedLots: "1", partial: false });
+        expect(await tx.notification.count({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } })).toBe(0);
+        const trx = await tx.transaction.findFirstOrThrow({ where: { referenceId: leg.id, type: "TRADE_PNL" } });
+        expect(trx.note).toMatch(/dealer-booked leg/);
       });
     }
+  });
+
+  it("a PARTIAL client close partially closes a dealer-booked leg by the same lots", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const client = await createPosition(tx, fx, { accountId: fx.clientAccountId, side: "BUY", volume: "1", openPrice: "1.10020" });
+      const leg = await book(tx, fx, client.id, "BUY", "1");   // by hand
+      // the client closes 0.3 of 1.0: 0.7 stays open on both sides
+      await tx.position.update({ where: { id: client.id }, data: { volume: D("0.7") } });
+      await onClose(tx, { positionId: client.id, brokerId: fx.brokerId, closedLots: D("0.3"), sourceVolumeBeforeClose: D(1), reason: "manual" });
+      const after = await tx.position.findUniqueOrThrow({ where: { id: leg.id } });
+      expect(after.status).toBe("OPEN");
+      expect(after.volume.toString()).toBe("0.7");
+      const audit = await tx.auditLog.findFirstOrThrow({ where: { entityId: leg.id, action: "POSITION_COVERAGE_AUTO_CLOSED" } });
+      expect(audit.newValue).toMatchObject({ legOrigin: "dealer_booked", coverageClosedLots: "0.3", partial: true });
+    });
   });
 
   it("an AUTO-HEDGED leg follows the client's close, whatever the desk is set to now", async () => {
