@@ -1060,63 +1060,31 @@ pub fn spawn_risk_passes(
     }))
 }
 
-/// How many engine-owned accounts one fire batch evaluates at once (the pass proved concurrent walkers safe in Stage 4).
-const LIVE_PARALLEL: usize = 8;
+/// How many engine-owned accounts the touch lane evaluates at once when the caller gives no lane settings (the pass
+/// proved concurrent walkers safe in Stage 4).
+pub const LIVE_PARALLEL: usize = 8;
+/// The same for the stop-out lane.
+pub const STOP_OUT_PARALLEL: usize = 4;
 
-/// Stage 6 risk mode: the worker behind the fire channel (market_data::risk_hook::LiveSender). Fires queued while a batch is
-/// evaluated are taken together, one evaluation per account (its tick prices merged, the newer tick of a symbol wins), up
-/// to LIVE_PARALLEL accounts at a time, each UNPINNED and LIVE (evaluate_live_fire). `after` runs once per batch: the
-/// server uses it to reload the margin trigger's book and the hook's levels, which a close has changed.
+/// evaluate_live_fire with an owned pool, for a spawned task (crate::live_lanes).
+pub async fn evaluate_live_fire_owned(pool: PgPool, fire: market_data::risk_hook::LiveFire) -> Result<Option<EvalReport>, sqlx::Error> {
+    evaluate_live_fire(&pool, None, fire).await
+}
+
+/// Stage 6 risk mode: the workers behind the fire channel (market_data::risk_hook::LiveSender), both lanes on `pool`
+/// (crate::live_lanes: a stop-out lane and a touch lane, one evaluation per account at a time, fires merged meanwhile).
+/// `after` runs after an evaluation that may have changed the book: the server uses it to reload the margin trigger's
+/// book and the hook's levels. The server itself gives each lane its own pool (live_lanes::spawn_watched).
 pub fn spawn_live_trigger(
     pool: PgPool,
     prices: book::PriceSource,
     pricing: Option<Arc<market_data::pricing::PricingCache>>,
     after: Arc<dyn Fn() + Send + Sync>,
 ) -> market_data::risk_hook::LiveSender {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<market_data::risk_hook::LiveFire>();
-    tokio::spawn(async move {
-        while let Some(first) = rx.recv().await {
-            // the engine is alive and about to act: assert it (the idle gate may have stopped the timer's beats)
-            crate::authority::touch(&pool, std::time::Duration::from_secs(1)).await;
-            let mut batch: Vec<market_data::risk_hook::LiveFire> = vec![first];
-            while let Ok(more) = rx.try_recv() {
-                match batch.iter_mut().find(|f| f.account_id == more.account_id) {
-                    Some(f) => {
-                        for (symbol, tick) in more.ticks {
-                            match f.ticks.get(&symbol) {
-                                Some(have) if have.2 >= tick.2 => {}
-                                _ => {
-                                    f.ticks.insert(symbol, tick);
-                                }
-                            }
-                        }
-                    }
-                    None => batch.push(more),
-                }
-            }
-            for chunk in batch.chunks(LIVE_PARALLEL) {
-                let handles: Vec<_> = chunk
-                    .iter()
-                    .cloned()
-                    .map(|fire| {
-                        let pool = pool.clone();
-                        let account_id = fire.account_id.clone();
-                        let task = book::with_book_sources(prices.clone(), pricing.clone(), async move { evaluate_live_fire(&pool, None, fire).await });
-                        (account_id, tokio::spawn(task))
-                    })
-                    .collect();
-                for (account_id, handle) in handles {
-                    match handle.await {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(err)) => tracing::warn!(%account_id, %err, "live fire: evaluation failed (the pass will retry)"),
-                        Err(err) => tracing::error!(%account_id, %err, "live fire: evaluation task panicked"),
-                    }
-                }
-            }
-            after();
-        }
-    });
-    tx
+    let callbacks = crate::live_lanes::Callbacks { after, idle: Arc::new(|_: &str| {}) };
+    let stop_out = crate::live_lanes::LaneConfig { pool: pool.clone(), parallel: STOP_OUT_PARALLEL };
+    let touch = crate::live_lanes::LaneConfig { pool: pool.clone(), parallel: LIVE_PARALLEL };
+    crate::live_lanes::spawn(pool, stop_out, touch, prices, pricing, callbacks).0
 }
 
 /// The shadow pass's idle gate (2026-09-26, market_data::activity): the engine's tick cache, and the per-tick margin

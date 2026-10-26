@@ -19,6 +19,7 @@ pub mod pricing;
 pub mod session;
 pub mod swap;
 pub mod margin_watch;
+pub mod live_lanes;
 pub mod shadow;
 pub mod reconcile;
 

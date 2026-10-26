@@ -51,6 +51,9 @@ const FRESH: i64 = 15;
 const EDGE_EVERY: Duration = Duration::from_secs(5);
 /// Cap of the re-fire backoff for a stop-out that stays.
 const MAX_BACKOFF_SECS: u64 = 30;
+/// An engine stop-out fire not reported finished after this long no longer counts as in flight (a lost report never
+/// silences an account): the backoff applies again, and a fire sent then still merges into a running evaluation.
+const IN_FLIGHT_MAX: Duration = Duration::from_secs(MAX_BACKOFF_SECS);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WatchedPosition {
@@ -237,8 +240,11 @@ struct Track {
     /// not `in_call`, once the damping is over: a change seen inside the 5 s is fired then, not dropped.
     fired_in_call: bool,
     stop_out_fires: u32,
+    /// the last stop-out fire; for an engine-owned account, once its evaluation finished, the end of that evaluation
     last_stop_out_fire: Option<Instant>,
     last_edge_fire: Option<Instant>,
+    /// an engine stop-out fire for the account is queued or running since (crate::live_lanes; cleared by engine_evaluated)
+    in_flight_since: Option<Instant>,
 }
 
 pub struct MarginWatch {
@@ -288,6 +294,21 @@ impl MarginWatch {
     /// Stage 5: hand every fired account to the shadow (monitor::spawn_shadow_trigger) before the web is called.
     pub fn set_on_fire(&self, tx: tokio::sync::mpsc::UnboundedSender<MarginFire>) {
         *self.on_fire.lock().unwrap() = Some(tx);
+    }
+
+    /// The engine finished evaluating `account_id` and has nothing more queued for it (crate::live_lanes, Callbacks::idle).
+    /// A stop-out fire that was in flight ends here: the backoff before the next one counts from now, not from the fire.
+    pub fn engine_evaluated(&self, account_id: &str) {
+        self.engine_evaluated_at(account_id, Instant::now());
+    }
+
+    /// engine_evaluated with an explicit `now` (tests).
+    pub fn engine_evaluated_at(&self, account_id: &str, now: Instant) {
+        if let Some(track) = self.tracks.lock().unwrap().get_mut(account_id) {
+            if track.in_flight_since.take().is_some() {
+                track.last_stop_out_fire = Some(now);
+            }
+        }
     }
 
     pub fn set_book(&self, book: Book) {
@@ -391,24 +412,33 @@ impl MarginWatch {
                     continue;
                 }
                 let account = &book.accounts[i];
-                if engine_only {
-                    let engine_owned = self.live.get().is_some_and(|(oracle, _)| book.owners.get(&account.id).is_some_and(|(broker, mode)| oracle.engine_owns(broker, mode)));
-                    if !engine_owned {
-                        continue;
-                    }
+                let engine_owned = self.live.get().is_some_and(|(oracle, _)| book.owners.get(&account.id).is_some_and(|(broker, mode)| oracle.engine_owns(broker, mode)));
+                if engine_only && !engine_owned {
+                    continue;
                 }
                 let (equity, used) = measure(account, cache);
                 let action = margin::evaluate(equity, used, account.thresholds);
                 let track = tracks.entry(account.id.clone()).or_default();
                 let fire = match action {
                     MonitorAction::StopOut => {
-                        let wait = if track.stop_out_fires == 0 { 0 } else { (1u64 << (track.stop_out_fires - 1).min(5)).min(MAX_BACKOFF_SECS) };
-                        let due = track.last_stop_out_fire.is_none_or(|l| now.duration_since(l) >= Duration::from_secs(wait));
-                        if due {
-                            track.stop_out_fires += 1;
-                            track.last_stop_out_fire = Some(now);
-                            tracing::info!(account_id = %account.id, %equity, used_margin = %used, stop_out = %account.thresholds.stop_out_level, "margin trigger: at or below stop-out, evaluating now");
-                        }
+                        // the engine's stop-out fire for this account is still queued or running: every new crossing goes to
+                        // it (merged into it, its newest tick), never held back by the backoff (owner 2026-10-26)
+                        let in_flight = engine_owned && track.in_flight_since.is_some_and(|s| now.duration_since(s) < IN_FLIGHT_MAX);
+                        let due = in_flight || {
+                            // the backoff counts from the end of the last evaluation for an engine-owned account
+                            // (engine_evaluated), from the last fire for the web's
+                            let wait = if track.stop_out_fires == 0 { 0 } else { (1u64 << (track.stop_out_fires - 1).min(5)).min(MAX_BACKOFF_SECS) };
+                            let due = track.last_stop_out_fire.is_none_or(|l| now.duration_since(l) >= Duration::from_secs(wait));
+                            if due {
+                                track.stop_out_fires += 1;
+                                track.last_stop_out_fire = Some(now);
+                                if engine_owned {
+                                    track.in_flight_since = Some(now);
+                                }
+                                tracing::info!(account_id = %account.id, %equity, used_margin = %used, stop_out = %account.thresholds.stop_out_level, "margin trigger: at or below stop-out, evaluating now");
+                            }
+                            due
+                        };
                         track.in_call = true;
                         // a stop-out fire is a full evaluation of an account below its call level: it stands for "in"
                         track.fired_in_call = true;
@@ -417,6 +447,7 @@ impl MarginWatch {
                     MonitorAction::MarginCall | MonitorAction::Ok => {
                         track.stop_out_fires = 0;
                         track.last_stop_out_fire = None;
+                        track.in_flight_since = None;
                         let in_call = action == MonitorAction::MarginCall;
                         track.in_call = in_call;
                         // against the last FIRED state: a change inside the damping window waits for the window to end
@@ -606,6 +637,56 @@ mod tests {
         let at = |ms: u64| t0 + Duration::from_millis(ms + 6000);
         w.set_book(Book::new(vec![gold_account("a", dec!(142))]));
         assert!(fired(at(3200)));
+    }
+
+    struct EngineOwnsAll;
+    impl market_data::risk_hook::RiskOwnerOracle for EngineOwnsAll {
+        fn engine_owns(&self, _broker_id: &str, _account_mode: &str) -> bool {
+            true
+        }
+    }
+
+    /// Stop-out under load (owner 2026-10-26): for an ENGINE-owned account the backoff counts from the end of its evaluation,
+    /// not from the fire. While the fire is queued or running every crossing is sent (the lanes merge it into that fire, with
+    /// the newest tick); once the engine reports it finished, the next fire waits 1 s, then 2 s ... from THAT moment.
+    #[test]
+    fn an_engine_stop_out_in_flight_is_never_held_back_and_the_backoff_counts_from_the_evaluation_end() {
+        let w = MarginWatch::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        w.set_live(Arc::new(EngineOwnsAll), tx);
+        let owners = HashMap::from([("a".to_string(), ("broker".to_string(), "LIVE".to_string()))]);
+        w.set_book(Book::new(vec![gold_account("a", dec!(142))]).with_owners(owners));
+        let t = tick("XAUUSD", dec!(4280), dec!(4280.30));
+        let cache = cache_with(&[(t.clone(), 0)]);
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut sent = |now| {
+            assert!(w.decide(std::slice::from_ref(&t), &cache, now).is_empty(), "an engine account never asks the web");
+            let mut n = 0;
+            while let Ok(f) = rx.try_recv() {
+                assert_eq!(f.source, market_data::risk_hook::FireSource::Margin);
+                n += 1;
+            }
+            n
+        };
+        assert_eq!(sent(at(0)), 1, "first: at once");
+        assert_eq!(sent(at(100)), 1, "in flight: the next crossing goes to the engine too (merged there), no 1 s wait");
+        assert_eq!(sent(at(20_000)), 1, "still in flight 20 s later (a long evaluation): still sent");
+        w.engine_evaluated_at("a", at(20_500));
+        assert_eq!(sent(at(21_000)), 0, "finished and still below: 1 s from the END of the evaluation");
+        assert_eq!(sent(at(21_500)), 1);
+        // a lost report never silences the account: after 30 s the fire no longer counts as in flight, the backoff (2 s) applies
+        assert_eq!(sent(at(51_500)), 1, "past the 30 s window: the backoff (2 s, long over) applies, so it is sent");
+        assert_eq!(sent(at(51_600)), 1, "the fire at 51.5 s is in flight again: sent");
+        w.engine_evaluated_at("a", at(52_000));
+        assert_eq!(sent(at(54_000)), 0, "third: not before 4 s after the end");
+        assert_eq!(sent(at(56_000)), 1);
+        // back above: reset
+        w.set_book(Book::new(vec![gold_account("a", dec!(150))]).with_owners(HashMap::from([("a".to_string(), ("broker".to_string(), "LIVE".to_string()))])));
+        sent(at(56_100));
+        w.engine_evaluated_at("a", at(56_200));
+        w.set_book(Book::new(vec![gold_account("a", dec!(142))]).with_owners(HashMap::from([("a".to_string(), ("broker".to_string(), "LIVE".to_string()))])));
+        assert_eq!(sent(at(56_300)), 1, "a new stop-out fires at once again");
     }
 
     #[test]

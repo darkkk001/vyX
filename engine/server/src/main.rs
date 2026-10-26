@@ -308,9 +308,12 @@ impl From<PlaceMarketOrderOutcome> for PlaceMarketOrderResponse {
 pub const ENGINE_COMMIT: &str = env!("VYX_GIT_COMMIT");
 
 /// Body stays the plain "ok" every check already reads; the build is in the x-vyx-engine-commit header
-/// (owner 2026-10-26: the running build on the VPS is read directly).
-async fn health() -> ([(&'static str, &'static str); 1], &'static str) {
-    ([("x-vyx-engine-commit", ENGINE_COMMIT)], "ok")
+/// (owner 2026-10-26: the running build on the VPS is read directly), the risk lanes' load in x-vyx-risk-lanes
+/// (order_management::live_lanes::Reading::header; "off" outside risk mode). "stopout=stale" = a stop-out fire has waited
+/// over 1 s.
+async fn health() -> ([(&'static str, String); 2], &'static str) {
+    let lanes = order_management::live_lanes::reading().map_or_else(|| "off".to_string(), |r| r.header());
+    ([("x-vyx-engine-commit", ENGINE_COMMIT.to_string()), ("x-vyx-risk-lanes", lanes)], "ok")
 }
 
 // EA clock-sync handshake target (2nd Contabo-audit follow-up on the tick
@@ -1533,8 +1536,10 @@ async fn main() {
     // hands it, and ONLY those. The pieces the hook block below wires in.
     let mut authority_cache: Option<Arc<order_management::authority::AuthorityCache>> = None;
     let mut live_fire_tx: Option<market_data::risk_hook::LiveSender> = None;
-    // the live trigger worker's "a batch is done" callback, filled in once the hook and the margin trigger exist
+    // the live lanes' callbacks, filled in once the hook and the margin trigger exist: "an evaluation may have changed the
+    // book" and "the engine is done with this account for now" (the margin trigger's backoff counts from there)
     let live_after_slot: Arc<std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>> = Arc::new(std::sync::OnceLock::new());
+    let live_idle_slot: Arc<std::sync::OnceLock<Arc<dyn Fn(&str) + Send + Sync>>> = Arc::new(std::sync::OnceLock::new());
     // Stage 6 (owner answer (e)): a live mode without an explicit flip marker is most likely a mistake; say so loudly (the engine stays in shadow until the flip)
     if let Some(warning) = order_management::authority::flip_marker_warning(
         std::env::var("ENGINE_ORDER_MANAGEMENT").ok().as_deref(),
@@ -1645,18 +1650,50 @@ async fn main() {
         let safety_secs: u64 = std::env::var("VYX_AUTHORITY_RELOAD_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(5);
         authority.spawn_reload_loop(pool.clone(), tick_cache.clone(), std::time::Duration::from_secs(safety_secs));
         authority_cache = Some(authority.clone());
-        // 2. the per-tick fires of engine-owned accounts: unpinned live evaluation (monitor::evaluate_live_fire)
-        let after_slot = live_after_slot.clone();
-        live_fire_tx = Some(order_management::monitor::spawn_live_trigger(
+        // 2. the per-tick fires of engine-owned accounts: unpinned live evaluation (monitor::evaluate_live_fire), in two lanes
+        // with their OWN connections (order_management::live_lanes, owner 2026-10-26): stop-out fires never wait behind SL / TP
+        let lane_connections = |name: &str, default: u32| std::env::var(name).ok().and_then(|v| v.trim().parse::<u32>().ok()).filter(|n| *n > 0).unwrap_or(default);
+        let stop_out_connections = lane_connections("VYX_STOPOUT_LANE_CONNECTIONS", order_management::monitor::STOP_OUT_PARALLEL as u32);
+        let touch_connections = lane_connections("VYX_TOUCH_LANE_CONNECTIONS", order_management::monitor::LIVE_PARALLEL as u32);
+        let mut lane_pools = Vec::new();
+        for (lane, n) in [("stop-out", stop_out_connections), ("touch", touch_connections)] {
+            match db::connect_pool(&database_url, n).await {
+                Ok(p) => match order_management::authority::verify_risk_pool(&p).await {
+                    Ok(_) => lane_pools.push(p),
+                    Err(why) => {
+                        tracing::error!(lane, %why, "RISK MODE REFUSED: a risk lane's pool is not writable (the engine acts on nothing)");
+                        break 'risk;
+                    }
+                },
+                Err(err) => {
+                    tracing::error!(lane, %err, "RISK MODE REFUSED: a risk lane's pool could not connect (the engine acts on nothing)");
+                    break 'risk;
+                }
+            }
+        }
+        let touch_pool = lane_pools.pop().expect("two lane pools");
+        let stop_out_pool = lane_pools.pop().expect("two lane pools");
+        let (after_slot, idle_slot) = (live_after_slot.clone(), live_idle_slot.clone());
+        live_fire_tx = Some(order_management::live_lanes::spawn_watched(
             pool.clone(),
+            order_management::live_lanes::LaneConfig { pool: stop_out_pool, parallel: stop_out_connections as usize },
+            order_management::live_lanes::LaneConfig { pool: touch_pool, parallel: touch_connections as usize },
             prices.clone(),
             Some(pricing.clone()),
-            Arc::new(move || {
-                if let Some(f) = after_slot.get() {
-                    f();
-                }
-            }),
+            order_management::live_lanes::Callbacks {
+                after: Arc::new(move || {
+                    if let Some(f) = after_slot.get() {
+                        f();
+                    }
+                }),
+                idle: Arc::new(move |account_id: &str| {
+                    if let Some(f) = idle_slot.get() {
+                        f(account_id);
+                    }
+                }),
+            },
         ));
+        tracing::warn!(stop_out_connections, touch_connections, "risk mode: engine fires run in two lanes (stop-out, touch), each with its own connections");
         // 2b. the engine-down watchdog (docs/STAGE6-PLAN.md section 14): the heartbeat the web and the engine's own transactions judge by.
         // The first beat is written before anything can act; the timer beats while the idle gate is open, the fire worker and the pass touch it.
         let beat_secs: u64 = std::env::var("VYX_RISK_HEARTBEAT_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(order_management::authority::DEFAULT_BEAT_SECS);
@@ -1851,12 +1888,15 @@ async fn main() {
             }
             if let (Some(authority), Some(tx)) = (&authority_cache, &live_fire_tx) {
                 watch.set_live(authority.clone(), tx.clone());
-                // a live evaluation may have closed something: reload the trigger's book and the hook's levels once the batch is done
+                // a live evaluation may have closed something: reload the trigger's book and the hook's levels
                 let (after_hook, after_watch) = (hook.clone(), watch.clone());
                 let _ = live_after_slot.set(Arc::new(move || {
                     after_hook.request_reload();
                     after_watch.request_reload();
                 }));
+                // the engine is done with an account: a stop-out re-fire's backoff counts from here, not from the fire
+                let idle_watch = watch.clone();
+                let _ = live_idle_slot.set(Arc::new(move |account_id: &str| idle_watch.engine_evaluated(account_id)));
                 tracing::warn!("risk mode: margin fires of engine-owned accounts are evaluated by the engine on the tick (unpinned, live)");
             }
             hook.set_margin_watch(watch);
@@ -2080,6 +2120,7 @@ mod build_commit_tests {
         let lower = raw.to_ascii_lowercase();
         assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
         assert!(lower.contains(&format!("x-vyx-engine-commit: {}", ENGINE_COMMIT.to_ascii_lowercase())), "{raw}");
+        assert!(lower.contains("x-vyx-risk-lanes: off"), "outside risk mode the lanes header says off: {raw}");
         assert!(raw.ends_with("\r\n\r\nok"), "the body every health check reads is unchanged: {raw}");
     }
 }

@@ -1022,3 +1022,134 @@ async fn risk_closes_ignore_trading_rights_status_and_the_group_minimum_volume()
 async fn status_of(pool: &PgPool, position: &str) -> String {
     status(pool, position).await
 }
+
+/// A pool of its own for a risk lane (the server gives each lane its own connections).
+async fn lane_pool(n: u32) -> PgPool {
+    let url = std::env::var("ENGINE_TEST_DATABASE_URL").unwrap();
+    sqlx::postgres::PgPoolOptions::new().max_connections(n).connect(&url).await.expect("connect to the scratch DB")
+}
+
+fn touch_fire(w: &World, account: &str) -> LiveFire {
+    let now = chrono::Utc::now();
+    LiveFire {
+        account_id: account.to_string(),
+        ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), now))]),
+        received: HashMap::from([(w.symbol_name.clone(), now)]),
+        source: FireSource::SlTp,
+    }
+}
+
+async fn open_count(pool: &PgPool, account: &str) -> i64 {
+    count(pool, r#"SELECT count(*) FROM "Position" WHERE "accountId" = $1 AND status = 'OPEN'"#, account).await
+}
+
+/// STOP-OUT UNDER LOAD (owner 2026-10-26, part A): a stop-out fire never waits behind SL / TP work. Two accounts with 300 SL touches
+/// each keep the touch lane (ONE slot here) busy; a stop-out fire sent while the first of them is closing runs at once in the stop-out
+/// lane, on that lane's own connections, and the account is stopped out within a second while the second SL account has not even
+/// started. The lanes' reading shows the touch lane working and the stop-out lane never stale. (Before part A the single worker took
+/// fires in arrival order: the stop-out waited for every SL close in front of it -- 12-37 s in production on 2026-10-26.)
+#[tokio::test]
+async fn a_stop_out_fire_is_not_held_behind_sl_tp_work_in_the_touch_lane() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let w = broker_and_symbol(&pool, "RUST", false).await;
+    let (first, first_pos) = add_account(&pool, &w, "LIVE", dec!(100000), Some(dec!(95)), 300).await;
+    let (second, second_pos) = add_account(&pool, &w, "LIVE", dec!(100000), Some(dec!(95)), 300).await;
+    let (stopped, stopped_pos) = add_account(&pool, &w, "LIVE", dec!(20), None, 2).await;
+
+    let cache = cache_at(&w.symbol_name, dec!(90));
+    let (sender, load) = order_management::live_lanes::spawn(
+        pool.clone(),
+        order_management::live_lanes::LaneConfig { pool: lane_pool(1).await, parallel: 1 },
+        order_management::live_lanes::LaneConfig { pool: lane_pool(1).await, parallel: 1 },
+        book::PriceSource::Ticks(cache),
+        None,
+        order_management::live_lanes::Callbacks { after: Arc::new(|| {}), idle: Arc::new(|_: &str| {}) },
+    );
+    sender.send(touch_fire(&w, &first)).unwrap();
+    sender.send(touch_fire(&w, &second)).unwrap();
+    // the first SL account is closing
+    let mut started = false;
+    for _ in 0..400 {
+        if open_count(&pool, &first).await < 300 {
+            started = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(started, "the first SL account started closing");
+    let r = load.reading(std::time::Instant::now());
+    assert_eq!((r.touch.running, r.touch.waiting), (1, 1), "the touch lane is busy: one account closing, one waiting: {r:?}");
+
+    let sent = std::time::Instant::now();
+    sender.send(gap_fire(&w, &stopped)).unwrap();
+    let mut took = None;
+    for _ in 0..1000 {
+        if status(&pool, &stopped_pos[0]).await == "CLOSED" && status(&pool, &stopped_pos[1]).await == "CLOSED" {
+            took = Some(sent.elapsed());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let took = took.expect("the stop-out account was stopped out");
+    let (first_open, second_open) = (open_count(&pool, &first).await, open_count(&pool, &second).await);
+    eprintln!("stop-out under touch load: stopped out in {} ms; SL accounts still open: {first_open} / {second_open}", took.as_millis());
+    assert!(took < Duration::from_secs(1), "stopped out within a second of its fire: {took:?}");
+    assert_eq!(second_open, 300, "the second SL account has not started yet: the stop-out did not wait for the touch lane");
+    let r = load.reading(std::time::Instant::now());
+    assert!(!r.stop_out_stale(), "{r:?}");
+
+    // everything finishes, every position once
+    assert!(wait_closed(&pool, &first_pos).await && wait_closed(&pool, &second_pos).await, "both SL accounts closed in full");
+    for p in first_pos.iter().chain(&second_pos).chain(&stopped_pos) {
+        assert_eq!(count(&pool, r#"SELECT count(*) FROM "Transaction" WHERE "referenceId" = $1 AND type = 'TRADE_PNL'"#, p).await, 1, "one close per position");
+    }
+    cleanup(&pool, &w).await;
+}
+
+/// Fires for an account that arrive while it is being evaluated are merged into ONE next evaluation (not one each), and that next
+/// evaluation runs right after: an account closing 300 SL positions gets 20 more fires meanwhile; when its last fire is done the lanes
+/// are empty again, every position was closed exactly once, and no fire was lost or run twice in parallel.
+#[tokio::test]
+async fn fires_for_an_account_being_evaluated_merge_into_one_next_evaluation() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let w = broker_and_symbol(&pool, "RUST", false).await;
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(100000), Some(dec!(95)), 300).await;
+    let cache = cache_at(&w.symbol_name, dec!(90));
+    let idle = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let idle_count = idle.clone();
+    let (sender, load) = order_management::live_lanes::spawn(
+        pool.clone(),
+        order_management::live_lanes::LaneConfig { pool: lane_pool(2).await, parallel: 2 },
+        order_management::live_lanes::LaneConfig { pool: lane_pool(4).await, parallel: 4 },
+        book::PriceSource::Ticks(cache),
+        None,
+        order_management::live_lanes::Callbacks {
+            after: Arc::new(|| {}),
+            idle: Arc::new(move |_: &str| {
+                idle_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        },
+    );
+    sender.send(touch_fire(&w, &account)).unwrap();
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        sender.send(touch_fire(&w, &account)).unwrap();
+    }
+    assert!(wait_closed(&pool, &positions).await);
+    for _ in 0..400 {
+        if idle.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let r = load.reading(std::time::Instant::now());
+    assert_eq!(idle.load(std::sync::atomic::Ordering::SeqCst), 1, "one idle report: the account left the lanes once");
+    assert_eq!((r.touch.running, r.touch.waiting, r.stop_out.running, r.stop_out.waiting), (0, 0, 0, 0), "{r:?}");
+    assert!(r.evaluations <= 3, "21 fires became at most 3 evaluations (the first, then one merged next, maybe one more): {r:?}");
+    for p in &positions {
+        assert_eq!(count(&pool, r#"SELECT count(*) FROM "Transaction" WHERE "referenceId" = $1 AND type = 'TRADE_PNL'"#, p).await, 1, "one close per position");
+    }
+    cleanup(&pool, &w).await;
+}
