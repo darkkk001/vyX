@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { evaluateAccountsRisk } from "@/lib/risk-monitor";
+import { evaluateAccountsRisk, type RiskTrigger } from "@/lib/risk-monitor";
 import { drainPostCloseBackstop } from "@/lib/post-close";
 import { evaluatePendingTriggers } from "@/lib/pending-trigger";
 import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
@@ -11,7 +11,7 @@ import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
  * (app/api/internal/risk-fallback); each does its own gating before it calls this. The risk owner prefilter is inside
  * evaluateAccountsRisk (lib/risk-owner.ts), so a RUST-owned account is skipped unless the engine's heartbeat is stale.
  */
-export async function runFullMarginPass() {
+export async function runFullMarginPass(trigger: RiskTrigger = "unknown") {
   // Rust cutover Stage 3 backstop: post-close outbox rows the engine's dispatcher has not finished within 2
   // minutes (engine down, or the route unreachable from the VPS) run here. One indexed query when there are none.
   const outbox = await drainPostCloseBackstop().catch((err) => {
@@ -43,7 +43,7 @@ export async function runFullMarginPass() {
   });
 
   // one shared read per batch of accounts, not one per account (lib/risk-monitor.ts evaluateAccountsRisk)
-  const errors = await evaluateAccountsRisk(openAccounts.map((a) => a.accountId), "margin-monitor: evaluation failed for account");
+  const errors = await evaluateAccountsRisk(openAccounts.map((a) => a.accountId), "margin-monitor: evaluation failed for account", trigger);
 
   return { accountsEvaluated: openAccounts.length, errors, outbox, pending };
 }

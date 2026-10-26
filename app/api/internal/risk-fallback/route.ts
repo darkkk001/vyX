@@ -15,19 +15,29 @@ import { checkEngineHeartbeatAlert } from "@/lib/risk-engine-alert";
 //   4. fresh = the engine acts, return; stale = the web's full pass (every RUST account is WEB-owned now).
 export const maxDuration = 15;
 
+// One log line per run (owner 2026-10-26, drill 7.B step 8): ran or not, why it skipped, how many accounts it checked,
+// so the Vercel log alone shows the fallback took over while the heartbeat was stale and stood down once it was back.
+function answer(body: { ran: boolean; skipped?: string; accountsEvaluated?: number; ageSecs?: number | null; alert?: string | null; errors?: number; [k: string]: unknown }, status = 200) {
+  console.log(
+    "risk-fallback:",
+    JSON.stringify({ ran: body.ran, skipped: body.skipped ?? null, accountsEvaluated: body.accountsEvaluated ?? 0, errors: body.errors ?? 0, ageSecs: body.ageSecs ?? null, alert: body.alert ?? null })
+  );
+  return NextResponse.json(body, { status });
+}
+
 export async function GET(request: NextRequest) {
   if (!bearerMatches(request.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const gate = await marginPassGate();
-  if (gate.run === false) return NextResponse.json({ skipped: gate.reason, ran: false });
+  if (gate.run === false) return answer({ skipped: gate.reason, ran: false });
   // gate.run === null: the engine could not be read. That is the case the fallback exists for: go on.
 
   const rust = await anyBrokerRust();
   if (!rust) {
     await checkEngineHeartbeatAlert({ rust: false, active: true, heartbeat: null });
-    return NextResponse.json({ skipped: "no broker is on the engine", ran: false });
+    return answer({ skipped: "no broker is on the engine", ran: false });
   }
 
   let heartbeat: EngineHeartbeat;
@@ -36,12 +46,12 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     // the database cannot be read: no alert about the engine for that, and the pass could not run either
     console.error("risk-fallback: heartbeat unreadable", err);
-    return NextResponse.json({ skipped: "heartbeat unreadable", ran: false }, { status: 503 });
+    return answer({ skipped: "heartbeat unreadable", ran: false }, 503);
   }
 
   const alert = await checkEngineHeartbeatAlert({ rust: true, active: true, heartbeat });
-  if (heartbeat.alive) return NextResponse.json({ skipped: "engine heartbeat fresh", ran: false, ageSecs: heartbeat.ageSecs, alert: alert.action });
+  if (heartbeat.alive) return answer({ skipped: "engine heartbeat fresh", ran: false, ageSecs: heartbeat.ageSecs, alert: alert.action });
 
-  const pass = await runFullMarginPass();
-  return NextResponse.json({ ran: true, fallback: true, ageSecs: heartbeat.ageSecs, alert: alert.action, ...pass });
+  const pass = await runFullMarginPass("risk-fallback");
+  return answer({ ran: true, fallback: true, ageSecs: heartbeat.ageSecs, alert: alert.action, ...pass });
 }
