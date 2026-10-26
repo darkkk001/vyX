@@ -111,5 +111,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261023100000_rejected_order",
   "20261023130000_order_rate_limit",
   "20261023140000_group_display_name",
-  "20261023150000_rejected_order_close_modify"
+  "20261023150000_rejected_order_close_modify",
+  "20261027120000_account_equity_snapshot",
+  "20261027130000_shared_coverage_leg"
 ];
