@@ -443,6 +443,23 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
 // lib/nats.ts (the actually-live path today, per ADR-003) -- both publish
 // the identical JSON shape, so this one subscription/fan-out serves
 // either origin without caring which one produced a given event.
+// Traders online now (bo 1.0.96 dashboard B, owner 2026-10-27: "online" = an open trading-event connection to this
+// gateway, terminal or web). brokerId -> accountId -> open sockets; read by GET /internal/online (index.ts).
+const onlineByBroker = new Map<string, Map<string, number>>();
+
+export function onlineAccountIds(brokerId: string): string[] {
+  return [...(onlineByBroker.get(brokerId)?.keys() ?? [])];
+}
+
+function markOnline(brokerId: string, accountId: string, delta: 1 | -1) {
+  const accounts = onlineByBroker.get(brokerId) ?? new Map<string, number>();
+  const n = (accounts.get(accountId) ?? 0) + delta;
+  if (n > 0) accounts.set(accountId, n);
+  else accounts.delete(accountId);
+  if (accounts.size > 0) onlineByBroker.set(brokerId, accounts);
+  else onlineByBroker.delete(brokerId);
+}
+
 export async function attachTradingEventStream(server: Server, natsUrl: string): Promise<void> {
   const nc: NatsConnection = await connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 });
   logNatsConnectionLoss("trading event stream", nc);
@@ -478,8 +495,14 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
     }
     bset.add(ws);
     gatewayStats.tradingWsConnectionsTotal += 1;
+    markOnline(brokerId, accountId, 1);
+    let online = true; // "close" follows "error": count the socket out once
 
     function unregister() {
+      if (online) {
+        online = false;
+        markOnline(brokerId, accountId, -1);
+      }
       set!.delete(ws);
       if (set!.size === 0) clientsByAccount.delete(accountId);
       bset!.delete(ws);

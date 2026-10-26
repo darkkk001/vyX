@@ -10,7 +10,7 @@ import express from "express";
 import { connect, StringCodec, type NatsConnection } from "nats";
 import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
-import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, askRegistry, gatewayStats, orderAckStats } from "./ws.js";
+import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, askRegistry, gatewayStats, onlineAccountIds, orderAckStats } from "./ws.js";
 import { BOOK_SEQ_SUBJECT, newBookSeqState, stampBookEvent } from "./book-seq.js";
 import { internalSecretOk, rotationInProgress } from "./internal-secret.js";
 
@@ -35,6 +35,21 @@ app.get("/internal/gateway-stats", (req, res) => {
     return;
   }
   res.json({ ...gatewayStats, ...orderAckStats(), ...askRegistry.stats() });
+});
+
+// Traders online now (bo 1.0.96 dashboard B): the accounts of one broker with an open trading-event connection. Ids only;
+// the web filters them (live / demo, clients only) and counts. Same shared-secret convention as gateway-stats.
+app.get("/internal/online", (req, res) => {
+  if (!internalSecretOk(req.headers["x-internal-secret"])) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const brokerId = typeof req.query.brokerId === "string" ? req.query.brokerId : "";
+  if (!brokerId) {
+    res.status(400).json({ error: "brokerId is required" });
+    return;
+  }
+  res.json({ brokerId, accountIds: onlineAccountIds(brokerId) });
 });
 
 // Publish relay for the legacy Vercel-hosted Next.js trade routes

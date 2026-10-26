@@ -6,6 +6,8 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { tradingDayStart } from "@/lib/trading-day";
 import { bookPnlFloating, bookPnlRealized, currencyAmountsJson, legacySum, type CurrencyAmount } from "@/lib/book-pnl";
 import { humanizeAction, excludeSuperAdminActor, auditActorKind, auditSource, deleteAuditFilter } from "@/lib/audit-labels";
+import { parseDashRange, rangeFromKey, rangeJson } from "@/lib/dash-range";
+import { bigTrades, feedAndBridge, netExposure, onlineNow, periodMoney, periodNewClients, topAccounts } from "@/lib/dashboard-panels";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -129,8 +131,26 @@ export async function GET(request: Request) {
   // voided trades; commission and swap are not part of it. The day starts at the charts' D1 boundary (lib/trading-day.ts).
   const tradingDay = await tradingDayStart(now);
   const tradingDayStartAt = tradingDay.start;
+  // bo 1.0.96 #29 (owner 2026-10-27): ?range= / ?from=&to= (lib/dash-range.ts, default 7D); the `period` cards follow it
+  const range = parseDashRange(new URL(request.url).searchParams, tradingDayStartAt, "7D");
+  if ("error" in range) return NextResponse.json({ error: range.error }, { status: 400 });
+  const week = rangeFromKey("7D", tradingDayStartAt);
   const scope = { brokerId, coverageAccountId: brokerRow.coverageAccountId, includeDemo: scopeMode === "all" };
-  const [bookToday, bookFloating] = await Promise.all([bookPnlRealized(prisma, scope, tradingDayStartAt), bookPnlFloating(prisma, scope)]);
+  const who = clientAccountSql(brokerId, brokerRow.coverageAccountId, scopeMode);
+  const moneyWho = clientAccountSql(brokerId, brokerRow.coverageAccountId, scopeMode === "all" ? "all" : "live");
+  const [bookToday, bookFloating, bookWeek, bookRange, periodCash, periodClients, online, status, top, exposure, big] = await Promise.all([
+    bookPnlRealized(prisma, scope, tradingDayStartAt),
+    bookPnlFloating(prisma, scope),
+    bookPnlRealized(prisma, scope, week.from),
+    bookPnlRealized(prisma, scope, range.from, range.to),
+    periodMoney(brokerId, moneyWho, range),
+    periodNewClients(clientAccountSql(brokerId, brokerRow.coverageAccountId, "all"), range),
+    onlineNow(brokerId, who),
+    feedAndBridge(brokerId),
+    topAccounts(brokerId, moneyWho, week.from),
+    netExposure(brokerId, who),
+    bigTrades(brokerId, who, range),
+  ]);
   // legacy single numbers for backoffice 1.0.61 and older (summed across currencies; new clients read bookPnl)
   const brokerBookClosedToday = legacySum(bookToday);
   const brokerBookClosedTodayCount = bookToday.reduce((t, r) => t + r.count, 0);
@@ -140,6 +160,33 @@ export async function GET(request: Request) {
   const newClients = await newClientsSplit(brokerId, brokerRow.coverageAccountId, sevenDaysAgo);
   return NextResponse.json({
     scope: scopeMode,
+    // ---- bo 1.0.96 (owner 2026-10-27); every older field below keeps its shape and fixed window ----
+    // #29: the cards that follow the range dropdown. Money live-only (all: live + demo) like the tiles; Book P/L as bookPnl.
+    period: {
+      range: rangeJson(range),
+      newClients: periodClients,
+      money: periodCash,
+      bookPnl: currencyAmountsJson(bookRange),
+    },
+    // A: Broker P/L (the Book P/L definition, lib/book-pnl.ts): realized today and over 7D (today + the 6 trading days
+    // before), and floating now
+    brokerPnl: {
+      today: { from: tradingDayStartAt.toISOString(), realized: currencyAmountsJson(bookToday) },
+      last7d: { from: week.from.toISOString(), realized: currencyAmountsJson(bookWeek) },
+      floating: currencyAmountsJson(bookFloating.byCurrency),
+      floatingUnpriced: bookFloating.unpriced,
+    },
+    // B: accounts with an open terminal / web connection now (status "unavailable" = could not be asked, not 0)
+    onlineNow: online,
+    // E: KYC pending = `pendingKyc` below (both queues)
+    // F: price feed + liquidity bridge, one compact read
+    status,
+    // G/H: top 5 winners / losers by realized net P/L over 7D, per currency (client view)
+    topAccounts7d: { from: week.from.toISOString(), byCurrency: top },
+    // I: biggest net exposure by symbol (clients' open positions, by USD notional)
+    netExposure: exposure,
+    // J: trades opened in the range with 1 lot or more, newest first (max 20)
+    bigTrades: { minLots: "1.00", rows: big },
     // NEW CLIENTS counts every registered client (live and demo) whatever the scope; the split is shown beside it
     newClients,
     // Step 2 (owner 2026-09-30): the same figures for real clients only (live accounts, no broker hedge / coverage
