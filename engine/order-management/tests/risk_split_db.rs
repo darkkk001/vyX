@@ -1153,3 +1153,51 @@ async fn fires_for_an_account_being_evaluated_merge_into_one_next_evaluation() {
     }
     cleanup(&pool, &w).await;
 }
+
+/// §9 pass-source <= 5 % (the 10-26 burst: 9.2 %): one account, two SL levels on one symbol (95 and 92), crossed by two ticks 200 ms
+/// apart. Through the real hook (levels loaded from the database) and the lanes, BOTH positions close from the FIRE, priced at the
+/// tick that crossed each; none is left for the pass. (Before 2026-10-27 the hook dropped the second touch: one fire per account and
+/// symbol per second, and the first fire, priced at 94, did not see the level at 92.)
+#[tokio::test]
+async fn a_second_level_crossed_inside_the_second_closes_from_the_fire_not_the_pass() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let w = broker_and_symbol(&pool, "RUST", false).await;
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(100000), Some(dec!(95)), 2).await;
+    sqlx::query(r#"UPDATE "Position" SET "slPrice" = 92 WHERE id = $1"#).bind(&positions[1]).execute(&pool).await.unwrap();
+
+    let cache = Arc::new(TickCache::new());
+    cache.set(&tick(&w.symbol_name, dec!(100)), chrono::Utc::now());
+    let (sender, _load) = order_management::live_lanes::spawn(
+        pool.clone(),
+        order_management::live_lanes::LaneConfig { pool: lane_pool(2).await, parallel: 2 },
+        order_management::live_lanes::LaneConfig { pool: lane_pool(4).await, parallel: 4 },
+        book::PriceSource::Ticks(cache.clone()),
+        None,
+        order_management::live_lanes::Callbacks { after: Arc::new(|| {}), idle: Arc::new(|_: &str| {}) },
+    );
+    let hook = market_data::risk_hook::RiskHook::new("http://127.0.0.1:9/api/internal/margin-monitor".into(), "test-secret".into(), Duration::from_secs(1)).unwrap();
+    hook.set_live(authority::AuthorityCache::with_rust_brokers(&[(w.broker.as_str(), false)]), sender, "http://127.0.0.1:9/api/internal/pending-trigger".into());
+    hook.reload(&pool).await;
+
+    // 94 crosses the SL at 95 only; 200 ms later 91 crosses the one at 92 too
+    for bid in [dec!(94), dec!(91)] {
+        let t = tick(&w.symbol_name, bid);
+        cache.set(&t, chrono::Utc::now());
+        hook.after_flush(std::slice::from_ref(&t), &cache);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(wait_closed(&pool, &positions).await, "both closed");
+    let rows: Vec<(String, String, Decimal)> = sqlx::query_as(
+        r#"SELECT e."positionId", e.payload->>'triggerSource', p."closePrice" FROM "PostCloseEffect" e JOIN "Position" p ON p.id = e."positionId"
+           WHERE e."accountId" = $1 AND e.kind = 'POSITION_CLOSED' ORDER BY p."closePrice" DESC"#,
+    )
+    .bind(&account)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!((rows[0].0.as_str(), rows[0].1.as_str(), rows[0].2), (positions[0].as_str(), "fire", dec!(94)), "the first level, from the fire at 94");
+    assert_eq!((rows[1].0.as_str(), rows[1].1.as_str(), rows[1].2), (positions[1].as_str(), "fire", dec!(91)), "the second level, from its OWN fire at 91: not the pass");
+    cleanup(&pool, &w).await;
+}

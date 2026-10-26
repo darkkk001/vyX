@@ -216,7 +216,7 @@ pub struct RiskHook {
     /// before Stage 6 (every touch and crossing goes to the web).
     live: std::sync::OnceLock<LiveEngine>,
     /// engine fires are limited per (account, symbol) to one a second, like the web call per symbol
-    last_engine_fire: Mutex<HashMap<(String, String), Instant>>,
+    last_engine_fire: Mutex<HashMap<(String, String), (Instant, HashSet<String>)>>,
 }
 
 impl RiskHook {
@@ -455,11 +455,14 @@ impl RiskHook {
     /// Stage 6: the SL / TP touches (first list) and resting-order crossings (second) of ENGINE-OWNED accounts among these
     /// ticks, one LiveFire per account and source, each carrying the tick that crossed. Empty without a live engine.
     /// The web path (touched_with_positions) skips exactly these levels, so a touch has ONE handler.
-    fn engine_touches(&self, ticks: &[Tick], cache: &TickCache, now: chrono::DateTime<chrono::Utc>) -> (Vec<LiveFire>, Vec<LiveFire>) {
+    /// The third value: (account, symbol) -> the positions whose SL / TP these ticks touched (limit_engine_fire).
+    #[allow(clippy::type_complexity)]
+    fn engine_touches(&self, ticks: &[Tick], cache: &TickCache, now: chrono::DateTime<chrono::Utc>) -> (Vec<LiveFire>, Vec<LiveFire>, HashMap<(String, String), HashSet<String>>) {
         let mut sl_tp: Vec<LiveFire> = Vec::new();
         let mut pending: Vec<LiveFire> = Vec::new();
+        let mut touched: HashMap<(String, String), HashSet<String>> = HashMap::new();
         if self.live.get().is_none() {
-            return (sl_tp, pending);
+            return (sl_tp, pending, touched);
         }
         let tick_at = |t: &Tick| t.tick_ms.and_then(chrono::DateTime::from_timestamp_millis).unwrap_or(now);
         // the engine's receive time of THIS tick (the cache still holds it unless a newer one arrived since the flush; then
@@ -491,6 +494,7 @@ impl RiskHook {
                     let tp_hit = l.tp.map_or(false, |tp| if l.is_buy { cp >= tp } else { cp <= tp });
                     if sl_hit || tp_hit {
                         add(&mut sl_tp, &l.account_id, t, FireSource::SlTp);
+                        touched.entry((l.account_id.clone(), t.symbol.clone())).or_default().insert(l.position_id.clone());
                     }
                 }
             }
@@ -504,7 +508,7 @@ impl RiskHook {
                 }
             }
         }
-        (sl_tp, pending)
+        (sl_tp, pending, touched)
     }
 
     /// True when a resting order of an engine-owned account is being watched (the backstop's pending sweep).
@@ -512,20 +516,39 @@ impl RiskHook {
         self.live.get().is_some() && self.pending.lock().unwrap().values().any(|ps| ps.iter().any(|p| self.engine_owns(&p.broker_id, &p.mode)))
     }
 
-    /// One fire per (account, symbol) per second: drops the symbols of a fire that were fired less than a second ago,
-    /// returns None when nothing is left.
-    fn limit_engine_fire(&self, mut fire: LiveFire) -> Option<LiveFire> {
+    /// At most one fire per (account, symbol) per second FOR THE SAME POSITIONS: a symbol fired less than a second ago is
+    /// dropped from the fire unless its tick touched a position that fire did not carry (a second level crossed by the next
+    /// tick: it fires at once; before 2026-10-27 it was dropped and waited for the pass, the 9.2 % "pass" closes of the
+    /// 10-26 burst). The same positions touched again inside the second are dropped as before (a level that stays crossed
+    /// does not evaluate the account on every tick). Returns None when nothing is left.
+    fn limit_engine_fire(&self, mut fire: LiveFire, touched: &HashMap<(String, String), HashSet<String>>) -> Option<LiveFire> {
+        self.limit_engine_fire_at(&mut fire, touched, Instant::now());
+        if fire.ticks.is_empty() { None } else { Some(fire) }
+    }
+
+    fn limit_engine_fire_at(&self, fire: &mut LiveFire, touched: &HashMap<(String, String), HashSet<String>>, now: Instant) {
         let mut last = self.last_engine_fire.lock().unwrap();
-        let now = Instant::now();
         let account = fire.account_id.clone();
-        fire.ticks.retain(|symbol, _| match last.get(&(account.clone(), symbol.clone())) {
-            Some(t) if now.duration_since(*t) < Duration::from_secs(1) => false,
-            _ => {
-                last.insert((account.clone(), symbol.clone()), now);
-                true
+        fire.ticks.retain(|symbol, _| {
+            let key = (account.clone(), symbol.clone());
+            let positions = touched.get(&key).cloned().unwrap_or_default();
+            match last.get_mut(&key) {
+                Some((at, fired)) if now.duration_since(*at) < Duration::from_secs(1) => {
+                    if positions.is_subset(fired) {
+                        false
+                    } else {
+                        fired.extend(positions);
+                        true
+                    }
+                }
+                _ => {
+                    last.insert(key, (now, positions));
+                    true
+                }
             }
         });
-        if fire.ticks.is_empty() { None } else { Some(fire) }
+        let symbols: HashSet<&String> = fire.ticks.keys().collect();
+        fire.received.retain(|s, _| symbols.contains(s));
     }
 
     /// Resting orders of engine-owned accounts whose entry a tick crossed: the web's fill routine runs for them
@@ -600,9 +623,9 @@ impl RiskHook {
         }
         // Stage 6: engine-owned accounts' touches and crossings go to the engine, never to the web
         if let Some(live) = self.live.get() {
-            let (sl_tp, pending) = self.engine_touches(ticks, cache, now);
+            let (sl_tp, pending, touched) = self.engine_touches(ticks, cache, now);
             for fire in sl_tp {
-                if let Some(fire) = self.limit_engine_fire(fire) {
+                if let Some(fire) = self.limit_engine_fire(fire, &touched) {
                     let _ = live.sender.send(fire);
                 }
             }
@@ -1306,6 +1329,52 @@ mod tests {
         h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
         assert!(live.try_recv().is_ok());
         assert!(live.try_recv().is_err(), "the second flush inside the second does not fire again");
+    }
+
+    /// The 10-26 burst's "pass" closes (9.2 %, the §9 line is 5 %): the next tick crosses a SECOND position of the same account
+    /// and symbol inside the second. That touch fires at once (the first fire was priced at the earlier tick and did not see it);
+    /// the same positions touched again inside the second still do not fire again.
+    #[tokio::test]
+    async fn a_second_position_touched_inside_the_second_fires_at_once_the_same_positions_do_not() {
+        let (url, _rx) = mock_route(200).await;
+        let (h, mut live) = live_hook(url);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl_of("p1", "a", "bA", "LIVE", dec!(4280.2))]);
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        assert!(live.try_recv().is_ok(), "p1: fires");
+        // 200 ms later the next tick also crosses p2 of the same account (here: p2's level is now in the book)
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl_of("p1", "a", "bA", "LIVE", dec!(4280.2)), lvl_of("p2", "a", "bA", "LIVE", dec!(4280.25))]);
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        let second = live.try_recv().expect("p2 is new: fires at once, not left for the pass");
+        assert!(second.ticks.contains_key("XAUUSD") && second.received.contains_key("XAUUSD"));
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        assert!(live.try_recv().is_err(), "p1 + p2 again inside the second: nothing new, no fire");
+    }
+
+    /// The limit's window: the same positions fire again once the second is over; a dropped symbol leaves no receive time behind.
+    #[test]
+    fn the_same_positions_fire_again_after_the_second_and_a_dropped_symbol_takes_its_receive_time_with_it() {
+        let h = hook("http://127.0.0.1:9".into());
+        let now = chrono::Utc::now();
+        let fire = || LiveFire {
+            account_id: "a".into(),
+            ticks: HashMap::from([("XAUUSD".into(), (dec!(1), dec!(2), now)), ("EURUSD".into(), (dec!(1), dec!(2), now))]),
+            received: HashMap::from([("XAUUSD".into(), now), ("EURUSD".into(), now)]),
+            source: FireSource::SlTp,
+        };
+        let touched = HashMap::from([
+            (("a".to_string(), "XAUUSD".to_string()), HashSet::from(["p1".to_string()])),
+            (("a".to_string(), "EURUSD".to_string()), HashSet::from(["p9".to_string()])),
+        ]);
+        let t0 = Instant::now();
+        let mut f = fire();
+        h.limit_engine_fire_at(&mut f, &touched, t0);
+        assert_eq!(f.ticks.len(), 2);
+        let mut f = fire();
+        h.limit_engine_fire_at(&mut f, &touched, t0 + Duration::from_millis(999));
+        assert!(f.ticks.is_empty() && f.received.is_empty(), "inside the second: both dropped, receive times too");
+        let mut f = fire();
+        h.limit_engine_fire_at(&mut f, &touched, t0 + Duration::from_millis(1000));
+        assert_eq!(f.ticks.len(), 2, "the second is over: fires again");
     }
 
     /// A resting order of an engine-owned account whose entry a tick crossed: the web's fill routine is called on the RUST-scope
