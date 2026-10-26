@@ -29,7 +29,7 @@ const lots = (d: Prisma.Decimal) => d.toFixed(2);
 const SELECT = {
   id: true, ticket: true, accountId: true, symbolId: true, side: true, volume: true, openPrice: true, covered: true, coveragePositionId: true, bookType: true, groupCategoryAtOpen: true,
   account: { select: { accountNumber: true, fullName: true, currency: true } },
-  symbol: { select: { name: true, contractSize: true, quoteCurrency: true } },
+  symbol: { select: { name: true, contractSize: true, quoteCurrency: true, digits: true } },
 } as const;
 type Pos = Prisma.PositionGetPayload<{ select: typeof SELECT }>;
 
@@ -63,6 +63,14 @@ async function floating(ps: Pos[]): Promise<Map<string, Prisma.Decimal | null>> 
     out.set(p.id, computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: close, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate));
   }
   return out;
+}
+
+/** Lot-weighted average open price of one side's positions, at the symbol's digits; null when that side has none. */
+function avgOpen(ps: Pos[], side: "BUY" | "SELL"): string | null {
+  const s = ps.filter((p) => p.side === side);
+  const lotsSum = s.reduce((t, p) => t.add(p.volume), D0());
+  if (lotsSum.lte(0)) return null;
+  return s.reduce((t, p) => t.add(p.openPrice.mul(p.volume)), D0()).div(lotsSum).toFixed(s[0].symbol.digits);
 }
 
 const sumBy = (rows: { currency: string; amount: Prisma.Decimal }[]) => {
@@ -117,6 +125,11 @@ export async function hedgeBook(brokerId: string) {
         buyLots: lots(legBuy),
         sellLots: lots(legSell),
         netLots: lots(legBuy.sub(legSell)),
+        // per-symbol figures of the legs (owner rule: the app never sums): lot-weighted average open per side (an average
+        // across opposite sides is not a price), the legs' floating per currency, and how many legs had no price
+        avgOpenPrice: { buy: avgOpen(ls, "BUY"), sell: avgOpen(ls, "SELL") },
+        floatingPnl: sumBy(ls.filter((l) => pnl.get(l.id) != null).map((l) => ({ currency: l.account.currency, amount: pnl.get(l.id)! }))),
+        unpriced: ls.filter((l) => pnl.get(l.id) == null).length,
         legs: ls.map((l) => ({
           positionId: l.id, ticket: l.ticket, side: l.side, lots: lots(l.volume), openPrice: l.openPrice.toString(), currency: l.account.currency,
           floatingPnl: pnl.get(l.id)?.toFixed(2) ?? null, clients: clientsPerLeg.get(l.id) ?? 0,

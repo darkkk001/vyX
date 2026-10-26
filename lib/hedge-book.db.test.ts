@@ -74,6 +74,10 @@ describe("hedge book per symbol (D8 / D10)", () => {
     const after = (await hedgeBook(brokerId)).symbols.find((r) => r.symbol === symbolName)!;
     expect(after).toMatchObject({ hedgedLots: "0.25", unhedgedLots: "0.00", hedgeAccount: { buyLots: "0.20", sellLots: "0.05", netLots: "0.15" } });
     expect(after.hedgeAccount.legs.map((l) => [l.side, l.lots, l.clients])).toEqual([["BUY", "0.20", 2], ["SELL", "0.05", 5]]);
+    // per-symbol leg figures (the app never sums): average open per side, the legs' floating per currency, unpriced count
+    expect(after.hedgeAccount.avgOpenPrice).toEqual({ buy: "1.10020", sell: "1.10000" });
+    expect(after.hedgeAccount.floatingPnl).toEqual([{ currency: "USD", amount: "-5.00" }]);
+    expect(after.hedgeAccount.unpriced).toBe(0);
     const sellLeg = after.hedgeAccount.legs.find((l) => l.side === "SELL")!;
     // DEALER P/L: the book and the hedge legs per currency; the legs' floating at bid 1.10000 / ask 1.10020: BUY 0.20
     // opened at 1.10020 closes at the bid (-0.0002 x 0.20 x 100000 = -4.00), SELL 0.05 opened at 1.10000 closes at the ask
