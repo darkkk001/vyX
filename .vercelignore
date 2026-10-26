@@ -1,0 +1,5 @@
+# Owner 2026-10-26: no binary is ever deployed from public/. Every feed binary is served from R2; the next.config.ts
+# redirects for native-*-updates run before any static lookup, so this changes nothing that is served today.
+public/**/*.exe
+public/**/*.nupkg
+public/**/*.zip
