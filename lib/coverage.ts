@@ -11,8 +11,6 @@ import { computeProportionalCloseVolume } from "@/lib/mirror";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
-import { loadRateResolver } from "@/lib/fx";
-import { computeRealizedPnl } from "@/lib/trading";
 import { isDemoBrokerId } from "@/lib/demo";
 import { writeOpenDealInTx } from "@/lib/deals";
 
@@ -283,53 +281,17 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
   // the tx-aware reader (like mirror.onClose): the latest known price for the leg's symbol
   const live = await getLivePriceRow(leg.symbol.name, db);
 
-  // WHO CLOSES THE LEG (2026-09-23) -- decided by who OPENED it, not by the desk's state right now:
-  //   auto-hedged leg (the platform opened it, Position.autoHedged) -> it follows the client's close
-  //                                                                    automatically, matched.
-  //   dealer-booked leg (BOOK NOW)                                  -> the dealer closes it, from the
-  //                                                                    Smart Dealer Manager.
-  // This is what "symmetric with opening" means: whoever opened the hedge closes it. 1.0.14 keyed this
-  // off whether the CLIENT was dealer-reviewed at the moment of the close, which broke symmetry the
-  // moment the desk toggle moved between the open and the close (a leg the platform had opened could
-  // end up waiting for a dealer, and one the dealer had booked could vanish under them).
+  // EVERY LEG FOLLOWS THE CLIENT (owner 2026-10-26): a leg closes with its client position -- same action, same lots
+  // (proportionally on a partial) -- whoever opened it. Until now a dealer-booked leg (BOOK NOW / Hedge all,
+  // Position.autoHedged = false) was left OPEN for the desk with a COVERAGE_CLOSE_AWAITING_DEALER notice; after the
+  // owner's test 12 such legs stayed open on the coverage account with no client behind them. No leg waits: the client's
+  // close reaching here is already final (a dealer-reviewed close only gets here once the desk accepted it,
+  // lib/queued-close.ts). legOrigin stays in the audit row.
   //
   // Note this branch is only reached when a leg EXISTS (the coveragePositionId check above). An
   // UNBOOKED position's close never gets here: it is governed solely by the dealer-review queue on the
   // close itself (lib/queued-close.ts), which is a separate switch and untouched by any of this.
-  if (!leg.autoHedged) {
-    // FX (Phase 2 batch 1): in the coverage account's currency; no rate = "unpriced"
-    const legRate = live ? (await loadRateResolver(db, [[leg.symbol.quoteCurrency, leg.account.currency]])).rate(leg.symbol.quoteCurrency, leg.account.currency) : null;
-    const legPnl = live && legRate
-      ? computeRealizedPnl({
-          side: leg.side,
-          openPrice: leg.openPrice,
-          closePrice: leg.side === "BUY" ? live.bid : live.ask,
-          volume: leg.volume,
-          contractSize: leg.symbol.contractSize,
-        }).mul(legRate)
-      : null;
-    const at = legPnl ? `${legPnl.gte(0) ? "+" : ""}${legPnl.toFixed(2)}` : "unpriced";
-    await db.auditLog.create({
-      data: {
-        brokerId: ev.brokerId,
-        action: "POSITION_COVERAGE_CLOSE_AWAITING_DEALER",
-        entityType: "Position",
-        entityId: leg.id,
-        oldValue: { clientPositionId: closed.id, clientTicket: closed.ticket, clientClosedLots: ev.closedLots.toString() },
-        newValue: { legTicket: leg.ticket, legPnl: legPnl?.toString() ?? null, reason: ev.reason ?? "manual", legOrigin: "dealer_booked" },
-      },
-    });
-    await createNotification(db, {
-      brokerId: ev.brokerId,
-      type: "COVERAGE_CLOSE_AWAITING_DEALER",
-      title: `Client closed #${closed.ticket}: coverage leg #${leg.ticket} is yours to close`,
-      body: `Client ${closed.account.accountNumber} closed ${ev.closedLots.toString()} ${leg.symbol.name} (#${closed.ticket}). You booked that hedge by hand, so the coverage leg #${leg.ticket} (${leg.side} ${leg.volume.toString()}) was left OPEN and is at ${at} against that order. Close it from the Smart Dealer Manager when you are ready.`,
-      entityType: "Position",
-      entityId: leg.id,
-    });
-    return;
-  }
-
+  const legOrigin = leg.autoHedged ? "auto_hedged" : "dealer_booked";
   if (!live) {
     // Stage 3 (engine outbox, lib/post-close.ts): try again shortly instead of alerting at once; the price is
     // usually back within a minute and then the leg closes as it should. The caller stops asking after a few
@@ -363,7 +325,7 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
       },
       closePrice,
       closeVolume,
-      note: `Coverage auto-close (auto-hedged leg): client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
+      note: `Coverage auto-close (${leg.autoHedged ? "auto-hedged" : "dealer-booked"} leg): client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
       deal: { reason: "COVERAGE" },
     });
     if (o.closed) {
@@ -374,7 +336,7 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
           entityType: "Position",
           entityId: leg.id,
           oldValue: { clientPositionId: closed.id, clientTicket: closed.ticket, clientClosedLots: ev.closedLots.toString() },
-          newValue: { coverageClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), realizedPnl: o.realizedPnl.toString(), partial: o.partial },
+          newValue: { coverageClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), realizedPnl: o.realizedPnl.toString(), partial: o.partial, legOrigin, legTicket: leg.ticket },
         },
       });
     }

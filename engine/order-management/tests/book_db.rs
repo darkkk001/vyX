@@ -319,8 +319,8 @@ async fn margin_call_edge_notifies_once_per_episode() {
     assert!(all.iter().all(|(k, p)| k == "MARGIN_CALL" && *p == serde_json::json!({ "marginLevel": "90.91", "marginCallLevel": "100" })));
 }
 
-/// Stage 4.5: an account waits for a pending follow-up that will close its auto-hedged leg -- only while that
-/// step is not done, only for FOLLOW_UP_DEFER_SECS, and never for a dealer-booked leg (the web leaves those open).
+/// Stage 4.5: an account waits for a pending follow-up that will close its coverage leg -- only while that step is
+/// not done and only for FOLLOW_UP_DEFER_SECS; a dealer-booked leg too (owner 2026-10-26: every leg follows).
 #[tokio::test]
 async fn a_pending_follow_up_defers_the_account_it_will_touch_but_never_for_long() {
     let Some(pool) = pool().await else { return };
@@ -353,7 +353,7 @@ async fn a_pending_follow_up_defers_the_account_it_will_touch_but_never_for_long
     assert!(fresh, "a fresh pending leg close defers the leg's account");
     assert!(!coverage_done, "once the coverage step ran, nothing is owed");
     assert!(!too_old, "past FOLLOW_UP_DEFER_SECS the account is evaluated anyway (a stuck outbox never blocks a stop-out)");
-    assert!(!dealer_booked, "a dealer-booked leg is not waited for");
+    assert!(dealer_booked, "a dealer-booked leg is waited for too: the web closes it with its client");
 }
 
 async fn cleanup(pool: &PgPool, broker: &str) {
