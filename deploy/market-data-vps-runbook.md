@@ -324,9 +324,13 @@ current caller. During a rotation the engine and the gateway accept `INTERNAL_SE
    the sha is the flip build (8abdda9 or the owner's later one).
    The first builds the engine (engine\build-tmp) and the gateway, prompts for the two NEW values (hidden), writes NEW
    as current and OLD as `*_PREVIOUS` into both .cmd files, and restarts each service once. Its checks: OLD and NEW
-   accepted on both. The second edits the Caddyfile by value (`header_up` -> NEW internal; the read matcher gains a NEW
-   line next to OLD), `caddy validate`, `caddy reload` (never `nssm restart vyxtrader-caddy`), then checks through
-   https://feed.vyxtrader.com: OLD read 200, NEW read 200, wrong 401; any wrong check puts the backup back and reloads.
+   accepted on both. The second (since 2026-10-27, for the `{$VAR}` Caddyfile) never edits the Caddyfile: it writes
+   the vyxtrader-caddy service's AppEnvironmentExtra (`INTERNAL_SERVICE_SECRET` = NEW, `MARKET_DATA_READ_SECRET` =
+   NEW, `MARKET_DATA_READ_SECRET_PREVIOUS` = OLD), then `caddy validate` + `caddy reload` with exactly that environment
+   (never `nssm restart vyxtrader-caddy`, never a plain console reload: the placeholders would load empty), then checks
+   through https://feed.vyxtrader.com: OLD read 200, NEW read 200, wrong / no header 401, and the restart parity
+   (a restart or reboot would load the same config). A failed reload or any wrong check puts the previous
+   AppEnvironmentExtra back and reloads it by itself.
 3. **Vercel:** `MARKET_DATA_READ_SECRET` and `INTERNAL_SERVICE_SECRET` (Production) = NEW
    (`vercel env rm <NAME> production -y`, then `vercel env add <NAME> production < <file holding only the value>`), then
    `vercel redeploy <current production deployment>` so no new code ships with it. Check: Feed health shows numbers,
@@ -339,8 +343,12 @@ current caller. During a rotation the engine and the gateway accept `INTERNAL_SE
    powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\rotate-internal-read-secrets-2026-09-28.ps1 -Phase Finish
    ```
    Checks: OLD refused (Caddy 401, engine 401, gateway 401), NEW accepted; the engine log's newest start has no
-   "secret rotation in progress".
+   "secret rotation in progress". The Caddy Finish sets `MARKET_DATA_READ_SECRET_PREVIOUS` = NEW too (no OLD value
+   left in AppEnvironmentExtra) and leaves a marker the engine Finish checks (`caddy-env-rotation-Finish-*.done`,
+   newer than this rotation's Overlap).
 5. Delete the generated file on the admin PC.
+6. After any later Caddy restart or VPS reboot: `caddy-rotate-secrets-2026-09-28.ps1 -Phase Verify` at once (prices
+   200; caddy-service-recovery-runbook.md rule 7).
 
 Rollback: Overlap can be undone from the backup directory each script prints (the engine script lists the commands at
 its bottom). After Vercel is on NEW, fix forward: the NEW values are the ones every caller now sends.
