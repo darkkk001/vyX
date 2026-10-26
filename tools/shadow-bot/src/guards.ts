@@ -47,3 +47,18 @@ export function assertObserverRequest(method: string, url: string): void {
   const key = `${method.toUpperCase()} ${u.pathname}`;
   if (u.origin !== TRADE_HOST || u.search || !(OBSERVER_REQUESTS as readonly string[]).includes(key)) throw new GuardRefused(`observer request ${key} to ${u.origin} refused`);
 }
+
+/** openMany (owner 2026-10-27, the stop-out-under-load match-run): hard caps that no scenario or config can widen. */
+export const BULK_MAX_POSITIONS_PER_ACCOUNT = 500;
+/** the largest volume of one openMany order */
+export const BULK_MAX_LOTS = 0.1;
+/** openMany orders per second per account; the server's order limit is a burst of 100 and 600 a minute */
+export const BULK_MAX_ORDERS_PER_SEC = 8;
+/** every openMany position carries an SL this far (at most) from the price it was opened at, never none */
+export const BULK_MAX_SL_PCT = 5;
+export function assertBulk(b: { count: number; volume: number; perSec: number; slFromPct: number; slToPct: number }): void {
+  if (!Number.isInteger(b.count) || b.count < 1 || b.count > BULK_MAX_POSITIONS_PER_ACCOUNT) throw new GuardRefused(`openMany count ${b.count} refused (1..${BULK_MAX_POSITIONS_PER_ACCOUNT})`);
+  if (!(b.volume > 0) || b.volume > BULK_MAX_LOTS) throw new GuardRefused(`openMany volume ${b.volume} refused (at most ${BULK_MAX_LOTS} lots per order)`);
+  if (!(b.perSec > 0) || b.perSec > BULK_MAX_ORDERS_PER_SEC) throw new GuardRefused(`openMany pace ${b.perSec}/s refused (at most ${BULK_MAX_ORDERS_PER_SEC}/s)`);
+  for (const v of [b.slFromPct, b.slToPct]) if (!(v > 0) || v > BULK_MAX_SL_PCT) throw new GuardRefused(`openMany SL distance ${v}% refused (every position has an SL, 0..${BULK_MAX_SL_PCT}%)`);
+}

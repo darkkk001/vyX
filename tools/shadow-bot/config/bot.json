@@ -14,27 +14,32 @@
     "vGOLD": {
       "contractSize": 100,
       "quoteCurrency": "USD",
-      "hedgedMarginPct": 0
+      "hedgedMarginPct": 0,
+      "digits": 2
     },
     "vEUR": {
       "contractSize": 100000,
       "quoteCurrency": "USD",
-      "hedgedMarginPct": 50
+      "hedgedMarginPct": 50,
+      "digits": 5
     },
     "vGBP": {
       "contractSize": 100000,
       "quoteCurrency": "USD",
-      "hedgedMarginPct": 100
+      "hedgedMarginPct": 100,
+      "digits": 5
     },
     "vJPY": {
       "contractSize": 100000,
       "quoteCurrency": "JPY",
-      "hedgedMarginPct": 200
+      "hedgedMarginPct": 200,
+      "digits": 3
     },
     "vIDX": {
       "contractSize": 1,
       "quoteCurrency": "USD",
-      "hedgedMarginPct": 200
+      "hedgedMarginPct": 200,
+      "digits": 1
     }
   },
   "dryRunFxRates": {

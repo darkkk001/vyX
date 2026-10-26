@@ -1,6 +1,7 @@
 // DRY RUN backend: no network. Accounts start from the config's seed values, orders fill at the price driver's
-// levels (BUY at the ask, SELL at the bid), and every positions() read first runs a simulated stop-out (while the
-// margin level is at or below the group's stop-out, close the worst-losing position), like the server's risk pass.
+// levels (BUY at the ask, SELL at the bid), and every positions() read first closes the positions whose SL the price
+// crossed, then runs a simulated stop-out (while the margin level is at or below the group's stop-out, close the
+// worst-losing position), like the server's risk pass.
 // Not simulated: group spread markups and commissions (the live server applies them), swaps, FX drift.
 import type { Closed, Me, OrderResult, Pos, Quote, Side, TradeBackend, Txn } from "./trade-client";
 import type { PriceDriver, TickSink, Tick } from "./price-driver";
@@ -23,6 +24,8 @@ export class SimTradeBackend implements TradeBackend {
   private readonly closed = new Map<string, Closed[]>();
   private readonly txns = new Map<string, Txn[]>();
   private seq = 0;
+  /** position id -> its SL (openMany) */
+  private readonly sl = new Map<string, number>();
   /** the coverage account's legs (lib/coverage.ts: same side and volume as the client), keyed by the client position */
   private readonly coverage = new Map<string, CoveragePos>();
   constructor(accounts: Record<string, SimAccount>, private readonly price: PriceDriver, private readonly meta: Record<string, SymbolMeta>, private readonly fxRates: Record<string, number>) {
@@ -69,10 +72,18 @@ export class SimTradeBackend implements TradeBackend {
   }
 
   async me(acct: string): Promise<Me> { return this.meOf(acct); }
-  async positions(acct: string): Promise<Pos[]> { this.stopOutPass(acct); return [...(this.open.get(acct) ?? [])]; }
+  private slPass(acct: string): void {
+    for (const p of [...(this.open.get(acct) ?? [])]) {
+      const sl = this.sl.get(p.id); if (sl == null) continue;
+      const q = this.price.quote(p.symbol);
+      if (p.side === "BUY" ? q.bid <= sl : q.ask >= sl) { this.realize(acct, p, "stop loss"); this.sl.delete(p.id); }
+    }
+  }
+  async positions(acct: string): Promise<Pos[]> { this.slPass(acct); this.stopOutPass(acct); return [...(this.open.get(acct) ?? [])]; }
   async quote(_acct: string, symbol: string): Promise<Quote> { const q = this.price.quote(symbol); return { ...q, tickAt: new Date().toISOString() }; }
-  async market(acct: string, symbol: string, side: Side, volume: number, _price: number): Promise<OrderResult> {
+  async market(acct: string, symbol: string, side: Side, volume: number, _price: number, _slip?: number | "unlimited", opts?: { slPrice?: string }): Promise<OrderResult> {
     const q = this.price.quote(symbol), fill = side === "BUY" ? q.ask : q.bid, id = `sim-pos-${++this.seq}`;
+    if (opts?.slPrice) this.sl.set(id, Number(opts.slPrice));
     this.open.set(acct, [...(this.open.get(acct) ?? []), { id, ticket: 100000 + this.seq, symbol, side, volume, openPrice: fill, contractSize: this.meta[symbol].contractSize }]);
     if (AUTO_HEDGED_GROUPS.has(this.accounts.get(acct)?.group ?? "")) {
       this.coverage.set(id, { id: `sim-cov-${this.seq}`, ticket: 900000 + this.seq, symbol, side, volume, openPrice: fill, openedAt: new Date().toISOString() });

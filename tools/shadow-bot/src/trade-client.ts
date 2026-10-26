@@ -17,7 +17,7 @@ export interface TradeBackend {
   me(acct: string): Promise<Me>;
   positions(acct: string): Promise<Pos[]>;
   quote(acct: string, symbol: string): Promise<Quote>;
-  market(acct: string, symbol: string, side: Side, volume: number, price: number, maxSlippagePips: number | "unlimited"): Promise<OrderResult>;
+  market(acct: string, symbol: string, side: Side, volume: number, price: number, maxSlippagePips: number | "unlimited", opts?: { slPrice?: string }): Promise<OrderResult>;
   close(acct: string, positionId: string, closePrice: number): Promise<{ status: number; error: string | null }>;
   /** MT5 close-by: a hedged pair closed against each other in ONE request (both legs or neither). */
   closeBy(acct: string, positionId: string, againstPositionId: string): Promise<{ status: number; error: string | null }>;
@@ -87,10 +87,10 @@ export class HttpTradeClient implements TradeBackend {
     if (!r) throw new Error(`no server quote for ${symbol} on ${acct} (is the price driver ticking it?)`);
     return { bid: num(r.bid), ask: num(r.ask), tickAt: r.tickAt };
   }
-  async market(acct: string, symbol: string, side: Side, volume: number, price: number, maxSlippagePips: number | "unlimited"): Promise<OrderResult> {
+  async market(acct: string, symbol: string, side: Side, volume: number, price: number, maxSlippagePips: number | "unlimited", opts?: { slPrice?: string }): Promise<OrderResult> {
     assertSymbol(symbol);
     const idempotencyKey = `shadowbot:${randomUUID()}`;
-    const r = await this.req(acct, "POST", "/api/trade/orders", { symbol, side, type: "MARKET", volume: volume.toFixed(2), price: String(price), maxSlippagePips: String(maxSlippagePips), idempotencyKey });
+    const r = await this.req(acct, "POST", "/api/trade/orders", { symbol, side, type: "MARKET", volume: volume.toFixed(2), price: String(price), maxSlippagePips: String(maxSlippagePips), idempotencyKey, ...(opts?.slPrice ? { slPrice: opts.slPrice } : {}) });
     const o = r.json?.order ?? r.json;
     return { status: r.status, orderId: o?.id ?? null, orderStatus: o?.status ?? null, positionId: r.json?.position?.id ?? r.json?.position_id ?? null, fillPrice: o?.filledPrice != null ? num(o.filledPrice) : null, error: r.status >= 300 ? String(r.json?.error ?? r.status) : null, idempotencyKey };
   }

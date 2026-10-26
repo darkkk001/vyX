@@ -6,7 +6,8 @@
 // given rate (1 when the currencies match).
 import type { Me, Pos } from "./trade-client";
 
-export type SymbolMeta = { contractSize: number; quoteCurrency: string; hedgedMarginPct: number };
+/** digits: the symbol's price digits (scripts/seed-zzshadowbot-synth.ts); openMany rounds its SL levels to them */
+export type SymbolMeta = { contractSize: number; quoteCurrency: string; hedgedMarginPct: number; digits?: number };
 export type Estimate = { balance: number; equity: number; floating: number; usedMargin: number; marginLevel: number | null };
 
 export function estimate(me: Me, positions: Pos[], quotes: Record<string, { bid: number; ask: number }>, meta: Record<string, SymbolMeta>, fx: (quote: string, account: string) => number): Estimate {

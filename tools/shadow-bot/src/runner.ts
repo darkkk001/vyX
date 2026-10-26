@@ -1,6 +1,8 @@
 // RUNNER: executes one scenario's steps in order, the price driver and the trade driver working together:
 //   price.set / price.jump / rampUntil  move a synthetic symbol (rampUntil watches a condition while it ramps);
 //   open / close / closeAccount         trade through the web trade API at the server's own quote;
+//   openMany                            N small positions on one account, each with its own SL, paced under the
+//                                       server's order limit (the stop-out-under-load match-run; guards.assertBulk);
 //   hold / observe / expect             wait, log the bot's margin estimate, and check what the SERVER did.
 // Always, at the end (also after a failure): flatten the scenario's accounts, stop ticking its symbols, then SETTLE
 // (owner, 2026-09-29): wait settleSecs (default 90) so the shadow's 4 s pass and 60 s reconciler record this
@@ -10,7 +12,7 @@ import type { Journal } from "./journal";
 import type { PriceDriver } from "./price-driver";
 import { sleep } from "./price-driver";
 import type { Pos, Side, TradeBackend } from "./trade-client";
-import { assertAccount, assertSymbol } from "./guards";
+import { assertAccount, assertBulk, assertSymbol, BULK_MAX_ORDERS_PER_SEC, BULK_MAX_POSITIONS_PER_ACCOUNT } from "./guards";
 import type { Observer } from "./observer";
 import { estimate, lotsForMarginPct, lotsForStopOutAt, type SymbolMeta } from "./margin";
 
@@ -20,6 +22,9 @@ export type Step = Common & (
   | { op: "price.set"; symbol: string; bid: number; spread: number }
   | { op: "price.jump"; symbol: string; pct: number }
   | { op: "open"; account: string; symbol: string; side: Side; volume?: number; marginPctOfEquity?: number; stopOutAtPct?: number; volumeOf?: string; as: string }
+  /** `count` positions of `volume` lots, the SL of position i at slFromPct .. slToPct (evenly spaced) on the losing side of
+   *  the price it is opened at; refs `as.0` .. `as.<count-1>`, and `as` names the whole group in until / expect */
+  | { op: "openMany"; account: string; symbol: string; side: Side; count: number; volume: number; slFromPct: number; slToPct: number; perSec?: number; as: string }
   | { op: "require"; account: string; minEquity: number }
   | { op: "close"; ref: string }
   | { op: "closeAccount"; account: string }
@@ -30,7 +35,7 @@ export type Step = Common & (
   | { op: "coverageBaseline" }
   | { op: "expectCoverageLeg"; ref: string; timeoutSecs: number }
   | { op: "expectCoverageClosed"; ref: string; timeoutSecs: number }
-  | { op: "expect"; stoppedOut?: string[]; nbpWriteOff?: string; stillOpen?: string[] }
+  | { op: "expect"; stoppedOut?: string[]; nbpWriteOff?: string; stillOpen?: string[]; closedByServer?: string[] }
   | { op: "ramp"; symbol: string; direction: "up" | "down"; pctPerSec: number; pct: number }
   | { op: "waitUntil"; until: Until; timeoutSecs: number }
   | { op: "expectMirror"; sourceRef: string; targetAccount: string; factor: number; reversed: boolean; timeoutSecs: number; as: string }
@@ -45,6 +50,8 @@ export class ScenarioFailed extends Error {}
 export class Runner {
   private readonly refs = new Map<string, { account: string; positionId: string; symbol: string; side: Side; volume: number }>();
   private readonly closedByBot = new Set<string>();
+  /** openMany groups: name -> its refs */
+  private readonly groups = new Map<string, string[]>();
   /** the coverage account's positions before the scenario's order, and each client ref's leg found there */
   private coverageBefore = new Set<string>();
   private readonly legOf = new Map<string, string>();
@@ -85,6 +92,7 @@ export class Runner {
         if (!sc.allowJump) throw new ScenarioFailed("price.jump is only allowed in scenarios that set allowJump");
         return this.price.jump(step.symbol, step.pct);
       case "open": return this.open(sc, step);
+      case "openMany": return this.openMany(sc, step);
       case "close": {
         const r = this.ref(step.ref); const q = await this.trade.quote(r.account, r.symbol);
         const res = await this.trade.close(r.account, r.positionId, r.side === "BUY" ? q.bid : q.ask);
@@ -197,9 +205,12 @@ export class Runner {
 
   private async met(u: Until): Promise<boolean> {
     if ("closed" in u) {
-      for (const ref of u.closed) {
+      // one positions() read per account, however many refs (an openMany group holds hundreds)
+      const open = new Map<string, Set<string>>();
+      for (const ref of this.expand(u.closed)) {
         const r = this.ref(ref);
-        if ((await this.trade.positions(r.account)).some((p) => p.id === r.positionId)) return false;
+        if (!open.has(r.account)) open.set(r.account, new Set((await this.trade.positions(r.account)).map((p) => p.id)));
+        if (open.get(r.account)!.has(r.positionId)) return false;
       }
       return true;
     }
@@ -218,6 +229,18 @@ export class Runner {
   }
 
   private async expect(s: Extract<Step, { op: "expect" }>): Promise<void> {
+    if (s.closedByServer?.length) {
+      // closed by the server (its SL or a stop-out), never by the bot
+      const refs = this.expand(s.closedByServer);
+      const open = new Map<string, Set<string>>();
+      for (const ref of refs) {
+        const r = this.ref(ref);
+        if (!open.has(r.account)) open.set(r.account, new Set((await this.trade.positions(r.account)).map((p) => p.id)));
+        if (open.get(r.account)!.has(r.positionId)) throw new ScenarioFailed(`${ref} is still open (expected the server to have closed it)`);
+        if (this.closedByBot.has(r.positionId)) throw new ScenarioFailed(`${ref} was closed by the bot, not by the server`);
+      }
+      this.journal.write({ kind: "closedByServer.confirmed", refs: s.closedByServer, positions: refs.length });
+    }
     for (const ref of s.stoppedOut ?? []) {
       const r = this.ref(ref);
       if ((await this.trade.positions(r.account)).some((p) => p.id === r.positionId)) throw new ScenarioFailed(`${ref} is still open (expected a stop-out)`);
@@ -295,7 +318,13 @@ export class Runner {
   }
 
   private async closeAll(account: string): Promise<void> {
-    for (const p of await this.trade.positions(account)) await this.closeOne(account, p);
+    const ps = await this.trade.positions(account);
+    // many positions (openMany): paced under the server's order limit like the opens
+    const gap = ps.length > 20 ? 1000 / BULK_MAX_ORDERS_PER_SEC : 0;
+    for (const p of ps) {
+      await this.closeOne(account, p);
+      if (gap && !this.opts.dryRun) await sleep(gap);
+    }
   }
   private async closeOne(account: string, p: Pos): Promise<void> {
     const q = await this.trade.quote(account, p.symbol);
@@ -310,6 +339,46 @@ export class Runner {
     }
     this.journal.write({ kind: "flatten.done", scenario: sc.name });
   }
+  private async openMany(sc: Scenario, s: Extract<Step, { op: "openMany" }>): Promise<void> {
+    if (!sc.accounts.includes(s.account)) throw new ScenarioFailed(`account ${s.account} is not in the scenario's account list`);
+    const perSec = s.perSec ?? BULK_MAX_ORDERS_PER_SEC;
+    assertBulk({ count: s.count, volume: s.volume, perSec, slFromPct: s.slFromPct, slToPct: s.slToPct });
+    const busy = new Set<string>();
+    for (const a of sc.accounts) if ((await this.trade.positions(a)).length > 0) busy.add(a);
+    busy.add(s.account);
+    if (busy.size > this.opts.maxOpenAccounts) throw new ScenarioFailed(`opening on ${s.account} would put ${busy.size} accounts in open positions (max ${this.opts.maxOpenAccounts})`);
+    const already = (await this.trade.positions(s.account)).length;
+    if (already + s.count > BULK_MAX_POSITIONS_PER_ACCOUNT) throw new ScenarioFailed(`openMany on ${s.account}: ${already} open + ${s.count} > ${BULK_MAX_POSITIONS_PER_ACCOUNT}`);
+    const digits = this.opts.meta[s.symbol]?.digits;
+    if (digits == null) throw new ScenarioFailed(`openMany ${s.symbol}: no digits in config symbolMeta (SL levels are rounded to them)`);
+    const refs: string[] = [];
+    const gap = 1000 / perSec;
+    for (let i = 0; i < s.count; i++) {
+      const started = Date.now();
+      // the driver's own quote: it sets the synthetic price, so it is the server's too (no read per order)
+      const q = this.price.quote(s.symbol);
+      const price = s.side === "BUY" ? q.ask : q.bid;
+      const pct = s.count === 1 ? s.slFromPct : s.slFromPct + ((s.slToPct - s.slFromPct) * i) / (s.count - 1);
+      // a BUY closes at the bid: its SL sits below it; a SELL closes at the ask: above it
+      const sl = s.side === "BUY" ? q.bid * (1 - pct / 100) : q.ask * (1 + pct / 100);
+      const slPrice = sl.toFixed(digits);
+      let res = await this.trade.market(s.account, s.symbol, s.side, s.volume, price, "unlimited", { slPrice });
+      for (let retry = 0; res.status === 429 && retry < 3; retry++) { await sleep(2000); res = await this.trade.market(s.account, s.symbol, s.side, s.volume, price, "unlimited", { slPrice }); }
+      const ref = `${s.as}.${i}`;
+      this.journal.write({ kind: "order", ref, account: s.account, symbol: s.symbol, side: s.side, volume: s.volume, quotedPrice: price, slPrice, status: res.status, orderId: res.orderId, orderStatus: res.orderStatus, positionId: res.positionId, fillPrice: res.fillPrice, idempotencyKey: res.idempotencyKey, error: res.error });
+      if (res.status !== 201 || !res.positionId) throw new ScenarioFailed(`openMany ${ref} not filled (${res.status} ${res.orderStatus ?? ""} ${res.error ?? ""})`);
+      this.refs.set(ref, { account: s.account, positionId: res.positionId, symbol: s.symbol, side: s.side, volume: s.volume });
+      refs.push(ref);
+      if (!this.opts.dryRun) await sleep(Math.max(0, gap - (Date.now() - started)));
+    }
+    this.groups.set(s.as, refs);
+    this.journal.write({ kind: "openMany.done", as: s.as, account: s.account, positions: refs.length, slFromPct: s.slFromPct, slToPct: s.slToPct });
+    await this.observe(s.account);
+  }
+
+  /** refs, with each openMany group name replaced by its members */
+  private expand(names: string[]): string[] { return names.flatMap((n) => this.groups.get(n) ?? [n]); }
+
   private ref(name: string) { const r = this.refs.get(name); if (!r) throw new ScenarioFailed(`unknown position ref ${name}`); return r; }
 }
 

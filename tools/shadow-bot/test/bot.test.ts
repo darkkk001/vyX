@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { assertAccount, assertConfig, assertFeedUrl, assertSymbol, assertTradeUrl, GuardRefused, TRADE_ACCOUNTS } from "../src/guards";
+import { assertAccount, assertBulk, assertConfig, assertFeedUrl, assertSymbol, assertTradeUrl, BULK_MAX_LOTS, BULK_MAX_ORDERS_PER_SEC, BULK_MAX_POSITIONS_PER_ACCOUNT, GuardRefused, TRADE_ACCOUNTS } from "../src/guards";
 import { lotsForMarginPct, lotsForStopOutAt } from "../src/margin";
 import { Journal } from "../src/journal";
 import { fxFrom, loadConfig, loadScenario } from "../bot";
@@ -25,6 +25,17 @@ describe("guards", () => {
     expect(() => assertFeedUrl("https://feed.vyxtrader.com/internal/synth-feed")).not.toThrow();
     expect(() => assertFeedUrl("https://feed.vyxtrader.com/internal/price-feed")).toThrow(GuardRefused);
   });
+  it("openMany: count, lots, pace and SL distance are capped; an SL is never optional", () => {
+    const ok = { count: 450, volume: 0.01, perSec: 8, slFromPct: 0.5, slToPct: 1.5 };
+    expect(() => assertBulk(ok)).not.toThrow();
+    expect(BULK_MAX_POSITIONS_PER_ACCOUNT).toBe(500);
+    for (const bad of [
+      { ...ok, count: BULK_MAX_POSITIONS_PER_ACCOUNT + 1 }, { ...ok, count: 0 }, { ...ok, count: 1.5 },
+      { ...ok, volume: BULK_MAX_LOTS + 0.01 }, { ...ok, volume: 0 },
+      { ...ok, perSec: BULK_MAX_ORDERS_PER_SEC + 1 }, { ...ok, perSec: 0 },
+      { ...ok, slFromPct: 0 }, { ...ok, slToPct: 5.1 }, { ...ok, slFromPct: NaN },
+    ]) expect(() => assertBulk(bad)).toThrow(GuardRefused);
+  });
   it("a config cannot widen them", () => {
     const cfg = loadConfig();
     expect(() => assertConfig({ ...cfg, tradeHost: "https://futurixglobal.vyxtrader.com" })).toThrow(GuardRefused);
@@ -37,8 +48,8 @@ describe("guards", () => {
 describe("scenarios", () => {
   const cfg = loadConfig();
   const files = readdirSync(path.join(import.meta.dirname, "..", "scenarios")).filter((f) => f.endsWith(".json"));
-  it("all seven exist and validate", () => {
-    expect(files.sort()).toEqual(["s1-single-stopout.json", "s2-fan-in.json", "s3-hedge-break.json", "s4-hedged-nbp.json", "s5-coverage.json", "s6-mirror.json", "s7-fx.json"]);
+  it("all eight exist and validate", () => {
+    expect(files.sort()).toEqual(["s1-single-stopout.json", "s2-fan-in.json", "s3-hedge-break.json", "s4-hedged-nbp.json", "s5-coverage.json", "s6-mirror.json", "s7-fx.json", "s8-stopout-contention.json"]);
     for (const f of files) expect(() => loadScenario(f, cfg)).not.toThrow();
   });
   it("no scenario holds more than 4 accounts, and only S2 may jump (within 5%)", () => {
@@ -50,6 +61,24 @@ describe("scenarios", () => {
       for (const j of jumps) expect(Math.abs(j.pct)).toBeLessThanOrEqual(cfg.limits.maxJumpPct);
       for (const s of sc.steps) if ("pctPerSec" in s) expect((s as { pctPerSec: number }).pctPerSec).toBeLessThanOrEqual(cfg.limits.maxRampPctPerSec);
     }
+  });
+  it("every openMany step is inside the bulk caps and gives every position an SL", () => {
+    for (const f of files) {
+      for (const st of loadScenario(f, cfg).steps) {
+        if (st.op !== "openMany") continue;
+        const m = st as unknown as { count: number; volume: number; perSec?: number; slFromPct: number; slToPct: number };
+        expect(() => assertBulk({ ...m, perSec: m.perSec ?? BULK_MAX_ORDERS_PER_SEC })).not.toThrow();
+      }
+    }
+  });
+  it("S8 crosses the victim's stop-out in the middle of the SL levels, on a symbol with digits", () => {
+    const sc = loadScenario("s8-stopout-contention", cfg);
+    const many = sc.steps.find((s) => s.op === "openMany") as unknown as { count: number; slFromPct: number; slToPct: number; symbol: string };
+    const victim = sc.steps.find((s) => s.op === "open") as unknown as { stopOutAtPct: number };
+    expect(many.count).toBe(450);
+    expect(victim.stopOutAtPct).toBeGreaterThan(many.slFromPct);
+    expect(victim.stopOutAtPct).toBeLessThan(many.slToPct);
+    expect(cfg.symbolMeta[many.symbol].digits).toBe(1);
   });
   it("S5 is marked as needing the observer (refused live until it exists)", () => {
     expect(loadScenario("s5-coverage", cfg).needsObserver).toBe(true);

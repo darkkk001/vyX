@@ -1,0 +1,87 @@
+{
+  "name": "s8-stopout-contention",
+  "title": "Stop-out under SL load: 450 x 0.01 vIDX with SL levels on 49990001, one account sized to stop out at 1% (49990003), one ramp through both",
+  "accounts": [
+    "49990001",
+    "49990003"
+  ],
+  "symbols": [
+    "vIDX"
+  ],
+  "steps": [
+    {
+      "op": "note",
+      "text": "The before / after match-run of Part A (owner 2026-10-27): the same scenario on the old engine and on the new one. The SL levels sit 0.5 % .. 1.5 % below the open, so the ramp crosses about 90 of them per tick while 49990003 crosses its stop-out at 1 %, in the middle of the burst. Read the result with C:\\vyx\\handoff\\stopout-contention-capture.sql."
+    },
+    {
+      "op": "price.set",
+      "symbol": "vIDX",
+      "bid": 20000.0,
+      "spread": 2.0
+    },
+    {
+      "op": "hold",
+      "secs": 3
+    },
+    {
+      "op": "require",
+      "account": "49990001",
+      "minEquity": 9000
+    },
+    {
+      "op": "require",
+      "account": "49990003",
+      "minEquity": 4500
+    },
+    {
+      "op": "openMany",
+      "account": "49990001",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "count": 450,
+      "volume": 0.01,
+      "slFromPct": 0.5,
+      "slToPct": 1.5,
+      "perSec": 8,
+      "as": "load"
+    },
+    {
+      "op": "open",
+      "account": "49990003",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "stopOutAtPct": 1.0,
+      "as": "victim"
+    },
+    {
+      "op": "hold",
+      "secs": 5,
+      "expectOpen": [
+        "victim"
+      ]
+    },
+    {
+      "op": "rampUntil",
+      "symbol": "vIDX",
+      "direction": "down",
+      "pctPerSec": 0.2,
+      "maxPct": 2.5,
+      "timeoutSecs": 240,
+      "until": {
+        "closed": [
+          "victim",
+          "load"
+        ]
+      }
+    },
+    {
+      "op": "expect",
+      "stoppedOut": [
+        "victim"
+      ],
+      "closedByServer": [
+        "load"
+      ]
+    }
+  ]
+}
