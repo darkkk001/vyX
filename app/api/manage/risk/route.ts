@@ -1,6 +1,7 @@
 import { parseIncidentReason } from "@/lib/incident-reason";
 import { NextRequest, NextResponse } from "next/server";
-import { brokerSlippageCapPoints } from "@/lib/risk";
+import { getLivePriceRow } from "@/lib/live-price";
+import { SLIPPAGE_BASE_SYMBOL } from "@/lib/slippage-cap";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -76,7 +77,9 @@ async function patchHandler(request: NextRequest) {
     "smartDealerAcceptPct" in body ||
     "smartDealerRejectPct" in body ||
     "defaultMaxSlippagePips" in body ||
-    "defaultMaxSlippagePoints" in body;
+    "defaultMaxSlippagePoints" in body ||
+    "slippageCapXauPoints" in body ||
+    "slippageAction" in body;
   if (touchesRiskFields && permissions.forbidUnless("RISK_SETTINGS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -178,19 +181,31 @@ async function patchHandler(request: NextRequest) {
     auditNewValue.smartDealerRejectPct = pct ? pct.toString() : null;
   }
 
-  if ("defaultMaxSlippagePoints" in body || "defaultMaxSlippagePips" in body) {
-    // owner 2026-09-30: stored in POINTS. A client may send points (preferred) or, like backoffice 1.0.58 and older,
-    // pips (converted x 10: a pip is 10 points on every symbol with 1+ digits). Both columns are written so the old
-    // pips column stays true until it is dropped. Positive number or blank (= no broker cap).
-    const usePoints = "defaultMaxSlippagePoints" in body;
-    const v = parsePct(usePoints ? body.defaultMaxSlippagePoints : body.defaultMaxSlippagePips);
+  if ("slippageCapXauPoints" in body || "defaultMaxSlippagePoints" in body || "defaultMaxSlippagePips" in body) {
+    // Slippage cap (owner 2026-10-26, lib/slippage-cap.ts): the broker's base in XAUUSD points; every other symbol gets
+    // the same fraction of its own price. Positive number or blank (= no cap). A backoffice from before it still sends
+    // its one broker-wide number (defaultMaxSlippagePoints, or pips x 10 from 1.0.58 and older): it is taken as the base.
+    // The gold price at this moment is stored with it, so the other symbols follow the base as it was meant.
+    const field = "slippageCapXauPoints" in body ? "slippageCapXauPoints" : "defaultMaxSlippagePoints" in body ? "defaultMaxSlippagePoints" : "defaultMaxSlippagePips";
+    const v = parsePct(body[field]);
     if (v === undefined) {
-      return NextResponse.json({ error: `${usePoints ? "defaultMaxSlippagePoints" : "defaultMaxSlippagePips"} must be a positive number or blank` }, { status: 400 });
+      return NextResponse.json({ error: `${field} must be a positive number or blank` }, { status: 400 });
     }
-    const points = v == null ? null : usePoints ? v : v.mul(10);
+    const points = v == null ? null : field === "defaultMaxSlippagePips" ? v.mul(10) : v;
+    data.slippageCapXauPoints = points;
     data.defaultMaxSlippagePoints = points;
     data.defaultMaxSlippagePips = points == null ? null : points.div(10);
-    auditNewValue.defaultMaxSlippagePoints = points ? points.toString() : null;
+    const gold = points == null ? null : await getLivePriceRow(SLIPPAGE_BASE_SYMBOL).catch(() => null);
+    if (gold) data.slippageCapRefPrice = gold.bid.add(gold.ask).div(2);
+    auditNewValue.slippageCapXauPoints = points ? points.toString() : null;
+    if (gold) auditNewValue.slippageCapRefPrice = (data.slippageCapRefPrice as Prisma.Decimal).toString();
+  }
+  if ("slippageAction" in body) {
+    if (body.slippageAction !== "REQUOTE" && body.slippageAction !== "REJECT") {
+      return NextResponse.json({ error: "slippageAction must be REQUOTE or REJECT" }, { status: 400 });
+    }
+    data.slippageAction = body.slippageAction;
+    auditNewValue.slippageAction = body.slippageAction;
   }
 
   {
@@ -253,9 +268,16 @@ async function patchHandler(request: NextRequest) {
   });
 }
 
-function slippageFields(b: { defaultMaxSlippagePoints: Prisma.Decimal | null; defaultMaxSlippagePips: Prisma.Decimal | null }) {
-  const points = brokerSlippageCapPoints(b);
-  return { defaultMaxSlippagePoints: points ? points.toString() : null, defaultMaxSlippagePips: points ? points.div(10).toString() : null };
+// the cap (lib/slippage-cap.ts) plus, for a backoffice from before it, the same base under its old broker-wide names
+function slippageFields(b: { slippageCapXauPoints: Prisma.Decimal | null; slippageCapRefPrice: Prisma.Decimal | null; slippageAction: string }) {
+  const points = b.slippageCapXauPoints;
+  return {
+    slippageCapXauPoints: points ? points.toString() : null,
+    slippageCapRefPrice: b.slippageCapRefPrice ? b.slippageCapRefPrice.toString() : null,
+    slippageAction: b.slippageAction,
+    defaultMaxSlippagePoints: points ? points.toString() : null,
+    defaultMaxSlippagePips: points ? points.div(10).toString() : null,
+  };
 }
 
 // Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)

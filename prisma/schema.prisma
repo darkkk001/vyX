@@ -58,6 +58,12 @@ enum ExecutionEngine {
 // WEB = lib/risk-monitor.ts (today, every broker). RUST = the engine's own live evaluation; every web risk
 // evaluator then skips the account. Read per evaluation by both sides, and re-checked inside every risk write's
 // transaction (Broker row FOR SHARE), so exactly one side writes at any moment and a flip waits for in-flight writes.
+// What a market order whose fill would slip past the broker's cap gets (lib/slippage-cap.ts).
+enum SlippageAction {
+  REQUOTE
+  REJECT
+}
+
 enum RiskAuthority {
   WEB
   RUST
@@ -437,6 +443,12 @@ model Broker {
   // column and falls back to pips x 10 only while it is null (before the backfill); the pips column is kept, and
   // written alongside, until the conversion is verified -- then dropped in a later batch.
   defaultMaxSlippagePoints   Decimal?        @db.Decimal(10, 2)
+  // Slippage cap (owner 2026-10-26, lib/slippage-cap.ts): the base on XAUUSD in its points (null = no cap), the gold
+  // price it was set against (every other symbol gets the same fraction of its own price), and what an order over the
+  // cap gets: REQUOTE at the live price (default) or REJECT. Replaces defaultMaxSlippagePoints / Pips for fills.
+  slippageCapXauPoints       Decimal?        @default(30) @db.Decimal(10, 2)
+  slippageCapRefPrice        Decimal?        @default(4000) @db.Decimal(18, 5)
+  slippageAction             SlippageAction  @default(REQUOTE)
   // Sum of open volume (lots) across every symbol for this broker. Null
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
   totalExposureLimit         Decimal?        @db.Decimal(18, 2)
@@ -1835,6 +1847,7 @@ model BrokerSymbol {
   symbolId         String
   symbol           Symbol      @relation(fields: [symbolId], references: [id])
   spreadMarkup     Decimal     @default(0) @db.Decimal(10, 4) // pips added on top of raw spread
+  maxSlippagePoints Decimal?   @db.Decimal(10, 2) // this symbol's own slippage cap in its points; null = derived from the broker's XAUUSD base (lib/slippage-cap.ts)
   // MT5 hedged margin (2026-09-25): margin for a fully hedged BUY+SELL lot PAIR on this symbol, as a % of ONE lot's
   // full margin (lib/margin.ts hedgedUsedMargin). 200 = both legs charged in full (the behavior before this field),
   // 100 = only the larger side, 50 = the MT5 FX default, 0 = a hedged pair is free.

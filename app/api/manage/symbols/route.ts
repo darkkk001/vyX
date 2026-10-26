@@ -89,6 +89,9 @@ export async function GET() {
       hedgedMarginPct: cfg ? cfg.hedgedMarginPct.toString() : DEFAULTS.hedgedMarginPct,
       // Phase 2 batch 8 (issue 188): minimum SL/TP distance from the price, in points (validateSlTp); 0 = none
       stopLevel: cfg ? cfg.stopLevel : DEFAULTS.stopLevel,
+      // Slippage cap (owner 2026-10-26, lib/slippage-cap.ts): this symbol's own cap in its points; null = derived from the
+      // broker's XAUUSD base (GET /api/manage/risk slippageCapXauPoints / slippageCapRefPrice)
+      maxSlippagePoints: cfg?.maxSlippagePoints != null ? cfg.maxSlippagePoints.toString() : null,
       // Step 2 (owner 2026-09-30): how many trading-hours rows this broker has for the symbol (0 = the default week),
       // so SYM's hours summary needs no per-symbol sessions read.
       sessionCount: cfg ? cfg._count.tradingSessions : 0,
@@ -204,6 +207,17 @@ async function patchHandler(request: NextRequest) {
   const swapLong = parseDecimalOrZero(body?.swapLong);
   const swapShort = parseDecimalOrZero(body?.swapShort);
   const commissionPerLot = parseDecimalOrZero(body?.commissionPerLot);
+  // this symbol's own slippage cap in points (lib/slippage-cap.ts): not sent = unchanged, blank / null = derived, else > 0
+  let maxSlippagePoints: Prisma.Decimal | null | undefined = undefined;
+  if (body && "maxSlippagePoints" in body) {
+    const raw = body.maxSlippagePoints;
+    if (raw === null || raw === "") maxSlippagePoints = null;
+    else {
+      const v = parseDecimal(raw);
+      if (!v || v.lte(0)) return NextResponse.json({ error: "maxSlippagePoints must be a positive number or blank" }, { status: 400 });
+      maxSlippagePoints = v;
+    }
+  }
   const maxExposureRaw = body?.maxExposure;
   const maxExposure = maxExposureRaw == null || maxExposureRaw === "" ? null : parseDecimal(maxExposureRaw);
   const enabled = typeof body?.enabled === "boolean" ? body.enabled : null;
@@ -323,6 +337,8 @@ async function patchHandler(request: NextRequest) {
     ...(defaultBookType === null ? {} : { defaultBookType }),
     ...(hedgedMarginPct === null ? {} : { hedgedMarginPct }),
     ...(stopLevel === null ? {} : { stopLevel }),
+    // optional: blank / null = back to the value derived from the broker's base; not sent = unchanged
+    ...(maxSlippagePoints === undefined ? {} : { maxSlippagePoints }),
   };
 
   const updated = await prisma.brokerSymbol.upsert({
@@ -364,6 +380,7 @@ async function patchHandler(request: NextRequest) {
         swapShort: updated.swapShort.toString(),
         enabled: updated.enabled,
         commissionPerLot: updated.commissionPerLot.toString(),
+        maxSlippagePoints: updated.maxSlippagePoints != null ? updated.maxSlippagePoints.toString() : null,
         maxExposure: updated.maxExposure?.toString() ?? null,
         tradingMode: updated.tradingMode,
         defaultBookType: updated.defaultBookType,
@@ -385,6 +402,7 @@ async function patchHandler(request: NextRequest) {
     swapShort: updated.swapShort.toString(),
     enabled: updated.enabled,
     commissionPerLot: updated.commissionPerLot.toString(),
+    maxSlippagePoints: updated.maxSlippagePoints != null ? updated.maxSlippagePoints.toString() : null,
     maxExposure: updated.maxExposure?.toString() ?? null,
     tradingMode: updated.tradingMode,
     defaultBookType: updated.defaultBookType,

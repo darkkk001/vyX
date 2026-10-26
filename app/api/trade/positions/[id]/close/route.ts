@@ -8,7 +8,8 @@ import { withDeadlockRetry } from "@/lib/tx-retry";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, resolveWantsDealingQueue } from "@/lib/dealing-routing";
-import { checkLotStep, checkSlippage, closePriceMaxAgeMs, CLOSE_FRESH_TICK_WAIT_MS, NOT_QUOTING_AFTER_MS, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, effectiveMaxSlippagePips, isValidMaxSlippageInput, traderSlippagePoints, brokerSlippageCapPoints } from "@/lib/risk";
+import { checkLotStep, closePriceMaxAgeMs, CLOSE_FRESH_TICK_WAIT_MS, NOT_QUOTING_AFTER_MS, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, isValidMaxSlippageInput, traderSlippagePoints } from "@/lib/risk";
+import { effectiveCapPoints, slippageVerdict, symbolSlippageCapPoints } from "@/lib/slippage-cap";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
@@ -102,7 +103,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     prisma.group.findFirst({ where: { accounts: { some: { positions: { some: { id } } } } }, select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } }),
     prisma.brokerSymbol.findFirst({ where: { brokerId: session.brokerId, symbol: bySymbolOfPosition } }),
     prisma.tradingSession.findMany({ where: { brokerSymbol: { brokerId: session.brokerId, symbol: bySymbolOfPosition } } }),
-    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { subdomain: true, dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true, defaultMaxSlippagePoints: true } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { subdomain: true, dealingModeAt: true, dealingDeskAutoFillAt: true, slippageCapXauPoints: true, slippageCapRefPrice: true } }),
     // S4 (docs/market-data.md §8): the engine's own in-memory tick when MARKET_DATA_PRICES=vps, Neon otherwise
     symbolRead.then((s) => (s ? getLivePriceRow(s.name) : null)),
     // the account's ask rule for this symbol (lib/ask-markup.ts): a SELL closes at the marked-up ask a BUY opens at
@@ -279,11 +280,16 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   // and the broker's cap (lib/risk.ts effectiveMaxSlippagePips), the same rule as the open path.
   // A SELL's reference may be the raw ask (a client from before the account-ask close, 2026-09-26) or the account's ask:
   // the markup is not market movement, so the close is refused only when the reference is off BOTH.
-  // in POINTS (owner 2026-09-30): the smaller of the trader's value and the broker's cap
-  const maxSlip = effectiveMaxSlippagePips(traderSlippagePoints(body, position.symbol.digits), brokerSlippageCapPoints(broker));
-  const slippageTo = (fill: Prisma.Decimal) => checkSlippage({ clientReferencePrice, serverFillPrice: fill, maxSlippagePoints: maxSlip, digits: position.symbol.digits });
-  const offAccountAsk = slippageTo(closePrice);
-  const slippageError = offAccountAsk && position.side === "SELL" && !closePrice.equals(livePrice.ask) && !slippageTo(livePrice.ask) ? null : offAccountAsk;
+  // in POINTS: the smaller of the trader's value and this symbol's cap (owner 2026-10-26, lib/slippage-cap.ts), and only a
+  // close WORSE for the client than its reference counts (a BUY position sells: lower is worse; a SELL position buys)
+  const capPoints = effectiveCapPoints(
+    traderSlippagePoints(body, position.symbol.digits),
+    symbolSlippageCapPoints(broker, { name: position.symbol.name, digits: position.symbol.digits, maxSlippagePoints: brokerSymbol?.maxSlippagePoints ?? null }, closePrice)
+  );
+  const closeSide = position.side === "BUY" ? "SELL" : "BUY";
+  const overCapAt = (fill: Prisma.Decimal) => slippageVerdict({ side: closeSide, requested: clientReferencePrice, fill, digits: position.symbol.digits, capPoints }).over;
+  const offAccountAsk = overCapAt(closePrice);
+  const slippageError = offAccountAsk && !(position.side === "SELL" && !closePrice.equals(livePrice.ask) && !overCapAt(livePrice.ask)) ? "SLIPPAGE_EXCEEDED" : null;
   if (slippageError) {
     return NextResponse.json({ error: slippageError, serverPrice: closePrice.toString() }, { status: 400 });
   }
