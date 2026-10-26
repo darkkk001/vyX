@@ -14,7 +14,8 @@
 --      M1s). H4 / D1 / W1 are never deleted. MN1 / Y1 stay (the Friday close is a real price inside their range).
 --   4. Abort (ROLLBACK, nothing changed) if a run runs more than 10 minutes past its closed hours, or its Friday
 --      close is unknown.
--- Literals are pinned to +00 ("bucketStart" is timestamptz; the psql session's time zone must not shift them).
+-- Literals are pinned to +00 and each transaction runs SET LOCAL TIME ZONE 'UTC'; bucket lengths are fixed hours (24 / 168),
+-- never '1 day' / '7 days', which follow the session's DST (owner, VPS v2 Step 0: last week's W1 was caught that way).
 --
 -- Where: the VPS engine's own Postgres (table "Candle"), psql -v ON_ERROR_STOP=1, by the VPS session.
 -- When: Step 0 any time (read only). Backup + Step 1 inside the engine deploy with the market-data engine STOPPED
@@ -23,6 +24,9 @@
 
 -- ============================================================ Step 0: dry run (read only) ======================
 BEGIN READ ONLY;
+-- whatever the psql session's time zone: all interval arithmetic in UTC (a '7 days' step across a DST change
+-- would move 21:00 UTC to 22:00); every bucket length is also in fixed hours
+SET LOCAL TIME ZONE 'UTC';
 -- 0a. each symbol's flat run (a symbol without one is not listed)
 -- RUNS: each symbol's flat run, derived from the data (one definition, used by Step 0 and Step 1).
 -- outer = the closed hours in UTC (only used to find where a run STARTS); fri_close = the last M1 close before them;
@@ -103,9 +107,9 @@ SELECT r.symbol, c.timeframe, c."bucketStart", c.open AS open_now, c.high AS hig
             ELSE 'skip' END AS action
 FROM runs r
 JOIN "Candle" c ON c.symbol = r.symbol AND c.timeframe IN ('M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1')
-  AND c."bucketStart" < r.run_to AND c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END > r.run_from
+  AND c."bucketStart" < r.run_to AND c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '24 hours' ELSE interval '168 hours' END > r.run_from
 LEFT JOIN "Candle" x ON x.symbol = r.symbol AND x.timeframe = 'M1'
-  AND x."bucketStart" >= c."bucketStart" AND x."bucketStart" < c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END
+  AND x."bucketStart" >= c."bucketStart" AND x."bucketStart" < c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '24 hours' ELSE interval '168 hours' END
   AND NOT (x."bucketStart" >= r.run_from AND x."bucketStart" < r.run_to)
 GROUP BY r.symbol, r.fri_close, c.timeframe, c."bucketStart", c.open, c.high, c.low, c.close
 ORDER BY r.symbol, c.timeframe, c."bucketStart";
@@ -117,6 +121,7 @@ COMMIT;
 
 -- ============================================================ Step 1: apply (engine stopped) ==================
 BEGIN;
+SET LOCAL TIME ZONE 'UTC';
 CREATE TEMP TABLE cleanup_runs ON COMMIT DROP AS
 -- RUNS: each symbol's flat run, derived from the data (one definition, used by Step 0 and Step 1).
 -- outer = the closed hours in UTC (only used to find where a run STARTS); fri_close = the last M1 close before them;
@@ -175,9 +180,9 @@ SELECT r.symbol, c.timeframe, c."bucketStart", c.open AS open_now, c.high AS hig
             ELSE 'skip' END AS action
 FROM runs r
 JOIN "Candle" c ON c.symbol = r.symbol AND c.timeframe IN ('M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1')
-  AND c."bucketStart" < r.run_to AND c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END > r.run_from
+  AND c."bucketStart" < r.run_to AND c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '24 hours' ELSE interval '168 hours' END > r.run_from
 LEFT JOIN "Candle" x ON x.symbol = r.symbol AND x.timeframe = 'M1'
-  AND x."bucketStart" >= c."bucketStart" AND x."bucketStart" < c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '1 day' ELSE interval '7 days' END
+  AND x."bucketStart" >= c."bucketStart" AND x."bucketStart" < c."bucketStart" + CASE c.timeframe::text WHEN 'M5' THEN interval '5 minutes' WHEN 'M15' THEN interval '15 minutes' WHEN 'M30' THEN interval '30 minutes' WHEN 'H1' THEN interval '1 hour' WHEN 'H4' THEN interval '4 hours' WHEN 'D1' THEN interval '24 hours' ELSE interval '168 hours' END
   AND NOT (x."bucketStart" >= r.run_from AND x."bucketStart" < r.run_to)
 GROUP BY r.symbol, r.fri_close, c.timeframe, c."bucketStart", c.open, c.high, c.low, c.close;
 
