@@ -48,6 +48,11 @@ describe("client allow-list (pure)", () => {
     expect(clientOrder(order).clientIp).toBe("203.0.113.9");
     expect(clientOrder({ ...order, source: "ADMIN" })).not.toHaveProperty("clientIp");
     for (const k of FORBIDDEN) expect(clientOrder(order)).not.toHaveProperty(k);
+    // owner 2026-10-26: a dealer's typed reject text never reaches the client, only its clientReason and sentence
+    const rejected = clientOrder({ ...order, status: "REJECTED", executionMode: "DEALER", rejectionReason: "toxic flow, no live price for you" });
+    expect(rejected).toMatchObject({ clientReason: "DEALER_REJECTED", rejectionReason: "Rejected by the dealer" });
+    expect(rejected).not.toHaveProperty("executionMode");
+    expect(clientOrder(order)).not.toHaveProperty("clientReason");
   });
 
   it("toClientShape cuts rows anywhere in an answer and keeps computed fields; a column added later is dropped", () => {

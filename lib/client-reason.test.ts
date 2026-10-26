@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLIENT_REASONS, clientReasonFor, clientRefusal, withClientRefusals } from "@/lib/client-reason";
+import { CLIENT_REASONS, clientReasonFor, clientRefusal, orderClientReason, withClientRefusals } from "@/lib/client-reason";
 
 // Two reasons (owner 2026-10-23): the internal one stays on the server, the client gets one of eleven.
 describe("clientReasonFor", () => {
@@ -26,11 +26,18 @@ describe("clientReasonFor", () => {
     [{ error: "DEMO_B_BOOK_ONLY" }, "TRADING_DISABLED"],
     [{ error: "Too many orders in a short time. Wait a moment and try again.", code: "ORDER_RATE_LIMITED" }, "TOO_MANY_REQUESTS"],
     [{ error: "something nobody planned for" }, "REJECTED"],
+    // owner 2026-10-26: the dealer's own codes win over any word the dealer typed
+    [{ error: "DEALER_REJECTED", reason: "no live price on my screen, margin too thin" }, "DEALER_REJECTED"],
+    [{ error: "x", code: "DEALER_TIMEOUT" }, "DEALER_TIMEOUT"],
+    // the old /live price/ rule turned any text with those words into OFF_QUOTES
+    [{ error: "rejected: client asked at a stale live price" }, "INVALID_PRICE"],
+    [{ error: "dealer said the live price moved" }, "INVALID_PRICE"],
+    [{ error: "no live price for XAUUSD" }, "OFF_QUOTES"],
   ];
   for (const [internal, want] of cases) {
     it(`${JSON.stringify(internal)} -> ${want}`, () => expect(clientReasonFor(internal)).toBe(want));
   }
-  it("always one of the eleven", () => {
+  it("always one of the thirteen", () => {
     for (const [internal] of cases) expect(CLIENT_REASONS).toContain(clientReasonFor(internal));
   });
 });
@@ -72,5 +79,21 @@ describe("withClientRefusals", () => {
       const r = json(s, { error: "x" });
       expect(await withClientRefusals(r)).toBe(r);
     }
+  });
+});
+
+describe("orderClientReason: a rejected Order row the client reads", () => {
+  it("a dealer's reject is DEALER_REJECTED whatever the dealer typed", () => {
+    expect(orderClientReason({ status: "REJECTED", executionMode: "DEALER", rejectionReason: "live price gone, try later" })).toBe("DEALER_REJECTED");
+    expect(orderClientReason({ status: "REJECTED", executionMode: "DEALER", rejectionReason: "not enough margin" })).toBe("DEALER_REJECTED");
+  });
+  it("a dealer-queue timeout is DEALER_TIMEOUT", () => {
+    expect(orderClientReason({ status: "REJECTED", executionMode: "AUTO", rejectionReason: "DEALER_TIMEOUT: no dealer answer in 30 s" })).toBe("DEALER_TIMEOUT");
+  });
+  it("an automatic reject keeps its own reason; a non-rejected order has none", () => {
+    expect(orderClientReason({ status: "REJECTED", executionMode: "AUTO", rejectionReason: "price moved beyond broker tolerance (auto-rejected)" })).toBe("INVALID_PRICE");
+    expect(orderClientReason({ status: "REJECTED", executionMode: "AUTO", rejectionReason: "INSUFFICIENT_MARGIN" })).toBe("NOT_ENOUGH_MARGIN");
+    expect(orderClientReason({ status: "FILLED", executionMode: "DEALER", rejectionReason: null })).toBeNull();
+    expect(orderClientReason({ status: "PENDING" })).toBeNull();
   });
 });

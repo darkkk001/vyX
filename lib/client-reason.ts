@@ -1,5 +1,5 @@
 // Refusal reasons, two of them (owner 2026-10-23). `reason` is the internal code with full detail: it goes to the
-// RejectedOrder trace and the backoffice FEED. `clientReason` is what a client is told, exactly one of the eleven below (owner: 9, then TOO_MANY_REQUESTS and CLOSE_PENDING).
+// RejectedOrder trace and the backoffice FEED. `clientReason` is what a client is told, exactly one of the thirteen below (owner: 9, then TOO_MANY_REQUESTS and CLOSE_PENDING, then DEALER_REJECTED and DEALER_TIMEOUT 2026-10-26).
 // The order, close and modify routes answer a refusal with clientReason (+ a plain sentence) only; the internal text
 // never reaches a client (clientRefusal / withClientRefusals below, test: lib/client-reason.test.ts).
 
@@ -14,6 +14,8 @@ export const CLIENT_REASONS = [
   "TRADING_DISABLED",
   "TOO_MANY_REQUESTS",
   "CLOSE_PENDING",
+  "DEALER_REJECTED",
+  "DEALER_TIMEOUT",
   "REJECTED",
 ] as const;
 export type ClientReason = (typeof CLIENT_REASONS)[number];
@@ -31,6 +33,9 @@ export const CLIENT_REASON_TEXT: Record<ClientReason, string> = {
   TRADING_DISABLED: "Trading disabled",
   TOO_MANY_REQUESTS: "Too many requests - wait a moment",
   CLOSE_PENDING: "Close already with the dealer",
+  // owner 2026-10-26: a dealer's decision is never told as a market state (it showed as OFF_QUOTES or REJECTED)
+  DEALER_REJECTED: "Rejected by the dealer",
+  DEALER_TIMEOUT: "Dealer did not respond - try again",
   REJECTED: "Order rejected",
 };
 
@@ -45,11 +50,14 @@ export function clientReasonFor(internal: Internal): ClientReason {
   if (str(internal.error) === "CLOSE_PENDING") return "CLOSE_PENDING";
   const error = str(internal.error);
   const code = str(internal.code);
+  // a dealer's decision is matched by its code before any text rule: the dealer types the reason freely, and words
+  // in it ("live price", "margin", "volume") must never turn it into a market or account state
+  for (const c of ["DEALER_REJECTED", "DEALER_TIMEOUT"] as const) if (error === c || code === c) return c;
   const sub = str(internal.reason);
   const all = `${error} ${code} ${sub}`;
   const has = (re: RegExp) => re.test(all);
 
-  if (has(/\b(NOT_QUOTING|PRICE_STALE|NO_LIVE_FEED|LP_NOT_CONNECTED|FEED_DOWN|PRICE_SOURCE)\b/) || has(/no live price|live price|feed (is )?down|not quoting/i)) {
+  if (has(/\b(NOT_QUOTING|PRICE_STALE|NO_LIVE_FEED|LP_NOT_CONNECTED|FEED_DOWN|PRICE_SOURCE)\b/) || has(/\bno live price\b|feed (is )?down|not quoting/i)) {
     return "OFF_QUOTES";
   }
   if (error === "MARKET_CLOSED" || code === "MARKET_CLOSED") return "MARKET_CLOSED";
@@ -120,4 +128,15 @@ export async function withClientRefusals(res: Response): Promise<Response> {
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   return new Response(JSON.stringify(next), { status: res.status, headers });
+}
+
+/** The client reason of an Order row the client reads (its orders list, the OrderRejected event). Null unless it was
+ *  REJECTED. A dealer's reject (executionMode DEALER) is DEALER_REJECTED whatever the dealer typed; a dealer-queue
+ *  timeout is stored with the DEALER_TIMEOUT code as its rejectionReason prefix; anything else goes through clientReasonFor. */
+export function orderClientReason(order: { status?: unknown; executionMode?: unknown; rejectionReason?: unknown }): ClientReason | null {
+  if (order.status !== "REJECTED") return null;
+  const text = str(order.rejectionReason);
+  if (text.startsWith("DEALER_TIMEOUT")) return "DEALER_TIMEOUT";
+  if (order.executionMode === "DEALER") return "DEALER_REJECTED";
+  return clientReasonFor({ error: text });
 }

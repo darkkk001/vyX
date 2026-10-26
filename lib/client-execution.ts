@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma, type Deal } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { EXEC_ORDER_SELECT, clientExecution, dealExecutionDetail, executionDetail } from "@/lib/order-execution";
+import { CLIENT_REASON_TEXT, orderClientReason } from "@/lib/client-reason";
 
 // D-4 (owner 2026-10-23): the execution detail a client's own history carries (terminal 1.0.94 Fill details reads
 // openExecution / closeExecution). Same sources as the backoffice (GET /api/manage/deals): the opening Order; the close
@@ -112,6 +113,13 @@ export function clientPosition(p: Row): Row {
 export function clientOrder(o: Row): Row {
   const out: Row = {};
   for (const k of ORDER_FIELDS) if (k in o) out[k] = o[k];
+  // a rejected order tells the client its clientReason and that reason's sentence, never the stored text (a dealer
+  // types it freely; the smart dealer's and the trigger's are internal): owner 2026-10-26
+  const clientReason = orderClientReason(o);
+  if (clientReason) {
+    out.clientReason = clientReason;
+    if ("rejectionReason" in out) out.rejectionReason = CLIENT_REASON_TEXT[clientReason];
+  }
   if (o.clientIp != null && CLIENT_ORDER_SOURCES.has(String(o.source ?? ""))) out.clientIp = o.clientIp;
   if (o.position != null && typeof o.position === "object") out.position = toClientShape(o.position);
   return out;

@@ -17,6 +17,7 @@ import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import type { ClientReason } from "@/lib/client-reason";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -154,7 +155,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // watching this broker (broker_id) both need this -- neither
     // previously learned about a dealing-queue reject until their next
     // poll/refresh.
-    await publishTradingEvent("OrderRejected", { order_id: id, account_id: order.accountId, broker_id: brokerId, reason });
+    await publishTradingEvent("OrderRejected", { order_id: id, account_id: order.accountId, broker_id: brokerId, reason, clientReason: "DEALER_REJECTED" satisfies ClientReason });
     return NextResponse.json({ id, status: "REJECTED" });
   }
 
