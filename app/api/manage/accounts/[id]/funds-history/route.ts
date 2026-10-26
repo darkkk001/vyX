@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { FUNDS_HISTORY_TYPES } from "@/lib/funds-history";
+import { bookedBalanceAfter } from "@/lib/balance-after";
 
 // Step 3b item 8 (owner 2026-10-07): the HISTORY tab of the Funds window. This account's deposits, withdrawals, adjustments, credit
 // changes and transfers (the last 200) and the per-type totals over ALL of them. Broker view: the stored sign (a withdrawal and a transfer
@@ -20,9 +21,13 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     prisma.transaction.findMany({ where, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, type: true, status: true, amount: true, balanceAfter: true, note: true, createdAt: true, hiddenForPositionId: true } }),
     prisma.transaction.groupBy({ by: ["type"], where: { ...where, status: "COMPLETED" }, _sum: { amount: true }, _count: { _all: true } }),
   ]);
+  const booked = await bookedBalanceAfter(rows.map((t) => t.id));
   return NextResponse.json({
     currency: account.currency,
-    rows: rows.map((t) => ({ id: t.id, type: t.type, status: t.status, amount: t.amount.toFixed(2), balanceAfter: t.balanceAfter.toFixed(2), note: t.note ?? "", at: t.createdAt.toISOString(), hiddenFromClient: t.hiddenForPositionId != null })), // Batch D: a deleted trade's row (the client does not see it)
+    // balanceAfter: the row's stored snapshot, kept for backoffice 1.0.95 and older (wrong on a few old accounts).
+    // bookedBalanceAfter (bo 1.0.96 #9): the server's balance right after the row moved it (lib/balance-after.ts);
+    // null when the row did not move the balance (not completed, or a credit change).
+    rows: rows.map((t) => ({ id: t.id, type: t.type, status: t.status, amount: t.amount.toFixed(2), balanceAfter: t.balanceAfter.toFixed(2), bookedBalanceAfter: booked.get(t.id) ?? null, note: t.note ?? "", at: t.createdAt.toISOString(), hiddenFromClient: t.hiddenForPositionId != null })), // Batch D: a deleted trade's row (the client does not see it)
     totals: sums.map((s) => ({ type: s.type, amount: s._sum.amount ? s._sum.amount.toFixed(2) : "0.00", count: s._count._all })),
   });
 }
