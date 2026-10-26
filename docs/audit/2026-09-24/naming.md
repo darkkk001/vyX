@@ -114,7 +114,8 @@ One more token with it: `BrushWarn` (dark `#F5A623`, light `#B36B00`), the warni
 
 These override every row below that still shows the older wording.
 
-- **D1 Book.** "Broker book (B-book)" is **Book** everywhere ("Book P/L ($)", "Book positions (lots)", "Market book / Book"). "Broker hedge account" is **Hedge account**.
+- **D1 Book.** "Broker book (B-book)" is **Book** everywhere ("Book P/L ($)", "Book positions (lots)", "A-book / B-book").
+- **D1a A-book (owner 2026-10-26).** Groups that pass trades to a liquidity provider say **A-book**, to match **B-book**. "Market book" is the old name and is removed everywhere. "Broker hedge account" is **Hedge account**.
 - **D2 For all clients.** "broker-wide" is **for all clients** (or dropped where the sentence is already clear).
 - **D3 Company.** The firm-name label is **Company** (SEC, CFG "This company"). The top bar has **no label**: it shows only the firm name.
 - **D4 No actor in install refusals.** "...retired by your broker", "Contact VyxTrader support" lose the actor: "This installation has been retired. Install the latest version." Trader-facing text keeps "your broker" where it means the client's broker.
@@ -196,7 +197,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | Group setting that follows the dealing switch | Same as dealing switch | — | BROKER DEFAULT, DESK-CONTROLLED, Same as broker switch |
 | Group ignores the broker dealing switch | Ignore broker dealing switch | — | Force dealer mode, FORCED |
 | Broker keeps the client's risk | Book | — | B_BOOK, BOOK, B-BOOK alone, dealing-group |
-| Trades passed to a liquidity provider | Market book (A-book) on first use, then Market book | — | A_BOOK, LP book |
+| Trades passed to a liquidity provider | A-book | — | A_BOOK, LP book |
 | Group whose trades are reversed into a master account | Reverse trading | — | REVERSAL, MIR |
 | How a group's (or a row's) trades are handled | Trade handling | — | CATEGORY, ROUTING, TYPE, groupType, Book, Handling |
 | Mirror / copy rule | Copy rule (Copy / Reverse) | — | mirror rule, MIR |
@@ -410,7 +411,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | DASH | 1) CLI  CLIENTS | Clients | — | All client accounts. |
 | DASH | {n} TOTAL | keep | — | Number of accounts. |
 | DASH | 2) EXP  OPEN BOOK | Live exposure | — | Open positions by symbol. |
-| DASH | A / B BOOK (stat) | Market book / Book (lots) | lots | Open volume passed to a liquidity provider vs kept by the broker. |
+| DASH | A / B BOOK (stat) | A-book / B-book (lots) | lots | Open volume passed to a liquidity provider vs kept by the broker. |
 | DASH | NET $ EXP (stat) | Net exposure ($) | $ | Value of client longs minus shorts across all symbols. |
 | DASH | 3) APPR  APPROVALS QUEUE | Deposits & withdrawals waiting | — | Deposit and withdrawal requests waiting for a decision. |
 | DASH | dep / wdr (stat) | Deposits / withdrawals | — | Count of each waiting. |
@@ -428,7 +429,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | DASH | CLIENT | keep | — | Client name. |
 | DASH | COUNTRY | keep | — | — |
 | DASH | KYC (column) | KYC | — | KYC status. |
-| DASH | CATEGORY | Trade handling | — | Book, Market book or Reverse trading, set by the group. |
+| DASH | CATEGORY | Trade handling | — | Book, A-book or Reverse trading, set by the group. |
 | DASH | GROUP | keep | — | — |
 | DASH | BALANCE | Balance ($) | $ | — |
 | DASH | EQUITY | Equity ($) | $ | Balance + credit + floating P/L. |
@@ -449,7 +450,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | DASH | SHORT | Sell volume (lots) | lots | Client sell volume. |
 | DASH | NET | Net volume (lots) | lots | Buy minus sell volume. |
 | DASH | PROFIT / LOSS (exposure) | Floating P/L ($) | $ | Clients' floating P/L on this symbol. |
-| DASH | A / B POS | Market book / Book positions | — | Number of positions in each book. |
+| DASH | A / B POS | A-book / B-book positions | — | Number of positions in each book. |
 | DASH | Live exposure · this symbol | Live exposure for this symbol | — | Open Live exposure filtered to this symbol. |
 | DASH | Symbol settings | keep | — | — |
 | DASH | TYPE | keep | — | Deposit or withdrawal. |
@@ -471,7 +472,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | DASH | WHY tag (new) | Stop-out / Margin call / Martingale / Scalping / Latency arbitrage / News trading / KYC pending / New 7D / Largest open; "{reason} +{n} more" | — | The tag's tooltip lists every reason: "Why: Margin call · Martingale · Largest open" (owner 2026-09-30). |
 | DASH | 2) EXP  OPEN BOOK (panel) | Open book | — | Client exposure per symbol and account currency; stat "Lots · Book {x}%" (owner 2026-09-30). |
 | DASH | Open book columns (new) | Symbol / Buy / Sell / Net / Client P/L / Ccy | lots in the panel stat | "(lots)" is in the panel stat, not each header, to fit 1366 (owner 2026-09-30). |
-| DASH | Open book facts (new) | Nearest stop-out / Market book (A-book): 0.00 lots · no liquidity provider connected / Totals: hedge account excluded | — | Nothing implies a connected LP (owner 2026-09-30). |
+| DASH | Open book facts (new) | Nearest stop-out / A-book: 0.00 lots · no liquidity provider connected / Totals: hedge account excluded | — | Nothing implies a connected LP (owner 2026-09-30). |
 | DASH | 3) APR  APPROVALS (panel) | Approvals | — | Waiting deposits and withdrawals; header link "APR ›"; one line "Nothing waiting for approval." when empty (owner 2026-09-30). |
 | DASH | MARKED (status chip) | Marked sent | — | Short form of "Client marked sent"; the Waiting column is hidden by default (owner 2026-09-30). |
 | DASH | 4) FLOW  DEPOSITS VS WITHDRAWALS · 7D | keep | — | Header link "DEP ›"; one line "No deposits or withdrawals in the last 7 days." when empty; day labels "24 Sep" (invariant, UTC) (owner 2026-09-30). |
@@ -588,7 +589,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | EXP | 1) EXP  EXPOSURE BY SYMBOL | Exposure by symbol | — | Open client volume per symbol, for all clients. |
 | EXP | <n> POSITIONS · <lots> LOTS · CLIENT P/L ±x | {n} positions · {x} lots · Floating P/L ($) | lots / $ | Totals for everything shown. |
 | EXP | BOOK (label) | Trade handling | — | Filter by how the positions are handled. |
-| EXP | ALL · A-BOOK · B-BOOK | All · Market book (A-book) · Book | — | Show all, market-book or book positions. |
+| EXP | ALL · A-BOOK · B-BOOK | All · A-book · B-book | — | Show all, A-book or B-book positions. |
 | EXP | GROUP (label) + group chips | Group | — | Filter by client group. |
 | EXP | SYMBOL | keep | — | Symbol. |
 | EXP | POSITIONS | keep | — | Number of open positions. |
@@ -596,7 +597,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | EXP | SELL VOLUME | Sell volume (lots) | lots | Total lots clients hold short. |
 | EXP | NET | Net volume (lots) | lots | Buy minus sell volume; the broker's exposure. |
 | EXP | NOTIONAL | Net exposure ($) | $ | Net volume × contract size × current price. |
-| EXP | A / B POS | Market book / Book positions | — | Number of positions in each book. |
+| EXP | A / B POS | A-book / B-book positions | — | Number of positions in each book. |
 | EXP | AVERAGE OPEN | Average open price | — | Volume-weighted open price of the net volume. |
 | EXP | CLIENT PROFIT / LOSS | Floating P/L ($) | $ | Clients' profit/loss on open positions now. |
 | EXP | PRICE | Current price | — | Latest price of the symbol. |
@@ -626,7 +627,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | EXP | S/L | SL | — | Stop loss price. |
 | EXP | T/P | TP | — | Take profit price. |
 | EXP | PROFIT / LOSS | Floating P/L ($) | $ | Profit/loss of the position now. |
-| EXP | BOOK ("A"/"B") | Trade handling | — | Market book (A) or Book (B). |
+| EXP | BOOK ("A"/"B") | Trade handling | — | A-book or B-book. |
 | EXP | OPENED | Opened (UTC) | UTC | When the position opened. |
 | EXP | ACTIONS | keep | — | Row actions. |
 | EXP | Modify SL / TP… | Change stop loss / take profit… | — | Set new SL/TP prices. |
@@ -919,8 +920,8 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | GRP | DESK <state> | Dealing: Manual / Automatic | — | For all clients dealing switch. |
 | GRP | + GROUP | Add group | — | Create a new group. |
 | GRP | NAME | keep | — | Group name. |
-| GRP | ROUTING | Trade handling | — | Book, Market book or Reverse trading. |
-| GRP | A-BOOK · LP | Market book (A-book) | — | Trades passed to a liquidity provider. |
+| GRP | ROUTING | Trade handling | — | Book, A-book or Reverse trading. |
+| GRP | A-BOOK · LP | A-book | — | Trades passed to a liquidity provider. |
 | GRP | B-BOOK | Book | — | The broker keeps the client's risk. |
 | GRP | DEALING DESK | Book · Manual dealing | — | Book where a dealer reviews every order. |
 | GRP | REVERSAL | Reverse trading | — | Trades reversed into a master account. |
@@ -964,7 +965,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | GRP | Leverage | keep | — | Written 1:N. |
 | GRP | Margin call % | Margin call level (%) | % | Level that triggers the warning. |
 | GRP | Stop out % | Stop-out level (%) | % | Level that auto-closes positions. |
-| GRP | Book / routing | Trade handling | — | Book, Market book or Book with manual dealing. |
+| GRP | Book / routing | Trade handling | — | Book, A-book or Book with manual dealing. |
 | GRP | Account mode (LIVE + DEMO / LIVE ONLY / DEMO ONLY) | Account kinds allowed (Live and demo / Live only / Demo only) | — | Which accounts may join. |
 | GRP | Advanced dealing options | keep | — | Show the dealing override. |
 | GRP | Dealer | Dealing | — | How orders fill for this group. |
@@ -1176,7 +1177,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | EMG | 3) GROUPS  HALT ONE GROUP | Halt a group | — | Stop new trades for one group. |
 | EMG | {n} OF {m} HALTED | {n} of {m} halted | — | Groups halted. |
 | EMG | GROUP (· default) | Group | — | Group name; default group marked. |
-| EMG | TYPE | Trade handling | — | Book, Market book… |
+| EMG | TYPE | Trade handling | — | Book, A-book… |
 | EMG | LEVERAGE | keep | — | 1:N. |
 | EMG | STATUS (TRADING / CLOSE-ONLY / HALTED) | Status (Trading / Close-only / Trading halted) | — | Group state (owner 2026-09-29). |
 | EMG | Set close-only… / Allow new trades again… | keep (Groups words) | — | Group close-only on or off (owner 2026-09-29). |
@@ -1223,7 +1224,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
 | LP | 1) LP  LIQUIDITY PROVIDERS | Liquidity providers | — | Provider records; none is connected until an LP bridge exists (owner 2026-09-30). |
-| LP | Banner (new) | No liquidity provider is connected · every order is filled in the book (market-book groups are refused) · the status below is your record of each relationship | — | Always shown while there is no LP bridge (owner 2026-09-30). |
+| LP | Banner (new) | No liquidity provider is connected · every order is filled in the book (A-book groups are refused) · the status below is your record of each relationship | — | Always shown while there is no LP bridge (owner 2026-09-30). |
 | LP | <n> LPS · <n> ACTIVE | {n} providers · none connected | — | Totals; a record status is not a connection, so it always reads none connected until an LP bridge exists (owner 2026-09-30). |
 | LP | ROUTING | remove | — | Routing rules are merged into this screen and hidden until an LP bridge exists (owner 2026-09-30). |
 | LP | Routing rules line (new) | Routing rules: hidden until an LP bridge exists ({n} saved, not used for trading) | — | Count only; "none saved" when there are none (owner 2026-09-30). |
@@ -1243,13 +1244,13 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | LP | What happens to a client order (values) | Filled at once (book) / Queued for the dealer (desk on) / Filled at once (desk off) / Always sent to the dealer / Refused until a liquidity provider is connected / Filled at once, then copied reversed (copy rule) / System only (hedge account) | — | Only the variant for the actual desk state is shown (owner 2026-09-30). |
 | LP | DEALER DESK (stat) | Dealer desk: On · reviewing orders / Off · filled at once | — | Only the actual desk state is shown (owner 2026-09-30). |
 | LP | Open in Groups / Copy group name (group row menu) | keep | — | Group row menu (owner 2026-09-30). |
-| LP | 2) BOOK  BOOK EXPOSURE · OPEN LOTS | Exposure by trade handling | — | Open volume in the market book vs the book; panel 3 now (owner 2026-09-30). |
-| LP | A <x> / B <x> | Market book {x} lots / Book {x} lots | lots | Totals (shown as money today; should be lots). |
+| LP | 2) BOOK  BOOK EXPOSURE · OPEN LOTS | Exposure by trade handling | — | Open volume in the A-book vs the B-book; panel 3 now (owner 2026-09-30). |
+| LP | A <x> / B <x> | A-book {x} lots / B-book {x} lots | lots | Totals (shown as money today; should be lots). |
 | LP | SYMBOL | keep | — | Symbol. |
-| LP | A-BOOK LOTS | Market book (lots) | lots | Open volume passed to a liquidity provider. |
+| LP | A-BOOK LOTS | A-book (lots) | lots | Open volume passed to a liquidity provider. |
 | LP | B-BOOK LOTS | Book (lots) | lots | Open volume the broker keeps. |
 | LP | TOTAL | Total (lots) | lots | Both books. |
-| LP | A-BOOK % | Market book (%) | % | Share of volume in the market book; hidden by default (can be shown from Columns), it reads 0 while there is no LP bridge (owner 2026-09-30). |
+| LP | A-BOOK % | A-book (%) | % | Share of volume in the A-book; hidden by default (can be shown from Columns), it reads 0 while there is no LP bridge (owner 2026-09-30). |
 | LP | Live exposure · this symbol | Live exposure for this symbol | — | Open Live Exposure filtered to it. |
 | LP | Symbol settings | keep | — | Open the symbol's settings. |
 | LP | NEW LIQUIDITY PROVIDER (form) | New liquidity provider | — | Form title. |
@@ -1276,7 +1277,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | ROUTE | Add new routing rule… | Add routing rule… | — | Create a rule. |
 | ROUTE | 2) RULE  SELECTED RULE | Selected rule | — | Detail of the chosen rule. |
 | ROUTE | priority / liquidity provider / LP record status / symbol / route / created | Priority / Liquidity provider / Provider status / Symbol / Trade handling / Created (UTC) | UTC | Rule details. |
-| ROUTE | A-BOOK (LP) | Market book (A-book) | — | Trades go to the provider. |
+| ROUTE | A-BOOK (LP) | A-book | — | Trades go to the provider. |
 | ROUTE | NOTES | keep | — | Staff notes. |
 | ROUTE | CONDITIONS · EDIT / DELETE — not available yet | keep | — | Planned. |
 | ROUTE | OPEN LP | Open liquidity provider | — | Go to the provider. |
@@ -1465,9 +1466,9 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI·360 | OPENED | Opened (UTC) | UTC | — |
 | CLI·360 | CLOSED | Closed (UTC) | UTC | — |
 | CLI·360 | PROFIT / LOSS | P/L ($) | $ | Floating P/L for positions, closed P/L for closed trades. |
-| CLI·360 | NOTE | Trade handling | — | Market book or Book; "Voided" for voided trades. |
+| CLI·360 | NOTE | Trade handling | — | A-book or B-book; "Voided" for voided trades. |
 | CLI·360 | OPEN (chip in CLOSED) | Still open | — | — |
-| CLI·360 | A-BOOK / B-BOOK | Market book / Book | — | — |
+| CLI·360 | A-BOOK / B-BOOK | A-book / B-book | — | — |
 | CLI·360 | VOIDED | keep | — | — |
 | CLI·360 | Open in Live exposure (modify / close / reverse) | keep | — | — |
 | CLI·360 | Open in Deals (replay / void / delete) | Open in Closed trades (fill details / void / delete) | — | — |
@@ -2528,7 +2529,7 @@ Each item lists the old variants, then the final word. The glossary above is the
 6. **Age**: `AGE` (DASH, DEAL, kept as-is) → `Waiting time`, as on KYC.
 7. **Partner clients**: `Partner clients` / `Partner client` (DASH, CLI, CLI·360) → `Referred clients` / `Referred client`, as on IB and RPT.
 8. **Partner pay**: `Owed ($)`, `Owed now ($)` (IB) → `Partner pay owed ($)`. `Partner pay rate` and `Rate` now carry `($ per lot or %)`.
-9. **Trade handling**: `Book` (CLI·360) and `Handling` (EXP) → `Trade handling`, the glossary word. `Market / Broker Book Positions` (EXP) → `Market book / Broker book positions`, as on DASH.
+9. **Trade handling**: `Book` (CLI·360) and `Handling` (EXP) → `Trade handling`, the glossary word. `Market / Broker Book Positions` (EXP) → `A-book / B-book positions`, as on DASH.
 10. **Dealing**: `Dealing mode` and `Execution` (DEAL) → `Dealing`, as on EXP, RISK and GRP. `MODE` is a banned code. The values stay `Manual dealing` and `Automatic dealing`.
 11. **Broker dealing switch**: `Same as broker switch` (GRP, two rows) → `Same as broker dealing switch`, to match `Ignore broker dealing switch`.
 12. **Halt state**: `Trading halt` used as a state (EXP, RISK, EMG) → `Trading halted`. `Trading halt` stays the name of the control and the screen.
@@ -2557,7 +2558,7 @@ Each item lists the old variants, then the final word. The glossary above is the
 35. **Approved by**: DEP `Marked by` and filter `Marked by first admin` → `Approved by (first admin)`, to match the renamed action `Approve (first admin)`.
 36. **Date range**: `From / To` (RPT, terminal tabs) → `From (UTC) / To (UTC)`, as on DEAL.
 37. **Ticket #**: KYC `ID` → `Check #`. `Ticket #` is kept for orders, positions and trades only.
-38. **Units in the name**: terminal `Points` → `Move (points)`, DEAL `+1 / +2 / +3` → `+1 / +2 / +3 steps`, CLI·360 `<first> → <last>` → `<first> → <last> ($)`, DASH `Market book / Broker book` stat → `… (lots)`.
+38. **Units in the name**: terminal `Points` → `Move (points)`, DEAL `+1 / +2 / +3` → `+1 / +2 / +3 steps`, CLI·360 `<first> → <last>` → `<first> → <last> ($)`, DASH `A-book / B-book` stat → `… (lots)`.
 39. **Margin panel**: RISK `Margin Watch` → `Margin`, the same name as the MRG screen it summarises.
 
 Resolved 2026-10-01 (owner): broker-wide **Max slippage** (DEAL, CFG) is stored in points (Broker.defaultMaxSlippagePoints, web 58b077a) and labelled Max slippage (points); no cap reads "unlimited".
