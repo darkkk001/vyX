@@ -5,6 +5,8 @@ import { missingForSymbol } from "@/lib/symbol-completeness";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, TradingMode, BookType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { getLivePriceRows } from "@/lib/live-price";
+import { symbolSlippageCapPoints } from "@/lib/slippage-cap";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
@@ -46,6 +48,19 @@ async function requireManager() {
   return session!;
 }
 
+// effectiveMaxSlippagePoints: the cap a fill on this symbol gets right now, in its points (null = no cap, or no live
+// price to derive it from); slippageCapSource: "symbol" (its own value) or "derived" (from the broker's XAUUSD base)
+function effectiveCap(
+  broker: { slippageCapXauPoints: Prisma.Decimal | null; slippageCapRefPrice: Prisma.Decimal | null },
+  symbol: { name: string; digits: number },
+  own: Prisma.Decimal | null,
+  live: { bid: Prisma.Decimal; ask: Prisma.Decimal } | undefined
+) {
+  if (own != null) return { effectiveMaxSlippagePoints: own.toString(), slippageCapSource: "symbol" as const };
+  const cap = live ? symbolSlippageCapPoints(broker, { name: symbol.name, digits: symbol.digits }, live.ask) : null;
+  return { effectiveMaxSlippagePoints: cap ? cap.toString() : null, slippageCapSource: "derived" as const };
+}
+
 export async function GET() {
   const session = await requireManager();
   if (!session) {
@@ -62,6 +77,12 @@ export async function GET() {
   // synthetic symbols (lib/synthetic-symbols.ts) exist for the shadow-bot tenant only, the demo's q-symbols for the demo tenant
   // only: hidden from every other broker
   const symbols = allSymbols.filter((s) => visible(s.name));
+  // the effective slippage cap per symbol is the server's number (owner rule: no app computes it): the broker's base,
+  // its gold reference and each added symbol's live price, one batched read (a symbol with no price shows no figure)
+  const [capBroker, capPrices] = await Promise.all([
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId! }, select: { slippageCapXauPoints: true, slippageCapRefPrice: true } }),
+    getLivePriceRows(symbols.filter((s) => s.brokerSymbols[0]).map((s) => s.name)).catch(() => new Map()),
+  ]);
 
   const rows = symbols.map((symbol) => {
     const cfg = symbol.brokerSymbols[0];
@@ -92,6 +113,7 @@ export async function GET() {
       // Slippage cap (owner 2026-10-26, lib/slippage-cap.ts): this symbol's own cap in its points; null = derived from the
       // broker's XAUUSD base (GET /api/manage/risk slippageCapXauPoints / slippageCapRefPrice)
       maxSlippagePoints: cfg?.maxSlippagePoints != null ? cfg.maxSlippagePoints.toString() : null,
+      ...effectiveCap(capBroker, symbol, cfg?.maxSlippagePoints ?? null, capPrices.get(symbol.name)),
       // Step 2 (owner 2026-09-30): how many trading-hours rows this broker has for the symbol (0 = the default week),
       // so SYM's hours summary needs no per-symbol sessions read.
       sessionCount: cfg ? cfg._count.tradingSessions : 0,
