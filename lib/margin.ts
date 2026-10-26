@@ -18,6 +18,7 @@ export type AccountMarginSnapshot = {
   marginCallLevel: number;
   stopOutLevel: number;
   marginLevel: number | null; // null = no used margin (no fresh price for any open position)
+  unpriced: number; // open positions left out of floatingPnl / equity: no fresh price or no FX rate (bo 1.0.96 equity snapshots skip these accounts)
 };
 
 // Shared by the Risk Dashboard stats (app/manage/(shell)/risk/page.tsx),
@@ -51,7 +52,7 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
   ]);
   const legsByAccount = new Map<string, MarginLeg[]>();
 
-  type Acc = { accountId: string; accountNumber: string; balance: Prisma.Decimal; credit: Prisma.Decimal; floating: Prisma.Decimal; usedMargin: Prisma.Decimal; exposure: Prisma.Decimal; positionCount: number; marginCallLevel: Prisma.Decimal; stopOutLevel: Prisma.Decimal };
+  type Acc = { accountId: string; accountNumber: string; balance: Prisma.Decimal; credit: Prisma.Decimal; floating: Prisma.Decimal; usedMargin: Prisma.Decimal; exposure: Prisma.Decimal; positionCount: number; unpriced: number; marginCallLevel: Prisma.Decimal; stopOutLevel: Prisma.Decimal };
   const byAccount = new Map<string, Acc>();
   for (const p of positions) {
     const acc = byAccount.get(p.account.id) ?? {
@@ -63,6 +64,7 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
       usedMargin: new Prisma.Decimal(0),
       exposure: new Prisma.Decimal(0),
       positionCount: 0,
+      unpriced: 0,
       marginCallLevel: p.account.group?.marginCallLevel ?? new Prisma.Decimal(100),
       stopOutLevel: p.account.group?.stopOutLevel ?? new Prisma.Decimal(50),
     };
@@ -80,6 +82,8 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
       const legs = legsByAccount.get(p.account.id) ?? [];
       legs.push({ symbolKey: p.symbolId, side: p.side, volume: p.volume, margin, hedgedMarginPct: hedgedPct.get(p.symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT });
       legsByAccount.set(p.account.id, legs);
+    } else {
+      acc.unpriced += 1;
     }
     byAccount.set(p.account.id, acc);
   }
@@ -100,6 +104,7 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
       marginCallLevel: a.marginCallLevel.toNumber(),
       stopOutLevel: a.stopOutLevel.toNumber(),
       marginLevel: a.usedMargin.gt(0) ? equity.div(a.usedMargin).mul(100).toNumber() : null,
+      unpriced: a.unpriced,
     };
   });
 }
