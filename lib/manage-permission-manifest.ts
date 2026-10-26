@@ -81,6 +81,8 @@ export const MANIFEST: Row[] = [
   { mod: "accounts/[id]/equity-curve/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   // Batch C-2 account summary (owner 2026-10-21): the history summary bar and statements, readable by SUPPORT
   { mod: "accounts/[id]/summary/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
+  // bo 1.0.96 realized Day / Week P/L (2026-10-26): the same read as the summary, readable by SUPPORT
+  { mod: "accounts/[id]/summary/periods/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/summary/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
   { mod: "accounts/[id]/kyc/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "accounts/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
@@ -151,6 +153,8 @@ export const MANIFEST: Row[] = [
   { mod: "liquidity-providers/[id]/route", method: "PATCH", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
   { mod: "liquidity-providers/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
   { mod: "liquidity/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
+  // the Liquidity screen's CONNECTED badge (owner 2026-10-23): any staff of the broker, SUPPORT included (plain words only)
+  { mod: "liquidity/status/route", method: "GET", perm: "ANY_ADMIN", supportRead: true },
   { mod: "live-account-requests/[id]/route", method: "PATCH", perm: "KYC_REVIEW", needsId: true, body: {} },
   { mod: "live-account-requests/route", method: "GET", perm: "KYC_REVIEW" },
   { mod: "live-activity/route", method: "GET", perm: "ANY_MANAGER" },
