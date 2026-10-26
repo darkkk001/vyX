@@ -77,5 +77,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ skipped: gate.reason, accountsEvaluated: 0, errors: 0 });
   }
 
-  return NextResponse.json(await runFullMarginPass());
+  // who asked, for the RISK_CLOSE_WEB audit row (lib/risk-monitor.ts): Vercel's cron says so in its user agent; the
+  // only other caller of the full pass is the engine's backstop
+  const fullPassTrigger = (request.headers.get("user-agent") ?? "").startsWith("vercel-cron") ? "margin-monitor-cron" : "engine-backstop";
+  return NextResponse.json(await runFullMarginPass(fullPassTrigger));
 }

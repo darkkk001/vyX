@@ -86,6 +86,8 @@ const LABELS: Record<string, string> = {
   // owner 2026-10-05 (docs/contracts/staff-credentials.md, staff-resend-verification.md)
   ACCOUNT_PASSWORD_SET: "Set trader password",
   PASSWORD_REVEALED: "Password revealed",
+  // owner 2026-10-26: every automatic SL / TP / stop-out the server closes (lib/risk-monitor.ts); brokers see no infra words
+  RISK_CLOSE_WEB: "Automatic close (SL / TP / stop-out)",
   ACCOUNT_INTERNAL_FLAG_CHANGED: "Changed internal account flag",
   STAFF_VERIFICATION_RESENT: "Resent verification e-mail",
   CLIENT_VERIFICATION_RESENT: "Client asked for a new verification e-mail",

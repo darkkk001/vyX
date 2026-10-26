@@ -211,7 +211,23 @@ export type RiskMonitorResult = {
  *  read. Anything it re-reads after a close is read fresh, as always. */
 type PreloadedAccount = { positions: OpenPositionWithMarket[]; account: RiskAccount | null; ownerChecked?: boolean };
 
-export async function evaluateAccountRisk(accountId: string, preloaded?: PreloadedAccount): Promise<RiskMonitorResult> {
+/** Which web pass made a risk close (owner 2026-10-26: Stage 6 drill step 8 must be provable from the database). Every
+ *  automatic close the web makes leaves one RISK_CLOSE_WEB audit row with it, in the close's own transaction. */
+export type RiskTrigger = "risk-fallback" | "margin-monitor-cron" | "engine-backstop" | "engine-symbols" | "unknown";
+
+function riskCloseAudit(tx: Prisma.TransactionClient, p: { brokerId: string; positionId: string; accountId: string; reason: "SL" | "TP" | "STOP_OUT"; trigger: RiskTrigger; marginLevel?: string }) {
+  return tx.auditLog.create({
+    data: {
+      brokerId: p.brokerId,
+      action: "RISK_CLOSE_WEB",
+      entityType: "Position",
+      entityId: p.positionId,
+      newValue: { accountId: p.accountId, reason: p.reason, trigger: p.trigger, ...(p.marginLevel ? { marginLevel: p.marginLevel } : {}) },
+    },
+  });
+}
+
+export async function evaluateAccountRisk(accountId: string, preloaded?: PreloadedAccount, trigger: RiskTrigger = "unknown"): Promise<RiskMonitorResult> {
   const slTpClosed: string[] = [];
   const stopOutClosed: string[] = [];
 
@@ -243,8 +259,8 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
     if (!reason || p.bid == null || p.ask == null) continue;
     const cp = closePriceFor(p.side, p.bid, p.ask);
     const outcome = await unlessNotOwner(() =>
-      prisma.$transaction((tx) =>
-        closePositionInTx(tx, {
+      prisma.$transaction(async (tx) => {
+        const o = await closePositionInTx(tx, {
           position: {
             id: p.id,
             accountId: p.accountId,
@@ -258,8 +274,10 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
           note: reason === "stop_loss" ? "Stop loss hit (automatic)" : "Take profit hit (automatic)",
           riskActor: "WEB",
           deal: { reason: reason === "stop_loss" ? "SL" : "TP", capture: { requestedAt: new Date(), platform: "Server", executionMode: "AUTO" } },
-        })
-      )
+        });
+        if (o.closed) await riskCloseAudit(tx, { brokerId: p.brokerId, positionId: p.id, accountId, reason: reason === "stop_loss" ? "SL" : "TP", trigger });
+        return o;
+      })
     );
     // the account changed hands (the engine owns it now): this side stops acting on it
     if (outcome === null) return { evaluated: false, slTpClosed, stopOutClosed };
@@ -302,8 +320,8 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
     if (!worst) break; // below threshold but nothing closeable has a live price right now -- stuck, not this function's call to guess a price
 
     const outcome = await unlessNotOwner(() =>
-      prisma.$transaction((tx) =>
-        closePositionInTx(tx, {
+      prisma.$transaction(async (tx) => {
+        const o = await closePositionInTx(tx, {
           position: {
             id: worst!.position.id,
             accountId,
@@ -317,8 +335,10 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
           note: `Stop-out (automatic): margin level ${marginLevel.toFixed(2)}% at or below ${stopOutLevel}%`,
           riskActor: "WEB",
           deal: { reason: "STOP_OUT", capture: { requestedAt: new Date(), platform: "Server", executionMode: "AUTO" } },
-        })
-      )
+        });
+        if (o.closed) await riskCloseAudit(tx, { brokerId: worst!.position.brokerId, positionId: worst!.position.id, accountId, reason: "STOP_OUT", trigger, marginLevel: marginLevel.toFixed(2) });
+        return o;
+      })
     );
     // the account changed hands (the engine owns it now): this side stops acting on it
     if (outcome === null) return { evaluated: false, slTpClosed, stopOutClosed };
@@ -438,13 +458,13 @@ async function clearMarginCall(accountId: string, brokerId: string, body: string
 // price-feed ingest route; failures for one account are isolated (a bad
 // account never blocks the rest, and never blocks the tick ingest
 // response itself from succeeding).
-export async function evaluateRiskForSymbol(symbolName: string): Promise<void> {
+export async function evaluateRiskForSymbol(symbolName: string, trigger: RiskTrigger = "engine-symbols"): Promise<void> {
   const accountIds = await prisma.position.findMany({
     where: { status: "OPEN", symbol: { name: symbolName }, ...excludeDemoByBrokerRelation() },
     select: { accountId: true },
     distinct: ["accountId"],
   });
-  await evaluateAccountsRisk(accountIds.map((a) => a.accountId), "risk-monitor: evaluation failed for account");
+  await evaluateAccountsRisk(accountIds.map((a) => a.accountId), "risk-monitor: evaluation failed for account", trigger);
 }
 
 const PASS_CHUNK = 50;
@@ -459,7 +479,7 @@ const PASS_CHUNK = 50;
  * account falls back to reading its own, exactly as before. Returns the number of accounts whose evaluation threw (each
  * one logged with `failLabel`).
  */
-export async function evaluateAccountsRisk(accountIdsAll: string[], failLabel: string): Promise<number> {
+export async function evaluateAccountsRisk(accountIdsAll: string[], failLabel: string, trigger: RiskTrigger = "unknown"): Promise<number> {
   let errors = 0;
   // Stage 6 (risk authority): the accounts the engine owns are not this side's to evaluate (lib/risk-owner.ts)
   const accountIds = await webOwnedAccountIds(prisma, accountIdsAll);
@@ -479,7 +499,7 @@ export async function evaluateAccountsRisk(accountIdsAll: string[], failLabel: s
       }
       const preloaded: PreloadedAccount | undefined = shared ? { positions: shared.book.get(accountId) ?? [], account: shared.accounts.get(accountId) ?? null, ownerChecked: true } : undefined;
       try {
-        const r = await evaluateAccountRisk(accountId, preloaded);
+        const r = await evaluateAccountRisk(accountId, preloaded, trigger);
         if (r.slTpClosed.length > 0 || r.stopOutClosed.length > 0) shared = null;
       } catch (err) {
         errors++;

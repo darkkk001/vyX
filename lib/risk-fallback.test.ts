@@ -166,6 +166,44 @@ describe("the 1-minute fallback route", () => {
     expect(await pnlRows(s.accountId)).toBe(3);
   }, 30_000);
 
+  // owner 2026-10-26 (drill 7.B step 8): every run leaves one log line, and every close the fallback makes leaves a
+  // RISK_CLOSE_WEB audit row naming it, so the takeover is provable from the Vercel log and the database alone
+  it("one log line per run, and each stop-out it makes is audited as RISK_CLOSE_WEB with trigger risk-fallback", async () => {
+    const s = await scenario("RUST", 2);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await setRiskHeartbeat(prisma, 3, 30);
+    await call(); // fresh: stands down
+    await setRiskHeartbeat(prisma, 45, 30);
+    await call(); // stale: takes over
+    const lines = log.mock.calls.filter(([first]) => first === "risk-fallback:").map(([, json]) => JSON.parse(String(json)));
+    log.mockRestore();
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({ ran: false, skipped: "engine heartbeat fresh", accountsEvaluated: 0 });
+    expect(lines[1]).toMatchObject({ ran: true, skipped: null, errors: 0 });
+    expect(lines[1].accountsEvaluated).toBeGreaterThanOrEqual(1);
+    const positions = await prisma.position.findMany({ where: { accountId: s.accountId }, select: { id: true } });
+    const audits = await prisma.auditLog.findMany({ where: { action: "RISK_CLOSE_WEB", entityId: { in: positions.map((p) => p.id) } } });
+    expect(audits).toHaveLength(2);
+    for (const a of audits) expect(a.newValue).toMatchObject({ accountId: s.accountId, reason: "STOP_OUT", trigger: "risk-fallback" });
+  }, 30_000);
+
+  it("the 5-minute margin-monitor pass names its caller: Vercel's cron or the engine's backstop", async () => {
+    const { GET: monitor } = await import("@/app/api/internal/margin-monitor/route");
+    const run = (userAgent?: string) =>
+      monitor(new NextRequest("http://localhost/api/internal/margin-monitor", { headers: { authorization: `Bearer ${process.env.CRON_SECRET}`, ...(userAgent ? { "user-agent": userAgent } : {}) } }));
+    const cron = await scenario("WEB", 1);
+    await run("vercel-cron/1.0");
+    const engine = await scenario("WEB", 1);
+    await run("reqwest/0.12");
+    const triggerOf = async (accountId: string) => {
+      const ids = (await prisma.position.findMany({ where: { accountId }, select: { id: true } })).map((p) => p.id);
+      return (await prisma.auditLog.findMany({ where: { action: "RISK_CLOSE_WEB", entityId: { in: ids } } })).map((a) => (a.newValue as { trigger: string }).trigger);
+    };
+    expect(await triggerOf(cron.accountId)).toContain("margin-monitor-cron");
+    expect(await triggerOf(engine.accountId)).toContain("engine-backstop");
+    expect(await triggerOf(engine.accountId)).not.toContain("margin-monitor-cron");
+  }, 30_000);
+
   it("the engine cannot be read (gate null): the fallback still runs when the heartbeat is stale", async () => {
     const s = await scenario("RUST", 1);
     gate.mockResolvedValue({ run: null, reason: "engine unreadable" });
