@@ -26,6 +26,7 @@ import {
 } from "@/lib/market-simulator";
 import { conversionRateNum, fxLookupNum, marginInAccount, newOrderMarginInAccount, pnlInAccount, quoteCurrencyOf, type FxQuoteNum } from "@/lib/fx-client";
 import { tradeApi, serverNow, effectiveAsk, spreadRuleFromPrice, ApiError, type SpreadRule, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
+import { createSessionExpiry, type SessionExpiry } from "@/lib/session-expiry";
 import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import AddSymbolDialog from "./AddSymbolDialog";
 import ChartSettingsDialog from "./ChartSettingsDialog";
@@ -1092,6 +1093,18 @@ export default function WebTrader({
 
 
   // ---------- data loading ----------
+  // A 401 on any poll means the session is gone (owner 2026-10-26: an expired demo tab kept polling /orders and
+  // /positions every 4 s with 401s). The first one stops every poll and shows the login screen, once.
+  // lib/session-expiry.ts; one instance for the component's life, the target read at the moment it fires
+  const expireTargetRef = useRef<() => void>(() => {});
+  expireTargetRef.current = () => {
+    if (onSessionExpired) onSessionExpired();
+    else window.location.href = demo ? "/trade" : "/trade/login";
+  };
+  const pollSessionRef = useRef<SessionExpiry | null>(null);
+  if (!pollSessionRef.current) pollSessionRef.current = createSessionExpiry(() => expireTargetRef.current());
+  const pollSession = pollSessionRef.current;
+  const { expire: expireSession, onPollError } = pollSession;
   const refreshAccount = useCallback(async () => {
     try {
       const me = await tradeApi.me();
@@ -1106,13 +1119,12 @@ export default function WebTrader({
       // leaves the last-known account state on screen; the next poll tries
       // again.
       if (err instanceof ApiError && err.status === 401) {
-        if (onSessionExpired) onSessionExpired();
-        else window.location.href = demo ? "/trade" : "/trade/login";
+        expireSession();
       } else {
         console.error("refreshAccount failed", err);
       }
     }
-  }, [onSessionExpired, demo]);
+  }, [expireSession]);
   // Terminal sounds need the live bid/ask at the moment a position
   // disappears from the open list (see prevPositionsRef below) --
   // refreshPositions is a stable ([]) callback, so it reads this ref
@@ -1130,7 +1142,8 @@ export default function WebTrader({
   const prevPositionsRef = useRef<Map<string, ApiPosition>>(new Map());
   const positionsLoadedRef = useRef(false);
   const refreshPositions = useCallback(async () => {
-    const fresh = await tradeApi.positions().catch(() => []);
+    const fresh = await tradeApi.positions().catch(onPollError<ApiPosition[]>([]));
+    if (pollSession.expired()) return; // never paint an expired session's empty list
     if (positionsLoadedRef.current) {
       const freshIds = new Set(fresh.map((p) => p.id));
       for (const [id, prev] of prevPositionsRef.current) {
@@ -1153,7 +1166,7 @@ export default function WebTrader({
     prevPositionsRef.current = new Map(fresh.map((p) => [p.id, p]));
     positionsLoadedRef.current = true;
     setPositions(fresh);
-  }, []);
+  }, [onPollError, pollSession]);
   // Real fix for the "30 enabled, only 10 shown" bug: replaces the
   // SYMBOL_DEFS bootstrap with the broker's actual enabled-symbol
   // universe and this account's real (server-persisted) watchlist order.
@@ -1225,9 +1238,10 @@ export default function WebTrader({
   const ordersLoadedRef = useRef(false);
   const refreshOrders = useCallback(async () => {
     const [pending, all] = await Promise.all([
-      tradeApi.orders().catch(() => []),
-      tradeApi.allOrders().catch(() => []),
+      tradeApi.orders().catch(onPollError<Awaited<ReturnType<typeof tradeApi.orders>>>([])),
+      tradeApi.allOrders().catch(onPollError<Awaited<ReturnType<typeof tradeApi.allOrders>>>([])),
     ]);
+    if (pollSession.expired()) return;
     if (ordersLoadedRef.current) {
       for (const order of all) {
         const prevStatus = prevOrderStatusRef.current.get(order.id);
@@ -1243,7 +1257,7 @@ export default function WebTrader({
     ordersLoadedRef.current = true;
     setPendingOrders(pending);
     setAllOrders(all);
-  }, []);
+  }, [onPollError, pollSession]);
   // Phase 1 trust pack §3 -- moved above the trading-events WebSocket
   // effect (which references it in a dependency array) rather than left
   // in the "---------- alerts ----------" section further down; a
@@ -1685,6 +1699,7 @@ export default function WebTrader({
     let cancelled = false;
     let wasConnected = true;
     async function poll() {
+      if (pollSession.expired()) return; // the session is gone: no more requests until the login screen
       try {
         const res = await tradeApi.pricesWithFx();
         if (cancelled) return;
@@ -1746,7 +1761,8 @@ export default function WebTrader({
         if (!wasConnected) { appendLog("Connection restored"); wasConnected = true; }
         setConnected(true);
         setDisconnectedSince(null);
-      } catch {
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) { expireSession(); return; }
         // feed unreachable — keep simulating, nothing to surface to the trader
         if (wasConnected) { appendLog("Connection lost"); wasConnected = false; }
         setConnected(false);
@@ -1769,7 +1785,7 @@ export default function WebTrader({
     pollPricesNowRef.current = () => { void poll(); };
     const interval = setInterval(poll, demo ? DEMO_POLL_MS : 30000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [appendLog, refreshOrders, refreshPositions, demo]);
+  }, [appendLog, refreshOrders, refreshPositions, demo, expireSession, pollSession]);
 
   // Pushed ticks from the API Gateway's price-tick WebSocket
   // (services/api-gateway/src/ws.ts, fed by NATS from the Rust Market
