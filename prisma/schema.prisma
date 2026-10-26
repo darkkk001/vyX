@@ -2076,7 +2076,8 @@ model Position {
   // The mirror Position created on the coverage account for this booking
   // (self-relation) -- the actual hedge leg, kept for unwind/audit. Null
   // on a non-booked position and on the coverage leg itself.
-  coveragePositionId  String?    @unique
+  // Dealing redesign D8 (owner 2026-10-26): several client positions can share one per-symbol hedge leg (no longer unique)
+  coveragePositionId  String?
   coveragePosition    Position?  @relation("PositionCoverage", fields: [coveragePositionId], references: [id])
   // Queued-close lock (docs/CLOSES-RESPECT-DEALER-MODE.md): the PENDING / REQUOTED close Order
   // the dealer has not acted on yet. While set the trader's row is locked ("close awaiting
@@ -2100,6 +2101,8 @@ model Position {
   // history accumulates over the platform's lifetime, undermining the
   // exact cost/latency goal that cron exists for.
   @@index([status])
+
+  @@index([coveragePositionId])
 }
 
 // Backoffice manual position tools' maker-checker gate (VYX-POSITION-

@@ -214,18 +214,18 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
       account: { select: { accountNumber: true, group: { select: { dealingMode: true, forceDealingMode: true, groupType: true } } } },
       broker: { select: { dealingModeAt: true, dealingDeskAutoFillAt: true } },
       // the client position this leg hedges (self-relation back side; unique in practice, a list in the schema)
-      coveredClientPos: { select: { id: true, ticket: true, status: true, accountId: true, account: { select: { accountNumber: true } } }, take: 1 },
+      // the client positions this leg hedges: one for a BOOK NOW / auto-hedge leg, several for a per-symbol leg (D8)
+      coveredClientPos: { select: { id: true, ticket: true, status: true, accountId: true, account: { select: { accountNumber: true } } } },
     },
   });
   if (!closed) return;
 
-  // (a) a coverage leg closed -> release the client position it was hedging
+  // (a) a coverage leg closed -> release the client positions it was hedging (every one of a shared per-symbol leg)
   if (closed.coveredClientPos.length > 0) {
-    const client = closed.coveredClientPos[0];
     // A PARTIAL close of the leg (Live Exposure can close part of any position) leaves the rest of it OPEN and
-    // still hedging this client. Releasing here orphaned that remainder (2026-09-23): the client showed as
+    // still hedging these clients. Releasing here orphaned that remainder (2026-09-23): the client showed as
     // UNBOOKED, could be booked a second time (over-hedged), and its later close never reached the leftover leg.
-    // The link stays; the client's own close follows the smaller leg proportionally, as it always has.
+    // The links stay; each client's own close follows the smaller leg proportionally, as it always has.
     if (closed.status === "OPEN") {
       await db.auditLog.create({
         data: {
@@ -234,12 +234,19 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
           entityType: "Position",
           entityId: closed.id,
           oldValue: { legVolume: ev.sourceVolumeBeforeClose.toString() },
-          newValue: { legVolume: closed.volume.toString(), closedLots: ev.closedLots.toString(), clientPositionId: client.id, reason: ev.reason ?? "manual" },
+          newValue: { legVolume: closed.volume.toString(), closedLots: ev.closedLots.toString(), clientPositionIds: closed.coveredClientPos.map((c) => c.id), reason: ev.reason ?? "manual" },
         },
       });
       return;
     }
-    if (client.status === "OPEN") {
+    const why =
+      ev.reason === "stop_out"
+        ? `stopped out${ev.marginLevel ? ` at margin level ${ev.marginLevel}%` : ""}: the coverage account ran out of balance`
+        : ev.reason === "sl_tp"
+          ? "closed by its own SL / TP"
+          : "closed";
+    for (const client of closed.coveredClientPos) {
+      if (client.status !== "OPEN") continue;
       await db.position.updateMany({ where: { id: client.id, coveragePositionId: closed.id }, data: { covered: false, coveragePositionId: null } });
       await db.auditLog.create({
         data: {
@@ -251,12 +258,6 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
           newValue: { covered: false, reason: ev.reason ?? "manual" },
         },
       });
-      const why =
-        ev.reason === "stop_out"
-          ? `stopped out${ev.marginLevel ? ` at margin level ${ev.marginLevel}%` : ""}: the coverage account ran out of balance`
-          : ev.reason === "sl_tp"
-            ? "closed by its own SL / TP"
-            : "closed";
       // the dealer must know the client leg is exposed again: bell + feed
       await createNotification(db, {
         brokerId: ev.brokerId,
@@ -278,7 +279,6 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
   });   // leg.autoHedged decides who closes it, below
   if (!leg || leg.status !== "OPEN") return; // the dealer already closed coverage -- nothing to follow
 
-  const closeVolume = computeProportionalCloseVolume(ev.closedLots, ev.sourceVolumeBeforeClose, leg.volume);
   // the tx-aware reader (like mirror.onClose): the latest known price for the leg's symbol
   const live = await getLivePriceRow(leg.symbol.name, db);
 
@@ -313,7 +313,20 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
     "$transaction" in db ? (db as PrismaClient).$transaction(fn) : fn(db as Prisma.TransactionClient);
   // Stage 3 BEHAVIOR CHANGE (2026-09-24): the leg's close and its POSITION_COVERAGE_AUTO_CLOSED audit commit
   // together (the audit used to follow the close, and was lost on a crash in between).
+  let closeVolume = new Prisma.Decimal(0);
   const outcome = await runInTx(async (tx) => {
+    // D8 (owner 2026-10-26): a leg may hedge several clients of one symbol and side. Read it under a row lock, so two
+    // clients closing at once never shrink it from the same stale volume, and close the client's share of it:
+    // closedLots x leg / (the lots of every client it hedged just before this close). For a one-client leg that is
+    // the old proportional rule; for an intact shared leg it is exactly the client's lots.
+    const [locked] = await tx.$queryRaw<{ volume: Prisma.Decimal; status: string }[]>`SELECT volume, status::text AS status FROM "Position" WHERE id = ${leg.id} FOR UPDATE`;
+    if (!locked || locked.status !== "OPEN") return { closed: false as const };
+    const legVolume = new Prisma.Decimal(locked.volume);
+    const others = await tx.position.aggregate({ where: { coveragePositionId: leg.id, status: "OPEN", id: { not: closed.id } }, _sum: { volume: true } });
+    const hedgedBefore = (others._sum.volume ?? new Prisma.Decimal(0)).add(ev.sourceVolumeBeforeClose);
+    closeVolume = computeProportionalCloseVolume(ev.closedLots, hedgedBefore, legVolume).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (closeVolume.lte(0)) return { closed: false as const };
+    if (closeVolume.gt(legVolume)) closeVolume = legVolume;
     const o = await closePositionInTx(tx, {
       position: {
         id: leg.id,
@@ -321,7 +334,7 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
         brokerId: leg.brokerId,
         side: leg.side,
         openPrice: leg.openPrice,
-        volume: leg.volume,
+        volume: legVolume,
         symbol: { contractSize: leg.symbol.contractSize },
       },
       closePrice,
