@@ -539,7 +539,7 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, samples: &[Ca
             // apply_broker_bars for why a bar that doesn't line up with this
             // engine's own bucket is counted and skipped, never applied.
             let mut updates = candle_updates_for_tick_ohlc(tick, tick_time, offset_sec, sample.open, sample.high, sample.low);
-            let outcome = apply_broker_bars(&mut updates, &tick.bars);
+            let outcome = apply_broker_bars(&mut updates, &tick.bars, offset_sec, tick_time);
             stats.record_broker_bars(&tick.symbol, outcome, &tick.bars, &updates);
             for update in updates {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped

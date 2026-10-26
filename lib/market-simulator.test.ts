@@ -458,3 +458,15 @@ describe("feedStatusFor (hotfix/terminal-live-bugs #4: no premature no-feed flas
     expect(feedStatusFor(longDeadTickAt, now, sessionStart)).toBe("no-feed");
   });
 });
+
+describe("W1 starts Sunday (owner 2026-10-26: MT5's W1 bars and the engine's)", () => {
+  it("bucketStartMs and demoBucketStart put a Thursday in the week of the Sunday before", async () => {
+    const { demoBucketStart } = await import("@/lib/demo-prices");
+    const thu = Date.UTC(2026, 9, 29, 12, 0, 0); // Thursday 2026-10-29
+    expect(bucketStartMs("W1", thu)).toBe(Date.UTC(2026, 9, 25)); // Sunday 10-25
+    expect(demoBucketStart("W1", thu)).toBe(Date.UTC(2026, 9, 25));
+    const sun = Date.UTC(2026, 9, 25, 0, 0, 0);
+    expect(bucketStartMs("W1", sun)).toBe(sun);
+    expect(bucketStartMs("W1", sun - 1)).toBe(Date.UTC(2026, 9, 18)); // Saturday 23:59:59.999 is the week before
+  });
+});
