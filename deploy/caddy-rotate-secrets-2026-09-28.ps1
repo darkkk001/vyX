@@ -140,6 +140,25 @@ function Invoke-Checks([string]$phase) {
   return $bad
 }
 
+# A parsed JSON value with the keys of every object in ordinal order, recursively; arrays keep their order (in a Caddy
+# config the order of routes and handlers means something). Returned unrolled-safe (`,` keeps an array an array).
+function ConvertTo-SortedJson($o) {
+  if ($null -eq $o) { return $null }
+  if ($o -is [System.Management.Automation.PSCustomObject]) {
+    $names = [string[]]@($o.PSObject.Properties | ForEach-Object { $_.Name })
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    $m = [ordered]@{}
+    foreach ($n in $names) { $m[$n] = ConvertTo-SortedJson $o.$n }
+    return $m
+  }
+  if ($o -is [System.Collections.IList]) {
+    $a = New-Object System.Collections.ArrayList
+    foreach ($x in $o) { [void]$a.Add((ConvertTo-SortedJson $x)) }
+    return , $a.ToArray()
+  }
+  return $o
+}
+
 # A restart or a reboot adapts the Caddyfile with AppEnvironmentExtra as stored: adapt it that way here and compare with
 # the config the running Caddy holds (admin endpoint, localhost). Hashes only.
 function Test-RestartParity {
@@ -150,8 +169,10 @@ function Test-RestartParity {
   if ($rc -ne 0) { Write-Host "  restart parity: adapt failed: $(Mask (($adapted | Select-Object -Last 2) -join ' '))"; return $false }
   $json = ($adapted | Where-Object { $_.TrimStart().StartsWith("{") }) -join ""
   try { $running = Invoke-RestMethod -Uri $Admin -TimeoutSec 5 } catch { Write-Host "  restart parity: admin endpoint unreachable"; return $false }
-  # both sides as objects, serialized the same way (key order and spacing never decide)
-  $norm = { param($o) ($o | ConvertTo-Json -Depth 100 -Compress) }
+  # both sides as objects with every object's keys sorted (ordinal, at every depth; array order kept), serialized the
+  # same way: the running config comes back from the admin endpoint in Caddy's own key order, which differs from the
+  # adapter's (2026-10-27, VPS: a false "DIFFERENT" until the keys were sorted)
+  $norm = { param($o) ConvertTo-Json -InputObject (ConvertTo-SortedJson $o) -Depth 100 -Compress }
   $sha = { param($s) [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($s))).Replace("-", "").Substring(0, 12) }
   $a = & $sha (& $norm ($json | ConvertFrom-Json)); $r = & $sha (& $norm $running)
   Write-Host "  restart parity: stored environment -> $a, running Caddy -> $r  $(if ($a -eq $r) { 'OK (a restart / reboot loads the same config)' } else { '<<< DIFFERENT: a restart or reboot would load another config' })"

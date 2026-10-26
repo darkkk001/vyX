@@ -81,7 +81,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\vyxtrader\scripts\caddy-h
    **never run a plain `caddy reload` (or `validate`) from a console**: it would load the placeholders EMPTY. Every
    reload goes through `deploy/caddy-rotate-secrets-2026-09-28.ps1` (it sets exactly the service's environment for
    the reload, never prints a value): `-Phase Reload` for a Caddyfile change, `-Phase Overlap` / `-Phase Finish`
-   for a secret rotation, `-Phase Verify` (read-only) for the checks.
+   for a secret rotation, `-Phase Verify` (read-only) for the checks. Any change to that script is first run against
+   `deploy/tests/caddy-rotate-secrets/run.ps1` on a PC (stub nssm / caddy, no VPS; must end `ALL OK`).
 7. **After ANY Caddy restart or VPS reboot: prices 200 at once** (next section). `/health` 200 alone proves nothing
    about the secrets: it needs no header.
 
