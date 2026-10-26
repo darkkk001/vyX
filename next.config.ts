@@ -4,8 +4,9 @@ import type { NextConfig } from "next";
 // broker slugs live in R2 behind feeds.vyxtrader.com, at the same paths. Installed apps keep their compiled-in
 // www.vyxtrader.com/native-<app>-updates/<slug>/ URL; this redirect (302, before public/ files) sends the binaries
 // to R2. The index files (releases.win.json, RELEASES, assets.win.json) stay here, under git review. A slug is added
-// only after its binaries are byte-checked in R2 and an installed copy updated through the redirect.
-const R2_FEED_SLUGS = ["qoretrader"];
+// only after its binaries are byte-checked in R2 and an installed copy updated through the redirect (QoreTrader), or,
+// where no installed copy is behind its feed, every file was downloaded through www and byte-checked (Futurix).
+const R2_FEED_SLUGS = ["qoretrader", "futurixglobal"];
 
 const nextConfig: NextConfig = {
   async redirects() {
