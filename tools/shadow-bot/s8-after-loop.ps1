@@ -12,6 +12,7 @@ param(
   [string]$OutDir = 'C:\vyx\handoff\s8-after',
   [string]$EnvFile = 'C:\vyx-secrets\env\D-vyX\.env.live',
   [string]$PasswordFile = 'C:\vyx-secrets\shadowbot-password.txt',
+  [string]$SynthSecretFile = 'C:\shadow-bot-secrets\synth-feed-secret.txt',
   [string]$WebRepo = 'C:\vyx\web',
   [string]$Psql = 'C:\pg-scratch\pgsql\bin\psql.exe',
   [int]$SettleSecs = 30,
@@ -126,6 +127,8 @@ $env:DATABASE_URL = $dbUrl
 $env:DIRECT_URL = Read-EnvValue 'DIRECT_URL'
 Set-PgEnv $env:DIRECT_URL
 $dbHost = ([uri]$dbUrl).Host
+if (-not $env:SYNTH_FEED_SECRET_FILE) { $env:SYNTH_FEED_SECRET_FILE = $SynthSecretFile }
+if (-not (Test-Path $env:SYNTH_FEED_SECRET_FILE)) { throw 'the synth-feed secret file is missing: set SYNTH_FEED_SECRET_FILE or -SynthSecretFile' }
 if (Test-Path $PasswordFile) { $env:SHADOWBOT_PASSWORD = (Get-Content $PasswordFile -Raw).Trim() }
 Say "database: $dbHost; scenario commit $(git -C $repo rev-parse --short HEAD); TSV $tsv"
 
