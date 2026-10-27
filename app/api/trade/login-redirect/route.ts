@@ -6,6 +6,7 @@ import {
   accountSessionCookieOptions,
 } from "@/lib/account-auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { loginFailed, loginRefusal, loginSucceeded } from "@/lib/login-guard";
 import { issuePending2faChallenge } from "@/lib/totp";
 
 // Landing point for the root-domain launcher's (app/launch) single-screen
@@ -36,8 +37,19 @@ export async function POST(request: NextRequest) {
     const qs = accountNumber ? `?error=1&account=${encodeURIComponent(accountNumber)}` : "?error=1";
     return NextResponse.redirect(`${origin}/trade/login${qs}`, { status: 303 });
   }
+  // per-IP limit + wrong-password lockout (lib/login-guard.ts); error=3 -> the login page says which and for how long
+  const identity = `${brokerId}:${accountNumber}`;
+  const refusal = await loginRefusal("trade", request.headers, identity);
+  if (refusal) {
+    const wait = Math.max(1, Math.ceil(refusal.retryAfterSeconds / 60));
+    const reason = refusal.code === "LOGIN_LOCKED" ? "locked" : "network";
+    const qs = `?${accountNumber ? `account=${encodeURIComponent(accountNumber)}&` : ""}error=3&reason=${reason}&wait=${wait}`;
+    return NextResponse.redirect(`${origin}/trade/login${qs}`, { status: 303 });
+  }
 
   const auth = await authenticateAccountDetailed(brokerId, accountNumber, password);
+  if (auth.kind === "invalid") await loginFailed("trade", identity);
+  else await loginSucceeded("trade", identity);
   if (auth.kind !== "ok") {
     // error=2 -> the login page shows the suspended/closed sentence instead of "wrong password"
     const reason = auth.kind === "inactive" ? `&error=2&status=${auth.status}` : "&error=1";

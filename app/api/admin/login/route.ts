@@ -8,6 +8,7 @@ import {
 } from "@/lib/auth";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { loginFailed, loginRefusal, loginRefusalResponse, loginSucceeded } from "@/lib/login-guard";
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
@@ -26,19 +27,25 @@ export async function POST(request: NextRequest) {
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
+  // per-IP limit + wrong-password lockout (lib/login-guard.ts), before any password compare
+  const refusal = await loginRefusal("admin", request.headers, email);
+  if (refusal) return loginRefusalResponse(refusal);
 
   const admin = await prisma.adminUser.findUnique({ where: { email } });
 
   // Constant-shape response whether the email exists or not, to avoid
   // leaking which admin emails are registered.
   if (!admin || admin.status !== "ACTIVE") {
+    await loginFailed("admin", email);
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
 
   const passwordMatches = await bcrypt.compare(password, admin.passwordHash);
   if (!passwordMatches) {
+    await loginFailed("admin", email);
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
+  await loginSucceeded("admin", email);
 
   // Password alone isn't enough once 2FA is turned on (see
   // AdminUser.twoFactorEnabled's schema comment) -- issue a short-lived

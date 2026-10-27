@@ -148,6 +148,9 @@ export async function middleware(request: NextRequest) {
   if (cors && request.method === "OPTIONS") return new NextResponse(null, { status: 204, headers: cors });
   const response = await route(request);
   if (cors) for (const [k, v] of Object.entries(cors)) response.headers.set(k, v);
+  // No API answer is ever cached by a browser, proxy or CDN (owner 2026-10-28): without this every /api/* response
+  // went out with the platform default "public, max-age=0, must-revalidate".
+  if (request.nextUrl.pathname.startsWith("/api/")) response.headers.set("Cache-Control", "no-store");
   return response;
 }
 

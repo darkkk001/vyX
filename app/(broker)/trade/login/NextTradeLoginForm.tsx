@@ -25,6 +25,12 @@ export default function NextTradeLoginForm({
   );
 }
 
+// error=3 (app/api/trade/login-redirect): the server's wait in whole minutes, as text
+function waitMinutes(raw: string | null): string {
+  const n = Math.max(1, Math.round(Number(raw) || 1));
+  return `${n} minute${n === 1 ? "" : "s"}`;
+}
+
 function NextTradeLoginFormInner({
   brokerName,
   brokerLogoUrl,
@@ -46,6 +52,10 @@ function NextTradeLoginFormInner({
       initialError={
         searchParams.get("error") === "2"
           ? `This account is ${searchParams.get("status") === "CLOSED" ? "closed" : "suspended"}. Contact your broker's support.`
+          : searchParams.get("error") === "3"
+            ? searchParams.get("reason") === "locked"
+              ? `Too many wrong passwords. Try again in ${waitMinutes(searchParams.get("wait"))}.`
+              : `Too many sign-in attempts from this network. Try again in ${waitMinutes(searchParams.get("wait"))}.`
           : searchParams.get("error")
             ? "Invalid account number or password"
             : null

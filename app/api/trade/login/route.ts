@@ -9,6 +9,7 @@ import {
 } from "@/lib/account-auth";
 import { wantsSessionToken } from "@/lib/app-web";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { loginFailed, loginRefusal, loginRefusalResponse, loginSucceeded } from "@/lib/login-guard";
 import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
 import { issuePending2faChallenge } from "@/lib/totp";
 
@@ -46,6 +47,10 @@ export async function POST(request: NextRequest) {
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
+  // per-IP limit + wrong-password lockout (lib/login-guard.ts), before any password compare
+  const identity = `${brokerId}:${accountNumber}`;
+  const refusal = await loginRefusal("trade", request.headers, identity);
+  if (refusal) return loginRefusalResponse(refusal);
 
   // Read any existing session *before* authenticating the new one -- this is
   // how we tell a genuine fresh login apart from the Account Selector
@@ -60,8 +65,10 @@ export async function POST(request: NextRequest) {
   // any of it.
   const auth = await authenticateAccountDetailed(brokerId, accountNumber, password);
   if (auth.kind === "invalid") {
+    await loginFailed("trade", identity);
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
+  await loginSucceeded("trade", identity);
   // Password was right but the account is SUSPENDED / CLOSED -- say so
   // (403, not 401) so the trader stops retyping a password that is fine.
   if (auth.kind === "inactive") {

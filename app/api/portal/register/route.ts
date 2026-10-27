@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { clientIpOf } from "@/lib/client-ip";
+
+const REGISTER_PER_IP = { limit: 3, windowSeconds: 3600 } as const;
 import { hashPassword } from "@/lib/client-auth";
 import { sendClientVerificationEmail } from "@/lib/email/verification-email";
 import { requestOrigin } from "@/lib/request-origin";
@@ -35,6 +38,15 @@ export async function POST(request: NextRequest) {
   }
   if (!fullName) {
     return NextResponse.json({ error: "full name is required" }, { status: 400 });
+  }
+  // Per IP as well as per broker (owner 2026-10-28): the per-broker budget alone let one address use up every visitor's
+  // sign-ups. Counted after the field checks, so typos do not use it up. No trusted address: the per-broker limit only.
+  const ip = clientIpOf(request.headers);
+  if (ip !== "unknown") {
+    const perIp = await checkRateLimit(`portal-register-ip:${ip}`, REGISTER_PER_IP.limit, REGISTER_PER_IP.windowSeconds);
+    if (!perIp.allowed) {
+      return NextResponse.json({ error: "too many sign-ups from this network, try again in an hour", code: "REGISTER_IP_LIMIT" }, { status: 429, headers: { "Retry-After": String(REGISTER_PER_IP.windowSeconds) } });
+    }
   }
 
   const existing = await prisma.client.findUnique({ where: { brokerId_email: { brokerId, email } } });

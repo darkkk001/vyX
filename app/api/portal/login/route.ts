@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateClient, createClientSession, CLIENT_SESSION_COOKIE_NAME, clientSessionCookieOptions } from "@/lib/client-auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { loginFailed, loginRefusal, loginRefusalResponse, loginSucceeded } from "@/lib/login-guard";
 
 // Client Portal login -- email + password, distinct from the trader
 // account-number login (app/api/trade/login) this doesn't touch or
@@ -21,11 +22,17 @@ export async function POST(request: NextRequest) {
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
+  // per-IP limit + wrong-password lockout (lib/login-guard.ts), before any password compare
+  const identity = `${brokerId}:${email}`;
+  const refusal = await loginRefusal("portal", request.headers, identity);
+  if (refusal) return loginRefusalResponse(refusal);
 
   const client = await authenticateClient(brokerId, email, password);
   if (!client) {
+    await loginFailed("portal", identity);
     return NextResponse.json({ error: "invalid email or password" }, { status: 401 });
   }
+  await loginSucceeded("portal", identity);
   if (!client.emailVerifiedAt) {
     return NextResponse.json({ error: "please verify your email before logging in, check your inbox" }, { status: 403 });
   }

@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions, staffTwoFactorRequired, TWO_FACTOR_SETUP_REQUIRED } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { loginFailed, loginRefusal, loginRefusalResponse, loginSucceeded } from "@/lib/login-guard";
 import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
 import { staffAddressAllowed, STAFF_IP_REFUSED } from "@/lib/staff-access";
@@ -40,6 +41,10 @@ export async function POST(request: NextRequest) {
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
+  // per-IP limit + wrong-password lockout (lib/login-guard.ts), before any password compare
+  const identity = `${requestBrokerId ?? "none"}:${email}`;
+  const refusal = await loginRefusal("manage", request.headers, identity);
+  if (refusal) return loginRefusalResponse(refusal);
 
   const admin = await prisma.adminUser.findUnique({ where: { email } });
 
@@ -48,7 +53,11 @@ export async function POST(request: NextRequest) {
   // are registered" rule as app/api/admin/login/route.ts, extended here
   // to also not leak "that email exists but isn't a manager for this
   // broker."
-  const invalid = () => NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  // every failure counts toward the lockout, so it never tells which logins exist
+  const invalid = async () => {
+    await loginFailed("manage", identity);
+    return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  };
 
   if (!admin || admin.status !== "ACTIVE") {
     return invalid();
@@ -69,6 +78,7 @@ export async function POST(request: NextRequest) {
   if (!passwordMatches) {
     return invalid();
   }
+  await loginSucceeded("manage", identity);
 
   // step 3b item 3: the broker's staff IP allowlist (after the password, so nothing leaks to a stranger)
   if (!(await staffAddressAllowed(admin.brokerId, request.headers))) {

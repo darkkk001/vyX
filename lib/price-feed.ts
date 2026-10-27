@@ -37,9 +37,11 @@ export async function ingestTicks(secret: string | null, ticksRaw: unknown) {
       method: "POST",
       headers: { "content-type": "application/json", "x-price-feed-secret": configuredSecret },
       body: JSON.stringify(valid),
+      // 2 s like every other call to the VPS (infra audit 2026-10-28): a hung core must not hold the function open
+      signal: AbortSignal.timeout(2000),
     });
   } catch (err) {
-    console.error("price-feed: Trading Core unreachable", err);
+    console.error("price-feed: Trading Core unreachable or timed out", err);
     return NextResponse.json({ error: "market data core unreachable" }, { status: 502 });
   }
 
