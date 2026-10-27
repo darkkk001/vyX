@@ -71,13 +71,27 @@ describe("scenarios", () => {
       }
     }
   });
-  it("S8 crosses the victim's stop-out in the middle of the SL levels, on a symbol with digits", () => {
+  it("S8 crosses three stop-outs inside the SL levels (three episodes per run), each before its wipe-out, on a symbol with digits", () => {
     const sc = loadScenario("s8-stopout-contention", cfg);
-    const many = sc.steps.find((s) => s.op === "openMany") as unknown as { count: number; slFromPct: number; slToPct: number; symbol: string };
-    const victim = sc.steps.find((s) => s.op === "open") as unknown as { stopOutAtPct: number };
+    const many = sc.steps.find((s) => s.op === "openMany") as unknown as { count: number; slFromPct: number; slToPct: number; symbol: string; account: string };
+    const victims = sc.steps.filter((s) => s.op === "open") as unknown as { account: string; stopOutAtPct: number; as: string }[];
+    const ramp = sc.steps.find((s) => s.op === "rampUntil") as unknown as { maxPct: number; until: { closed: string[] } };
+    const expectStep = sc.steps.find((s) => s.op === "expect") as unknown as { stoppedOut: string[] };
     expect(many.count).toBe(450);
-    expect(victim.stopOutAtPct).toBeGreaterThan(many.slFromPct);
-    expect(victim.stopOutAtPct).toBeLessThan(many.slToPct);
+    expect(victims).toHaveLength(3);
+    expect(new Set(victims.map((v) => v.account)).size).toBe(3);
+    expect(victims.map((v) => v.account)).not.toContain(many.account);
+    expect(sc.accounts.length).toBeLessThanOrEqual(cfg.limits.maxOpenAccounts);
+    for (const v of victims) {
+      expect(v.stopOutAtPct).toBeGreaterThan(many.slFromPct);
+      expect(v.stopOutAtPct).toBeLessThan(many.slToPct);
+      const a = cfg.accounts[v.account];
+      const wipeOut = v.stopOutAtPct + a.stopOutLevel / a.leverage;
+      expect(wipeOut - v.stopOutAtPct, `${v.as}: room between its stop-out and its wipe-out`).toBeGreaterThanOrEqual(0.25);
+      expect(ramp.until.closed).toContain(v.as);
+      expect(expectStep.stoppedOut).toContain(v.as);
+    }
+    expect(new Set(victims.map((v) => v.stopOutAtPct)).size).toBe(3);
     expect(cfg.symbolMeta[many.symbol].digits).toBe(1);
   });
   it("S5 is marked as needing the observer (refused live until it exists)", () => {

@@ -1,9 +1,11 @@
 {
   "name": "s8-stopout-contention",
-  "title": "Stop-out under SL load: 450 x 0.01 vIDX with SL levels on 49990001, one account sized to stop out at 1% (49990003), one ramp through both",
+  "title": "Stop-out under SL load: 450 x 0.01 vIDX with SL levels on 49990001, three accounts sized to stop out at 0.7 / 1.0 / 1.3 % (three stop-out episodes per run), one ramp through all",
   "accounts": [
     "49990001",
-    "49990003"
+    "49990002",
+    "49990003",
+    "49990004"
   ],
   "symbols": [
     "vIDX"
@@ -11,7 +13,7 @@
   "steps": [
     {
       "op": "note",
-      "text": "The before / after match-run of Part A (owner 2026-10-27): the same scenario on the old engine and on the new one. The SL levels sit 0.5 % .. 1.5 % below the open, so the ramp crosses about 90 of them per tick while 49990003 crosses its stop-out at 1 %, in the middle of the burst. Read the result with C:\\vyx\\handoff\\stopout-contention-capture.sql."
+      "text": "The before / after match-run of Part A (owner 2026-10-27): the same scenario on the old engine and on the new one. The SL levels sit 0.5 % .. 1.5 % below the open, so the ramp crosses about 90 of them per tick. Three accounts are sized to stop out INSIDE that burst, at 0.7 %, 1.0 % and 1.3 % (owner 2026-10-27: three stop-out episodes per run, not one, so the after-run's stop-out delay p95 has more than a single sample; run it several times for more). Each wipe-out stays beyond its stop-out: 1:200 at 0.95 %, 1:100 at 1.5 %, 1:50 at 2.3 %; a stop-out late enough to pass it is the NBP write-off the old engine risks. Read the result with tools/shadow-bot/sql/stopout-contention-capture.sql."
     },
     {
       "op": "price.set",
@@ -30,8 +32,18 @@
     },
     {
       "op": "require",
+      "account": "49990002",
+      "minEquity": 1800
+    },
+    {
+      "op": "require",
       "account": "49990003",
       "minEquity": 4500
+    },
+    {
+      "op": "require",
+      "account": "49990004",
+      "minEquity": 900
     },
     {
       "op": "openMany",
@@ -47,17 +59,35 @@
     },
     {
       "op": "open",
+      "account": "49990002",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "stopOutAtPct": 0.7,
+      "as": "victim1"
+    },
+    {
+      "op": "open",
       "account": "49990003",
       "symbol": "vIDX",
       "side": "BUY",
       "stopOutAtPct": 1.0,
-      "as": "victim"
+      "as": "victim2"
+    },
+    {
+      "op": "open",
+      "account": "49990004",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "stopOutAtPct": 1.3,
+      "as": "victim3"
     },
     {
       "op": "hold",
       "secs": 5,
       "expectOpen": [
-        "victim"
+        "victim1",
+        "victim2",
+        "victim3"
       ]
     },
     {
@@ -70,7 +100,9 @@
       "holdAtMaxSecs": 300,
       "until": {
         "closed": [
-          "victim",
+          "victim1",
+          "victim2",
+          "victim3",
           "load"
         ]
       }
@@ -78,7 +110,9 @@
     {
       "op": "expect",
       "stoppedOut": [
-        "victim"
+        "victim1",
+        "victim2",
+        "victim3"
       ],
       "closedByServer": [
         "load"
