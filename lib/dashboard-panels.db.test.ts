@@ -31,7 +31,7 @@ afterAll(async () => {
 describe("dashboard panels (db)", () => {
   it("winners / losers, big trades, net exposure, balance-after", async () => {
     if (!dbReachable) return;
-    const { topAccounts, bigTrades, netExposure } = await import("@/lib/dashboard-panels");
+    const { topAccounts, bigTrades, netExposure, largePositions } = await import("@/lib/dashboard-panels");
     const { bookedBalanceAfter } = await import("@/lib/balance-after");
     const s = randomUUID().replace(/-/g, "").slice(0, 8);
     brokerId = (await prisma.broker.create({ data: { name: `DP ${s}`, subdomain: `dp-${s}`, dealingModeAt: null } })).id;
@@ -72,6 +72,14 @@ describe("dashboard panels (db)", () => {
     const exp = await netExposure(brokerId, Prisma.sql`${who} AND TRUE`);
     // open: 2.00 BUY (win) + 0.50 SELL (lose); demo left out; no fresh price in this test -> notional null
     expect(exp).toEqual([{ symbol: sym.name, buyLots: "2.00", sellLots: "0.50", netLots: "1.50", positions: 2, notionalUsd: null }]);
+
+    // LARGE POSITION: book 2.50 open lots; win holds 2.00 (80%, >= 1 lot) = flagged; lose 0.50 (20%) = not
+    const large = await largePositions(brokerId, who);
+    expect(large).toMatchObject({ rule: { minSharePct: 25, minLots: "1.00" }, bookLots: "2.50", count: 1 });
+    expect(large.rows.map((r) => [r.kind, r.accountNumber, r.lots, r.sharePct, r.positions])).toEqual([["LARGE_POSITION", win.accountNumber, "2.00", "80", 1]]);
+    // the old bug: a small account alone on the book is 100% of it but under 1 lot -> never flagged
+    const alone = await largePositions(brokerId, Prisma.sql`${who} AND a.id = ${lose.id}`);
+    expect(alone).toMatchObject({ bookLots: "0.50", count: 0, rows: [] });
 
     const ba = await bookedBalanceAfter([swap.id]);
     expect(ba.get(swap.id)).toBe("1000.00"); // the last row: balance after it = the balance now

@@ -177,6 +177,40 @@ export async function netExposure(brokerId: string, who: Prisma.Sql, limit = 10)
   return out.slice(0, limit).map(({ _n, ...r }) => (void _n, r));
 }
 
+// ------------------------------------------------------------------------------------------------ large positions
+/** The Needs attention LARGE POSITION flag (owner 2026-10-27): an account whose open lots are at least 25% of the
+ *  clients' open lots AND at least 1.0 lot. Both together, so a small account on a small book (0.17 lot = "100% of book")
+ *  is never flagged. Book = every open position of the dashboard's clients, both sides, all symbols. */
+export const LARGE_POSITION_RULE = { minSharePct: 25, minLots: 1 } as const;
+export async function largePositions(brokerId: string, who: Prisma.Sql) {
+  const rows = await prisma.$queryRaw<{ id: string; accountNumber: string; fullName: string | null; lots: Prisma.Decimal; positions: bigint }[]>`
+    SELECT a.id, a."accountNumber", a."fullName", SUM(p.volume) AS lots, COUNT(*)::bigint AS positions
+    FROM "Position" p JOIN "Account" a ON a.id = p."accountId"
+    WHERE p."brokerId" = ${brokerId} AND p.status = 'OPEN' AND p."deletedAt" IS NULL AND ${who}
+    GROUP BY 1, 2, 3`;
+  const book = rows.reduce((t, r) => t.add(r.lots), new Prisma.Decimal(0));
+  const flagged = book.gt(0)
+    ? rows
+        .map((r) => ({ r, share: new Prisma.Decimal(r.lots).div(book).mul(100) }))
+        .filter(({ r, share }) => share.gte(LARGE_POSITION_RULE.minSharePct) && new Prisma.Decimal(r.lots).gte(LARGE_POSITION_RULE.minLots))
+        .sort((x, y) => y.share.cmp(x.share))
+    : [];
+  return {
+    rule: { minSharePct: LARGE_POSITION_RULE.minSharePct, minLots: lots(LARGE_POSITION_RULE.minLots) },
+    bookLots: lots(book),
+    count: flagged.length,
+    rows: flagged.map(({ r, share }) => ({
+      kind: "LARGE_POSITION" as const,
+      accountId: r.id,
+      accountNumber: r.accountNumber,
+      name: r.fullName ?? "",
+      lots: lots(r.lots),
+      positions: Number(r.positions),
+      sharePct: share.toFixed(0),
+    })),
+  };
+}
+
 // ------------------------------------------------------------------------------------------------ J big trades
 /** Trades OPENED in the range with 1 lot or more (the opening deal), newest first, not voided or deleted. */
 export async function bigTrades(brokerId: string, who: Prisma.Sql, range: DashRange, minLots = 1, limit = 20) {

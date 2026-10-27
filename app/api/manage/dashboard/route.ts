@@ -7,7 +7,7 @@ import { tradingDayStart } from "@/lib/trading-day";
 import { bookPnlFloating, bookPnlRealized, currencyAmountsJson, legacySum, type CurrencyAmount } from "@/lib/book-pnl";
 import { humanizeAction, excludeSuperAdminActor, auditActorKind, auditSource, deleteAuditFilter } from "@/lib/audit-labels";
 import { parseDashRange, rangeFromKey, rangeJson } from "@/lib/dash-range";
-import { bigTrades, feedAndBridge, netExposure, onlineNow, periodMoney, periodNewClients, topAccounts } from "@/lib/dashboard-panels";
+import { bigTrades, feedAndBridge, largePositions, netExposure, onlineNow, periodMoney, periodNewClients, topAccounts } from "@/lib/dashboard-panels";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -138,7 +138,7 @@ export async function GET(request: Request) {
   const scope = { brokerId, coverageAccountId: brokerRow.coverageAccountId, includeDemo: scopeMode === "all" };
   const who = clientAccountSql(brokerId, brokerRow.coverageAccountId, scopeMode);
   const moneyWho = clientAccountSql(brokerId, brokerRow.coverageAccountId, scopeMode === "all" ? "all" : "live");
-  const [bookToday, bookFloating, bookWeek, bookRange, periodCash, periodClients, online, status, top, exposure, big] = await Promise.all([
+  const [bookToday, bookFloating, bookWeek, bookRange, periodCash, periodClients, online, status, top, exposure, big, large] = await Promise.all([
     bookPnlRealized(prisma, scope, tradingDayStartAt),
     bookPnlFloating(prisma, scope),
     bookPnlRealized(prisma, scope, week.from),
@@ -150,6 +150,7 @@ export async function GET(request: Request) {
     topAccounts(brokerId, moneyWho, week.from),
     netExposure(brokerId, who),
     bigTrades(brokerId, who, range),
+    largePositions(brokerId, who),
   ]);
   // legacy single numbers for backoffice 1.0.61 and older (summed across currencies; new clients read bookPnl)
   const brokerBookClosedToday = legacySum(bookToday);
@@ -187,6 +188,8 @@ export async function GET(request: Request) {
     netExposure: exposure,
     // J: trades opened in the range with 1 lot or more, newest first (max 20)
     bigTrades: { minLots: "1.00", rows: big },
+    // Needs attention LARGE POSITION flags (owner 2026-10-27): >= 25% of the clients' open lots AND >= 1.0 lot, per account
+    largePositions: large,
     // NEW CLIENTS counts every registered client (live and demo) whatever the scope; the split is shown beside it
     newClients,
     // Step 2 (owner 2026-09-30): the same figures for real clients only (live accounts, no broker hedge / coverage
