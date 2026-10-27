@@ -26,7 +26,7 @@ The engine (`engine/server/src/db_probe.rs`) and the gateway (`services/api-gate
 - **Classification:** `auth` (28P01 / 28000 / "password authentication failed"), `unreachable` (DNS / TCP / TLS), `timeout`, `error`.
   - Checked against live Neon: a wrong password reads `auth`, through the pooler too.
 
-### `/health`
+### `/health` (engine, gateway; the web's `/api/health` is below)
 
 | probe | engine | gateway | `x-vyx-db` |
 |---|---|---|---|
@@ -53,7 +53,8 @@ The engine (`engine/server/src/db_probe.rs`) and the gateway (`services/api-gate
 `deploy/vps/db-health-check.ps1`, scheduled task "VyX DB health", every 2 minutes:
 
 - It reads `x-vyx-db` of the engine (`127.0.0.1:8081/health`) and the gateway (`127.0.0.1:8080/health`).
-- **FAIL** = either says `down`.
+- It reads the web's (`https://www.vyxtrader.com/api/health`) too, but only while the engine is not idle.
+- **FAIL** = any of them says `down`.
 - An engine or gateway that does not answer is not this check's failure: the Caddy check and the deploy scripts cover a dead process. It is recorded in the checks only.
 - It reports to `/api/internal/infra-health` as component **`database`**: one e-mail to `OPS_ALERT_EMAIL` on OK -> FAIL, one on recovery.
   - That route needs Redis and e-mail only, no database, so it alerts even when the web's own database access is down.
@@ -62,10 +63,21 @@ The engine (`engine/server/src/db_probe.rs`) and the gateway (`services/api-gate
   - A failure still there after the break alerts at the first check after it.
 - `caddy-health-check.ps1`: a feed `/health` 503 whose `x-vyx-db` says `down` is no longer a **Caddy** failure. That is the database alert, so one outage is not reported twice under the wrong name.
 
+### The web (Vercel, its own `DATABASE_URL`, role `vyx_web`)
+
+`lib/db-probe.ts` behind `GET /api/health`:
+
+- **A NEW Prisma client** (and connection) on `DATABASE_URL`, then `SELECT 1`. The shared `prisma` client is never used: a warm instance's open connections survive a password change.
+- **Timeout: 5 s.** A new Prisma client loads its query engine first. Measured 1.55 s for the whole attempt from the owner's PC to Neon Frankfurt; far less from fra1.
+- **On demand** (serverless has no background loop), cached 10 s per instance. Concurrent requests share one probe.
+- **Down:** 503 `{"status":"down","schema":...,"db":"down","reason","down_secs"}` and `x-vyx-db: down reason=...`.
+  - OK: 200 `{"status":"ok","schema":"ok","db":"ok"}`.
+  - "updating" (schema behind) is unchanged.
+- **Nothing calls it on a timer.** `db-health-check.ps1` asks it only while the engine's probe runs (`x-vyx-db` ok / down / starting, not idle), so Neon still suspends when quiet.
+- **Checked against live Neon:** a wrong password through the pooler reads `auth`.
+
 ### Not covered (follow-ups)
 
-- **The web's own database access** (the Vercel `DATABASE_URL`). If only that is wrong, the VPS probes stay green. The web's `/api/health` checks the schema state, which is cached.
-  - Follow-up: give `/api/health` the same fresh-connection probe, or check a DB-backed public route from the VPS.
 - **`MARKET_DATA_DATABASE_URL`**: the local VPS Postgres, a different role. Not probed here.
 - **Pool errors in request handlers** are not logged separately: the probe sees the same failure within 10 s.
 
@@ -89,7 +101,9 @@ The engine (`engine/server/src/db_probe.rs`) and the gateway (`services/api-gate
    powershell -ExecutionPolicy Bypass -File <repo>\deploy\vps\install-db-health-task.ps1 -Source C:\vyxtrader\scripts\db-health-check.ps1
    powershell -ExecutionPolicy Bypass -File C:\vyxtrader\scripts\db-health-check.ps1   # one line: db health OK ...; report delivered (200)
    ```
-4. **The web part.** The `database` component in `lib/infra-health.ts` must be live before step 3's first report, or the route answers 400 "invalid report". It is in the same branch and ships with the web batch.
+4. **The web part.** It ships with the web batch, from the same branch:
+   - the `database` component in `lib/infra-health.ts`. It must be live before step 3's first report, or the route answers 400 "invalid report".
+   - the `/api/health` probe. After the deploy, `curl -sI https://www.vyxtrader.com/api/health` shows `x-vyx-db: ok`.
 
 ## When it alerts
 

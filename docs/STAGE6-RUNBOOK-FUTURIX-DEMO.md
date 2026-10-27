@@ -580,6 +580,7 @@ Demo-only back on (step 9's undo): the 9.2 statement. If the owner needs the fas
 * [ ] The final 7-path sweep (10.2) was re-run on the engine build that is running (75d4113 or later; a new engine build needs a new sweep).
 * [ ] **The book-database health gate is live and has alerted once** (owner 2026-10-27, flip blocker). The incident of 10-27, 11:02-11:30 UTC: the database refused new connections for 28 minutes, so the engine could not have come back from a restart and the web had no database. Every check stayed green: `/health` 200, `SERVICE_RUNNING`, no auth error logged. Design and steps: `deploy/db-health-runbook.md`. All of these must hold:
   * the engine's and the gateway's `/health` probe the database with a NEW connection every 10 s: 503 with `"db":"down"` and `x-vyx-db: down reason=...` when it fails, and an ERROR log line within 10 s;
+  * the web's `/api/health` does the same on its own `DATABASE_URL` (a new Prisma client, cached 10 s per instance): `x-vyx-db: ok` on production after the deploy;
   * the "VyX DB health" task runs on the VPS and reports component `database` to `/api/internal/infra-health`;
   * the runbook's Caddy gate (step 1: no active health check on the engine upstream) returned nothing;
   * one alert drill on the live system: run `db-health-check.ps1` once with `-EngineHealth` pointed at a stub answering 503 `x-vyx-db: down reason=auth` (outside the break). The FAIL e-mail arrives at `OPS_ALERT_EMAIL`; the next normal run sends the recovery e-mail.

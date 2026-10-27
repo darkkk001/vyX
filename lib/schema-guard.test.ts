@@ -124,7 +124,7 @@ describe("schema guard against the scratch database", () => {
     expect(res.status).not.toBe(503);
     const health = await healthGET();
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ status: "ok", schema: "ok" });
+    expect(await health.json()).toEqual({ status: "ok", schema: "ok", db: "ok" });
   });
 
   it("database unreachable: warns and serves", async () => {

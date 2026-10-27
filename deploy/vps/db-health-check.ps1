@@ -2,10 +2,11 @@
 # database refused every NEW connection for ~28 minutes and every check stayed green). Read-only apart from its own
 # status file. Runs every 2 minutes as the scheduled task "VyX DB health" (deploy/vps/install-db-health-task.ps1).
 #
-# Reads the book-database probe of the engine and of the gateway (engine/server/src/db_probe.rs,
-# services/api-gateway/src/db-probe.ts): each opens a NEW connection every 10 s and reports it in /health
+# Reads the book-database probe of the engine, the gateway and the web (engine/server/src/db_probe.rs,
+# services/api-gateway/src/db-probe.ts, lib/db-probe.ts): each opens a NEW connection and reports it in /health
 # (`x-vyx-db: ok | idle | starting | down reason=<auth|unreachable|timeout|error|probe-stale> ...`; down = HTTP 503).
-#   FAIL = either says "down".
+# The web is asked only while the engine's probe runs (not idle), so Neon still suspends when quiet.
+#   FAIL = any of them says "down".
 #   An engine / gateway that does not answer at all is NOT this check's failure (the Caddy check's feed /health and the
 #   deploy scripts cover a dead process); it is recorded in the checks only.
 # The daily break (16:59-18:00 New York time = 20:59-22:00 UTC in summer, 21:59-23:00 UTC in winter; deploys and
@@ -60,6 +61,17 @@ foreach ($c in @(@{ name = "engine"; url = $EngineHealth }, @{ name = "gateway";
   $checks["$($c.name)Db"] = if ($h.db) { $h.db } elseif ($h.code -eq 0) { "no answer" } else { "no probe (older build)" }
   if ($h.db -like "down*") { $reasons.Add("$($c.name): the book database refuses new connections ($($h.db)); /health $($h.code)") }
 }
+# The web (Vercel, its own DATABASE_URL: lib/db-probe.ts behind /api/health). Asked only while the engine's probe runs
+# (x-vyx-db ok / down / starting, not idle): each ask opens a new connection, and Neon must still suspend when quiet.
+if ($checks.engineDb -like "ok*" -or $checks.engineDb -like "down*" -or $checks.engineDb -like "starting*") {
+  $h = Read-Health "$WebUrl/api/health"
+  $checks.webStatus = $h.code
+  $checks.webDb = if ($h.db) { $h.db } elseif ($h.code -eq 0) { "no answer" } else { "no probe (older build)" }
+  if ($h.db -like "down*") { $reasons.Add("web: the book database refuses new connections ($($h.db)); /api/health $($h.code)") }
+} else {
+  $checks.webStatus = $null
+  $checks.webDb = "not asked (the engine is idle or has no probe)"
+}
 
 $inBreak = Test-InBreak $utcNow
 $ok = ($reasons.Count -eq 0)
@@ -86,5 +98,5 @@ $result.report = $delivered
 $result.inBreak = $inBreak
 $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $OutFile -Encoding UTF8
 
-"db health $(if ($ok) { 'OK' } else { 'FAIL' }): engine $($checks.engineStatus) [$($checks.engineDb)], gateway $($checks.gatewayStatus) [$($checks.gatewayDb)]; report $delivered$(if (-not $ok) { '; ' + ($reasons -join '; ') })"
+"db health $(if ($ok) { 'OK' } else { 'FAIL' }): engine $($checks.engineStatus) [$($checks.engineDb)], gateway $($checks.gatewayStatus) [$($checks.gatewayDb)], web $($checks.webStatus) [$($checks.webDb)]; report $delivered$(if (-not $ok) { '; ' + ($reasons -join '; ') })"
 if ($ok -or $inBreak) { exit 0 } else { exit 1 }
