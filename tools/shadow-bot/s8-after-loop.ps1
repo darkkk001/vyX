@@ -2,6 +2,9 @@
 # then p50 / p95 / max(delay_ms) and count(delay_ms > 1000) over every row of the accumulating TSV.
 # The capture runs BEFORE the next reset, because --reset-trading deletes the tenant's PostCloseEffect rows. Nothing in the
 # TSV is ever rewritten: each run appends its rows. The scenario itself (s8-stopout-contention.json) is not touched.
+# Each row keeps the phase split too: created_at (database now() = the close transaction's start) and close_written_at
+# (database clock after the close's own writes). tick -> tx start = the engine's detect + lane queue (engine and database
+# clocks, apart by close_written_at - close_engine_at), tx start -> write = the database work.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\shadow-bot\s8-after-loop.ps1                 # 4 runs, then the summary
 #   powershell -ExecutionPolicy Bypass -File tools\shadow-bot\s8-after-loop.ps1 -SummaryOnly    # the summary of the TSV only
@@ -21,7 +24,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $tsv = Join-Path $OutDir 's8-after-episodes.tsv'
-$columns = 'run', 'login', 'account_id', 'tick_engine_at', 'close_engine_at', 'delay_ms', 'sl_tp_ahead', 'run_from', 'run_to'
+$columns = 'run', 'login', 'account_id', 'tick_engine_at', 'close_engine_at', 'created_at', 'close_written_at', 'delay_ms', 'sl_tp_ahead', 'run_from', 'run_to'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
 function Stamp { [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
@@ -56,7 +59,9 @@ WITH c AS (
   SELECT a."accountNumber" AS login, e."accountId" AS account_id, e.reason,
          (e.payload->>'engineDelayMs')::numeric AS delay_ms,
          (e.payload->>'triggerTickEngineAt')::timestamptz AS tick_engine_at,
-         (e.payload->>'closeEngineAt')::timestamptz AS close_engine_at
+         (e.payload->>'closeEngineAt')::timestamptz AS close_engine_at,
+         e."createdAt" AS created_at,
+         (e.payload->>'closeWrittenAt')::timestamptz AS close_written_at
   FROM "PostCloseEffect" e JOIN "Account" a ON a.id = e."accountId"
   WHERE e.kind = 'POSITION_CLOSED' AND e.payload ? 'triggerSource'
     AND e."createdAt" BETWEEN :'t_from'::timestamptz AND :'t_to'::timestamptz
@@ -70,6 +75,8 @@ WITH c AS (
 SELECT s.login, s.account_id,
        to_char(s.tick_engine_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
        to_char(s.close_engine_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+       to_char(s.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+       to_char(s.close_written_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
        s.delay_ms,
        (SELECT count(*) FROM c o WHERE o.account_id <> s.account_id AND o.reason IN ('stop_loss', 'take_profit')
           AND o.close_engine_at > s.tick_engine_at AND o.close_engine_at < s.close_engine_at)
@@ -133,13 +140,15 @@ if (Test-Path $PasswordFile) { $env:SHADOWBOT_PASSWORD = (Get-Content $PasswordF
 Say "database: $dbHost; scenario commit $(git -C $repo rev-parse --short HEAD); TSV $tsv"
 
 if (-not (Test-Path $tsv)) { [IO.File]::WriteAllText($tsv, ($columns -join "`t") + "`n") }
+# a TSV from before the phase columns is left as it is: its rows would not line up with the new ones
+if ((Get-Content $tsv -TotalCount 1) -ne ($columns -join "`t")) { throw "$tsv has other columns (an older loop's file); keep it and pass a new -OutDir" }
 $lastRun = @(Import-Csv -Path $tsv -Delimiter "`t" | ForEach-Object { [int]$_.run } | Sort-Object)
 $firstRun = if ($lastRun.Count) { $lastRun[-1] + 1 } else { 1 }
 # whatever the tenant still holds from earlier runs (the last 24 h) is kept in a file of its own before the first reset
 $prior = Get-Episodes ([DateTime]::UtcNow.AddHours(-24).ToString('o')) (Stamp)
 if ($prior.Count) {
   $priorFile = Join-Path $OutDir ("pre-reset-{0}.tsv" -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))
-  [IO.File]::WriteAllText($priorFile, (@(($columns[1..5] + 'sl_tp_ahead') -join "`t") + $prior) -join "`n")
+  [IO.File]::WriteAllText($priorFile, (@($columns[1..($columns.Count - 3)] -join "`t") + $prior) -join "`n")
   Say "kept $($prior.Count) earlier episode(s) in $priorFile (not part of the TSV)"
 }
 
