@@ -26,6 +26,8 @@ export interface TradeBackend {
 }
 
 const num = (v: unknown) => (v == null || v === "" ? NaN : Number(v));
+/** Every request answers within this or fails (fetch has no timeout of its own: a dead connection hung 8.5 min). */
+export const REQUEST_TIMEOUT_MS = 30_000;
 
 export class HttpTradeClient implements TradeBackend {
   private readonly cookies = new Map<string, string>();
@@ -39,7 +41,7 @@ export class HttpTradeClient implements TradeBackend {
     this.lastLogin.set(acct, Date.now());
     const url = `${TRADE_HOST}/api/trade/login`;
     assertTradeUrl(url);
-    const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ accountNumber: acct, password: this.password }), redirect: "manual" });
+    const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ accountNumber: acct, password: this.password }), redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     const body = await res.json().catch(() => ({}));
     if (res.status !== 200) throw new Error(`login ${acct} answered ${res.status}: ${JSON.stringify(body).slice(0, 200)}`);
     if (body?.requiresTwoFactor || body?.pendingToken) throw new GuardRefused(`account ${acct} asks for two-step sign-in; the bot does not handle it`);
@@ -56,12 +58,22 @@ export class HttpTradeClient implements TradeBackend {
     const url = `${TRADE_HOST}${pathQ}`;
     assertTradeUrl(url);
     if (!this.cookies.has(acct)) await this.login(acct);
-    const res = await fetch(url, {
+    const send = () => fetch(url, {
       method,
       headers: { "content-type": "application/json", cookie: this.cookies.get(acct)!, "x-client-platform": "API" },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       redirect: "manual",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+    let res: Response;
+    try {
+      res = await send();
+    } catch (e) {
+      // a stalled connection (10-27 00:47: one GET hung 8.5 min, then "fetch failed"): a read is sent once more; an
+      // order is never re-sent (it may have reached the server)
+      if (method !== "GET") throw new Error(`${method} ${pathQ} (${acct}): no answer within ${REQUEST_TIMEOUT_MS / 1000} s or the connection failed (${(e as Error).message}); not re-sent`);
+      res = await send();
+    }
     if (res.status === 401 && retry) { this.cookies.delete(acct); await this.login(acct); return this.req(acct, method, pathQ, body, false); }
     return { status: res.status, json: await res.json().catch(() => ({})) };
   }
