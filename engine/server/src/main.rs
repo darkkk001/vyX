@@ -35,6 +35,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 
+mod db_probe;
+
 struct AppState {
     pool: PgPool,
     // Where Candle / LivePrice rows are written and read -- Neon, the VPS
@@ -311,9 +313,23 @@ pub const ENGINE_COMMIT: &str = env!("VYX_GIT_COMMIT");
 /// (owner 2026-10-26: the running build on the VPS is read directly), the risk lanes' load in x-vyx-risk-lanes
 /// (order_management::live_lanes::Reading::header; "off" outside risk mode). "stopout=stale" = a stop-out fire has waited
 /// over 1 s.
-async fn health() -> ([(&'static str, String); 2], &'static str) {
-    let lanes = order_management::live_lanes::reading().map_or_else(|| "off".to_string(), |r| r.header());
-    ([("x-vyx-engine-commit", ENGINE_COMMIT.to_string()), ("x-vyx-risk-lanes", lanes)], "ok")
+/// The book database (db_probe, incident 2026-10-27): x-vyx-db; when the database refuses new connections the answer is
+/// 503 with a JSON body naming it ("db":"down"), so every check that wants 200 turns red.
+async fn health() -> axum::response::Response {
+    health_response(order_management::live_lanes::reading().map(|r| r.header()), db_probe::reading())
+}
+
+fn health_response(lanes: Option<String>, db: Option<db_probe::Reading>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let headers = [
+        ("x-vyx-engine-commit", ENGINE_COMMIT.to_string()),
+        ("x-vyx-risk-lanes", lanes.unwrap_or_else(|| "off".to_string())),
+        ("x-vyx-db", db.map_or_else(|| "off".to_string(), |d| d.header())),
+    ];
+    match db.and_then(|d| d.down_body()) {
+        Some(body) => (StatusCode::SERVICE_UNAVAILABLE, headers, [(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response(),
+        None => (headers, "ok").into_response(),
+    }
 }
 
 // EA clock-sync handshake target (2nd Contabo-audit follow-up on the tick
@@ -1521,6 +1537,12 @@ async fn main() {
     // book's price source whenever order management runs (live or shadow), instead of the database's LivePrice,
     // which stopped moving when the feed's writes went VPS-local (S5).
     let tick_cache = Arc::new(TickCache::new());
+    // The book database probe (db_probe, incident 2026-10-27): a NEW connection every 10 s while the idle gate is open
+    // (or while it is down), for /health and an ERROR log.
+    db_probe::spawn(database_url.clone(), {
+        let cache = tick_cache.clone();
+        move || market_data::activity::reload_due(&cache, Utc::now())
+    });
     // The pricing cache (2026-10-05, market_data::pricing): the account ask rules of the risk hook, the margin trigger and
     // every order-management book read, from memory. Reloaded on config.changed / account.updated (below), on a lost
     // event or a reconnect, and every 10 min while anything real moves. Its loop starts only if something uses it.
@@ -2122,5 +2144,27 @@ mod build_commit_tests {
         assert!(lower.contains(&format!("x-vyx-engine-commit: {}", ENGINE_COMMIT.to_ascii_lowercase())), "{raw}");
         assert!(lower.contains("x-vyx-risk-lanes: off"), "outside risk mode the lanes header says off: {raw}");
         assert!(raw.ends_with("\r\n\r\nok"), "the body every health check reads is unchanged: {raw}");
+        assert!(lower.contains("x-vyx-db: off"), "no probe started (this test): {raw}");
+    }
+
+    async fn body_of(r: axum::response::Response) -> (u16, String, String) {
+        let status = r.status().as_u16();
+        let db = r.headers().get("x-vyx-db").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+        let bytes = axum::body::to_bytes(r.into_body(), 4096).await.unwrap();
+        (status, db, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn health_is_503_naming_the_database_when_it_refuses_new_connections() {
+        use db_probe::{Failure, Reading};
+        assert_eq!(body_of(health_response(None, Some(Reading::Ok))).await, (200, "ok".into(), "ok".into()));
+        assert_eq!(body_of(health_response(None, Some(Reading::Idle))).await, (200, "idle".into(), "ok".into()));
+        assert_eq!(body_of(health_response(None, Some(Reading::Starting))).await, (200, "starting".into(), "ok".into()));
+        let (status, db, body) = body_of(health_response(None, Some(Reading::Down { failure: Failure::Auth, secs: 120 }))).await;
+        assert_eq!(status, 503);
+        assert_eq!(db, "down reason=auth secs=120");
+        assert_eq!(body, r#"{"status":"down","db":"down","reason":"auth","down_secs":120}"#);
+        let (status, _, body) = body_of(health_response(None, Some(Reading::Stale))).await;
+        assert_eq!((status, body.contains(r#""db":"down""#)), (503, true));
     }
 }

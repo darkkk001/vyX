@@ -17,6 +17,10 @@ import { Decimal } from "decimal.js";
 import { randomUUID } from "node:crypto";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// when the gateway last used its Neon pool: the DB probe (db-probe.ts) runs only while something uses the database
+let lastPoolUse = 0;
+pool.on("acquire", () => { lastPoolUse = Date.now(); });
+export const poolUsedWithin = (ms: number) => Date.now() - lastPoolUse <= ms;
 
 /** Read-only parameterized query on the main database (client-ask.ts loads ask rules with it). */
 export async function query(sql: string, params: unknown[]): Promise<{ rows: Record<string, unknown>[] }> {

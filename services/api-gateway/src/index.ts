@@ -13,6 +13,8 @@ import positionsRouter from "./routes/positions.js";
 import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, askRegistry, gatewayStats, onlineAccountIds, orderAckStats } from "./ws.js";
 import { BOOK_SEQ_SUBJECT, newBookSeqState, stampBookEvent } from "./book-seq.js";
 import { internalSecretOk, rotationInProgress } from "./internal-secret.js";
+import { ACTIVE_WINDOW_MS, healthBody, reading as dbReading, startProbe } from "./db-probe.js";
+import { poolUsedWithin } from "./db.js";
 
 if (rotationInProgress()) {
   console.warn("secret rotation in progress: INTERNAL_SERVICE_SECRET_PREVIOUS is still accepted; unset it and restart once every caller has switched");
@@ -21,8 +23,13 @@ if (rotationInProgress()) {
 const app = express();
 app.use(express.json());
 
+// The book database probe (db-probe.ts, incident 2026-10-27): 503 naming the database when it refuses new connections.
+if (process.env.DATABASE_URL) startProbe(process.env.DATABASE_URL, () => poolUsedWithin(ACTIVE_WINDOW_MS));
 app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+  const r = dbReading();
+  const { status, body } = healthBody(r);
+  res.setHeader("x-vyx-db", r ? (r.kind === "down" ? `down reason=${r.reason} secs=${r.secs}` : r.kind) : "off");
+  res.status(status).json(body);
 });
 
 // Phase 4 of the tick-pipeline audit -- same shared-secret convention as

@@ -8,11 +8,14 @@ import { sendPlatformEmail } from "@/lib/email/adapter";
 // Redis, sends ONE alert e-mail when a component goes OK -> FAIL and ONE when it recovers (never repeats while the
 // state is unchanged), and gives Feed health a summary that turns NO_REPORT when the check itself stops reporting.
 
-export const INFRA_COMPONENTS = ["caddy", "qorebridge"] as const; // qorebridge: the VPS bridge health task (owner 2026-10-26)
+// qorebridge: the VPS bridge health task (owner 2026-10-26); database: the engine's and the gateway's book-database probe
+// read by deploy/vps/db-health-check.ps1 (incident 2026-10-27: the DB refused new connections for 28 min, all green)
+export const INFRA_COMPONENTS = ["caddy", "qorebridge", "database"] as const;
 export type InfraComponent = (typeof INFRA_COMPONENTS)[number];
 export const RUNBOOKS: Record<InfraComponent, string> = {
   caddy: "deploy/caddy-service-recovery-runbook.md",
   qorebridge: "deploy/qorebridge-vps-runbook.md",
+  database: "deploy/db-health-runbook.md",
 };
 
 /** No report for this long = the check is not running (the task runs every 5 minutes). */

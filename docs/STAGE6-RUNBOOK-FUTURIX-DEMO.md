@@ -578,6 +578,11 @@ Demo-only back on (step 9's undo): the 9.2 statement. If the owner needs the fas
 * [ ] The stale-heartbeat ops alert (plan 14.3, built 2026-10-07) fired once and recovered once in the 7.B drill, and `OPS_ALERT_EMAIL` is set on Vercel production.
 * [ ] The 1-minute `risk-fallback` cron (owner decision (b), 2026-10-06; plan 14.2) is registered on Vercel and answered `ran: true` during the 7.B drill.
 * [ ] The final 7-path sweep (10.2) was re-run on the engine build that is running (75d4113 or later; a new engine build needs a new sweep).
+* [ ] **The book-database health gate is live and has alerted once** (owner 2026-10-27, flip blocker). The incident of 10-27, 11:02-11:30 UTC: the database refused new connections for 28 minutes, so the engine could not have come back from a restart and the web had no database. Every check stayed green: `/health` 200, `SERVICE_RUNNING`, no auth error logged. Design and steps: `deploy/db-health-runbook.md`. All of these must hold:
+  * the engine's and the gateway's `/health` probe the database with a NEW connection every 10 s: 503 with `"db":"down"` and `x-vyx-db: down reason=...` when it fails, and an ERROR log line within 10 s;
+  * the "VyX DB health" task runs on the VPS and reports component `database` to `/api/internal/infra-health`;
+  * the runbook's Caddy gate (step 1: no active health check on the engine upstream) returned nothing;
+  * one alert drill on the live system: run `db-health-check.ps1` once with `-EngineHealth` pointed at a stub answering 503 `x-vyx-db: down reason=auth` (outside the break). The FAIL e-mail arrives at `OPS_ALERT_EMAIL`; the next normal run sends the recovery e-mail.
 * [ ] Both cutover gates of `docs/RUST-CUTOVER-PLAN.md` 6.1 that name this step are signed off by the owner: position / deal model, and measured touch-to-write delay and slippage.
 * [ ] The demo-week numbers (owner, 2026-10-26), from `scripts/report/trigger-tick-daily.sql` over at least one full trading week of the running build (a Friday close and a Sunday reopen included):
   * every engine close since the deploy carries the trigger tick (`missing` = 0);
