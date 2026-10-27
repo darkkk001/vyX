@@ -72,11 +72,15 @@ export class SimTradeBackend implements TradeBackend {
   }
 
   async me(acct: string): Promise<Me> { return this.meOf(acct); }
+  /** At most this many SL closes per positions() read: a slow server (the old engine closed one by one, 37 s for 405). */
+  slClosesPerRead = Infinity;
   private slPass(acct: string): void {
+    let n = 0;
     for (const p of [...(this.open.get(acct) ?? [])]) {
+      if (n >= this.slClosesPerRead) return;
       const sl = this.sl.get(p.id); if (sl == null) continue;
       const q = this.price.quote(p.symbol);
-      if (p.side === "BUY" ? q.bid <= sl : q.ask >= sl) { this.realize(acct, p, "stop loss"); this.sl.delete(p.id); }
+      if (p.side === "BUY" ? q.bid <= sl : q.ask >= sl) { this.realize(acct, p, "stop loss"); this.sl.delete(p.id); n++; }
     }
   }
   async positions(acct: string): Promise<Pos[]> { this.slPass(acct); this.stopOutPass(acct); return [...(this.open.get(acct) ?? [])]; }

@@ -78,6 +78,13 @@ async function main() {
       accounts[acct].balance = Number(amt);
     }
     trade = new SimTradeBackend(accounts, price, cfg.symbolMeta, cfg.dryRunFxRates);
+    // --dry-slow-sl=<n> (dry run only): the simulated server closes at most n SL positions per read (like the old engine)
+    const slow = rest.find((x) => x.startsWith("-" + "-dry-slow-sl="));
+    if (slow) {
+      const n = Number(slow.split("=")[1]);
+      if (!(n >= 1)) throw new Error(`bad ${slow}`);
+      (trade as SimTradeBackend).slClosesPerRead = n;
+    }
   } else {
     const password = process.env.SHADOWBOT_PASSWORD;
     const secretFile = process.env.SYNTH_FEED_SECRET_FILE;

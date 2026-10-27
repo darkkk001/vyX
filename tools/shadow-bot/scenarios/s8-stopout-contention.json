@@ -67,6 +67,7 @@
       "pctPerSec": 0.2,
       "maxPct": 2.5,
       "timeoutSecs": 240,
+      "holdAtMaxSecs": 300,
       "until": {
         "closed": [
           "victim",

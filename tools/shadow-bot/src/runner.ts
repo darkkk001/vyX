@@ -28,7 +28,9 @@ export type Step = Common & (
   | { op: "require"; account: string; minEquity: number }
   | { op: "close"; ref: string }
   | { op: "closeAccount"; account: string }
-  | { op: "rampUntil"; symbol: string; direction: "up" | "down"; pctPerSec: number; maxPct: number; timeoutSecs: number; until: Until }
+  /** holdAtMaxSecs: when the move reaches maxPct first, the price stays there and the condition gets this long more
+   *  (a slow server still closes at the level the ramp crossed; without it the step fails the moment maxPct is hit) */
+  | { op: "rampUntil"; symbol: string; direction: "up" | "down"; pctPerSec: number; maxPct: number; timeoutSecs: number; holdAtMaxSecs?: number; until: Until }
   | { op: "hold"; secs: number; expectOpen?: string[] }
   | { op: "observe"; account: string }
   | { op: "closeBy"; ref: string; against: string }
@@ -113,8 +115,21 @@ export class Runner {
       }
       case "rampUntil": {
         const why = await this.price.ramp(step.symbol, step.direction, step.pctPerSec, step.maxPct, step.timeoutSecs, () => this.met(step.until));
-        if (why !== "condition") throw new ScenarioFailed(`rampUntil ${JSON.stringify(step.until)} not met (${why})`);
-        return;
+        if (why === "condition") return;
+        if (why === "maxPct" && step.holdAtMaxSecs) {
+          // the price stays at the level reached (the driver keeps ticking it); progress every 5 s shows how fast the
+          // server works through the closes
+          const t0 = Date.now(), end = t0 + step.holdAtMaxSecs * 1000;
+          let lastNote = 0;
+          for (;;) {
+            if (await this.met(step.until)) { this.journal.write({ kind: "rampUntil.met", heldSecs: (Date.now() - t0) / 1000 }); return; }
+            if (Date.now() - lastNote >= 5000) { lastNote = Date.now(); this.journal.write({ kind: "rampUntil.holding", heldSecs: (Date.now() - t0) / 1000, open: await this.openCounts(step.until) }); }
+            if (Date.now() > end) break;
+            await sleep(Math.max(this.opts.pollMs, 1000));
+          }
+          throw new ScenarioFailed(`rampUntil ${JSON.stringify(step.until)} not met (maxPct, then held ${step.holdAtMaxSecs} s; still open ${JSON.stringify(await this.openCounts(step.until))})`);
+        }
+        throw new ScenarioFailed(`rampUntil ${JSON.stringify(step.until)} not met (${why})`);
       }
       case "hold": {
         const end = Date.now() + step.secs * 1000;
@@ -217,6 +232,21 @@ export class Runner {
     const e = await this.observe(u.marginLevelAtOrBelow.account, true);
     return e.marginLevel != null && e.marginLevel <= u.marginLevelAtOrBelow.level;
   }
+  /** Per `closed` ref name (a group counts its members): how many are still open. */
+  private async openCounts(u: Until): Promise<Record<string, number>> {
+    if (!("closed" in u)) return {};
+    const open = new Map<string, Set<string>>();
+    const out: Record<string, number> = {};
+    for (const name of u.closed) {
+      out[name] = 0;
+      for (const ref of this.expand([name])) {
+        const r = this.ref(ref);
+        if (!open.has(r.account)) open.set(r.account, new Set((await this.trade.positions(r.account)).map((p) => p.id)));
+        if (open.get(r.account)!.has(r.positionId)) out[name]++;
+      }
+    }
+    return out;
+  }
 
   private async observe(account: string, quiet = false) {
     const me = await this.trade.me(account);
@@ -318,7 +348,19 @@ export class Runner {
   }
 
   private async closeAll(account: string): Promise<void> {
-    const ps = await this.trade.positions(account);
+    let ps = await this.trade.positions(account);
+    if (ps.length > 20 && !this.opts.dryRun) {
+      // the server may still be working through closes (a slow engine, SL levels crossed): closing over it races
+      // (10-27: mass 409). Wait until the count stops moving, at most 180 s.
+      const t0 = Date.now(); let stable = 0;
+      while (Date.now() - t0 < 180_000 && stable < 5) {
+        await sleep(2000);
+        const now = await this.trade.positions(account);
+        stable = now.length === ps.length ? stable + 1 : 0;
+        ps = now;
+      }
+      this.journal.write({ kind: "flatten.quiesce", account, waitedSecs: (Date.now() - t0) / 1000, open: ps.length });
+    }
     // many positions (openMany): paced under the server's order limit like the opens
     const gap = ps.length > 20 ? 1000 / BULK_MAX_ORDERS_PER_SEC : 0;
     for (const p of ps) {
@@ -329,7 +371,8 @@ export class Runner {
   private async closeOne(account: string, p: Pos): Promise<void> {
     const q = await this.trade.quote(account, p.symbol);
     const res = await this.trade.close(account, p.id, p.side === "BUY" ? q.bid : q.ask);
-    this.closedByBot.add(p.id);
+    // a 409 = the server closed (or is closing) it first: not the bot's close
+    if (res.status === 200) this.closedByBot.add(p.id);
     this.journal.write({ kind: "close", account, positionId: p.id, symbol: p.symbol, side: p.side, volume: p.volume, status: res.status, error: res.error, why: "flatten" });
   }
   /** End of every scenario: close whatever the scenario's accounts still hold (the prices are still ticking here). */
