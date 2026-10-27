@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import { assertAccount, assertBulk, assertConfig, assertFeedUrl, assertSymbol, assertTradeUrl, BULK_MAX_LOTS, BULK_MAX_ORDERS_PER_SEC, BULK_MAX_POSITIONS_PER_ACCOUNT, GuardRefused, TRADE_ACCOUNTS } from "../src/guards";
 import { lotsForMarginPct, lotsForStopOutAt } from "../src/margin";
 import { Journal } from "../src/journal";
+import { PriceDriver } from "../src/price-driver";
+import { RecordingSink } from "../src/sim";
 import { fxFrom, loadConfig, loadScenario } from "../bot";
 
 describe("guards", () => {
@@ -166,5 +168,38 @@ describe("journal", () => {
     const text = readFileSync(j.file, "utf8");
     for (const v of ["abc", "vyx=1", "pw\"", "zzz"]) expect(text).not.toContain(v);
     expect(text).toContain("\"ok\":1");
+  });
+});
+
+describe("price driver tick jitter (owner 2026-10-27: no phase lock with the engine's 250 ms risk loop)", () => {
+  const driver = (tickMs: number, tickJitterMs?: number) =>
+    new PriceDriver(new RecordingSink(), new Journal(mkdtempSync(path.join(os.tmpdir(), "pd-")), "t", () => {}), { tickMs, tickJitterMs, maxRampPctPerSec: 1, maxJumpPct: 1, logEveryTick: false });
+  it("without a jitter every interval is tickMs", () => {
+    const d = driver(1000);
+    for (let i = 0; i < 50; i++) expect(d.nextTickMs()).toBe(1000);
+  });
+  it("with a jitter the intervals spread over tickMs +- jitter, and their phase against a 250 ms cycle is not fixed", () => {
+    const d = driver(1000, 150);
+    const xs = Array.from({ length: 2000 }, () => d.nextTickMs());
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(850);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(1150);
+    const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+    expect(Math.abs(mean - 1000)).toBeLessThan(15);
+    // the arrival phase (cumulative time mod 250) visits all four quarters of the loop's cycle
+    let t = 0; const quarters = new Set<number>();
+    for (const x of xs) { t += x; quarters.add(Math.floor((t % 250) / 62.5)); }
+    expect(quarters.size).toBe(4);
+  });
+  it("a jittered ramp keeps its %/s: each step follows the interval it stands for", async () => {
+    const d = driver(40, 15);
+    await d.set("vIDX", 20000, 2);
+    const t0 = Date.now();
+    await d.ramp("vIDX", "down", 0.5, 100, 1.2, async () => false);
+    const secs = (Date.now() - t0) / 1000;
+    const moved = (20000 - d.bid("vIDX")) / 20000 * 100;
+    d.stopAll();
+    // 0.5 %/s over the ramp's own time, within the timer slack of a test machine
+    expect(moved / secs).toBeGreaterThan(0.35);
+    expect(moved / secs).toBeLessThan(0.55);
   });
 });

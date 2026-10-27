@@ -65,6 +65,14 @@ async function main() {
   const dryRun = rest.includes("--dry-run");
   const runId = new Date().toISOString().replace(/[:.]/g, "-") + (dryRun ? "-dry" : "");
   const journal = new Journal(path.join(ROOT, "logs"), runId);
+  // --tick-jitter-ms=<n>: each tick interval is tickMs +- n ms (uniform), so the crossing ticks do not phase-lock with the
+  // engine's risk loop (owner 2026-10-27); 0 / absent = the fixed tickMs
+  const jitterFlag = rest.find((x) => x.startsWith("-" + "-tick-jitter-ms="));
+  if (jitterFlag) {
+    const n = Number(jitterFlag.split("=")[1]);
+    if (!(Number.isInteger(n) && n >= 0 && n < cfg.limits.tickMs / 2)) throw new Error(`bad ${jitterFlag} (a whole number of ms under tickMs / 2)`);
+    (cfg.limits as { tickJitterMs?: number }).tickJitterMs = n;
+  }
 
   let trade: TradeBackend; let price: PriceDriver;
   if (dryRun) {

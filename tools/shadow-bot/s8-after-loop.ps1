@@ -19,6 +19,8 @@ param(
   [string]$WebRepo = 'C:\vyx\web',
   [string]$Psql = 'C:\pg-scratch\pgsql\bin\psql.exe',
   [int]$SettleSecs = 30,
+  # the bot's tick interval is tickMs +- this (owner 2026-10-27): no phase lock with the engine's risk loop; 0 = fixed
+  [int]$TickJitterMs = 150,
   [switch]$SummaryOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -137,7 +139,7 @@ $dbHost = ([uri]$dbUrl).Host
 if (-not $env:SYNTH_FEED_SECRET_FILE) { $env:SYNTH_FEED_SECRET_FILE = $SynthSecretFile }
 if (-not (Test-Path $env:SYNTH_FEED_SECRET_FILE)) { throw 'the synth-feed secret file is missing: set SYNTH_FEED_SECRET_FILE or -SynthSecretFile' }
 if (Test-Path $PasswordFile) { $env:SHADOWBOT_PASSWORD = (Get-Content $PasswordFile -Raw).Trim() }
-Say "database: $dbHost; scenario commit $(git -C $repo rev-parse --short HEAD); TSV $tsv"
+Say "database: $dbHost; scenario commit $(git -C $repo rev-parse --short HEAD); tick jitter +-$TickJitterMs ms; TSV $tsv"
 
 if (-not (Test-Path $tsv)) { [IO.File]::WriteAllText($tsv, ($columns -join "`t") + "`n") }
 # a TSV from before the phase columns is left as it is: its rows would not line up with the new ones
@@ -164,7 +166,7 @@ for ($run = $firstRun; $run -lt $firstRun + $Runs; $run++) {
   $from = Stamp
   Say "run ${run}: S8 start"
   Push-Location $repo
-  try { cmd /c "npx tsx tools/shadow-bot/bot.ts run s8-stopout-contention --flatten-first > `"$log-bot.log`" 2>&1" }
+  try { cmd /c "npx tsx tools/shadow-bot/bot.ts run s8-stopout-contention --flatten-first --tick-jitter-ms=$TickJitterMs > `"$log-bot.log`" 2>&1" }
   finally { Pop-Location }
   $botExit = $LASTEXITCODE
   Say "run ${run}: S8 end (exit $botExit); settling $SettleSecs s"

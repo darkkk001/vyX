@@ -33,7 +33,17 @@ export class PriceDriver {
   private sending = false;
   lastError: string | null = null;
 
-  constructor(private readonly sink: TickSink, private readonly journal: Journal, private readonly opts: { tickMs: number; maxRampPctPerSec: number; maxJumpPct: number; logEveryTick: boolean }) {}
+  constructor(private readonly sink: TickSink, private readonly journal: Journal, private readonly opts: { tickMs: number; tickJitterMs?: number; maxRampPctPerSec: number; maxJumpPct: number; logEveryTick: boolean }) {}
+
+  /**
+   * The next tick interval: tickMs, or tickMs +- tickJitterMs (uniform) with a jitter. A fixed 1000 ms cadence phase-locks
+   * with the engine's 250 ms risk loop (owner 2026-10-27): every crossing tick then lands at about the same point of the
+   * loop's cycle, and a run's stop-out delays are one sample, not three.
+   */
+  nextTickMs(): number {
+    const j = this.opts.tickJitterMs ?? 0;
+    return j > 0 ? Math.round(this.opts.tickMs - j + Math.random() * 2 * j) : this.opts.tickMs;
+  }
 
   bid(symbol: string): number { const l = this.levels.get(symbol); if (!l) throw new Error(`${symbol} has no price yet (price.set first)`); return l.bid; }
   quote(symbol: string): Tick { const l = this.levels.get(symbol)!; return { symbol, bid: l.bid, ask: round(symbol, l.bid + l.spread) }; }
@@ -65,15 +75,16 @@ export class PriceDriver {
     if (pctPerSec > this.opts.maxRampPctPerSec) throw new Error(`ramp ${pctPerSec}%/s refused (max ${this.opts.maxRampPctPerSec}%/s)`);
     const l = this.levels.get(symbol); if (!l) throw new Error(`${symbol} has no price yet`);
     const start = l.bid, t0 = Date.now(), sign = direction === "up" ? 1 : -1;
-    const stepPct = pctPerSec * (this.opts.tickMs / 1000);
-    this.journal.write({ kind: "price.ramp", symbol, direction, from: start, pctPerSec, maxPct, timeoutSecs });
+    this.journal.write({ kind: "price.ramp", symbol, direction, from: start, pctPerSec, maxPct, timeoutSecs, tickMs: this.opts.tickMs, tickJitterMs: this.opts.tickJitterMs ?? 0 });
     for (;;) {
       if (await stop()) { this.journal.write({ kind: "price.ramp.end", symbol, why: "condition", at: l.bid, movedPct: pct(start, l.bid) }); return "condition"; }
       if (Math.abs(pct(start, l.bid)) >= maxPct) { this.journal.write({ kind: "price.ramp.end", symbol, why: "maxPct", at: l.bid }); return "maxPct"; }
       if (Date.now() - t0 > timeoutSecs * 1000) { this.journal.write({ kind: "price.ramp.end", symbol, why: "timeout", at: l.bid }); return "timeout"; }
-      l.bid = round(symbol, l.bid * (1 + sign * stepPct / 100));
+      // the step follows the interval it stands for, so a jittered ramp keeps its %/s
+      const intervalMs = this.nextTickMs();
+      l.bid = round(symbol, l.bid * (1 + sign * (pctPerSec * intervalMs / 1000) / 100));
       await this.flush();
-      await sleep(this.opts.tickMs);
+      await sleep(intervalMs);
     }
   }
 
@@ -87,9 +98,11 @@ export class PriceDriver {
 
   private ensureLoop(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => { void this.flush(); }, this.opts.tickMs);
+    if (!(this.opts.tickJitterMs ?? 0)) { this.timer = setInterval(() => { void this.flush(); }, this.opts.tickMs); return; }
+    const next = () => { this.timer = setTimeout(() => { void this.flush(); if (this.timer) next(); }, this.nextTickMs()); };
+    next();
   }
-  private stopLoop(): void { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
+  private stopLoop(): void { if (this.timer) { clearInterval(this.timer); clearTimeout(this.timer); this.timer = null; } }
   private async flush(): Promise<void> {
     if (this.sending || this.levels.size === 0) return;
     this.sending = true;
