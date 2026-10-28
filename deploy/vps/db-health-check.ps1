@@ -55,11 +55,14 @@ function Read-Health([string]$Url) {
 $utcNow = if ($Now) { [datetime]::Parse($Now, $null, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal) } else { (Get-Date).ToUniversalTime() }
 $checks = [ordered]@{}
 $reasons = New-Object System.Collections.Generic.List[string]
+# stable failure keys (checks.failing): the web alerts on each NEW key, not only on OK -> FAIL (lib/infra-health.ts)
+$failing = New-Object System.Collections.Generic.List[string]
+function Add-Failure([string]$Key, [string]$Text) { $reasons.Add($Text); if (-not $failing.Contains($Key)) { $failing.Add($Key) } }
 foreach ($c in @(@{ name = "engine"; url = $EngineHealth }, @{ name = "gateway"; url = $GatewayHealth })) {
   $h = Read-Health $c.url
   $checks["$($c.name)Status"] = $h.code
   $checks["$($c.name)Db"] = if ($h.db) { $h.db } elseif ($h.code -eq 0) { "no answer" } else { "no probe (older build)" }
-  if ($h.db -like "down*") { $reasons.Add("$($c.name): the book database refuses new connections ($($h.db)); /health $($h.code)") }
+  if ($h.db -like "down*") { Add-Failure "$($c.name)_db" ("$($c.name): the book database refuses new connections ($($h.db)); /health $($h.code)") }
 }
 # The web (Vercel, its own DATABASE_URL: lib/db-probe.ts behind /api/health). Asked only while the engine's probe runs
 # (x-vyx-db ok / down / starting, not idle): each ask opens a new connection, and Neon must still suspend when quiet.
@@ -67,13 +70,14 @@ if ($checks.engineDb -like "ok*" -or $checks.engineDb -like "down*" -or $checks.
   $h = Read-Health "$WebUrl/api/health"
   $checks.webStatus = $h.code
   $checks.webDb = if ($h.db) { $h.db } elseif ($h.code -eq 0) { "no answer" } else { "no probe (older build)" }
-  if ($h.db -like "down*") { $reasons.Add("web: the book database refuses new connections ($($h.db)); /api/health $($h.code)") }
+  if ($h.db -like "down*") { Add-Failure "web_db" ("web: the book database refuses new connections ($($h.db)); /api/health $($h.code)") }
 } else {
   $checks.webStatus = $null
   $checks.webDb = "not asked (the engine is idle or has no probe)"
 }
 
 $inBreak = Test-InBreak $utcNow
+$checks.failing = @($failing)
 $ok = ($reasons.Count -eq 0)
 $result = [ordered]@{ component = "database"; ok = $ok; checks = $checks; reasons = @($reasons); checkedAt = $utcNow.ToString("o"); host = $env:COMPUTERNAME }
 $delivered = "not sent"

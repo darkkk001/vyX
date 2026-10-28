@@ -38,6 +38,9 @@ function Get-CmdVar([string]$Path, [string]$Name) {
 
 $reasons = New-Object System.Collections.Generic.List[string]
 $checks = [ordered]@{}
+# stable failure keys (checks.failing): the web alerts on each NEW key, not only on OK -> FAIL (lib/infra-health.ts)
+$failing = New-Object System.Collections.Generic.List[string]
+function Add-Failure([string]$Key, [string]$Text) { $reasons.Add($Text); if (-not $failing.Contains($Key)) { $failing.Add($Key) } }
 
 # a) + b) processes
 $svc = Get-CimInstance Win32_Service -Filter "Name='$Service'" -ErrorAction SilentlyContinue
@@ -46,19 +49,19 @@ $caddies = @(Get-CimInstance Win32_Process -Filter "Name='caddy.exe'" -ErrorActi
 $checks.processCount = $caddies.Count
 $checks.servicePid = $nssmPid
 $checks.caddyPids = @($caddies | ForEach-Object { [int]$_.ProcessId })
-if ($caddies.Count -eq 0) { $reasons.Add("no caddy.exe is running") }
+if ($caddies.Count -eq 0) { Add-Failure "process_count" ("no caddy.exe is running") }
 elseif ($caddies.Count -gt 1) {
   $desc = ($caddies | ForEach-Object { "pid $($_.ProcessId) parent $($_.ParentProcessId) started $($_.CreationDate.ToUniversalTime().ToString('yyyy-MM-dd HH:mm'))Z" }) -join "; "
-  $reasons.Add("$($caddies.Count) caddy.exe processes ($desc); expected 1")
+  Add-Failure "process_count" ("$($caddies.Count) caddy.exe processes ($desc); expected 1")
 }
 $orphans = @($caddies | Where-Object { $nssmPid -eq 0 -or [int]$_.ParentProcessId -ne $nssmPid })
 $checks.orphanPids = @($orphans | ForEach-Object { [int]$_.ProcessId })
-foreach ($o in $orphans) { $reasons.Add("caddy.exe pid $($o.ProcessId) is not a child of the $Service service (parent $($o.ParentProcessId), service pid $nssmPid)") }
+foreach ($o in $orphans) { Add-Failure "orphan" ("caddy.exe pid $($o.ProcessId) is not a child of the $Service service (parent $($o.ParentProcessId), service pid $nssmPid)") }
 
 # c) service state
 $status = if ($HaveNssm) { ((& $Nssm status $Service 2>$null) -join "" -replace "`0", "").Trim() } else { "nssm not found at $Nssm" }
 $checks.serviceStatus = $status
-if ($status -ne "SERVICE_RUNNING") { $reasons.Add("service $Service is '$status', expected SERVICE_RUNNING") }
+if ($status -ne "SERVICE_RUNNING") { Add-Failure "service" ("service $Service is '$status', expected SERVICE_RUNNING") }
 
 # d) new bind errors in the stderr log
 $log = if ($StderrLog) { $StderrLog } else { Get-NssmValue "AppStderr" }
@@ -87,7 +90,7 @@ if ($log -and (Test-Path -LiteralPath $log)) {
   $checks.stderrBaseline = $false
 }
 $checks.newBindErrors = $newBind
-if ($newBind -gt 0) { $reasons.Add("$newBind new 'bind' / 'address already in use' line(s) in $log since the last check") }
+if ($newBind -gt 0) { Add-Failure "bind_errors" ("$newBind new 'bind' / 'address already in use' line(s) in $log since the last check") }
 
 # e) the public health endpoint
 $healthDb = ""
@@ -101,8 +104,9 @@ try {
 # 503 with x-vyx-db "down ..." = the engine answered through Caddy but its book database refuses new connections
 # (engine/server/src/db_probe.rs): Caddy itself is fine; that is the "database" check's alert (db-health-check.ps1)
 $checks.healthDb = $healthDb
-if ($checks.healthStatus -ne 200 -and -not ($checks.healthStatus -eq 503 -and $healthDb -like "down*")) { $reasons.Add("$HealthUrl answered $(if ($checks.healthStatus) { $checks.healthStatus } else { 'nothing within 5 s' })") }
+if ($checks.healthStatus -ne 200 -and -not ($checks.healthStatus -eq 503 -and $healthDb -like "down*")) { Add-Failure "feed_health" ("$HealthUrl answered $(if ($checks.healthStatus) { $checks.healthStatus } else { 'nothing within 5 s' })") }
 
+$checks.failing = @($failing)
 $ok = ($reasons.Count -eq 0)
 $result = [ordered]@{ component = "caddy"; ok = $ok; checks = $checks; reasons = @($reasons); checkedAt = (Get-Date).ToUniversalTime().ToString("o"); host = $env:COMPUTERNAME }
 $json = $result | ConvertTo-Json -Depth 5 -Compress

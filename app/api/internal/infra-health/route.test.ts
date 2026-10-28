@@ -25,7 +25,7 @@ import { sendPlatformEmail } from "@/lib/email/adapter";
 import { getAdminSession } from "@/lib/auth";
 import { getRedis } from "@/lib/redis";
 import { POST } from "@/app/api/internal/infra-health/route";
-import { readInfraSummary } from "@/lib/infra-health";
+import { INFRA_COMPONENTS, checkInfraStale, inDailyBreak, readInfraSummary, recordInfraHealth, REMIND_EVERY_MS } from "@/lib/infra-health";
 
 const SECRET = "infra-test-secret";
 const saved: Record<string, string | undefined> = {};
@@ -33,9 +33,13 @@ const KEYS = ["INTERNAL_SERVICE_SECRET", "OPS_ALERT_EMAIL", "TRADING_CORE_URL", 
 const send = vi.mocked(sendPlatformEmail);
 
 async function clearKeys() {
-  await getRedis().del("infra-health:caddy", "infra-health:caddy:state", "infra-health:qorebridge", "infra-health:qorebridge:state");
+  const parts = ["", ":state", ":alerted", ":remind-at", ":stale", ":lock"];
+  await getRedis().del(...INFRA_COMPONENTS.flatMap((c) => parts.map((p) => `infra-health:${c}${p}`)));
 }
 beforeEach(async () => {
+  // a fixed weekday clock outside the daily break (16:59-18:00 New York), so the break gate never makes a run flaky
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-28T12:00:00Z"));
   for (const k of KEYS) saved[k] = process.env[k];
   process.env.INTERNAL_SERVICE_SECRET = SECRET;
   process.env.OPS_ALERT_EMAIL = "ops1@example.test, ops2@example.test";
@@ -44,6 +48,7 @@ beforeEach(async () => {
   await clearKeys();
 });
 afterEach(() => {
+  vi.useRealTimers();
   for (const k of KEYS) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -106,7 +111,7 @@ describe("qorebridge (owner 2026-10-26: the VPS bridge health task got 400)", ()
   });
 });
 
-describe("alerts: one per state change", () => {
+describe("alerts: one per state change (and per new failure, below)", () => {
   it("first report OK: stored, no e-mail", async () => {
     const res = await post(report(true));
     expect(res.status).toBe(200);
@@ -125,7 +130,7 @@ describe("alerts: one per state change", () => {
     expect(first.text).toContain("deploy/caddy-service-recovery-runbook.md");
 
     send.mockClear();
-    for (let i = 0; i < 3; i++) expect(await (await post(report(false, ["still bad"]))).json()).toMatchObject({ state: "FAIL", alerted: null });
+    for (let i = 0; i < 3; i++) expect(await (await post(report(false, ["2 caddy.exe processes", "service SERVICE_PAUSED"]))).json()).toMatchObject({ state: "FAIL", alerted: null });
     expect(send).not.toHaveBeenCalled();
 
     const r2 = await (await post(report(true))).json();
@@ -210,5 +215,82 @@ describe("infra state (ops only, unchanged)", () => {
     await post(report(true));
     expect((await readInfraSummary("caddy", Date.now() + 16 * 60 * 1000)).state).toBe("NO_REPORT");
     expect((await readInfraSummary("caddy", Date.now() + 14 * 60 * 1000)).state).toBe("OK");
+  });
+});
+
+// Owner 2026-10-28: the zzzqa QoreBridge stayed stopped for 17 h and nobody heard. The component was already FAIL for
+// another reason, so FAIL -> FAIL said nothing; and a check that stops reporting was only visible on Feed health.
+describe("alert gaps (owner 2026-10-28)", () => {
+  const NOON = new Date("2026-10-28T12:00:00Z"); // 08:00 New York, far from the break
+  const at = (base: Date, mins: number) => new Date(base.getTime() + mins * 60_000);
+  function bridge(ok: boolean, failing: string[] = [], reasons: string[] = failing.map((k) => `${k} text ${Math.random()}`)) {
+    return { ok, checks: { failing }, reasons, checkedAt: NOON.toISOString(), host: "vps-test" };
+  }
+  beforeEach(() => {
+    process.env.OPS_ALERT_EMAIL = "ops1@example.test";
+  });
+
+  it("a NEW failure key while already failing alerts again and names it; the same keys with new text do not", async () => {
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["lp_sessions"]), NOON)).toMatchObject({ alerted: "FAIL", emailed: true });
+    // same key, different reason text (counts in it change): no e-mail
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["lp_sessions"]), at(NOON, 5))).toMatchObject({ alerted: null });
+    // the 10-27 case: the license stops while LP sessions were already down
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["license_state", "lp_sessions"]), at(NOON, 10))).toMatchObject({ alerted: "FAIL", emailed: true });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0].text).toContain("New failure: license_state");
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["license_state", "lp_sessions"]), at(NOON, 15))).toMatchObject({ alerted: null });
+  });
+  it("a key that clears and comes back alerts again; recovery after an alert sends one e-mail", async () => {
+    await recordInfraHealth("qorebridge", bridge(false, ["lp_sessions", "license_state"]), NOON);
+    await recordInfraHealth("qorebridge", bridge(false, ["lp_sessions"]), at(NOON, 5));
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["lp_sessions", "license_state"]), at(NOON, 10))).toMatchObject({ alerted: "FAIL" });
+    expect(await recordInfraHealth("qorebridge", bridge(true), at(NOON, 15))).toMatchObject({ alerted: "RECOVERED", emailed: true });
+    expect(await recordInfraHealth("qorebridge", bridge(true), at(NOON, 20))).toMatchObject({ alerted: null });
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+  it("one reminder every 6 h while it stays failing", async () => {
+    await recordInfraHealth("qorebridge", bridge(false, ["license_state"]), NOON);
+    const sixH = REMIND_EVERY_MS / 60_000;
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["license_state"]), at(NOON, sixH - 1))).toMatchObject({ alerted: null });
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["license_state"]), at(NOON, sixH))).toMatchObject({ alerted: "REMINDER", emailed: true });
+    expect(send.mock.calls[1][0].subject).toBe("[VyX ops] qorebridge check STILL FAILING on vps-test");
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["license_state"]), at(NOON, sixH + 5))).toMatchObject({ alerted: null });
+  });
+  it("the daily break defers a FAIL to the first report after it; one that recovers inside the break never mails", async () => {
+    const inBreak = new Date("2026-10-28T21:30:00Z"); // 17:30 New York (EDT)
+    const after = new Date("2026-10-28T22:05:00Z"); // 18:05 New York
+    expect([inDailyBreak(inBreak), inDailyBreak(after), inDailyBreak(new Date("2026-11-02T21:30:00Z")), inDailyBreak(new Date("2026-11-02T22:30:00Z"))]).toEqual([true, false, false, true]);
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["health_down"]), inBreak)).toMatchObject({ state: "FAIL", deferred: true, alerted: null });
+    expect(await recordInfraHealth("qorebridge", bridge(false, ["health_down"]), after)).toMatchObject({ alerted: "FAIL", emailed: true });
+    await clearKeys();
+    send.mockClear();
+    await recordInfraHealth("qorebridge", bridge(false, ["health_down"]), inBreak);
+    expect(await recordInfraHealth("qorebridge", bridge(true), at(inBreak, 10))).toMatchObject({ alerted: null });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("not reporting: nothing for a check never installed; one STALE after 15 min of silence, one when it reports again", async () => {
+    expect(await checkInfraStale(NOON)).toEqual({});
+    await recordInfraHealth("qorebridge", bridge(true), NOON);
+    expect(await checkInfraStale(at(NOON, 14))).toEqual({});
+    expect(await checkInfraStale(at(NOON, 16))).toEqual({ qorebridge: "STALE" });
+    expect(send.mock.calls[0][0].subject).toBe("[VyX ops] qorebridge check is NOT REPORTING (vps-test)");
+    expect(send.mock.calls[0][0].text).toContain("401 after a secret rotation");
+    expect(await checkInfraStale(at(NOON, 30))).toEqual({});
+    await recordInfraHealth("qorebridge", bridge(true), at(NOON, 31));
+    expect(await checkInfraStale(at(NOON, 32))).toEqual({ qorebridge: "REPORTING" });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+  it("not reporting through the daily break is not STALE until 15 min after it", async () => {
+    await recordInfraHealth("database", { ...bridge(true), checkedAt: "2026-10-28T20:58:00Z" }, new Date("2026-10-28T20:58:00Z"));
+    expect(await checkInfraStale(new Date("2026-10-28T21:40:00Z"))).toEqual({}); // in the break
+    expect(await checkInfraStale(new Date("2026-10-28T22:10:00Z"))).toEqual({}); // 10 min after it
+    expect(await checkInfraStale(new Date("2026-10-28T22:16:00Z"))).toEqual({ database: "STALE" });
+  });
+  it("a failed STALE e-mail is retried on the next minute", async () => {
+    await recordInfraHealth("caddy", bridge(true), NOON);
+    send.mockRejectedValueOnce(new Error("Resend send failed (500)"));
+    expect(await checkInfraStale(at(NOON, 16))).toEqual({});
+    expect(await checkInfraStale(at(NOON, 17))).toEqual({ caddy: "STALE" });
   });
 });

@@ -4,6 +4,7 @@ import { marginPassGate } from "@/lib/live-price";
 import { runFullMarginPass } from "@/lib/margin-pass";
 import { anyBrokerRust, readEngineHeartbeat, type EngineHeartbeat } from "@/lib/risk-fallback";
 import { checkEngineHeartbeatAlert } from "@/lib/risk-engine-alert";
+import { checkInfraStale } from "@/lib/infra-health";
 
 // Stage 6 (owner decisions b and c, 2026-10-07): the 1-minute web fallback while any broker is on the engine, and the
 // stale-heartbeat alert (ops only). Vercel cron "* * * * *" (vercel.json); the 5-minute margin-monitor cron is unchanged.
@@ -29,6 +30,14 @@ export async function GET(request: NextRequest) {
   if (!bearerMatches(request.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+
+  // 0. the VPS infra checks' "not reporting" alert (lib/infra-health.ts): Redis only, before every gate, so it also runs
+  //    while the market is closed (a dead bridge or health task matters then too)
+  const stale = await checkInfraStale().catch((err) => {
+    console.error("risk-fallback: infra stale check failed", err);
+    return {};
+  });
+  if (Object.keys(stale).length > 0) console.log("risk-fallback: infra", JSON.stringify(stale));
 
   const gate = await marginPassGate();
   if (gate.run === false) return answer({ skipped: gate.reason, ran: false });

@@ -35,11 +35,14 @@ function Get-CmdVar([string]$Path, [string]$Name) {
 
 $reasons = New-Object System.Collections.Generic.List[string]
 $checks = [ordered]@{}
+# stable failure keys (checks.failing): the web alerts on each NEW key, not only on OK -> FAIL (lib/infra-health.ts)
+$failing = New-Object System.Collections.Generic.List[string]
+function Add-Failure([string]$Key, [string]$Text) { $reasons.Add($Text); if (-not $failing.Contains($Key)) { $failing.Add($Key) } }
 
 # ---- a) service state
 $status = if ($HaveNssm) { ((& $Nssm status $Service 2>$null) -join "" -replace "`0", "").Trim() } else { "" }
 $checks.serviceStatus = $status
-if ($status -ne "SERVICE_RUNNING") { $reasons.Add("nssm status $Service is '$(if ($status) { $status } else { 'unknown' })', not SERVICE_RUNNING") }
+if ($status -ne "SERVICE_RUNNING") { Add-Failure "service" ("nssm status $Service is '$(if ($status) { $status } else { 'unknown' })', not SERVICE_RUNNING") }
 
 # ---- b + c) /health
 $checks.healthStatus = $null
@@ -50,22 +53,22 @@ try {
   $checks.healthStatus = [int]$r.StatusCode
   $h = $r.Content | ConvertFrom-Json
   $checks.healthOk = ($h.status -eq "ok")
-  if ($h.status -ne "ok") { $reasons.Add("/health overall status is '$($h.status)', not ok") }
+  if ($h.status -ne "ok") { Add-Failure "health_status" ("/health overall status is '$($h.status)', not ok") }
   $bad = @()
   if ($h.components) {
     foreach ($p in $h.components.PSObject.Properties) {
       if ($p.Value.status -ne "ok") { $bad += "$($p.Name)=$($p.Value.status)" }
     }
-  } else { $reasons.Add("/health returned no components block") }
+  } else { Add-Failure "health_components" ("/health returned no components block") }
   $checks.componentsBad = @($bad)
-  if ($bad.Count -gt 0) { $reasons.Add("/health components not ok: $($bad -join ', ')") }
+  if ($bad.Count -gt 0) { Add-Failure "health_components" ("/health components not ok: $($bad -join ', ')") }
 } catch {
   $code = $null; if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
   $checks.healthStatus = $code
-  $reasons.Add("$HealthUrl answered $(if ($code) { $code } else { 'nothing within 5 s' })")
+  Add-Failure "health_down" ("$HealthUrl answered $(if ($code) { $code } else { 'nothing within 5 s' })")
 }
 if ($checks.healthStatus -ne $null -and $checks.healthStatus -ne 200) {
-  if (-not ($reasons -match 'answered')) { $reasons.Add("$HealthUrl answered $($checks.healthStatus)") }
+  if (-not ($reasons -match 'answered')) { Add-Failure "health_down" ("$HealthUrl answered $($checks.healthStatus)") }
 }
 
 # ---- d + e) metrics
@@ -78,14 +81,15 @@ try {
   $lp = $m | Where-Object { $_ -match '^qb_lp_sessions_ready\s+(\d+)' } | Select-Object -First 1
   if ($lp -match '^qb_lp_sessions_ready\s+(\d+)') { $checks.lpSessionsReady = [int]$Matches[1] }
 } catch {
-  $reasons.Add("$MetricsUrl unreachable: $($_.Exception.Message)")
+  Add-Failure "metrics" ("$MetricsUrl unreachable: $($_.Exception.Message)")
 }
 $licMeaning = @{ 0 = "holding (not yet confirmed)"; 1 = "ok"; 2 = "grace (platform unreachable)"; 3 = "stopped" }
-if ($checks.licenseState -eq $null) { $reasons.Add("qb_license_state not present in /metrics") }
-elseif ($checks.licenseState -ne 1) { $reasons.Add("qb_license_state is $($checks.licenseState) -- $($licMeaning[[int]$checks.licenseState]) -- expected 1 (ok)") }
-if ($checks.lpSessionsReady -eq $null) { $reasons.Add("qb_lp_sessions_ready not present in /metrics") }
-elseif ($checks.lpSessionsReady -lt 1) { $reasons.Add("qb_lp_sessions_ready is 0 -- no LP FIX session is logged on") }
+if ($checks.licenseState -eq $null) { Add-Failure "license_state" ("qb_license_state not present in /metrics") }
+elseif ($checks.licenseState -ne 1) { Add-Failure "license_state" ("qb_license_state is $($checks.licenseState) -- $($licMeaning[[int]$checks.licenseState]) -- expected 1 (ok)") }
+if ($checks.lpSessionsReady -eq $null) { Add-Failure "lp_sessions" ("qb_lp_sessions_ready not present in /metrics") }
+elseif ($checks.lpSessionsReady -lt 1) { Add-Failure "lp_sessions" ("qb_lp_sessions_ready is 0 -- no LP FIX session is logged on") }
 
+$checks.failing = @($failing)
 $ok = ($reasons.Count -eq 0)
 $result = [ordered]@{ component = "qorebridge"; ok = $ok; checks = $checks; reasons = @($reasons); checkedAt = (Get-Date).ToUniversalTime().ToString("o"); host = $env:COMPUTERNAME }
 $json = $result | ConvertTo-Json -Depth 5 -Compress
