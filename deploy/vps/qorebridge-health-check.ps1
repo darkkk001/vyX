@@ -8,6 +8,8 @@
 #   c) /health overall status is "ok" AND every component (intake, license, lp:*) is "ok"
 #   d) qb_license_state is 1  (0 = holding / not yet confirmed, 2 = grace / platform unreachable, 3 = stopped)
 #   e) qb_lp_sessions_ready is at least 1
+#   f) the price feed, when its service is installed (owner 2026-10-28): `nssm status QoreBridgeFeed` is
+#      SERVICE_RUNNING and its own qb_license_state on http://127.0.0.1:8096/metrics is 1. Not installed = skipped.
 # Reports: POST to $WebUrl/api/internal/infra-health (x-internal-secret = INTERNAL_SERVICE_SECRET from
 # start-gateway.cmd, never printed), writes C:\vyxtrader\status\qorebridge-health.json, prints one line.
 # Exit 0 = all OK, 1 = something is wrong.
@@ -15,6 +17,8 @@ param(
   [string]$WebUrl = "https://www.vyxtrader.com",
   [string]$HealthUrl = "http://127.0.0.1:8095/health",
   [string]$MetricsUrl = "http://127.0.0.1:8095/metrics",
+  [string]$FeedMetricsUrl = "http://127.0.0.1:8096/metrics",
+  [string]$FeedService = "QoreBridgeFeed",
   [string]$GatewayCmd = "C:\vyxtrader\scripts\start-gateway.cmd",
   [string]$StatusDir = "C:\vyxtrader\status",
   [string]$NssmPath = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"
@@ -86,6 +90,28 @@ elseif ($checks.licenseState -ne 1) { $reasons.Add("qb_license_state is $($check
 if ($checks.lpSessionsReady -eq $null) { $reasons.Add("qb_lp_sessions_ready not present in /metrics") }
 elseif ($checks.lpSessionsReady -lt 1) { $reasons.Add("qb_lp_sessions_ready is 0 -- no LP FIX session is logged on") }
 
+# ---- f) the price feed (its own process, its own license check)
+$checks.feedServiceStatus = $null
+$checks.feedLicenseState = $null
+$feedStatus = if ($HaveNssm) { ((& $Nssm status $FeedService 2>$null) -join "" -replace "`0", "").Trim() } else { "" }
+if ($feedStatus -match '^SERVICE_') {
+  $checks.feedServiceStatus = $feedStatus
+  if ($feedStatus -ne "SERVICE_RUNNING") { $reasons.Add("nssm status $FeedService is '$feedStatus', not SERVICE_RUNNING") }
+  else {
+    try {
+      $fm = (Invoke-WebRequest -UseBasicParsing -Uri $FeedMetricsUrl -TimeoutSec 5).Content -split "`n"
+      $fl = $fm | Where-Object { $_ -match '^qb_license_state\s+(\d+)' } | Select-Object -First 1
+      if ($fl -match '^qb_license_state\s+(\d+)') { $checks.feedLicenseState = [int]$Matches[1] }
+    } catch {
+      $reasons.Add("$FeedMetricsUrl unreachable: $($_.Exception.Message)")
+    }
+    if ($checks.feedLicenseState -eq $null) { if (-not ($reasons -match [regex]::Escape($FeedMetricsUrl))) { $reasons.Add("feed qb_license_state not present in $FeedMetricsUrl") } }
+    elseif ($checks.feedLicenseState -ne 1) { $reasons.Add("feed qb_license_state is $($checks.feedLicenseState) -- $($licMeaning[[int]$checks.feedLicenseState]) -- expected 1 (ok)") }
+  }
+} else {
+  $checks.feedServiceStatus = "not installed"
+}
+
 $ok = ($reasons.Count -eq 0)
 $result = [ordered]@{ component = "qorebridge"; ok = $ok; checks = $checks; reasons = @($reasons); checkedAt = (Get-Date).ToUniversalTime().ToString("o"); host = $env:COMPUTERNAME }
 $json = $result | ConvertTo-Json -Depth 5 -Compress
@@ -107,5 +133,5 @@ $secret = $null
 $result.report = $delivered
 $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $OutFile -Encoding UTF8
 
-"qorebridge health $(if ($ok) { 'OK' } else { 'FAIL' }): service $status, /health $($checks.healthStatus), license_state $($checks.licenseState), lp_sessions_ready $($checks.lpSessionsReady); report $delivered$(if (-not $ok) { '; ' + ($reasons -join '; ') })"
+"qorebridge health $(if ($ok) { 'OK' } else { 'FAIL' }): service $status, /health $($checks.healthStatus), license_state $($checks.licenseState), lp_sessions_ready $($checks.lpSessionsReady), feed $($checks.feedServiceStatus) license_state $($checks.feedLicenseState); report $delivered$(if (-not $ok) { '; ' + ($reasons -join '; ') })"
 if ($ok) { exit 0 } else { exit 1 }
