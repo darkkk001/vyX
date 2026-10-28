@@ -37,6 +37,10 @@
     {
       "path": "/api/internal/demo-cleanup",
       "schedule": "50 3 * * *"
+    },
+    {
+      "path": "/api/internal/infra-silence",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
