@@ -1442,10 +1442,16 @@ async fn spawn_alert_hot_reload(
 
 // Windows' default timer resolution is 15.6 ms, which rounds up every tokio sleep / interval (the risk loop's
 // every_ms=100, lane waits). The S8 stop-out p95 was 348 ms while MT5 / cTrader happened to hold a 1 ms timer on the
-// VPS and 601 ms without them (2026-10-28), so the engine asks for 1 ms itself. The request lasts for the process's
-// lifetime; Windows drops it when the process exits. Other platforms already have fine-grained timers.
+// VPS and 601 ms without them (2026-10-28), so the engine asks for 1 ms itself. The returned guard calls
+// timeEndPeriod(1) when main ends (return or panic); a killed process (nssm stop) is released by Windows itself.
+// Other platforms already have fine-grained timers.
+struct TimerResolution {
+    #[cfg(windows)]
+    active: bool,
+}
+
 #[cfg(windows)]
-fn request_1ms_timer_resolution() {
+fn request_1ms_timer_resolution() -> TimerResolution {
     use windows_sys::Win32::Media::{timeBeginPeriod, TIMERR_NOERROR};
     // SAFETY: timeBeginPeriod takes a plain integer and has no memory-safety preconditions.
     let rc = unsafe { timeBeginPeriod(1) };
@@ -1454,16 +1460,29 @@ fn request_1ms_timer_resolution() {
     } else {
         tracing::warn!(rc, "timer resolution: timeBeginPeriod(1) refused; sleeps keep the system default (15.6 ms)");
     }
+    TimerResolution { active: rc == TIMERR_NOERROR }
 }
 
 #[cfg(not(windows))]
-fn request_1ms_timer_resolution() {}
+fn request_1ms_timer_resolution() -> TimerResolution {
+    TimerResolution {}
+}
+
+#[cfg(windows)]
+impl Drop for TimerResolution {
+    fn drop(&mut self) {
+        if self.active {
+            // SAFETY: same as timeBeginPeriod; pairs the one successful request above.
+            unsafe { windows_sys::Win32::Media::timeEndPeriod(1) };
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
     tracing::info!(commit = ENGINE_COMMIT, "engine build: commit {ENGINE_COMMIT}");
-    request_1ms_timer_resolution();
+    let _timer_resolution = request_1ms_timer_resolution();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
