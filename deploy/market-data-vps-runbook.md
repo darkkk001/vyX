@@ -352,3 +352,20 @@ current caller. During a rotation the engine and the gateway accept `INTERNAL_SE
 
 Rollback: Overlap can be undone from the backup directory each script prints (the engine script lists the commands at
 its bottom). After Vercel is on NEW, fix forward: the NEW values are the ones every caller now sends.
+
+## Vercel firewall: the VPS IP bypass (2026-10-28)
+
+The VPS's public IP is **161.97.138.160** (Contabo, AS51167). Everything it sends to the web is server-to-server:
+QoreBridge `/api/internal/bridge-status` and `/api/client/manifest`, `/api/internal/margin-monitor`,
+`/api/internal/infra-health`. Vercel project vy-x has a firewall **system bypass** for this IP on all domains, so
+Vercel's automatic mitigations never challenge it.
+
+Why: on 2026-10-27 07:05-07:20 UTC those automatic mitigations challenged 76 requests from this IP (no custom rule,
+no alert). A challenge answers a non-browser client with 403 and an HTML page, never reaching the function (runtime
+logs show only gaps). The zzzqa bridge read the 403 on its license check as a refusal and stopped (sticky until a
+restart).
+
+- Check: `vercel firewall system-bypass list` (in C:\vyx\web, linked to vy-x); `vercel firewall traffic inspect ip
+  161.97.138.160 --since 1h` must show Allow only.
+- **If the VPS IP changes** (new VPS, Contabo re-IP): `vercel firewall system-bypass add <new ip> --notes "..."` before
+  the move, then `vercel firewall system-bypass remove 161.97.138.160` after it, and update this section.
