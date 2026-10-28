@@ -133,5 +133,5 @@ $secret = $null
 $result.report = $delivered
 $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $OutFile -Encoding UTF8
 
-"qorebridge health $(if ($ok) { 'OK' } else { 'FAIL' }): service $status, /health $($checks.healthStatus), license_state $($checks.licenseState), lp_sessions_ready $($checks.lpSessionsReady), feed $($checks.feedServiceStatus) license_state $($checks.feedLicenseState); report $delivered$(if (-not $ok) { '; ' + ($reasons -join '; ') })"
+"qorebridge health $(if ($ok) { 'OK' } else { 'FAIL' }): service $status, /health $($checks.healthStatus), license_state $($checks.licenseState), lp_sessions_ready $($checks.lpSessionsReady), feed $($checks.feedServiceStatus)$(if ($checks.feedServiceStatus -ne 'not installed') { ' license_state ' + $checks.feedLicenseState }); report $delivered$(if (-not $ok) { '; ' + ($reasons -join '; ') })"
 if ($ok) { exit 0 } else { exit 1 }
