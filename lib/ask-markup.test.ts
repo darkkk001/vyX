@@ -6,7 +6,7 @@ import path from "node:path";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { computeAskMarkupVectors, RESOLUTION_INPUTS, type ResolutionInput } from "@/lib/ask-markup-contract";
-import { loadAskRules, markedUpAsk, accountClosePrice, RAW_ASK } from "@/lib/ask-markup";
+import { accountClosePrice, accountQuote, loadAskRules, markedDownBid, markedUpAsk, RAW_RULE } from "@/lib/ask-markup";
 import { resolveFillPricing } from "@/lib/pricing-engine";
 import { applySpreadMarkup, pipSize } from "@/lib/group-pricing";
 
@@ -18,18 +18,40 @@ describe("ask-markup vectors", () => {
     expect(file).toEqual(JSON.parse(JSON.stringify(computeAskMarkupVectors())));
   });
 
-  it("the account's ask is the BUY fill price: applySpreadMarkup on the same markup", () => {
+  it("both account prices are the fill prices: applySpreadMarkup on the same markup, each side", () => {
     for (const p of computeAskMarkupVectors().prices) {
-      const fill = applySpreadMarkup({ side: "BUY", price: p.ask, spreadMarkup: p.expected.markupPips, digits: p.digits });
-      expect(p.expected.accountAsk).toBe(fill.toString());
+      // symmetric markup (2026-10-29): applySpreadMarkup halves the markup itself, so the SAME full markup in pips
+      // produces the ask-side fill from the raw ask and the bid-side fill from the raw bid
+      const buyFill = applySpreadMarkup({ side: "BUY", price: p.ask, spreadMarkup: p.expected.markupPips, digits: p.digits });
+      const sellFill = applySpreadMarkup({ side: "SELL", price: p.bid, spreadMarkup: p.expected.markupPips, digits: p.digits });
+      expect(p.expected.accountAsk).toBe(buyFill.toString());
+      expect(p.expected.accountBid).toBe(sellFill.toString());
+      // a BUY opens at the account's ask and CLOSES at its bid; a SELL the other way round
       expect(p.expected.sellClose).toBe(p.expected.accountAsk);
-      expect(p.expected.buyClose).toBe(D(p.bid).toString());
+      expect(p.expected.buyClose).toBe(p.expected.accountBid);
+      // never tighter than raw, never crossed
+      expect(D(p.expected.accountAsk).gte(D(p.ask))).toBe(true);
+      expect(D(p.expected.accountBid).lte(D(p.bid))).toBe(true);
+      expect(D(p.expected.accountBid).lt(D(p.expected.accountAsk))).toBe(true);
     }
   });
 
-  it("no rule = raw ask; a raw rule = raw ask", () => {
-    expect(accountClosePrice("SELL", "1", "1.5", null).toString()).toBe("1.5");
-    expect(markedUpAsk(RAW_ASK(2), "1", "1.5").toString()).toBe("1.5");
+  it("a zero markup leaves BOTH sides raw, and the half is rounded away from the client", () => {
+    expect(markedUpAsk(RAW_RULE(2), "1", "1.5").toString()).toBe("1.5");
+    expect(markedDownBid(RAW_RULE(2), "1", "1.5").toString()).toBe("1");
+    expect(accountClosePrice("SELL", "1", "1.5", RAW_RULE(2)).toString()).toBe("1.5");
+    expect(accountClosePrice("BUY", "1", "1.5", RAW_RULE(2)).toString()).toBe("1");
+
+    // XAUUSD, digits 2 (pip 0.1), 1.5 pips = 0.15 -> half 0.075, not representable at 2 digits:
+    // the ask must round UP and the bid DOWN, so the client never gains the half point.
+    const rule = { mode: "markup" as const, markupPips: D("1.5"), digits: 2 };
+    expect(markedUpAsk(rule, "4298.96", "4299.13").toString()).toBe("4299.21");
+    expect(markedDownBid(rule, "4298.96", "4299.13").toString()).toBe("4298.88");
+
+    // a markup wider than the price itself degrades to the smallest quotable price, never zero or negative
+    const huge = { mode: "markup" as const, markupPips: D("600"), digits: 2 };
+    expect(markedDownBid(huge, "1.00", "1.02").gt(0)).toBe(true);
+    expect(() => accountQuote(huge, "1.00", "1.02")).not.toThrow();
   });
 });
 

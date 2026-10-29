@@ -1,5 +1,6 @@
 import "server-only";
-import { accountClosePrice, loadAccountAskRules, loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { accountClosePrice, loadAccountAskRules, NO_MARKUP, valuationClosePrice } from "@/lib/ask-markup";
+import { closeAskRulesCached } from "@/lib/ask-markup-cache";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma, PrismaClient, MirrorRule, OrderSide } from "@prisma/client";
 import { openPositionFromOrder } from "@/lib/dealing";
@@ -222,14 +223,14 @@ export async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ kille
     const [priceBySymbol, fx, askRules] = await Promise.all([
       getFreshPrices([...new Set(openPositions.map((p) => p.symbol.name))]),
       loadRateResolver(db, openPositions.map((p) => [p.symbol.quoteCurrency, target.currency] as const)),
-      loadSellAskRules(db, openPositions),
+      closeAskRulesCached(db, openPositions),
     ]);
     let floating = new Prisma.Decimal(0);
     for (const p of openPositions) {
       const live = priceBySymbol.get(p.symbol.name);
       const rate = fx.rate(p.symbol.quoteCurrency, target.currency);
       if (!live || !rate) continue; // no fresh price / no rate -- excluded from floating, same "can't value it, don't guess" convention as checkAccountPreTradeMargin
-      const cp = p.side === "BUY" ? live.bid : valuationAsk(askRules, p, live.bid, live.ask);
+      const cp = valuationClosePrice(askRules, p, live.bid, live.ask); // symmetric: BUY at account bid, SELL at account ask
       floating = floating.add(
         computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );
@@ -573,8 +574,14 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose, opts?: { re
         await recordMirrorFailure(db, rule, "no live price to close mirrored position (market closed?)");
         return;
       }
-      // MARKET: the target's own close-side price -- a SELL at the target account's ask (lib/ask-markup.ts)
-      closePrice = targetPosition.side === "BUY" ? livePrice.bid : accountClosePrice("SELL", livePrice.bid, livePrice.ask, (await loadAccountAskRules(db, targetPosition.accountId, [targetPosition.symbolId]))(targetPosition.symbolId));
+      // MARKET: the target's own close-side price -- symmetric markup (lib/ask-markup.ts), so a BUY closes at the
+      // target account's BID and a SELL at its ask; both need the rule
+      closePrice = accountClosePrice(
+        targetPosition.side,
+        livePrice.bid,
+        livePrice.ask,
+        (await loadAccountAskRules(db, targetPosition.accountId, [targetPosition.symbolId]))(targetPosition.symbolId) ?? NO_MARKUP
+      );
     }
 
     // Stage 3 BEHAVIOR CHANGE (2026-09-24): the target's close, its queued-close cancel and the

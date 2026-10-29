@@ -183,13 +183,22 @@ impl PendingLevel {
         PendingLevel { is_buy, is_limit, entry, ask_rule, account_id: String::new(), broker_id: String::new(), mode: String::new() }
     }
 
-    fn triggered(&self, bid: Decimal, raw_ask: Decimal) -> bool {
-        let ask = if self.is_buy { self.ask_rule.as_ref().map_or(raw_ask, |r| ask_markup::account_ask(r, bid, raw_ask)) } else { raw_ask };
+    fn triggered(&self, raw_bid: Decimal, raw_ask: Decimal) -> bool {
+        // Symmetric markup (2026-10-29): a BUY enters at THIS ACCOUNT's ask and a SELL at THIS ACCOUNT's bid. The
+        // bid used to be the raw tick here because the markup was ask-only; it now carries the same half in the
+        // opposite direction, so a SELL LIMIT / STOP triggers off the marked-down bid.
+        let (bid, ask) = match self.ask_rule.as_ref() {
+            Some(r) => (
+                ask_markup::account_bid(r, raw_bid, raw_ask).get(),
+                ask_markup::account_ask(r, raw_bid, raw_ask).get(),
+            ),
+            None => (raw_bid, raw_ask),
+        };
         match (self.is_buy, self.is_limit) {
-            (true, true) => ask <= self.entry,   // BUY LIMIT: buy when the ask falls to the entry
-            (true, false) => ask >= self.entry,  // BUY STOP: buy when the ask rises to the entry
-            (false, true) => bid >= self.entry,  // SELL LIMIT: sell when the bid rises to the entry
-            (false, false) => bid <= self.entry, // SELL STOP: sell when the bid falls to the entry
+            (true, true) => ask <= self.entry,   // BUY LIMIT: buy when the account's ask falls to the entry
+            (true, false) => ask >= self.entry,  // BUY STOP: buy when the account's ask rises to the entry
+            (false, true) => bid >= self.entry,  // SELL LIMIT: sell when the account's bid rises to the entry
+            (false, false) => bid <= self.entry, // SELL STOP: sell when the account's bid falls to the entry
         }
     }
 }
@@ -415,8 +424,13 @@ impl RiskHook {
                 if self.engine_owns(&l.broker_id, &l.mode) {
                     continue;
                 }
-                // close price: a BUY closes at the raw bid, a SELL at its account's ask (lib/ask-markup.ts)
-                let cp = if l.is_buy { t.bid } else { ask_markup::close_price(protocol::OrderSide::Sell, t.bid, t.ask, l.ask_rule.as_ref()) };
+                // Close price, symmetric markup (lib/ask-markup.ts, owner decision 2026-10-29): a BUY closes at its
+                // account's BID and a SELL at its account's ask -- both sides carry half the markup, so the BUY side
+                // is no longer the raw tick. No rule = raw on both sides, as before.
+                let raw_rule = ask_markup::AskRule::Markup { markup_pips: Decimal::ZERO, digits: 0 };
+                let rule = l.ask_rule.as_ref().unwrap_or(&raw_rule);
+                let side = if l.is_buy { protocol::OrderSide::Buy } else { protocol::OrderSide::Sell };
+                let cp = ask_markup::close_price(side, t.bid, t.ask, rule).get();
                 let sl_hit = l.sl.map_or(false, |sl| if l.is_buy { cp <= sl } else { cp >= sl });
                 let tp_hit = l.tp.map_or(false, |tp| if l.is_buy { cp >= tp } else { cp <= tp });
                 if !(sl_hit || tp_hit) {
@@ -489,7 +503,11 @@ impl RiskHook {
                     if !self.engine_owns(&l.broker_id, &l.mode) {
                         continue;
                     }
-                    let cp = if l.is_buy { t.bid } else { ask_markup::close_price(protocol::OrderSide::Sell, t.bid, t.ask, l.ask_rule.as_ref()) };
+                    // symmetric markup: a BUY's SL / TP is reached at its account's BID, not the raw tick
+                    let raw_rule = ask_markup::AskRule::Markup { markup_pips: Decimal::ZERO, digits: 0 };
+                    let rule = l.ask_rule.as_ref().unwrap_or(&raw_rule);
+                    let side = if l.is_buy { protocol::OrderSide::Buy } else { protocol::OrderSide::Sell };
+                    let cp = ask_markup::close_price(side, t.bid, t.ask, rule).get();
                     let sl_hit = l.sl.map_or(false, |sl| if l.is_buy { cp <= sl } else { cp >= sl });
                     let tp_hit = l.tp.map_or(false, |tp| if l.is_buy { cp >= tp } else { cp <= tp });
                     if sl_hit || tp_hit {

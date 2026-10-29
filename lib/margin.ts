@@ -3,7 +3,8 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
-import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { markedDownBid, markedUpAsk, NO_MARKUP } from "@/lib/ask-markup";
+import { closeAskRulesCached } from "@/lib/ask-markup-cache";
 
 export type AccountMarginSnapshot = {
   accountId: string;
@@ -43,12 +44,14 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     },
   });
 
-  // a SELL is valued at its account's ask (lib/ask-markup.ts, owner decision 2026-09-26): the price it closes at
+  // symmetric markup (lib/ask-markup.ts, owner decision 2026-10-29): each side is valued at the price it closes at --
+  // a BUY at this account's bid, a SELL at its ask -- so every position needs a rule (per-cycle cache, no new query
+  // in the steady state)
   const [priceBySymbol, fx, hedgedPct, askRules] = await Promise.all([
     getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
     loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
     loadHedgedMarginPct(prisma, brokerId),
-    loadSellAskRules(prisma, positions),
+    closeAskRulesCached(prisma, positions),
   ]);
   const legsByAccount = new Map<string, MarginLeg[]>();
 
@@ -75,10 +78,13 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     // quote -> account currency (lib/fx.ts); no rate = counted like no price, never as if it were 1
     const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
     if (live && rate) {
-      const ask = valuationAsk(askRules, p, live.bid, live.ask);
-      const currentPrice = closePriceFor(p.side, live.bid, ask);
+      // symmetric markup: both sides are account-side now (a BUY closes and margins on the account's BID)
+      const rule = askRules.get(p.accountId, p.symbolId) ?? NO_MARKUP;
+      const accountBid = markedDownBid(rule, live.bid, live.ask);
+      const accountAsk = markedUpAsk(rule, live.bid, live.ask);
+      const currentPrice = closePriceFor(p.side, accountBid, accountAsk);
       acc.floating = acc.floating.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate));
-      const margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask, leverage: p.account.leverage }).mul(rate);
+      const margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, accountBid, accountAsk, leverage: p.account.leverage }).mul(rate);
       const legs = legsByAccount.get(p.account.id) ?? [];
       legs.push({ symbolKey: p.symbolId, side: p.side, volume: p.volume, margin, hedgedMarginPct: hedgedPct.get(p.symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT });
       legsByAccount.set(p.account.id, legs);
@@ -189,15 +195,20 @@ function symbolHedgedMargin(buyVol: Prisma.Decimal, buyMargin: Prisma.Decimal, s
 // their own dashboard. Side-aware (closePriceFor: bid for BUY, ask for
 // SELL) rather than "always bid," for full consistency with how P&L is
 // computed everywhere else in this app.
+//
+// Symmetric markup (2026-10-29): `accountBid` / `accountAsk` are THIS ACCOUNT's prices, not the raw tick's. The
+// parameters were called `bid` / `ask` while the markup was ask-only and a BUY margined on the raw bid; they are
+// renamed so every caller is a compile error until it supplies an account-side bid (valuationClosePrice /
+// markedDownBid), rather than silently margining a BUY on a price the position cannot actually close at.
 export function liveUsedMarginFor(params: {
   side: "BUY" | "SELL";
   volume: Prisma.Decimal;
   contractSize: Prisma.Decimal;
-  bid: Prisma.Decimal;
-  ask: Prisma.Decimal;
+  accountBid: Prisma.Decimal;
+  accountAsk: Prisma.Decimal;
   leverage: number;
 }): Prisma.Decimal {
-  const price = closePriceFor(params.side, params.bid, params.ask);
+  const price = closePriceFor(params.side, params.accountBid, params.accountAsk);
   return requiredMarginFor(params.volume, params.contractSize, price, params.leverage);
 }
 
@@ -296,8 +307,9 @@ export async function loadAccountMarginState(
     }),
     brokerId ? loadHedgedMarginPct(prisma, brokerId) : Promise.resolve(null),
   ]);
-  // a SELL is valued at the account's ask (lib/ask-markup.ts); resolved only when a SELL is open (no query otherwise)
-  const askRulesP = loadSellAskRules(prisma, positions.map((p) => ({ accountId, symbolId: p.symbolId, side: p.side })));
+  // symmetric markup (lib/ask-markup.ts): BOTH sides are valued at this account's prices, so every position needs a
+  // rule -- served from the per-cycle cache, so the steady state issues no query (lib/ask-markup-cache.ts)
+  const askRulesP = closeAskRulesCached(prisma, positions.map((p) => ({ accountId, symbolId: p.symbolId, side: p.side })));
   const hedgedPct = hedgedPctKnownBroker && account.brokerId === brokerId ? hedgedPctKnownBroker : await loadHedgedMarginPct(prisma, account.brokerId);
   const pctFor = (symbolId: string) => hedgedPct.get(symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT;
 
@@ -327,9 +339,11 @@ export async function loadAccountMarginState(
     const live = priceBySymbol.get(p.symbol.name);
     let margin: Prisma.Decimal;
     if (live) {
-      const ask = valuationAsk(askRules, { accountId, symbolId: p.symbolId, side: p.side }, live.bid, live.ask);
-      const currentPrice = closePriceFor(p.side, live.bid, ask);
-      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask, leverage }).mul(rate);
+      const rule = askRules.get(accountId, p.symbolId) ?? NO_MARKUP;
+      const accountBid = markedDownBid(rule, live.bid, live.ask);
+      const accountAsk = markedUpAsk(rule, live.bid, live.ask);
+      const currentPrice = closePriceFor(p.side, accountBid, accountAsk);
+      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, accountBid, accountAsk, leverage }).mul(rate);
       equity = equity.add(
         computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );

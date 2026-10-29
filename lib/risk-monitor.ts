@@ -13,7 +13,8 @@ import { DEFAULT_HEDGED_MARGIN_PCT, hedgedUsedMargin, liveUsedMarginFor, marginC
 import { conversionRate, loadFxLookup } from "@/lib/fx";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
-import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { markedDownBid, markedUpAsk, NO_MARKUP } from "@/lib/ask-markup";
+import { closeAskRulesCached } from "@/lib/ask-markup-cache";
 import { assertRiskActorInTx, loadRiskOwners, traceRiskAction, unlessNotOwner, webOwnedAccountIds } from "@/lib/risk-owner";
 import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
 
@@ -95,7 +96,7 @@ async function loadMarketBook(accountIds: string[]): Promise<Map<string, OpenPos
       include: { symbol: { select: { name: true, category: true } }, tradingSessions: true },
     }),
     loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
-    loadSellAskRules(prisma, positions),
+    closeAskRulesCached(prisma, positions),
   ]);
   // Trading-session gate reused verbatim from the order-placement path
   // (checkTradingSession -- see its own comment on why "zero configured
@@ -117,6 +118,9 @@ async function loadMarketBook(accountIds: string[]): Promise<Map<string, OpenPos
     const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
     if (!rate) console.error(`risk monitor: no ${p.symbol.quoteCurrency}->${p.account.currency} rate for ${p.symbol.name} position ${p.id}; treated as unpriced`);
     const live = closedSymbols.has(key(p.brokerId, p.symbol.name)) || !rate ? undefined : prices.get(p.symbol.name);
+    // symmetric markup: BOTH sides are this account's prices. `bid` used to be the raw tick because a BUY closed
+    // there; it now carries the same half of the markup as the ask, in the opposite direction.
+    const askRule = askRules.get(p.accountId, p.symbolId) ?? NO_MARKUP;
     let list = byAccount.get(p.accountId);
     if (!list) byAccount.set(p.accountId, (list = []));
     list.push({
@@ -132,9 +136,10 @@ async function loadMarketBook(accountIds: string[]): Promise<Map<string, OpenPos
       contractSize: p.symbol.contractSize,
       ticket: p.ticket,
       symbol: p.symbol.name,
-      bid: live?.bid ?? null,
-      // the close-side ask of THIS account (every reader below uses `ask` only as a SELL's close price)
-      ask: live ? valuationAsk(askRules, p, live.bid, live.ask) : null,
+      // THIS account's bid -- a BUY's close price, SL / TP level and stop-out all read it
+      bid: live ? markedDownBid(askRule, live.bid, live.ask) : null,
+      // THIS account's ask -- a SELL's close price, SL / TP level and stop-out
+      ask: live ? markedUpAsk(askRule, live.bid, live.ask) : null,
       hedgedMarginPct: hedgedPctBySymbol.get(key(p.brokerId, p.symbol.name)) ?? DEFAULT_HEDGED_MARGIN_PCT,
     });
   }
@@ -183,7 +188,8 @@ function measureAccount(account: { balance: Prisma.Decimal; credit: Prisma.Decim
     const cp = closePriceFor(p.side, p.bid, p.ask);
     const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(p.fxRate);
     equity = equity.add(pnl);
-    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: account.leverage }).mul(p.fxRate), hedgedMarginPct: p.hedgedMarginPct });
+    // p.bid / p.ask are already THIS account's prices (both marked, see the row built in loadRiskBook)
+    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, accountBid: p.bid, accountAsk: p.ask, leverage: account.leverage }).mul(p.fxRate), hedgedMarginPct: p.hedgedMarginPct });
     if (!worst || pnl.lt(worst.pnl)) worst = { position: p, pnl, closePrice: cp };
   }
   // hedged per symbol (lib/margin.ts hedgedUsedMargin); the stop-out still closes the LARGEST LOSS first (MT5),

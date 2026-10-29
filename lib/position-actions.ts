@@ -9,7 +9,7 @@ import { resolveBookType } from "@/lib/group-pricing";
 import { closePositionInTx, writeOffIfFlatInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
 import { lockAccountBalance, lockAccountFunds } from "@/lib/account-lock";
-import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { accountClosePrice, loadAccountAskRules, markedDownBid, markedUpAsk, NO_MARKUP } from "@/lib/ask-markup";
 import { markDealsVoidedInTx, writeFlipDealsInTx, writeOpenDealInTx } from "@/lib/deals";
 import { hedgeVoidInTx } from "@/lib/hedge";
 
@@ -318,13 +318,17 @@ export async function executeReverseCloseReopen(
   const price = await getFreshPrice(position.symbol.name);
   if (!price) throw new PositionActionError(`no live price for ${position.symbol.name}`);
 
-  // every ask-side execution at the ACCOUNT's ask (lib/ask-markup.ts, owner decision 2026-09-26): a SELL closes at it
-  // and the reversed BUY opens at it (it used to open at the raw ask, below what a trader's own BUY pays)
+  // Symmetric markup (lib/ask-markup.ts, owner decision 2026-10-29): EVERY leg of a reverse is priced at this
+  // account's own side -- the old position closes at the account's bid (BUY) or ask (SELL), and the new one opens at
+  // the account's ask (BUY) or bid (SELL). The bid used to be the raw tick on both of those, which under a symmetric
+  // split would hand the trader a better close and a better open than their own quote.
   const askRuleFor = await loadAccountAskRules(tx, position.accountId, [position.symbolId]);
-  const accountAsk = accountClosePrice("SELL", price.bid, price.ask, askRuleFor(position.symbolId));
-  const closePrice = position.side === "BUY" ? price.bid : accountAsk;
+  const askRule = askRuleFor(position.symbolId) ?? NO_MARKUP;
+  const accountAsk = markedUpAsk(askRule, price.bid, price.ask);
+  const accountBid = markedDownBid(askRule, price.bid, price.ask);
+  const closePrice = position.side === "BUY" ? accountBid : accountAsk;
   const newSide: OrderSide = position.side === "BUY" ? "SELL" : "BUY";
-  const openPrice = newSide === "BUY" ? accountAsk : price.bid;
+  const openPrice = newSide === "BUY" ? accountAsk : accountBid;
 
   const account = await tx.account.findUniqueOrThrow({
     where: { id: position.accountId },

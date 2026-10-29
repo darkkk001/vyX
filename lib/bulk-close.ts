@@ -3,7 +3,8 @@ import { Prisma, PrismaClient, type OrderSource } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
-import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { valuationClosePrice } from "@/lib/ask-markup";
+import { closeAskRulesCached } from "@/lib/ask-markup-cache";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
@@ -93,9 +94,10 @@ export async function selectBulkCloseTargets(
   // entirely (their positions are reported via nextOpenBySymbolName
   // instead, never priced at all).
   const symbolNames = [...new Set(openPositions.map((p) => p.symbol.name))];
-  // a SELL closes at its account's ask (lib/ask-markup.ts, owner decision 2026-09-26), a BUY at the raw bid
-  const [priceBySymbol, askRules] = await Promise.all([getFreshPrices(symbolNames.filter((n) => !nextOpenBySymbolName.has(n))), loadSellAskRules(db, openPositions)]);
-  const closePriceOf = (p: (typeof openPositions)[number], live: { bid: Prisma.Decimal; ask: Prisma.Decimal }) => closePriceFor(p.side, live.bid, valuationAsk(askRules, p, live.bid, live.ask));
+  // symmetric markup (lib/ask-markup.ts, owner decision 2026-10-29): a SELL closes at its account's ask and a BUY at
+  // its account's BID -- both sides carry half the markup, so both come from the rule
+  const [priceBySymbol, askRules] = await Promise.all([getFreshPrices(symbolNames.filter((n) => !nextOpenBySymbolName.has(n))), closeAskRulesCached(db, openPositions)]);
+  const closePriceOf = (p: (typeof openPositions)[number], live: { bid: Prisma.Decimal; ask: Prisma.Decimal }) => valuationClosePrice(askRules, p, live.bid, live.ask);
 
   const candidates = openPositions.filter((p) => {
     // web3 (owner 2026-09-30, terminal bulk-close bar): an optional Buy / Sell scope on top of the scope above. Never

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { accountClosePrice, loadAccountAskRules, markedDownBid, markedUpAsk, NO_MARKUP } from "@/lib/ask-markup";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -109,11 +109,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // RESPECT-DEALER-MODE.md) settles on the other side: a BUY position closes at bid, a SELL at ask
   const isClose = order.closesPositionId != null;
   // a SELL position's close settles at its ACCOUNT's ask (lib/ask-markup.ts, owner decision 2026-09-26)
-  const closeAskRule = isClose && order.side === "SELL" && liveAtClick ? (await loadAccountAskRules(prisma, order.accountId, [order.symbolId]))(order.symbolId) : null;
+  // Symmetric markup (2026-10-29): BOTH sides carry half the markup, so the rule is needed for every combination,
+  // not just a SELL close. `(side === "BUY") !== isClose` picks the ASK-side operations (a BUY open, a SELL close);
+  // the other branch is the BID side (a SELL open, a BUY close) and is no longer the raw bid.
+  const askRule = liveAtClick ? ((await loadAccountAskRules(prisma, order.accountId, [order.symbolId]))(order.symbolId) ?? NO_MARKUP) : NO_MARKUP;
   const liveRefAtClick = liveAtClick
     ? (order.side === "BUY") !== isClose
-      ? isClose ? accountClosePrice("SELL", liveAtClick.bid, liveAtClick.ask, closeAskRule) : liveAtClick.ask
-      : liveAtClick.bid
+      ? markedUpAsk(askRule, liveAtClick.bid, liveAtClick.ask)
+      : markedDownBid(askRule, liveAtClick.bid, liveAtClick.ask)
     : null;
 
   if (action === "REJECT") {

@@ -10,7 +10,7 @@ import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { checkLotStep, closePriceMaxAgeMs, CLOSE_FRESH_TICK_WAIT_MS, NOT_QUOTING_AFTER_MS, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, isValidMaxSlippageInput, traderSlippagePoints } from "@/lib/risk";
 import { effectiveCapPoints, slippageVerdict, symbolSlippageCapPoints } from "@/lib/slippage-cap";
-import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { accountClosePrice, loadAccountAskRules, NO_MARKUP } from "@/lib/ask-markup";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { classifyMissingPrice, getLivePriceRow, waitForFreshTick } from "@/lib/live-price";
@@ -174,8 +174,8 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   if (referenceError) {
     return NextResponse.json({ error: referenceError, symbol: position.symbol.name, lastTickAgeMs }, { status: 400 });
   }
-  // Owner decision (2026-09-26): a BUY closes at the raw bid, a SELL at this account's ask (lib/ask-markup.ts)
-  const closePrice = accountClosePrice(position.side, livePrice.bid, livePrice.ask, askRuleFor?.(position.symbol.id));
+  // Owner decision (2026-10-29): symmetric markup -- a BUY closes at this account's BID, a SELL at its ask
+  const closePrice = accountClosePrice(position.side, livePrice.bid, livePrice.ask, askRuleFor?.(position.symbol.id) ?? NO_MARKUP);
 
   let closeVolume = position.volume;
   if (body?.volume != null) {

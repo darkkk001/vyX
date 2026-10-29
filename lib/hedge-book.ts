@@ -4,7 +4,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getFreshPrice, getFreshPrices } from "@/lib/live-price";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
-import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { valuationClosePrice } from "@/lib/ask-markup";
+import { closeAskRulesCached } from "@/lib/ask-markup-cache";
 import { closePriceFor, computeRealizedPnl } from "@/lib/trading";
 import { ensureCoverageAccount } from "@/lib/coverage";
 import { hedgeRouteOf } from "@/lib/hedge-route";
@@ -52,14 +53,14 @@ async function floating(ps: Pos[]): Promise<Map<string, Prisma.Decimal | null>> 
   const [prices, fx, askRules] = await Promise.all([
     getFreshPrices([...new Set(ps.map((p) => p.symbol.name))]),
     loadFxLookup(prisma, ps.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
-    loadSellAskRules(prisma, ps),
+    closeAskRulesCached(prisma, ps),
   ]);
   const out = new Map<string, Prisma.Decimal | null>();
   for (const p of ps) {
     const live = prices.get(p.symbol.name);
     const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
     if (!live || !rate) { out.set(p.id, null); continue; }
-    const close = closePriceFor(p.side, live.bid, valuationAsk(askRules, p, live.bid, live.ask));
+    const close = valuationClosePrice(askRules, p, live.bid, live.ask); // symmetric: BUY at account bid, SELL at account ask
     out.set(p.id, computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: close, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate));
   }
   return out;

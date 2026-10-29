@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { accountClosePrice, loadAccountAskRules, NO_MARKUP } from "@/lib/ask-markup";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { publishTradingEvent } from "@/lib/nats";
@@ -79,8 +79,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!price) {
     return NextResponse.json({ error: `no live price for ${position.symbol.name}` }, { status: 409 });
   }
-  // a SELL is checked against its account's ask -- the price it closes / triggers at (lib/ask-markup.ts)
-  const referencePrice = position.side === "BUY" ? price.bid : accountClosePrice("SELL", price.bid, price.ask, (await loadAccountAskRules(prisma, position.accountId, [position.symbolId]))(position.symbolId));
+  // symmetric markup (lib/ask-markup.ts): each side is checked against its own account price -- a BUY against the
+  // account's BID, a SELL against its ask; that is the price it closes and triggers at
+  const referencePrice = accountClosePrice(
+    position.side,
+    price.bid,
+    price.ask,
+    (await loadAccountAskRules(prisma, position.accountId, [position.symbolId]))(position.symbolId) ?? NO_MARKUP
+  );
   const brokerSymbol = await prisma.brokerSymbol.findUnique({
     where: { brokerId_symbolId: { brokerId: position.brokerId, symbolId: position.symbolId } },
     include: { symbol: { select: { digits: true } } },

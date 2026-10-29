@@ -124,7 +124,9 @@ export function computeFxVectors(input: typeof FX_VECTOR_INPUTS) {
     const cs = D(c.symbol.contractSize);
     const close = c.side === "BUY" ? c.bid : c.ask;
     const pnl = rate ? computeRealizedPnl({ side: c.side, openPrice: D(c.openPrice), closePrice: close, volume: D(c.volume), contractSize: cs }).mul(rate) : null;
-    const margin = rate ? liveUsedMarginFor({ side: c.side, volume: D(c.volume), contractSize: cs, bid: D(c.bid), ask: D(c.ask), leverage: c.leverage }).mul(rate) : null;
+    // the FX vectors supply the prices to value AT, i.e. already account-side -- this contract is about currency
+    // conversion and the money formulas, not about where the markup sits
+    const margin = rate ? liveUsedMarginFor({ side: c.side, volume: D(c.volume), contractSize: cs, accountBid: D(c.bid), accountAsk: D(c.ask), leverage: c.leverage }).mul(rate) : null;
     const pointValue = rate ? D(c.volume).mul(cs).mul(D(10).pow(-c.symbol.digits)).mul(rate) : null;
     const fill = c.side === "BUY" ? D(c.ask) : D(c.bid);
     const newOrderMargin = rate ? requiredMarginFor(D(c.volume), cs, fill, c.leverage).mul(rate) : null;
@@ -139,7 +141,7 @@ export function computeFxVectors(input: typeof FX_VECTOR_INPUTS) {
       if (!rate) { unpriced++; continue; }
       const cs = D(p.symbol.contractSize);
       equity = equity.add(computeRealizedPnl({ side: p.side, openPrice: D(p.openPrice), closePrice: p.side === "BUY" ? p.bid : p.ask, volume: D(p.volume), contractSize: cs }).mul(rate));
-      const margin = liveUsedMarginFor({ side: p.side, volume: D(p.volume), contractSize: cs, bid: D(p.bid), ask: D(p.ask), leverage: a.leverage }).mul(rate);
+      const margin = liveUsedMarginFor({ side: p.side, volume: D(p.volume), contractSize: cs, accountBid: D(p.bid), accountAsk: D(p.ask), leverage: a.leverage }).mul(rate);
       legs.push({ symbolKey: p.symbol.name, side: p.side, volume: D(p.volume), margin, hedgedMarginPct: D(p.hedgedMarginPct) });
     }
     const usedMargin = hedgedUsedMargin(legs);

@@ -3,7 +3,8 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
-import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { valuationClosePrice } from "@/lib/ask-markup";
+import { closeAskRulesCached } from "@/lib/ask-markup-cache";
 import { dealReads } from "@/lib/deal-reads";
 
 // Book P/L, defined ONCE (owner 2026-10-06; naming.md / memory "BOOK P/L RULE"). Every screen that shows a Book P/L
@@ -88,7 +89,7 @@ export async function bookPnlFloating(db: Db, s: BookScope): Promise<{ byCurrenc
   const [prices, fx, askRules] = await Promise.all([
     getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
     loadFxLookup(db, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
-    loadSellAskRules(db, positions),
+    closeAskRulesCached(db, positions),
   ]);
   const byCcy = new Map<string, CurrencyAmount>();
   let unpriced = 0;
@@ -96,8 +97,8 @@ export async function bookPnlFloating(db: Db, s: BookScope): Promise<{ byCurrenc
     const live = prices.get(p.symbol.name);
     const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
     if (!live || !rate) { unpriced += 1; continue; }
-    const ask = valuationAsk(askRules, p, live.bid, live.ask);
-    const now = closePriceFor(p.side, live.bid, ask);
+    // symmetric markup: a BUY closes at the account's BID, not the raw bid -- both sides come from the rule now
+    const now = valuationClosePrice(askRules, p, live.bid, live.ask);
     const clientPnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: now, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate);
     const row = byCcy.get(p.account.currency) ?? { currency: p.account.currency, amount: new Prisma.Decimal(0), count: 0 };
     row.amount = row.amount.sub(clientPnl); // the broker's side is the client's result reversed

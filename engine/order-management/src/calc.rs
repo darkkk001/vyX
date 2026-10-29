@@ -32,10 +32,14 @@ pub fn close_price_for(side: OrderSide, bid: Decimal, ask: Decimal) -> Decimal {
     }
 }
 
-/// The price a book position closes at, and is valued at (owner decision 2026-09-26, lib/ask-markup.ts
-/// accountClosePrice): a BUY at the raw bid, a SELL at its account's ask (market_data::ask_markup).
+/// The price a book position closes at, and is valued at (owner decision 2026-10-29, lib/ask-markup.ts
+/// accountClosePrice): SYMMETRIC markup -- a BUY at its account's BID, a SELL at its account's ask
+/// (market_data::ask_markup). The BUY side used to be the raw bid, which is why the rule is no longer optional
+/// here: a position with no rule gets a zero markup, i.e. raw on both sides, stated explicitly.
 pub fn position_close_price(p: &db::OpenPositionWithMarket, bid: Decimal, ask: Decimal) -> Decimal {
-    market_data::ask_markup::close_price(p.side, bid, ask, p.ask_rule.as_ref())
+    let raw_rule = market_data::ask_markup::AskRule::Markup { markup_pips: Decimal::ZERO, digits: 0 };
+    let rule = p.ask_rule.as_ref().unwrap_or(&raw_rule);
+    market_data::ask_markup::close_price(p.side, bid, ask, rule).get()
 }
 
 pub struct AccountState {

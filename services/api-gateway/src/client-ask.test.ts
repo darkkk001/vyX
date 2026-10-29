@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Decimal } from "decimal.js";
-import { resolveRule, clientAsk, rewriteTick, type AskRule } from "./client-ask.js";
+import { resolveRule, clientAsk, clientBid, rewriteTick, type AskRule } from "./client-ask.js";
 
 const v = JSON.parse(readFileSync(new URL("../../../docs/contracts/ask-markup-vectors.json", import.meta.url), "utf-8"));
 const D = (x: unknown) => (x == null ? null : new Decimal(String(x)));
@@ -18,22 +18,28 @@ test("every resolution vector: the stream resolves the same rule as the web", ()
   }
 });
 
-test("every price vector: the stream's ask equals the web's account ask", () => {
+test("every price vector: the stream's BOTH sides equal the web's account bid and ask", () => {
   for (const c of v.prices) {
     const rule: AskRule = c.rule.mode === "markup"
       ? { mode: "markup", markupPips: new Decimal(c.rule.markupPips), digits: c.digits }
       : { mode: "target", targetPips: new Decimal(c.rule.targetPips), fallbackPips: D(c.rule.fallbackPips), digits: c.digits };
-    assert.equal(clientAsk(rule, c.bid, c.ask).toString(), new Decimal(c.expected.accountAsk).toString(), c.name);
+    assert.equal(clientAsk(rule, c.bid, c.ask).toString(), new Decimal(c.expected.accountAsk).toString(), `${c.name}: ask`);
+    // symmetric markup (2026-10-29): the bid is marked DOWN by the same half, so it is pinned by the contract too
+    assert.equal(clientBid(rule, c.bid, c.ask).toString(), new Decimal(c.expected.accountBid).toString(), `${c.name}: bid`);
+    assert.ok(clientBid(rule, c.bid, c.ask).lt(clientAsk(rule, c.bid, c.ask)), `${c.name}: must not cross`);
   }
 });
 
-test("a rewritten tick carries the account's ask in place of the raw ask, nothing else changes, same JSON type", () => {
+test("a rewritten tick carries the account's bid AND ask in place of the raw ones, nothing else changes, same JSON type", () => {
   const rule: AskRule = { mode: "markup", markupPips: new Decimal("1.5"), digits: 2 };
   const out = JSON.parse(rewriteTick({ symbol: "XAUUSD", bid: "4298.96", ask: "4299.13", t0: 1 }, rule));
-  assert.deepEqual(out, { symbol: "XAUUSD", bid: "4298.96", ask: "4299.28", t0: 1 });
+  // 1.5 pips = 0.15 -> half 0.075: the ask rounds UP to 4299.21 and the bid DOWN to 4298.88, away from the client
+  assert.deepEqual(out, { symbol: "XAUUSD", bid: "4298.88", ask: "4299.21", t0: 1 });
   assert.ok(!JSON.stringify(out).includes("4299.13"), "the raw ask must not reach the trader");
+  assert.ok(!JSON.stringify(out).includes("4298.96"), "the raw bid must not reach the trader either");
   const num = JSON.parse(rewriteTick({ symbol: "X", bid: 1.1, ask: 1.2 }, { mode: "markup", markupPips: new Decimal(0), digits: 1 }));
   assert.equal(typeof num.ask, "number");
+  assert.equal(typeof num.bid, "number");
 });
 
 // ---- Neon compute: rule reads are event-driven, never per tick (coordinator 2026-10-01) ----
@@ -78,7 +84,7 @@ test("a switched-on broker: 1 read per socket open, 1 per config event (all its 
   await flush();
   assert.equal(calls.length, 1, "socket open = 1 read, the held ticks did not add any");
   const frames = ticks(reg, "a1", "b1", 1000);
-  assert.ok(frames.every((f) => f !== null && JSON.parse(f).ask === "4299.28" && !f.includes("4299.13")));
+  assert.ok(frames.every((f) => f !== null && JSON.parse(f).ask === "4299.21" && !f.includes("4299.13")));
   reg.addSocket("a2", "b1");
   await flush();
   assert.equal(calls.length, 2);
@@ -106,7 +112,7 @@ test("the switch turning on while traders are connected: one read loads them all
   assert.equal(reg.frameFor("a1", "b1", "XAUUSD", TICK, RAW), null);
   await flush();
   assert.equal(calls.length, 1);
-  assert.equal(JSON.parse(reg.frameFor("a2", "b1", "XAUUSD", TICK, RAW)!).ask, "4299.28");
+  assert.equal(JSON.parse(reg.frameFor("a2", "b1", "XAUUSD", TICK, RAW)!).ask, "4299.21");
   assert.equal(reg.setBrokerFlag("b1", true), false, "already on: no reload");
   reg.setBrokerFlag("b1", false);
   assert.equal(reg.frameFor("a1", "b1", "XAUUSD", TICK, RAW), RAW);
@@ -132,7 +138,7 @@ test("unknown switch = held; a failed read is retried at most every 30 s, never 
   ticks(reg, "a1", "b1", 500);
   await flush();
   assert.equal(calls.length, 2);
-  assert.equal(JSON.parse(reg.frameFor("a1", "b1", "XAUUSD", TICK, RAW)!).ask, "4299.28");
+  assert.equal(JSON.parse(reg.frameFor("a1", "b1", "XAUUSD", TICK, RAW)!).ask, "4299.21");
 });
 
 test("sockets are ref-counted per account: the last close drops the rules, a reconnect reads once", async () => {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { displayCurrency } from "@/lib/demo-policy";
-import { accountClosePrice, askRuleWire, loadAskRules } from "@/lib/ask-markup";
+import { accountClosePrice, askRuleWire, loadAskRules, NO_MARKUP } from "@/lib/ask-markup";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
@@ -142,7 +142,7 @@ export async function GET(request: NextRequest) {
   const rows = positions.map((p) => {
     const lp = priceBySymbol.get(p.symbol.name);
     const askRule = askRules.get(p.accountId, p.symbolId);
-    const currentPrice = lp ? accountClosePrice(p.side, lp.bid, lp.ask, askRule) : null;
+    const currentPrice = lp ? accountClosePrice(p.side, lp.bid, lp.ask, askRule ?? NO_MARKUP) : null;
     const fxRate = fx.rate(p.symbol.quoteCurrency, p.account.currency);
     const floatingPnl = currentPrice && fxRate
       ? computeRealizedPnl({

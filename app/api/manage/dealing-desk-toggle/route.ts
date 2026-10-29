@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { accountClosePrice, loadAccountAskRules, NO_MARKUP } from "@/lib/ask-markup";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
@@ -172,8 +172,14 @@ async function flushDealingQueueToMarket(
       // applies to a close exactly as to an open. Only the halt / session gate applies.
       const closeGate = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category, order.symbol.name);
       if (closeGate) { results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: closeGate }); continue; }
-      // a SELL position closes at its ACCOUNT's ask (lib/ask-markup.ts, owner decision 2026-09-26)
-      const closePrice = order.side === "BUY" ? livePrice.bid : accountClosePrice("SELL", livePrice.bid, livePrice.ask, (await loadAccountAskRules(prisma, order.accountId, [order.symbolId]))(order.symbolId));
+      // symmetric markup (lib/ask-markup.ts, owner decision 2026-10-29): a BUY position closes at its ACCOUNT's bid
+      // and a SELL at its ACCOUNT's ask -- both sides carry half the markup, so both need the rule
+      const closePrice = accountClosePrice(
+        order.side,
+        livePrice.bid,
+        livePrice.ask,
+        (await loadAccountAskRules(prisma, order.accountId, [order.symbolId]))(order.symbolId) ?? NO_MARKUP
+      );
       const before = await prisma.position.findUnique({ where: { id: order.closesPositionId }, select: { volume: true } });
       try {
         const result = await prisma.$transaction(async (tx) => {

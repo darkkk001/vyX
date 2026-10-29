@@ -34,6 +34,12 @@ export const RAW_RULE = (digits: number): AskRule => ({ mode: "markup", markupPi
 /** @deprecated Use RAW_RULE -- since the markup is symmetric, "raw ask" no longer names what this is. */
 export const RAW_ASK = RAW_RULE;
 
+/** The rule for an account with no markup on this symbol (no BrokerSymbol row, a coverage account, or a server that
+ *  sent none). `digits` is deliberately 0 and irrelevant: a zero markup short-circuits in halfMarkupPrice before any
+ *  pip or rounding is read, so both sides come back raw. Use this as the `?? NO_MARKUP` fallback wherever a rule
+ *  lookup is nullable -- accountClosePrice now requires one. */
+export const NO_MARKUP: AskRule = { mode: "markup", markupPips: new Prisma.Decimal(0), digits: 0 };
+
 /** The rule from a resolved spread (pricing engine on) or a plain markup (off). */
 export function askRuleFromSpread(spread: ResolvedSpread, digits: number): AskRule {
   return spread.mode === "target"
@@ -218,13 +224,24 @@ export async function loadAccountAskRules(db: Db, accountId: string, symbolIds: 
   return (symbolId) => rules.get(accountId, symbolId);
 }
 
-/** The rules a set of positions needs to be valued at their close-side price: only a SELL closes at the ask, so only
- *  SELL positions are resolved (none = no query at all). */
-export function loadSellAskRules(db: Db, positions: { accountId: string; symbolId: string; side: "BUY" | "SELL" }[]): Promise<AskRules> {
-  return loadAskRules(db, positions.filter((p) => p.side === "SELL").map((p) => ({ accountId: p.accountId, symbolId: p.symbolId })));
+/** The rules a set of positions needs to be valued at their close-side price.
+ *
+ *  Symmetric markup (2026-10-29) replaced `loadSellAskRules`, which resolved SELL positions ONLY because under the
+ *  ask-only rule a BUY closed at the raw bid and needed no rule at all. Both sides now carry half the markup, so BOTH
+ *  sides need one. The cost of that is bounded on purpose: `loadAskRules` is a BATCHED read (5-6 queries over id
+ *  arrays, never one per position), so dropping the SELL filter widens the `IN` lists and does not multiply queries.
+ *  The one real regression is that a book of only BUY positions used to issue no query and now issues one -- which is
+ *  what `askRulesCached` (lib/ask-markup-cache.ts) removes for the steady state.
+ *
+ *  Owner decision 2026-10-30: no per-position query; markup-0 short-circuits (the rule resolves to RAW and both sides
+ *  come back raw with no arithmetic); non-zero markups come from the per-cycle config cache. */
+export function loadCloseAskRules(db: Db, positions: { accountId: string; symbolId: string; side: "BUY" | "SELL" }[]): Promise<AskRules> {
+  return loadAskRules(db, positions.map((p) => ({ accountId: p.accountId, symbolId: p.symbolId })));
 }
 
-/** A position's close-side ask for valuation: the account's ask for a SELL; a BUY never reads it (it closes at bid). */
-export function valuationAsk(rules: AskRules, p: { accountId: string; symbolId: string; side: "BUY" | "SELL" }, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): Prisma.Decimal {
-  return p.side === "SELL" ? accountClosePrice("SELL", bid, ask, rules.get(p.accountId, p.symbolId)) : new Prisma.Decimal(ask);
+/** A position's close price for valuation: the account's BID for a BUY, the account's ask for a SELL. A pair with no
+ *  resolved rule (an account or symbol the batch did not cover) is treated as having no markup, i.e. raw on both
+ *  sides -- the same fallback the ask-only version used for a missing rule. */
+export function valuationClosePrice(rules: AskRules, p: { accountId: string; symbolId: string; side: "BUY" | "SELL" }, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): Prisma.Decimal {
+  return accountClosePrice(p.side, bid, ask, rules.get(p.accountId, p.symbolId) ?? NO_MARKUP);
 }

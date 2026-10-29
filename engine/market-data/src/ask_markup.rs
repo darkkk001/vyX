@@ -419,15 +419,48 @@ mod tests {
             let (bid, ask) = (dec_opt(&c["bid"]).unwrap(), dec_opt(&c["ask"]).unwrap());
             let e = &c["expected"];
             assert_eq!(s(markup_pips_at(&rule, bid, ask)), e["markupPips"].as_str().unwrap(), "{name}: markupPips");
-            assert_eq!(s(account_ask(&rule, bid, ask)), e["accountAsk"].as_str().unwrap(), "{name}: accountAsk");
-            assert_eq!(s(close_price(OrderSide::Buy, bid, ask, Some(&rule))), e["buyClose"].as_str().unwrap(), "{name}: buyClose");
-            assert_eq!(s(close_price(OrderSide::Sell, bid, ask, Some(&rule))), e["sellClose"].as_str().unwrap(), "{name}: sellClose");
+            // symmetric markup: half the markup on each side, and a BUY now closes at the account's BID
+            assert_eq!(s(half_markup_price(&rule, bid, ask)), e["halfMarkup"].as_str().unwrap(), "{name}: halfMarkup");
+            assert_eq!(s(account_bid(&rule, bid, ask).get()), e["accountBid"].as_str().unwrap(), "{name}: accountBid");
+            assert_eq!(s(account_ask(&rule, bid, ask).get()), e["accountAsk"].as_str().unwrap(), "{name}: accountAsk");
+            assert_eq!(s(close_price(OrderSide::Buy, bid, ask, &rule).get()), e["buyClose"].as_str().unwrap(), "{name}: buyClose");
+            assert_eq!(s(close_price(OrderSide::Sell, bid, ask, &rule).get()), e["sellClose"].as_str().unwrap(), "{name}: sellClose");
+            // the book must never cross, on any vector
+            let (b, a) = account_quote(&rule, bid, ask).expect("account quote must not cross");
+            assert!(b.get() < a.get(), "{name}: crossed account book");
         }
     }
 
     #[test]
-    fn no_broker_symbol_means_no_rule_and_no_rule_means_the_raw_ask() {
+    fn no_broker_symbol_means_no_rule_and_a_zero_markup_means_raw_on_both_sides() {
         assert_eq!(resolve(&AskLevels { broker: None, pricing_engine: true, group: Level { markup: Some(dec!(9)), target: None }, ..Default::default() }), None);
-        assert_eq!(close_price(OrderSide::Sell, dec!(1), dec!(1.5), None), dec!(1.5));
+        // close_price no longer takes an Option: "no rule" is stated as a zero markup, which leaves BOTH sides raw
+        let raw = AskRule::Markup { markup_pips: Decimal::ZERO, digits: 2 };
+        assert_eq!(close_price(OrderSide::Sell, dec!(1), dec!(1.5), &raw).get(), dec!(1.5));
+        assert_eq!(close_price(OrderSide::Buy, dec!(1), dec!(1.5), &raw).get(), dec!(1));
+    }
+
+    #[test]
+    fn symmetric_split_rounds_away_from_the_client_and_never_crosses() {
+        // XAUUSD, digits 2 (pip 0.1), markup 1.5 pips = 0.15 -> half 0.075, which 2 digits cannot represent:
+        // the bid must round DOWN and the ask UP, so the client never gains the half point.
+        let rule = AskRule::Markup { markup_pips: dec!(1.5), digits: 2 };
+        let (bid, ask) = (dec!(4298.96), dec!(4299.13));
+        assert_eq!(account_bid(&rule, bid, ask).get(), dec!(4298.88));
+        assert_eq!(account_ask(&rule, bid, ask).get(), dec!(4299.21));
+        // total spread is therefore never tighter than raw + markup
+        assert!(account_ask(&rule, bid, ask).get() - account_bid(&rule, bid, ask).get() >= (ask - bid) + dec!(0.15));
+
+        // a markup wider than the price itself degrades to the smallest quotable price, never zero or negative
+        let huge = AskRule::Markup { markup_pips: dec!(600), digits: 2 };
+        let (b, a) = (dec!(1.00), dec!(1.02));
+        assert!(account_bid(&huge, b, a).get() > Decimal::ZERO);
+        assert!(account_bid(&huge, b, a).get() < account_ask(&huge, b, a).get());
+        assert!(account_quote(&huge, b, a).is_some());
+
+        // a target no wider than the live raw spread leaves the quote exactly raw (markup floored at 0)
+        let tight = AskRule::Target { target_pips: dec!(1), fallback_pips: None, digits: 2 };
+        assert_eq!(account_bid(&tight, bid, ask).get(), bid);
+        assert_eq!(account_ask(&tight, bid, ask).get(), ask);
     }
 }

@@ -146,7 +146,9 @@ function measure(acct: SimAccount, positions: SimPos[], q: TickQuotes): Measure 
     const cp = closePriceFor(p.side, bid, ask);
     const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(rate);
     equity = equity.add(pnl);
-    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid, ask, leverage: acct.leverage }).mul(rate), hedgedMarginPct: p.hedgedMarginPct });
+    // the demo's quotes ARE the account's prices: the deterministic demo path carries no broker markup
+    // (lib/demo-client.ts reports askMarkup "0"), so symmetric markup leaves both sides unchanged here
+    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, accountBid: bid, accountAsk: ask, leverage: acct.leverage }).mul(rate), hedgedMarginPct: p.hedgedMarginPct });
     if (!worst || pnl.lt(worst.pnl)) worst = { pos: p, pnl, closePrice: cp };
   }
   const used = hedgedUsedMargin(legs);

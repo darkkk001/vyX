@@ -12,7 +12,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { cancelPendingClose } from "@/lib/queued-close";
 import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
-import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { accountClosePrice, loadAccountAskRules, NO_MARKUP } from "@/lib/ask-markup";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -121,7 +121,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // BUY, the ACCOUNT's ask for an open SELL (lib/ask-markup.ts, owner decision 2026-09-26) -- what closing it right now
   // would actually fill at. A coverage account's ask is raw.
   const askRuleFor = await loadAccountAskRules(prisma, position.accountId, [position.symbolId]);
-  const closePrice = accountClosePrice(position.side, price.bid, price.ask, askRuleFor(position.symbolId));
+  const closePrice = accountClosePrice(position.side, price.bid, price.ask, askRuleFor(position.symbolId) ?? NO_MARKUP);
 
   // The close itself is lib/position-actions.ts executeAdminCloseInTx -> closePositionInTx (2026-09-23):
   // status + volume guard against a double close, negative-balance protection, the TRADE_PNL row, the

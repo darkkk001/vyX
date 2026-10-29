@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { valuationClosePrice } from "@/lib/ask-markup";
+import { closeAskRulesCached } from "@/lib/ask-markup-cache";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, MirrorFillPriceMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -71,14 +72,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const priceBySymbol = await getFreshPrices([...allSymbolNames]);
   // FX (Phase 2 batch 1): an open position's P/L converted to its account's currency (realizedPnl already is)
   const fx = await loadRateResolver(prisma, [...sourcePositions, ...targetPositions].map((p) => [p.symbol.quoteCurrency, p.account.currency] as const));
-  // an open SELL is valued at its account's ask (lib/ask-markup.ts)
-  const askRules = await loadSellAskRules(prisma, [...sourcePositions, ...targetPositions].filter((p) => p.status === "OPEN"));
+  // symmetric markup (lib/ask-markup.ts): an open position is valued at its account's own bid (BUY) or ask (SELL)
+  const askRules = await closeAskRulesCached(prisma, [...sourcePositions, ...targetPositions].filter((p) => p.status === "OPEN"));
 
   const pnlFor = (p: (typeof sourcePositions)[number]): Prisma.Decimal | null => {
     if (p.status === "CLOSED") return p.realizedPnl ?? new Prisma.Decimal(0);
     const live = priceBySymbol.get(p.symbol.name);
     if (!live) return null;
-    const cp = p.side === "BUY" ? live.bid : valuationAsk(askRules, p, live.bid, live.ask);
+    const cp = valuationClosePrice(askRules, p, live.bid, live.ask);
     const rate = fx.rate(p.symbol.quoteCurrency, p.account.currency);
     if (!rate) return null; // unpriced
     return computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate);

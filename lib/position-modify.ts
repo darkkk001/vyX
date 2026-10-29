@@ -1,6 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
-import { accountClosePrice, type AskRule } from "@/lib/ask-markup";
+import { accountClosePrice, NO_MARKUP, type AskRule } from "@/lib/ask-markup";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { validateSlTp } from "@/lib/trading";
 import { publishTradingEvent } from "@/lib/nats";
@@ -49,8 +49,9 @@ export function refuseModify(input: {
   const category = brokerSymbol?.symbol.category ?? "FOREX";
   const sessionError = checkTradingSession(sessions, now, category, input.symbolName);
   if (sessionError) return { status: 400, body: { error: sessionError, nextOpenAt: computeNextSessionOpen(sessions, now, category, input.symbolName).toISOString() } };
-  // what the position closes / triggers at: a BUY at the raw bid, a SELL at its account's ask (lib/ask-markup.ts)
-  const serverClosePrice = brokerSymbol && live ? accountClosePrice(position.side, live.bid, live.ask, input.askRuleFor?.(position.symbolId)).toString() : null;
+  // what the position closes / triggers at -- symmetric markup (lib/ask-markup.ts): a BUY at its account's BID,
+  // a SELL at its account's ask
+  const serverClosePrice = brokerSymbol && live ? accountClosePrice(position.side, live.bid, live.ask, input.askRuleFor?.(position.symbolId) ?? NO_MARKUP).toString() : null;
   if (!serverClosePrice) {
     // no server price at all right now: refuse rather than trust the client's number
     return { status: 400, body: { error: "NO_LIVE_FEED", symbol: input.symbolName } };
