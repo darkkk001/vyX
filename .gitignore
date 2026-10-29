@@ -90,3 +90,8 @@ next-env.d.ts
 # is tracked the way icon.ico is, so these are pure build output.
 *-tauri/src-tauri/icons/nsis-*.bmp
 *-tauri/src-tauri/icons/nsis-*.png
+
+# Native feed binaries live on R2 (feeds.vyxtrader.com); only the index files are tracked under public/ (owner 2026-10-29)
+public/**/*.exe
+public/**/*.nupkg
+public/**/*.zip
