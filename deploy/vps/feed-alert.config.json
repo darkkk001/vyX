@@ -4,31 +4,80 @@
   "feed_service": "QoreBridgeFeed",
   "events_dir": "C:\\qorebridge-feed\\data\\feed\\pepperstone-razor-quote\\shadow-log",
   "poll_secs": 5,
-
   "stall_secs": 10,
   "session_event_hold_secs": 120,
   "feed_unreachable_polls": 3,
-
   "stale_warn_ratio": 0.3,
   "stale_warn_polls": 3,
-  "stale_exclude": ["USDX"],
-
+  "stale_exclude": [
+    "USDX"
+  ],
   "drop_warn_count": 20,
   "drop_window_secs": 300,
-
   "engine_warn_secs": 60,
-
   "quiet_timezone": "Eastern Standard Time",
   "quiet_windows": [
-    { "name": "daily rollover (17:00 New York)", "days": "Mon,Tue,Wed,Thu,Fri,Sat,Sun", "from": "16:55", "to": "17:10", "suppress": ["stall", "stale"] },
-    { "name": "weekend (Fri 17:00 to Sun 17:00 New York)", "days": "Sat", "from": "00:00", "to": "24:00", "suppress": ["stall", "stale"] },
-    { "name": "weekend Friday close", "days": "Fri", "from": "16:55", "to": "24:00", "suppress": ["stall", "stale"] },
-    { "name": "weekend Sunday open", "days": "Sun", "from": "00:00", "to": "17:10", "suppress": ["stall", "stale"] }
+    {
+      "name": "daily rollover (17:00 New York)",
+      "days": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+      "from": "16:55",
+      "to": "17:10",
+      "suppress": [
+        "stall",
+        "stale"
+      ]
+    },
+    {
+      "name": "overnight thin market, NY close to London open (evening)",
+      "days": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+      "from": "17:10",
+      "to": "24:00",
+      "suppress": [
+        "stale"
+      ]
+    },
+    {
+      "name": "overnight thin market, NY close to London open (early hours)",
+      "days": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+      "from": "00:00",
+      "to": "03:00",
+      "suppress": [
+        "stale"
+      ]
+    },
+    {
+      "name": "weekend (Saturday, New York)",
+      "days": "Sat",
+      "from": "00:00",
+      "to": "24:00",
+      "suppress": [
+        "stall",
+        "stale"
+      ]
+    },
+    {
+      "name": "weekend Friday close",
+      "days": "Fri",
+      "from": "16:55",
+      "to": "24:00",
+      "suppress": [
+        "stall",
+        "stale"
+      ]
+    },
+    {
+      "name": "weekend Sunday open",
+      "days": "Sun",
+      "from": "00:00",
+      "to": "17:10",
+      "suppress": [
+        "stall",
+        "stale"
+      ]
+    }
   ],
-
   "remind_minutes": 15,
   "heartbeat_minutes": 5,
-
   "ntfy_server": "https://ntfy.sh",
   "ntfy_topic_file": "C:\\vyx-secrets\\ntfy-feed-alert-topic.txt",
   "web_url": "https://www.vyxtrader.com",
