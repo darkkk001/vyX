@@ -41,25 +41,60 @@ export function resolveRule(l: Levels): AskRule {
   return levelRule(l.account, l.digits) ?? levelRule(l.group, l.digits) ?? { mode: "markup", markupPips: l.broker ?? new Decimal(0), digits: l.digits };
 }
 
-/** The account's ask at this tick: raw ask + markup x pip; target mode lifts the live spread to the target (never below
- *  the raw ask), with the level's fallback markup when the live spread is unknown. */
-export function clientAsk(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
-  const a = new Decimal(ask);
-  const pip = pipSize(rule.digits);
-  if (rule.mode === "markup") return rule.markupPips.isZero() ? a : a.add(rule.markupPips.mul(pip));
-  const b = new Decimal(bid);
-  if (!a.isFinite() || !b.isFinite()) return rule.fallbackPips ? a.add(rule.fallbackPips.mul(pip)) : a;
-  const base = a.sub(b).div(pip);
-  const diff = rule.targetPips.sub(base);
-  return diff.isNegative() ? a : a.add(diff.mul(pip));
+/** This rule's markup IN PIPS at this tick: the configured markup, or whatever lifts the live spread to the target,
+ *  floored at 0; the level's fallback markup when the live spread is unknown. Mirrors lib/ask-markup.ts markupPipsAt
+ *  and engine ask_markup.rs markup_pips_at. */
+export function markupPipsAt(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
+  if (rule.mode === "markup") return rule.markupPips;
+  const [a, b] = [new Decimal(ask), new Decimal(bid)];
+  if (!a.isFinite() || !b.isFinite()) return rule.fallbackPips ?? new Decimal(0);
+  const diff = rule.targetPips.sub(a.sub(b).div(pipSize(rule.digits)));
+  return diff.isNegative() ? new Decimal(0) : diff;
 }
 
-/** The tick a trader socket receives: the same JSON with `ask` replaced by the account's ask (same JSON type). */
+/** Half the markup in PRICE units -- what each side moves under the symmetric (mid-anchored) split. */
+function halfMarkupPrice(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
+  const m = markupPipsAt(rule, bid, ask);
+  return m.isZero() ? new Decimal(0) : m.mul(pipSize(rule.digits)).div(2);
+}
+
+/** The account's ask at this tick: raw ask + m/2, rounded AWAY FROM THE CLIENT (up) at the symbol's precision, never
+ *  tighter than the raw ask. The price a BUY opens at / a SELL closes at. */
+export function clientAsk(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
+  const a = new Decimal(ask);
+  const half = halfMarkupPrice(rule, bid, ask);
+  if (half.isZero()) return a;
+  return Decimal.max(a.add(half).toDecimalPlaces(rule.digits, Decimal.ROUND_CEIL), a);
+}
+
+/** The account's bid at this tick: raw bid - m/2, rounded AWAY FROM THE CLIENT (down), never tighter than the raw bid
+ *  and never at or below zero. The price a SELL opens at / a BUY closes at.
+ *  Symmetric markup, owner decision 2026-10-29 -- before it, the bid went to the trader raw. */
+export function clientBid(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
+  const b = new Decimal(bid);
+  const half = halfMarkupPrice(rule, bid, ask);
+  if (half.isZero()) return b;
+  const floor = new Decimal(1).div(new Decimal(10).pow(Math.max(rule.digits, 0)));
+  const out = b.sub(half).toDecimalPlaces(rule.digits, Decimal.ROUND_FLOOR);
+  return Decimal.min(Decimal.max(out, floor), b);
+}
+
+/** The tick a trader socket receives: the same JSON with BOTH sides replaced by this account's prices (same JSON type).
+ *
+ *  Symmetric markup (owner decision 2026-10-29): the bid is no longer passed through raw -- it carries the same half
+ *  of the markup as the ask, in the opposite direction. A crossed result is never sent: the raw tick goes out instead,
+ *  because a crossed quote is worse than an unmarked one. */
 export function rewriteTick(tick: Record<string, unknown>, rule: AskRule): string {
   const ask = tick.ask as string | number;
   const bid = tick.bid as string | number;
-  const v = clientAsk(rule, bid, ask);
-  return JSON.stringify({ ...tick, ask: typeof ask === "number" ? v.toNumber() : v.toString() });
+  const a = clientAsk(rule, bid, ask);
+  const b = clientBid(rule, bid, ask);
+  if (!b.lt(a)) return JSON.stringify(tick);
+  return JSON.stringify({
+    ...tick,
+    ask: typeof ask === "number" ? a.toNumber() : a.toString(),
+    bid: typeof bid === "number" ? b.toNumber() : b.toString(),
+  });
 }
 
 // ---- per-account rule cache (DB) ----

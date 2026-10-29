@@ -33,15 +33,24 @@ export function pipSize(digits: number): Prisma.Decimal {
   return new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(exp));
 }
 
-// Widens a BUY fill by spreadMarkup pips; a SELL fill (which fills at
-// bid) is unaffected -- same "ask-only markup" broker revenue convention
-// as pricing.rs's own apply_spread_markup, applied here to whatever price
-// is actually used to fill (client-supplied, dealer-typed, or a live
-// tick -- this app's trading routes don't yet have a single point where
-// every fill price already comes from a server-owned bid/ask, so this
-// runs as a final adjustment at each fill site instead of inside price
-// quoting itself, see app/api/trade/orders/route.ts's own module comment
-// on why the server isn't yet the price authority for every path).
+// SYMMETRIC markup (owner decision 2026-10-29, see lib/ask-markup.ts's module comment for the rule and the
+// mid-anchor algebra). Moves a fill price by HALF the markup, away from the client on whichever side it is:
+// an ask-side fill (a BUY open, a SELL close) goes UP by m/2 and rounds up; a bid-side fill (a SELL open, a BUY
+// close) goes DOWN by m/2 and rounds down. Total client-visible spread stays raw_spread + m, as under the old
+// ask-only rule -- only the split moved.
+//
+// `side` is the side of the BOOK this price sits on, which is what each call site already passes: the previous
+// ask-only rule needed the same distinction (it returned the price untouched for "SELL"), so every existing call
+// site is already correct here and keeps its signature. What changed is that the bid side is no longer a no-op.
+//
+// Same formula as pricing.rs's own apply_spread_markup, applied to whatever price is actually used to fill
+// (client-supplied, dealer-typed, or a live tick -- this app's trading routes don't yet have a single point where
+// every fill price already comes from a server-owned bid/ask, so this runs as a final adjustment at each fill site
+// instead of inside price quoting itself, see app/api/trade/orders/route.ts's own module comment on why the server
+// isn't yet the price authority for every path).
+//
+// Never returns a price at or below zero: a markup wider than the price itself degrades to the smallest quotable
+// price rather than going negative (the 60-pip hedge group on a cheap symbol).
 export function applySpreadMarkup(params: {
   side: OrderSide;
   price: Prisma.Decimal | number | string;
@@ -50,8 +59,14 @@ export function applySpreadMarkup(params: {
 }): Prisma.Decimal {
   const price = new Prisma.Decimal(params.price);
   const markup = new Prisma.Decimal(params.spreadMarkup);
-  if (params.side === "SELL" || markup.isZero()) return price;
-  return price.add(markup.mul(pipSize(params.digits)));
+  if (markup.isZero()) return price;
+  const half = markup.mul(pipSize(params.digits)).div(2);
+  if (params.side === "SELL") {
+    const floor = new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(Math.max(params.digits, 0)));
+    const out = price.sub(half).toDecimalPlaces(params.digits, Prisma.Decimal.ROUND_FLOOR);
+    return Prisma.Decimal.min(Prisma.Decimal.max(out, floor), price);
+  }
+  return Prisma.Decimal.max(price.add(half).toDecimalPlaces(params.digits, Prisma.Decimal.ROUND_CEIL), price);
 }
 
 export type ResolvedSymbolPricing = { spreadMarkup: Prisma.Decimal; commissionPerLot: Prisma.Decimal };

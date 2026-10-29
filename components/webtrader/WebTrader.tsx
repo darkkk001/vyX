@@ -25,7 +25,7 @@ import {
   type SymbolCategory,
 } from "@/lib/market-simulator";
 import { conversionRateNum, fxLookupNum, marginInAccount, newOrderMarginInAccount, pnlInAccount, quoteCurrencyOf, type FxQuoteNum } from "@/lib/fx-client";
-import { tradeApi, serverNow, effectiveAsk, spreadRuleFromPrice, ApiError, type SpreadRule, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
+import { tradeApi, serverNow, effectiveAsk, effectiveBid, effectiveClose, spreadRuleFromPrice, ApiError, type AccountPrice, type SpreadRule, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
 import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import AddSymbolDialog from "./AddSymbolDialog";
 import ChartSettingsDialog from "./ChartSettingsDialog";
@@ -1156,7 +1156,8 @@ export default function WebTrader({
         const sl = prev.slPrice ? parseFloat(prev.slPrice) : null;
         const tp = prev.tpPrice ? parseFloat(prev.tpPrice) : null;
         const live = marketRef.current[prev.symbol.name];
-        const refPrice = live ? (prev.side === "BUY" ? live.bid : effectiveAsk(askMarkupRef.current, prev.symbol.name, live.ask, live.bid)) : null;
+        // symmetric markup: a BUY's SL / TP is reached at the account's BID, not the raw bid
+        const refPrice = live ? effectiveClose(askMarkupRef.current, prev.symbol.name, prev.side, live.ask, live.bid) : null;
         const closeEpsilon = Math.pow(10, -digits) * 3; // a few points of tolerance
         if (refPrice !== null && sl !== null && Math.abs(refPrice - sl) <= closeEpsilon) {
           playSound("slHit", chartSettingsRef.current);
@@ -1690,14 +1691,15 @@ export default function WebTrader({
   // rarely changes this, so a full replace once per 30s poll (no WS
   // equivalent exists for it) is more than fresh enough.
   // Batch 5: holds the per-symbol spread RULE (markup, or target spread), re-read at once on ConfigChanged.
-  // Owner decision (2026-09-26, lib/ask-markup.ts): every ask-side execution uses this account's ask -- a BUY opens AND
-  // a SELL closes at it (SL / TP, stop-out, P/L, margin), so closeRefFor below applies it to every SELL-position price.
-  // The bid is never marked up: a BUY closes and a SELL opens at the raw bid.
+  // Owner decision (2026-10-29, lib/ask-markup.ts): the markup is SYMMETRIC -- half on each side of the mid. A BUY
+  // opens at this account's ask and CLOSES AT ITS BID; a SELL opens at its bid and closes at its ask. So both sides
+  // move, and closeRefFor routes both through lib/trade-api's helpers rather than using a raw bid for a BUY.
   const [askMarkupBySymbol, setAskMarkupBySymbol] = useState<Record<string, SpreadRule>>({});
   const askMarkupRef = useRef(askMarkupBySymbol);
   askMarkupRef.current = askMarkupBySymbol;
-  // the price an open position closes at on this account: BUY -> raw bid, SELL -> this account's ask
-  const closeRefFor = (side: "BUY" | "SELL", symbol: string, m: { bid: number; ask: number }) => (side === "BUY" ? m.bid : effectiveAsk(askMarkupRef.current, symbol, m.ask, m.bid));
+  // the price an open position closes at on this account: BUY -> this account's bid, SELL -> this account's ask
+  const closeRefFor = (side: "BUY" | "SELL", symbol: string, m: { bid: number; ask: number }): AccountPrice =>
+    effectiveClose(askMarkupRef.current, symbol, side, m.ask, m.bid);
   // FX batch: the server's conversion quotes (GET /api/trade/prices?fx=1 fx.quotes), for rateFor below
   const [fxQuotes, setFxQuotes] = useState<Record<string, FxQuoteNum>>({});
   // the prices poll below, callable from the trading-event handler (ConfigChanged -> re-read now, not in 30 s)
@@ -2299,7 +2301,8 @@ export default function WebTrader({
     (p: ApiPosition): number => {
       const m = market[p.symbol.name];
       if (!m) return 0;
-      return pnlInAccount(p.side, parseFloat(p.openPrice), m.bid, effectiveAsk(askMarkupBySymbol, p.symbol.name, m.ask, m.bid), m.def.contractSize, parseFloat(p.volume), rateFor(p.symbol.name)) ?? NaN;
+      // symmetric markup: BOTH sides are account-side now (a BUY closes at the account's bid, not the raw bid)
+      return pnlInAccount(p.side, parseFloat(p.openPrice), effectiveBid(askMarkupBySymbol, p.symbol.name, m.ask, m.bid), effectiveAsk(askMarkupBySymbol, p.symbol.name, m.ask, m.bid), m.def.contractSize, parseFloat(p.volume), rateFor(p.symbol.name)) ?? NaN;
     },
     [market, rateFor, askMarkupBySymbol]
   );
@@ -2329,7 +2332,7 @@ export default function WebTrader({
     for (const p of positions) {
       const m = market[p.symbol.name];
       if (!m) continue;
-      const margin = marginInAccount(p.side, m.bid, effectiveAsk(askMarkupBySymbol, p.symbol.name, m.ask, m.bid), m.def.contractSize, parseFloat(p.volume), account.leverage, rateFor(p.symbol.name));
+      const margin = marginInAccount(p.side, effectiveBid(askMarkupBySymbol, p.symbol.name, m.ask, m.bid), effectiveAsk(askMarkupBySymbol, p.symbol.name, m.ask, m.bid), m.def.contractSize, parseFloat(p.volume), account.leverage, rateFor(p.symbol.name));
       if (margin == null) continue; // unpriced: left out, as on the server
       legs.push({ symbolKey: p.symbol.name, side: p.side, volume: parseFloat(p.volume), margin, hedgedMarginPct: m.def.hedgedMarginPct ?? 200 });
     }
@@ -2494,8 +2497,13 @@ export default function WebTrader({
       // (the slippage-check reference the server compares its own marked-
       // up fill against) needs to be marked up, same 2026-09-05 P0 fix as
       // placeOrder above.
+      // symmetric markup: an OPENING fill is ask-side for a BUY and bid-side for a SELL, and both sides now carry
+      // half the markup -- so a SELL's reference is the account's bid, not the raw bid.
       const price = o.side === "BUY" ? m.ask : m.bid;
-      const fillReferencePrice = o.side === "BUY" ? effectiveAsk(askMarkupBySymbol, o.symbol.name, m.ask, m.bid) : m.bid;
+      const fillReferencePrice =
+        o.side === "BUY"
+          ? effectiveAsk(askMarkupBySymbol, o.symbol.name, m.ask, m.bid)
+          : effectiveBid(askMarkupBySymbol, o.symbol.name, m.ask, m.bid);
       let shouldFill = false;
       if (o.type === "LIMIT") shouldFill = o.side === "BUY" ? price <= trigger : price >= trigger;
       if (o.type === "STOP") shouldFill = o.side === "BUY" ? price >= trigger : price <= trigger;

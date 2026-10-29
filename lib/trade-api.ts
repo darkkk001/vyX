@@ -84,33 +84,73 @@ export type ApiFx = {
   rates: Record<string, string>;
 };
 
-export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; tickAt: string; marketClosed: boolean; askMarkup: string; spreadRule?: "markup" | "target"; targetSpread?: string };
+export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; tickAt: string; marketClosed: boolean; askMarkup: string; bidMarkup?: string; spreadRule?: "markup" | "target"; targetSpread?: string };
 
 // Batch 5 (quote = fill, docs/audit/2026-09-24/realtime-contract.md): the spread RULE per symbol, not only the markup
 // in force at the last poll -- in target mode the fill markup moves with the live raw spread on every tick.
-export type SpreadRule = { markup: number; target?: number };
+//
+// Symmetric markup (2026-10-29): `markup` is the ask-side addition and `bidMarkup` the bid-side subtraction, each half
+// of the configured markup. `target` is still the TOTAL target spread, not a per-side figure.
+export type SpreadRule = { markup: number; bidMarkup: number; target?: number };
 
-export function spreadRuleFromPrice(row: Pick<ApiLivePrice, "askMarkup" | "spreadRule" | "targetSpread">): SpreadRule {
-  const markup = parseFloat(row.askMarkup) || 0;
-  if (row.spreadRule === "target" && row.targetSpread != null) {
-    const target = parseFloat(row.targetSpread);
-    if (Number.isFinite(target)) return { markup, target };
-  }
-  return { markup };
+declare const accountPriceBrand: unique symbol;
+/** A price that ALREADY has this account's markup applied on its own side of the book.
+ *
+ *  Compile guard for the symmetric-markup change: a raw bid or a raw ask is NOT an AccountPrice, so handing one to a
+ *  valuation helper (lib/fx-client.ts pnlInAccount / marginInAccount) is a type error instead of a silent wrong P/L.
+ *  The only ways to get one are `effectiveAsk`, `effectiveBid`, or `asAccountPrice` for a price the SERVER already
+ *  marked up. Under the old ask-only rule a BUY was valued at the RAW bid, so ~10 sites passed `tick.bid` straight in;
+ *  every one of those is now a compile error that has to be routed through `effectiveBid`. */
+export type AccountPrice = number & { readonly [accountPriceBrand]: true };
+
+/** Assert that this number is already account-side. ONLY for a price the server marked up -- a stored openPrice, a
+ *  filledPrice, a dealer-typed fill, a server-computed closePrice. NEVER for a raw tick bid/ask. */
+export function asAccountPrice(price: number): AccountPrice {
+  return price as AccountPrice;
 }
 
-// The one place this addition happens -- every "what would a new BUY
-// actually cost" call site (order ticket, quick-order, Smart Trade
-// Manager, the watchlist/chart spread display) should go through this
-// rather than re-deriving it, so the fix stays in exactly one place.
+export function spreadRuleFromPrice(row: Pick<ApiLivePrice, "askMarkup" | "bidMarkup" | "spreadRule" | "targetSpread">): SpreadRule {
+  const markup = parseFloat(row.askMarkup) || 0;
+  // Absent on a server that predates the symmetric change: the bid then stays raw, the safe degradation.
+  const bidMarkup = row.bidMarkup != null ? parseFloat(row.bidMarkup) || 0 : 0;
+  if (row.spreadRule === "target" && row.targetSpread != null) {
+    const target = parseFloat(row.targetSpread);
+    if (Number.isFinite(target)) return { markup, bidMarkup, target };
+  }
+  return { markup, bidMarkup };
+}
+
+// The one place each adjustment happens -- every "what would this actually fill at" call site (order ticket,
+// quick-order, Smart Trade Manager, the watchlist/chart spread display, floating P/L, used margin) goes through these
+// two rather than re-deriving, so the rule stays in exactly one place.
 //
-// Same formula as the fill (lib/pricing-engine.ts resolveEffectiveSpreadMarkup): markup mode -> ask + markup;
-// target mode -> markup = max(0, target - live raw spread), i.e. BUY = max(ask, bid + target).
-export function effectiveAsk(spreadRuleBySymbol: Record<string, SpreadRule>, symbol: string, rawAsk: number, rawBid: number): number {
+// Symmetric markup, mid-anchored (lib/ask-markup.ts is the authority; these mirror it for the client's own estimates):
+//   markup mode -> ask = rawAsk + m/2, bid = rawBid - m/2   (the wire already halves m)
+//   target mode -> mid = (rawBid + rawAsk)/2, ask = max(rawAsk, mid + target/2), bid = min(rawBid, mid - target/2)
+// The min/max keep the quote from ever being TIGHTER than raw. These are floats for display and estimates; the server
+// stays the authority for an actual fill, and it rounds away from the client at the symbol's precision.
+
+/** This account's ask: the price a BUY opens at / a SELL closes at. */
+export function effectiveAsk(spreadRuleBySymbol: Record<string, SpreadRule>, symbol: string, rawAsk: number, rawBid: number): AccountPrice {
   const rule = spreadRuleBySymbol[symbol];
-  if (!rule) return rawAsk;
-  if (rule.target != null) return Math.max(rawAsk, rawBid + rule.target);
-  return rawAsk + rule.markup;
+  if (!rule) return rawAsk as AccountPrice;
+  if (rule.target != null) return Math.max(rawAsk, (rawBid + rawAsk) / 2 + rule.target / 2) as AccountPrice;
+  return (rawAsk + rule.markup) as AccountPrice;
+}
+
+/** This account's bid: the price a SELL opens at / a BUY closes at. Never at or below zero. */
+export function effectiveBid(spreadRuleBySymbol: Record<string, SpreadRule>, symbol: string, rawAsk: number, rawBid: number): AccountPrice {
+  const rule = spreadRuleBySymbol[symbol];
+  if (!rule) return rawBid as AccountPrice;
+  const out = rule.target != null ? Math.min(rawBid, (rawBid + rawAsk) / 2 - rule.target / 2) : rawBid - rule.bidMarkup;
+  return Math.max(out, 0) as AccountPrice;
+}
+
+/** The price one side of an open position closes at for this account: a BUY at the account's bid, a SELL at its ask. */
+export function effectiveClose(spreadRuleBySymbol: Record<string, SpreadRule>, symbol: string, side: "BUY" | "SELL", rawAsk: number, rawBid: number): AccountPrice {
+  return side === "BUY"
+    ? effectiveBid(spreadRuleBySymbol, symbol, rawAsk, rawBid)
+    : effectiveAsk(spreadRuleBySymbol, symbol, rawAsk, rawBid);
 }
 
 export type ApiCandleTimeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";

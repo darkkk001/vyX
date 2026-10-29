@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { computeFxVectors, FX_VECTOR_INPUTS } from "@/lib/fx-contract";
 import { conversionRateNum, fxLookupNum, marginInAccount, newOrderMarginInAccount, pnlInAccount, pointValueInAccount } from "@/lib/fx-client";
+import { asAccountPrice } from "@/lib/trade-api";
 import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import { isWeeklyClosed, nextWeeklyReopen } from "@/lib/market-week";
 import { isDefaultFxSessionClosed, computeNextSessionOpen } from "@/lib/risk";
@@ -42,8 +43,9 @@ describe("FX contract: the web trader's client math (lib/fx-client.ts) reproduce
       const cs = Number(c.symbol.contractSize);
       const [bid, ask, vol] = [Number(c.bid), Number(c.ask), Number(c.volume)];
       close(rate, c.expect.rate, "rate");
-      close(pnlInAccount(c.side, Number(c.openPrice), bid, ask, cs, vol, rate), c.expect.pnl, "pnl");
-      close(marginInAccount(c.side, bid, ask, cs, vol, c.leverage, rate), c.expect.margin, "margin");
+      // the vectors supply the prices to value AT, i.e. already account-side (asAccountPrice, not a raw tick)
+      close(pnlInAccount(c.side, Number(c.openPrice), asAccountPrice(bid), asAccountPrice(ask), cs, vol, rate), c.expect.pnl, "pnl");
+      close(marginInAccount(c.side, asAccountPrice(bid), asAccountPrice(ask), cs, vol, c.leverage, rate), c.expect.margin, "margin");
       close(pointValueInAccount(vol, cs, c.symbol.digits, rate), c.expect.pointValue, "pointValue");
       close(newOrderMarginInAccount(vol, cs, c.side === "BUY" ? ask : bid, c.leverage, rate), c.expect.newOrderMargin, "newOrderMargin");
     });
@@ -57,8 +59,8 @@ describe("FX contract: the web trader's client math (lib/fx-client.ts) reproduce
       for (const p of a.positions) {
         const rate = conversionRateNum(p.symbol.quoteCurrency, a.accountCurrency, lookup);
         const cs = Number(p.symbol.contractSize);
-        const pnl = pnlInAccount(p.side, Number(p.openPrice), Number(p.bid), Number(p.ask), cs, Number(p.volume), rate);
-        const margin = marginInAccount(p.side, Number(p.bid), Number(p.ask), cs, Number(p.volume), a.leverage, rate);
+        const pnl = pnlInAccount(p.side, Number(p.openPrice), asAccountPrice(Number(p.bid)), asAccountPrice(Number(p.ask)), cs, Number(p.volume), rate);
+        const margin = marginInAccount(p.side, asAccountPrice(Number(p.bid)), asAccountPrice(Number(p.ask)), cs, Number(p.volume), a.leverage, rate);
         if (pnl == null || margin == null) { unpriced++; continue; }
         equity += pnl;
         legs.push({ symbolKey: p.symbol.name, side: p.side, volume: Number(p.volume), margin, hedgedMarginPct: Number(p.hedgedMarginPct) });

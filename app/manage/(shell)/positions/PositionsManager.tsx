@@ -31,7 +31,7 @@ import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "
 import { useLiveTicks } from "@/lib/price-stream";
 import { formatDateTime, formatNumber, formatPnl, formatPrice, formatVolume } from "@/lib/format";
 import { useUnsavedChangesWarning } from "@/lib/use-unsaved-changes-warning";
-import { effectiveAsk, spreadRuleFromPrice } from "@/lib/trade-api";
+import { effectiveClose, spreadRuleFromPrice } from "@/lib/trade-api";
 import { plainError } from "@/lib/plain-error";
 
 export type PositionRow = {
@@ -51,6 +51,7 @@ export type PositionRow = {
   currentPrice: string | null;
   // the account's ask rule (app/api/manage/positions: askMarkup / spreadRule / targetSpread, price units)
   askMarkup?: string;
+  bidMarkup?: string;
   spreadRule?: "markup" | "target";
   targetSpread?: string;
   floatingPnl: string | null;
@@ -227,8 +228,10 @@ export default function PositionsManager() {
     return rawRows.map((p) => {
       const tick = liveTicks[p.symbolName];
       if (!tick) return p;
-      // a SELL closes at its account's ask (lib/ask-markup.ts): the row's rule, raw when an older server sent none
-      const closePrice = p.side === "BUY" ? tick.bid : effectiveAsk({ [p.symbolName]: spreadRuleFromPrice({ askMarkup: p.askMarkup ?? "0", spreadRule: p.spreadRule, targetSpread: p.targetSpread }) }, p.symbolName, tick.ask, tick.bid);
+      // symmetric markup (lib/ask-markup.ts): a BUY closes at its account's BID, a SELL at its ask -- the row's rule,
+      // raw on both sides when an older server sent none
+      const rules = { [p.symbolName]: spreadRuleFromPrice({ askMarkup: p.askMarkup ?? "0", bidMarkup: p.bidMarkup, spreadRule: p.spreadRule, targetSpread: p.targetSpread }) };
+      const closePrice = effectiveClose(rules, p.symbolName, p.side, tick.ask, tick.bid);
       const openPrice = Number(p.openPrice);
       const diff = p.side === "BUY" ? closePrice - openPrice : openPrice - closePrice;
       const floatingPnl = diff * Number(p.contractSize) * Number(p.volume);

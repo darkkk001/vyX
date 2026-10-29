@@ -3,6 +3,8 @@
 // inverse, else a cross through USD; a quote 72 h old or older counts as none) and the same money formulas as the
 // server. lib/fx-contract.test.ts pins these functions to docs/contracts/fx-vectors.json, like the terminal's.
 
+import type { AccountPrice } from "@/lib/trade-api";
+
 export const FX_RATE_MAX_AGE_MS = 72 * 3_600_000;
 
 export type FxQuoteNum = { bid: number; ask: number; tickAtMs: number };
@@ -54,12 +56,18 @@ export function quoteCurrencyOf(def: { name: string; quoteCurrency?: string }): 
 }
 
 // ---- money, account currency (each null when the rate is null) ----
-export function pnlInAccount(side: "BUY" | "SELL", openPrice: number, bid: number, ask: number, contractSize: number, volume: number, rate: number | null): number | null {
+//
+// SYMMETRIC MARKUP COMPILE GUARD (2026-10-29): `bid` and `ask` here are this ACCOUNT's prices, not the raw tick's.
+// Under the old ask-only rule a BUY was valued at the raw bid, so these took plain numbers and ~10 call sites passed
+// `tick.bid` directly. The markup now moves both sides, so a raw bid is a wrong valuation -- the AccountPrice brand
+// makes passing one a compile error. Route them through lib/trade-api.ts effectiveBid / effectiveAsk (or
+// effectiveClose), and use asAccountPrice only for a price the server already marked up.
+export function pnlInAccount(side: "BUY" | "SELL", openPrice: number, bid: AccountPrice, ask: AccountPrice, contractSize: number, volume: number, rate: number | null): number | null {
   if (rate == null) return null;
   const close = side === "BUY" ? bid : ask;
   return (side === "BUY" ? close - openPrice : openPrice - close) * contractSize * volume * rate;
 }
-export function marginInAccount(side: "BUY" | "SELL", bid: number, ask: number, contractSize: number, volume: number, leverage: number, rate: number | null): number | null {
+export function marginInAccount(side: "BUY" | "SELL", bid: AccountPrice, ask: AccountPrice, contractSize: number, volume: number, leverage: number, rate: number | null): number | null {
   if (rate == null) return null;
   const price = side === "BUY" ? bid : ask;
   return ((volume * contractSize * price) / leverage) * rate;

@@ -19,7 +19,7 @@
 //! raw spread in pips, floored at 0 -> ask + markup x pip.
 
 use protocol::OrderSide;
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AskRule {
@@ -87,24 +87,92 @@ pub fn markup_pips_at(rule: &AskRule, bid: Decimal, ask: Decimal) -> Decimal {
     }
 }
 
-/// The account's ask: raw ask + markup x pip (the BUY fill price, pricing.rs apply_spread_markup's formula).
-pub fn account_ask(rule: &AskRule, bid: Decimal, ask: Decimal) -> Decimal {
-    let m = markup_pips_at(rule, bid, ask);
-    if m.is_zero() {
-        return ask;
-    }
-    let digits = match *rule {
+/// This rule's own `digits`.
+fn rule_digits(rule: &AskRule) -> i32 {
+    match *rule {
         AskRule::Markup { digits, .. } | AskRule::Target { digits, .. } => digits,
-    };
-    ask + m * pip_size(digits)
+    }
 }
 
-/// The price an open position closes at for its account: a BUY at the raw bid, a SELL at the account's ask (no rule =
-/// the raw ask).
-pub fn close_price(side: OrderSide, bid: Decimal, ask: Decimal, rule: Option<&AskRule>) -> Decimal {
+/// The smallest price this symbol can quote (one unit of its last digit) -- the floor a marked-down bid may not cross.
+fn price_floor(digits: i32) -> Decimal {
+    Decimal::new(1, digits.max(0) as u32)
+}
+
+/// Half of this rule's markup in PRICE units -- what EACH side moves under the symmetric (mid-anchored) split.
+/// See lib/ask-markup.ts's module comment for the algebra: because `markup_pips_at` floors the target-mode markup at
+/// zero, `raw_ask + m/2` IS `mid + target/2` and `raw_bid - m/2` IS `mid - target/2`, and a target no wider than the
+/// live raw spread leaves the quote exactly raw. The clamps below restate that as an assertion after rounding.
+pub fn half_markup_price(rule: &AskRule, bid: Decimal, ask: Decimal) -> Decimal {
+    let m = markup_pips_at(rule, bid, ask);
+    if m.is_zero() {
+        return Decimal::ZERO;
+    }
+    m * pip_size(rule_digits(rule)) / Decimal::TWO
+}
+
+/// A price that ALREADY carries this account's markup on its own side of the book.
+///
+/// Compile guard for the symmetric-markup change (owner decision 2026-10-29): a raw `bid` is no longer a valid close
+/// price for a BUY, so the close / valuation path cannot be satisfied with a bare `Decimal` any more. Every site that
+/// used to write `if is_buy { tick.bid }` is a type error until it goes through [`account_bid`] or [`close_price`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountPrice(Decimal);
+
+impl AccountPrice {
+    /// The underlying price. Use at the edges only (writing a fill, comparing against a client level).
+    pub fn get(self) -> Decimal {
+        self.0
+    }
+}
+
+impl std::fmt::Display for AccountPrice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// The account's ask: raw ask + m/2, rounded AWAY FROM THE CLIENT (up) at the symbol's precision, never tighter than
+/// the raw ask. The price a BUY opens at and a SELL closes at.
+pub fn account_ask(rule: &AskRule, bid: Decimal, ask: Decimal) -> AccountPrice {
+    let half = half_markup_price(rule, bid, ask);
+    if half.is_zero() {
+        return AccountPrice(ask);
+    }
+    let digits = rule_digits(rule).max(0) as u32;
+    let out = (ask + half).round_dp_with_strategy(digits, RoundingStrategy::ToPositiveInfinity);
+    AccountPrice(out.max(ask))
+}
+
+/// The account's bid: raw bid - m/2, rounded AWAY FROM THE CLIENT (down) at the symbol's precision, never tighter than
+/// the raw bid, and never at or below zero. The price a SELL opens at and a BUY closes at.
+pub fn account_bid(rule: &AskRule, bid: Decimal, ask: Decimal) -> AccountPrice {
+    let half = half_markup_price(rule, bid, ask);
+    if half.is_zero() {
+        return AccountPrice(bid);
+    }
+    let d = rule_digits(rule);
+    let out = (bid - half).round_dp_with_strategy(d.max(0) as u32, RoundingStrategy::ToNegativeInfinity);
+    AccountPrice(out.max(price_floor(d)).min(bid))
+}
+
+/// Both account-side prices for one tick, with the crossed-book invariant checked. `None` when the quote would cross
+/// or invert -- such a quote is never safe to fill or value against, and the caller must skip the tick rather than
+/// act on it (the engine's risk paths must not panic on a bad configuration).
+pub fn account_quote(rule: &AskRule, bid: Decimal, ask: Decimal) -> Option<(AccountPrice, AccountPrice)> {
+    let (b, a) = (account_bid(rule, bid, ask), account_ask(rule, bid, ask));
+    if b.get() < a.get() { Some((b, a)) } else { None }
+}
+
+/// The price an open position closes at for its account: a BUY at the account's BID, a SELL at the account's ask.
+///
+/// `rule` is REQUIRED (compile guard). Under the ask-only rule a BUY closed at the RAW bid, so every caller could pass
+/// `None` and still be right for a BUY. Under the symmetric rule that is a wrong price, so the `Option` is gone: pass
+/// `&AskRule::Markup { markup_pips: Decimal::ZERO, digits }` where the account genuinely has no markup.
+pub fn close_price(side: OrderSide, bid: Decimal, ask: Decimal, rule: &AskRule) -> AccountPrice {
     match side {
-        OrderSide::Buy => bid,
-        OrderSide::Sell => rule.map_or(ask, |r| account_ask(r, bid, ask)),
+        OrderSide::Buy => account_bid(rule, bid, ask),
+        OrderSide::Sell => account_ask(rule, bid, ask),
     }
 }
 
