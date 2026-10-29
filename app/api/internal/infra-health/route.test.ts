@@ -33,7 +33,10 @@ const KEYS = ["INTERNAL_SERVICE_SECRET", "OPS_ALERT_EMAIL", "TRADING_CORE_URL", 
 const send = vi.mocked(sendPlatformEmail);
 
 async function clearKeys() {
-  await getRedis().del("infra-health:caddy", "infra-health:caddy:state", "infra-health:qorebridge", "infra-health:qorebridge:state");
+  await getRedis().del(
+    "infra-health:caddy", "infra-health:caddy:state", "infra-health:qorebridge", "infra-health:qorebridge:state",
+    "infra-health:qorebridge-feed", "infra-health:qorebridge-feed:state"
+  );
 }
 beforeEach(async () => {
   for (const k of KEYS) saved[k] = process.env[k];
@@ -103,6 +106,31 @@ describe("qorebridge (owner 2026-10-26: the VPS bridge health task got 400)", ()
     const r = await (await post({ ...report(false, ["service Stopped"]), component: "qorebridge" })).json();
     expect(r).toMatchObject({ state: "FAIL", alerted: "FAIL" });
     expect(send.mock.calls[0][0].text).toContain("deploy/qorebridge-vps-runbook.md");
+  });
+});
+
+describe("qorebridge-feed (owner 2026-10-29: the VPS FIX feed alert monitor, with a severity)", () => {
+  const feed = (ok: boolean, severity?: string, reasons: string[] = []) => ({ ...report(ok, reasons), component: "qorebridge-feed", checks: severity ? { severity } : {} });
+  it("WARNING alerts, a repeated WARNING does not, WARNING -> CRITICAL alerts again, CRITICAL -> OK alerts recovered once", async () => {
+    process.env.OPS_ALERT_EMAIL = "ops1@example.test";
+    await post(feed(true));
+    expect(await (await post(feed(false, "WARNING", ["12 of 31 symbols stale"]))).json()).toMatchObject({ state: "FAIL", alerted: "FAIL" });
+    expect(send.mock.calls[0][0].subject).toBe("[VyX ops] WARNING qorebridge-feed check FAILED on vps-test");
+    expect(send.mock.calls[0][0].text).toContain("Severity: WARNING");
+    expect(send.mock.calls[0][0].text).toContain("deploy/qorebridge-feed-alert-runbook.md");
+    expect(await (await post(feed(false, "WARNING"))).json()).toMatchObject({ alerted: null });
+    expect(await (await post(feed(false, "CRITICAL", ["feed stall: no quote on any symbol for 14 s"]))).json()).toMatchObject({ alerted: "FAIL" });
+    expect(send.mock.calls[1][0].subject).toBe("[VyX ops] CRITICAL qorebridge-feed check FAILED on vps-test");
+    expect(await (await post(feed(false, "CRITICAL"))).json()).toMatchObject({ alerted: null });
+    expect(await (await post(feed(true))).json()).toMatchObject({ state: "OK", alerted: "RECOVERED" });
+    expect(await (await post(feed(true))).json()).toMatchObject({ alerted: null });
+    expect(send).toHaveBeenCalledTimes(3);
+    expect((await readInfraSummary("qorebridge-feed")).state).toBe("OK");
+  });
+  it("an unknown severity is ignored (plain FAIL, the old subject)", async () => {
+    const r = await (await post(feed(false, "PANIC"))).json();
+    expect(r).toMatchObject({ state: "FAIL", alerted: "FAIL" });
+    expect(send.mock.calls[0][0].subject).toBe("[VyX ops] qorebridge-feed check FAILED on vps-test");
   });
 });
 

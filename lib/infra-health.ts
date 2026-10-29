@@ -8,12 +8,18 @@ import { sendPlatformEmail } from "@/lib/email/adapter";
 // Redis, sends ONE alert e-mail when a component goes OK -> FAIL and ONE when it recovers (never repeats while the
 // state is unchanged), and gives Feed health a summary that turns NO_REPORT when the check itself stops reporting.
 
-export const INFRA_COMPONENTS = ["caddy", "qorebridge"] as const; // qorebridge: the VPS bridge health task (owner 2026-10-26)
+// qorebridge: the VPS bridge health task (owner 2026-10-26). qorebridge-feed: the VPS FIX feed alert monitor (owner
+// 2026-10-29, deploy/vps/feed-alert-monitor.ps1), which also pushes its alerts itself and says how bad a failure is in
+// checks.severity (CRITICAL / WARNING).
+export const INFRA_COMPONENTS = ["caddy", "qorebridge", "qorebridge-feed"] as const;
 export type InfraComponent = (typeof INFRA_COMPONENTS)[number];
 export const RUNBOOKS: Record<InfraComponent, string> = {
   caddy: "deploy/caddy-service-recovery-runbook.md",
   qorebridge: "deploy/qorebridge-vps-runbook.md",
+  "qorebridge-feed": "deploy/qorebridge-feed-alert-runbook.md",
 };
+const SEVERITIES = ["CRITICAL", "WARNING"] as const;
+type Severity = (typeof SEVERITIES)[number];
 
 /** No report for this long = the check is not running (the task runs every 5 minutes). */
 export const NO_REPORT_AFTER_MS = 15 * 60 * 1000;
@@ -52,13 +58,21 @@ export function recipients(): string[] {
   return (process.env.OPS_ALERT_EMAIL ?? "").split(",").map((s) => s.trim()).filter((s) => s.includes("@"));
 }
 
+/** A failing report's severity, when the check gives one (checks.severity). */
+function severityOf(r: InfraReport): Severity | null {
+  const s = r.checks.severity;
+  return !r.ok && typeof s === "string" && (SEVERITIES as readonly string[]).includes(s) ? (s as Severity) : null;
+}
+
 function alertText(component: InfraComponent, kind: "FAIL" | "RECOVERED", r: InfraReport) {
-  const title = kind === "FAIL" ? `${component} check FAILED on ${r.host}` : `${component} check recovered on ${r.host}`;
+  const severity = severityOf(r);
+  const title = kind === "FAIL" ? `${severity ? `${severity} ` : ""}${component} check FAILED on ${r.host}` : `${component} check recovered on ${r.host}`;
   const lines = [
     title,
     "",
     `Component: ${component}`,
     `State: ${kind === "FAIL" ? "FAIL" : "OK (recovered)"}`,
+    ...(severity ? [`Severity: ${severity}`] : []),
     `Checked at (UTC): ${r.checkedAt}`,
     `Host: ${r.host}`,
     ...(r.reasons.length ? ["Reasons:", ...r.reasons.map((x) => `  - ${x}`)] : []),
@@ -75,12 +89,17 @@ function alertText(component: InfraComponent, kind: "FAIL" | "RECOVERED", r: Inf
 export async function recordInfraHealth(component: InfraComponent, report: InfraReport, now = new Date()) {
   const redis = getRedis();
   const state: "OK" | "FAIL" = report.ok ? "OK" : "FAIL";
-  const previous = ((await redis.eval(SWAP, 1, stateKey(component), state)) as string | null) as "OK" | "FAIL" | null;
+  // the stored state carries the severity (FAIL:CRITICAL), so a WARNING that turns CRITICAL (or back) alerts again;
+  // a report without a severity stores plain FAIL, as before
+  const severity = severityOf(report);
+  const storedState = severity ? `FAIL:${severity}` : state;
+  const previousRaw = (await redis.eval(SWAP, 1, stateKey(component), storedState)) as string | null;
+  const previous: "OK" | "FAIL" | null = previousRaw === null ? null : previousRaw === "OK" ? "OK" : "FAIL";
   const stored: StoredInfraReport = { ...report, receivedAt: now.toISOString(), previousState: previous };
   await redis.set(reportKey(component), JSON.stringify(stored), "EX", REPORT_TTL_SECONDS);
 
   // first report ever and OK: nothing to say. First report and FAIL: alert. Otherwise only on a change.
-  const kind: "FAIL" | "RECOVERED" | null = state === "FAIL" ? (previous === "FAIL" ? null : "FAIL") : previous === "FAIL" ? "RECOVERED" : null;
+  const kind: "FAIL" | "RECOVERED" | null = state === "FAIL" ? (previousRaw === storedState ? null : "FAIL") : previous === "FAIL" ? "RECOVERED" : null;
   if (!kind) return { state, alerted: null as null | "FAIL" | "RECOVERED", emailed: false };
 
   const to = recipients();
@@ -94,7 +113,7 @@ export async function recordInfraHealth(component: InfraComponent, report: Infra
     return { state, alerted: kind, emailed: true };
   } catch (err) {
     console.error(`[infra-health] ${component} ${kind}: alert e-mail failed, the next report retries`, err);
-    await redis.eval(RESTORE, 1, stateKey(component), state, previous ?? "");
+    await redis.eval(RESTORE, 1, stateKey(component), storedState, previousRaw ?? "");
     return { state, alerted: kind, emailed: false };
   }
 }
