@@ -6,7 +6,8 @@ import path from "node:path";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { computeAskMarkupVectors, RESOLUTION_INPUTS, type ResolutionInput } from "@/lib/ask-markup-contract";
-import { accountClosePrice, accountQuote, loadAskRules, markedDownBid, markedUpAsk, RAW_RULE } from "@/lib/ask-markup";
+import { accountClosePrice, accountQuote, loadAskRules, markedDownBid, markedUpAsk, RAW_RULE, type AskRule } from "@/lib/ask-markup";
+import { askRuleCacheStats, askRulesCached, invalidateAskRules } from "@/lib/ask-markup-cache";
 import { resolveFillPricing } from "@/lib/pricing-engine";
 import { applySpreadMarkup, pipSize } from "@/lib/group-pricing";
 
@@ -138,5 +139,63 @@ describe("loadAskRules (scratch DB)", () => {
   it("an unknown account or symbol resolves to null (callers use the raw ask)", async () => {
     const rules = await loadAskRules(prisma, [{ accountId: "nope", symbolId: made[0].symbolId }]);
     expect(rules.get("nope", made[0].symbolId)).toBeNull();
+  });
+});
+
+// The per-cycle cache (lib/ask-markup-cache.ts, owner decision 2026-10-30) resolves the SAME precedence in memory
+// from cached config tables instead of querying per (account, symbol). It is a second implementation of the rule, so
+// it has to be pinned to the first one -- on exactly the fixtures above, which cover every resolution vector.
+describe("askRulesCached vs loadAskRules (scratch DB): the two resolvers must agree", () => {
+  const shape = (r: AskRule | null) =>
+    r == null
+      ? null
+      : r.mode === "markup"
+        ? { mode: "markup", markupPips: r.markupPips.toString(), digits: r.digits }
+        : { mode: "target", targetPips: r.targetPips.toString(), fallbackPips: r.fallbackPips?.toString() ?? null, digits: r.digits };
+
+  it("agrees on every resolution case (account > group > broker, coverage, engine on/off)", async () => {
+    invalidateAskRules();
+    const pairs = made.map((m) => ({ accountId: m.accountId, symbolId: m.symbolId }));
+    const loader = await loadAskRules(prisma, pairs);
+    const cached = await askRulesCached(prisma, pairs);
+    for (const m of made) {
+      expect(shape(cached.get(m.accountId, m.symbolId)), `${m.input.name}: cache vs loader`).toEqual(shape(loader.get(m.accountId, m.symbolId)));
+    }
+  });
+
+  it("agrees on the account's bid AND ask at a live tick, for every case", async () => {
+    invalidateAskRules();
+    const pairs = made.map((m) => ({ accountId: m.accountId, symbolId: m.symbolId }));
+    const loader = await loadAskRules(prisma, pairs);
+    const cached = await askRulesCached(prisma, pairs);
+    const bid = D("4298.96"), ask = D("4299.13");
+    for (const m of made) {
+      const l = loader.get(m.accountId, m.symbolId)!;
+      const c = cached.get(m.accountId, m.symbolId)!;
+      expect(markedUpAsk(c, bid, ask).toString(), `${m.input.name}: ask`).toBe(markedUpAsk(l, bid, ask).toString());
+      expect(markedDownBid(c, bid, ask).toString(), `${m.input.name}: bid`).toBe(markedDownBid(l, bid, ask).toString());
+    }
+  });
+
+  it("an unknown pair answers NO_MARKUP (raw both sides), where the loader answers null", async () => {
+    invalidateAskRules();
+    const cached = await askRulesCached(prisma, [{ accountId: "nope", symbolId: made[0].symbolId }]);
+    const r = cached.get("nope", made[0].symbolId)!;
+    expect(r).not.toBeNull();
+    expect(markedUpAsk(r, "1", "1.5").toString()).toBe("1.5");
+    expect(markedDownBid(r, "1", "1.5").toString()).toBe("1");
+  });
+
+  it("is warm after the first call: the second resolve issues no further config read", async () => {
+    invalidateAskRules();
+    expect(askRuleCacheStats().rows).toBe(0);
+    const pairs = made.map((m) => ({ accountId: m.accountId, symbolId: m.symbolId }));
+    await askRulesCached(prisma, pairs);
+    const afterFirst = askRuleCacheStats();
+    expect(afterFirst.rows).toBeGreaterThan(0);
+    // a pair NOT asked for the first time must still resolve from the warm config, with no new read
+    await askRulesCached(prisma, [{ accountId: made[0].accountId, symbolId: made[made.length - 1].symbolId }]);
+    expect(askRuleCacheStats().at).toBe(afterFirst.at);
+    expect(askRuleCacheStats().rows).toBe(afterFirst.rows);
   });
 });
