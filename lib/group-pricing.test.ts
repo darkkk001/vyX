@@ -56,12 +56,15 @@ describe("pipSize", () => {
 });
 
 describe("applySpreadMarkup", () => {
-  it("widens a BUY fill by spreadMarkup pips, leaves a SELL fill untouched", () => {
+  it("splits spreadMarkup across both sides: a BUY fill up by half, a SELL fill DOWN by half", () => {
+    // SYMMETRIC MARKUP (2026-10-29): 2 pips on a 5-digit symbol is 0.0002 of total spread, half on each side, each
+    // rounded away from the client. The mid is unchanged, which is the point: an FX conversion off this pair no
+    // longer drifts with the markup.
     const buyPrice = applySpreadMarkup({ side: "BUY", price: "1.10000", spreadMarkup: "2", digits: 5 });
-    expect(buyPrice.toString()).toBe("1.1002"); // +2 pips = +0.0002
+    expect(buyPrice.toString()).toBe("1.1001"); // +1 pip = +0.0001
 
     const sellPrice = applySpreadMarkup({ side: "SELL", price: "1.10000", spreadMarkup: "2", digits: 5 });
-    expect(sellPrice.toString()).toBe("1.1"); // unaffected -- ask-only markup convention
+    expect(sellPrice.toString()).toBe("1.0999"); // -1 pip, no longer untouched
   });
 
   it("a zero markup returns the price unchanged for either side", () => {

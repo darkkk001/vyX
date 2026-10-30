@@ -48,7 +48,10 @@ function pricesAnswer(path: string) {
   const t = gridTime(serverNow());
   const rows = DEMO_SYMBOLS.map((d) => {
     const q = demoQuoteAt(d.name, t)!;
-    return { symbol: d.display, bid: q.bid, ask: q.ask, updatedAt: iso(t), tickAt: iso(t), marketClosed: false, askMarkup: "0" };
+    // The QoreTrader demo carries no broker markup at all, so both sides are already this account's prices.
+    // bidMarkup is emitted alongside askMarkup (both "0") so the demo answers the same wire shape as the real
+    // route after the symmetric change -- a client reading bidMarkup must not see it missing only on the demo.
+    return { symbol: d.display, bid: q.bid, ask: q.ask, updatedAt: iso(t), tickAt: iso(t), marketClosed: false, askMarkup: "0", bidMarkup: "0" };
   });
   if (!path.includes("fx=1")) return rows;
   const j = demoQuoteAt("qUSDJPY", t)!;

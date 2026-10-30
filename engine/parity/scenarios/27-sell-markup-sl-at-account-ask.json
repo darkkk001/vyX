@@ -1,6 +1,6 @@
 {
   "name": "27-sell-markup-sl-at-account-ask",
-  "why": "Owner decision 2026-09-26: a SELL closes (and its SL triggers) at the account's marked-up ask. BrokerSymbol.spreadMarkup 1.5 pips on XAUUSD: raw ask 4299.13 is below the SL 4299.25, the account ask 4299.28 is above it, so the SL fires and closes at 4299.28 (-928). Needs scripts/parity/run-ts.ts to seed BrokerSymbol.spreadMarkup from symbols[].spreadMarkup.",
+  "why": "Owner decision 2026-09-26, revised to SYMMETRIC MARKUP 2026-10-29: a SELL closes (and its SL triggers) at the account's ask, which now carries HALF the markup. BrokerSymbol.spreadMarkup 1.5 pips on XAUUSD = 0.15 split: raw ask 4299.13 is below the SL 4299.20, the account ask ceil(4299.13 + 0.075) = 4299.21 is above it, so the SL fires and closes at 4299.21 (-921). Needs scripts/parity/run-ts.ts to seed BrokerSymbol.spreadMarkup from symbols[].spreadMarkup.",
   "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
@@ -38,7 +38,7 @@
       "side": "SELL",
       "volume": "1",
       "openPrice": "4290.00",
-      "slPrice": "4299.25",
+      "slPrice": "4299.20",
       "tpPrice": null
     }
   ],

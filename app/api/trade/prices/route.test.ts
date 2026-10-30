@@ -86,8 +86,9 @@ describe("GET /api/trade/prices -- flag consistency (live DB)", () => {
     const json = await getPrices(account.id, broker.id);
     const row = json.find((p: { symbol: string }) => p.symbol === symbol.name);
     expect(row).toBeTruthy();
-    // 3 pips markup, 2-digit symbol -> pip size 0.1 -> 3 * 0.1 = 0.3
-    expect(row.askMarkup).toBe("0.3");
+    // 3 pips markup, 2-digit symbol -> pip size 0.1 -> 0.3 price units, SPLIT symmetrically: half each side
+    // (symmetric markup 2026-10-29). Both sides are wired now, so a client marks the ask up and the bid down.
+    expect({ ask: row.askMarkup, bid: row.bidMarkup }).toEqual({ ask: "0.15", bid: "0.15" });
   });
 
   it("D4: flag ON ignores the AccountType override too and quotes the broker markup, matching a real fill", async () => {
@@ -96,7 +97,7 @@ describe("GET /api/trade/prices -- flag consistency (live DB)", () => {
     const json = await getPrices(account.id, broker.id);
     const row = json.find((p: { symbol: string }) => p.symbol === symbol.name);
     expect(row).toBeTruthy();
-    // broker spreadMarkup = 3 pips, pip size 0.1 -> 0.3 (the type's 0.05 is no longer read)
-    expect(row.askMarkup).toBe("0.3");
+    // broker spreadMarkup = 3 pips, pip size 0.1 -> 0.3, half each side (the type's 0.05 is no longer read)
+    expect({ ask: row.askMarkup, bid: row.bidMarkup }).toEqual({ ask: "0.15", bid: "0.15" });
   });
 });

@@ -829,31 +829,37 @@ mod tests {
     }
 
     #[test]
-    fn a_buy_entry_triggers_on_its_account_ask_a_sell_entry_on_the_raw_bid() {
+    fn a_buy_entry_triggers_on_its_account_ask_a_sell_entry_on_its_account_bid() {
         use crate::ask_markup::AskRule;
-        // +1.5 pips on a 2-digit symbol = +0.15
+        // SYMMETRIC MARKUP: +1.5 pips on a 2-digit symbol is 0.15 SPLIT -- 0.075 onto the ask, 0.075 off the bid,
+        // each rounded away from the client at 2 digits.
         let rule = Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 });
-        // BUY STOP at 100.10: raw ask 100.00 has not reached it, the account ask 100.15 has
+        // BUY STOP at 100.10: raw ask 100.03 has not reached it, the account ask ceil(100.105) = 100.11 has
         let buy_stop = super::PendingLevel::bare(true, false, dec!(100.10), rule);
-        assert!(buy_stop.triggered(dec!(99.90), dec!(100.00)));
-        // BUY LIMIT at 100.00: raw ask 99.95 would fill it raw; the account ask 100.10 is above the entry
+        assert!(buy_stop.triggered(dec!(99.93), dec!(100.03)));
+        // half a markup lower and neither price reaches the entry
+        assert!(!buy_stop.triggered(dec!(99.90), dec!(100.00)));
+        // BUY LIMIT at 100.00: raw ask 99.95 would fill it raw; the account ask ceil(100.025) = 100.03 is above it
         let buy_limit = super::PendingLevel::bare(true, true, dec!(100.00), rule);
         assert!(!buy_limit.triggered(dec!(99.80), dec!(99.95)));
-        // a SELL entry never reads the ask
+        // A SELL entry reads the account's BID, which is no longer the raw one: SELL STOP at 99.90 fires on a raw bid
+        // of 99.95, because floor(99.95 - 0.075) = 99.87 has fallen through the entry.
         let sell_stop = super::PendingLevel::bare(false, false, dec!(99.90), rule);
-        assert!(!sell_stop.triggered(dec!(99.95), dec!(100.00)));
+        assert!(sell_stop.triggered(dec!(99.95), dec!(100.00)));
+        // ... and still does not fire where the account's bid floor(99.925) = 99.92 stays above the entry
+        assert!(!sell_stop.triggered(dec!(100.00), dec!(100.10)));
     }
 
     #[test]
     fn a_sell_level_is_touched_at_its_account_ask() {
         use crate::ask_markup::AskRule;
         let h = hook("http://127.0.0.1:1/x".into());
-        // SELL SL at 4299.25: raw ask 4299.13 has not reached it, the account ask 4299.28 (+1.5 pips) has
-        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
+        // SELL SL at 4299.20: raw ask 4299.13 has not reached it, the account ask ceil(4299.13 + 0.075) = 4299.21 has
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.20)), tp: None, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
         let t: Tick = serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "4298.96", "ask": "4299.13" })).unwrap();
         assert_eq!(h.touched(std::slice::from_ref(&t)), vec!["XAUUSD".to_string()]);
         // the same level on the raw ask (no rule) is not touched
-        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: None }]);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.20)), tp: None, ask_rule: None }]);
         assert!(h.touched(std::slice::from_ref(&t)).is_empty());
     }
 
@@ -1210,8 +1216,8 @@ mod tests {
                 lvl("p-sell-sl", "a1", false, Some(dec!(4299.10)), None, None),           // raw ask 4299.13 >= 4299.10: hit
                 lvl("p-sell-tp", "a4", false, None, Some(dec!(4299.20)), None),           // raw ask <= 4299.20: hit
                 lvl("p-sell-far", "a5", false, Some(dec!(4300)), Some(dec!(4290)), None),
-                // the account ask rule: 4299.13 + 0.15 = 4299.28 >= SL 4299.25 (the raw ask would not reach it)
-                lvl("p-sell-markup", "a6", false, Some(dec!(4299.25)), None, Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 })),
+                // the account ask rule, SYMMETRIC: ceil(4299.13 + 0.075) = 4299.21 >= SL 4299.20 (the raw ask would not reach it)
+                lvl("p-sell-markup", "a6", false, Some(dec!(4299.20)), None, Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 })),
             ],
         );
         // a resting order on another symbol: touched as a symbol, never snapshotted

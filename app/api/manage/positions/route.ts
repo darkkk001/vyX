@@ -201,9 +201,10 @@ export async function GET(request: NextRequest) {
       volume: p.volume.toString(),
       openPrice: p.openPrice.toFixed(p.symbol.digits),
       currentPrice: currentPrice ? currentPrice.toFixed(p.symbol.digits) : null,
-      // the account's ask rule for this symbol (a SELL closes at raw ask + askMarkup, or max(ask, bid + targetSpread) in
-      // target mode; price units). Missing on an older server = raw.
-      ...(askRule ? askRuleWire(askRule, lp?.bid, lp?.ask) : { askMarkup: "0", spreadRule: "markup" as const }),
+      // This account's markup rule for this symbol, in price units: symmetric, so `askMarkup` is added to the raw ask
+      // and `bidMarkup` subtracted from the raw bid (each half the configured markup); in target mode the client
+      // re-anchors on the mid. Missing on an older server = raw on both sides.
+      ...(askRule ? askRuleWire(askRule, lp?.bid, lp?.ask) : { askMarkup: "0", bidMarkup: "0", spreadRule: "markup" as const }),
       floatingPnl: floatingPnl ? floatingPnl.toFixed(2) : null,
       slPrice: p.slPrice ? p.slPrice.toFixed(p.symbol.digits) : null,
       tpPrice: p.tpPrice ? p.tpPrice.toFixed(p.symbol.digits) : null,

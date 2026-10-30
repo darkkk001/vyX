@@ -125,7 +125,11 @@ export async function GET(request: Request) {
     groupSymbolConfigBySymbolId = new Map(groupSymbolConfigsFull.map((c) => [c.symbolId, c]));
   }
 
-  const askMarkupByName = new Map<string, string>();
+  // SYMMETRIC MARKUP (owner decision 2026-10-29, lib/ask-markup.ts): this map holds HALF the markup in price units,
+  // because that is what each side moves -- the ask up by it, the bid down by it. The wire's `askMarkup` and
+  // `bidMarkup` are therefore both this value, exactly as lib/ask-markup.ts askRuleWire emits them.
+  const halfMarkupByName = new Map<string, string>();
+  const digitsByName = new Map<string, number>();
   // Batch 5 (quote = fill, docs/audit/2026-09-24/realtime-contract.md): the RULE, not only today's number, so the
   // client applies the fill formula on every tick -- target mode: BUY = max(ask, bid + targetSpread)
   const targetSpreadByName = new Map<string, string>();
@@ -159,8 +163,10 @@ export async function GET(request: Request) {
       // at all. No existing row has ever stored null, so this is a no-op today.
       markupPips = override?.spreadMarkup ?? bs.spreadMarkup;
     }
+    digitsByName.set(bs.symbol.name, bs.symbol.digits);
     if (markupPips.isZero()) continue;
-    askMarkupByName.set(bs.symbol.name, markupPips.mul(pipSize(bs.symbol.digits)).toString());
+    // half, not the full markup: the symmetric split moves each side by this much
+    halfMarkupByName.set(bs.symbol.name, markupPips.mul(pipSize(bs.symbol.digits)).div(2).toString());
   }
   // markup-leak fix (owner 2026-10-01: traders never see the broker's markup). Once the broker is switched to
   // server-side asks (Broker.clientAskServerSideAt, set together with the price stream's own switch,
@@ -168,14 +174,42 @@ export async function GET(request: Request) {
   // fields say "nothing to add": askMarkup "0", spreadRule "markup", no targetSpread -- so an installed terminal /
   // WebTrader that still adds them prices exactly right, and the raw ask and the markup never leave the server.
   const serverSide = broker?.clientAskServerSideAt != null;
-  const clientAskOf = (symbol: string, bid: Prisma.Decimal, ask: Prisma.Decimal) => (askMarkupByName.has(symbol) ? ask.add(new Prisma.Decimal(askMarkupByName.get(symbol)!)) : ask);
+  // Symmetric, and rounded AWAY FROM THE CLIENT at the symbol's own precision -- the same rule and the same rounding
+  // as lib/ask-markup.ts markedUpAsk / markedDownBid and the stream's clientAsk / clientBid, so the HTTP poll, the
+  // socket and the fill cannot disagree. The bid never goes to or below zero.
+  const halfOf = (symbol: string) => halfMarkupByName.get(symbol);
+  const clientAskOf = (symbol: string, _bid: Prisma.Decimal, ask: Prisma.Decimal) => {
+    const h = halfOf(symbol);
+    if (h == null) return ask;
+    const d = digitsByName.get(symbol) ?? 2;
+    return Prisma.Decimal.max(ask.add(new Prisma.Decimal(h)).toDecimalPlaces(d, Prisma.Decimal.ROUND_CEIL), ask);
+  };
+  const clientBidOf = (symbol: string, bid: Prisma.Decimal) => {
+    const h = halfOf(symbol);
+    if (h == null) return bid;
+    const d = digitsByName.get(symbol) ?? 2;
+    const floor = new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(Math.max(d, 0)));
+    const out = bid.sub(new Prisma.Decimal(h)).toDecimalPlaces(d, Prisma.Decimal.ROUND_FLOOR);
+    return Prisma.Decimal.min(Prisma.Decimal.max(out, floor), bid);
+  };
   const rows = [...priceByName.values()].map((p) =>
     serverSide
-      ? { ...p, ask: clientAskOf(p.symbol, p.bid, p.ask), marketClosed: closedByName.get(p.symbol) ?? false, askMarkup: "0", spreadRule: "markup" }
+      ? {
+          ...p,
+          // BOTH sides are this account's prices now; the client adds nothing (askMarkup / bidMarkup "0")
+          bid: clientBidOf(p.symbol, p.bid),
+          ask: clientAskOf(p.symbol, p.bid, p.ask),
+          marketClosed: closedByName.get(p.symbol) ?? false,
+          askMarkup: "0",
+          bidMarkup: "0",
+          spreadRule: "markup",
+        }
       : {
           ...p,
           marketClosed: closedByName.get(p.symbol) ?? false,
-          askMarkup: askMarkupByName.get(p.symbol) ?? "0",
+          // half on each side: add to the raw ask, subtract from the raw bid
+          askMarkup: halfMarkupByName.get(p.symbol) ?? "0",
+          bidMarkup: halfMarkupByName.get(p.symbol) ?? "0",
           spreadRule: targetSpreadByName.has(p.symbol) ? "target" : "markup",
           ...(targetSpreadByName.has(p.symbol) ? { targetSpread: targetSpreadByName.get(p.symbol) } : {}),
         }
@@ -194,9 +228,19 @@ export async function GET(request: Request) {
     const now = Date.now();
     const quotes = [...fxRows.values()]
       .filter((r) => r.tickAt.getTime() > now - FX_RATE_MAX_AGE_MS)
-      // server-side asks: a conversion quote of a symbol this account trades carries the account's ask too, so the raw ask
-      // cannot be read off the FX block either
-      .map((r) => ({ symbol: displayCurrency(r.symbol), bid: r.bid.toString(), ask: (serverSide ? clientAskOf(r.symbol, r.bid, r.ask) : r.ask).toString(), tickAt: r.tickAt.toISOString() }));
+      // Server-side asks: a conversion quote of a symbol this account trades carries the account's prices too, so
+      // neither raw side can be read off the FX block.
+      //
+      // Symmetric markup fixes a real distortion here: conversionRate uses the MID of these quotes
+      // (lib/fx.ts / lib/fx-client.ts mid()), and the ask-only rule moved the ask alone -- so every conversion
+      // through a marked-up symbol was skewed by half the markup. Moving both sides by the same half leaves the mid
+      // exactly where the raw mid was, so the rate is right again.
+      .map((r) => ({
+        symbol: displayCurrency(r.symbol),
+        bid: (serverSide ? clientBidOf(r.symbol, r.bid) : r.bid).toString(),
+        ask: (serverSide ? clientAskOf(r.symbol, r.bid, r.ask) : r.ask).toString(),
+        tickAt: r.tickAt.toISOString(),
+      }));
     const lookup = fxLookupFromQuotes(fxRows.values(), now);
     const rates: Record<string, string> = {};
     for (const q of quoteCurrencies) {

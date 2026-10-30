@@ -509,12 +509,12 @@ mod tests {
     fn a_sell_with_a_broker_markup_closes_at_the_marked_up_ask() {
         let sc = Scenario::from_json(&std::fs::read_to_string(scenario_dir().join("27-sell-markup-sl-at-account-ask.json")).unwrap()).unwrap();
         let out = evaluate(&sc);
-        // SELL 1 lot XAUUSD from 4290.00, SL 4299.25; raw ask 4299.13 (not hit), account ask 4299.28 (+1.5 pips): hit.
-        // P&L = (4290.00 - 4299.28) x 100 x 1 = -928
+        // SELL 1 lot XAUUSD from 4290.00, SL 4299.20; raw ask 4299.13 (not hit), account ask 4299.21 (half of 1.5
+        // pips, rounded away from the client): hit.  P&L = (4290.00 - 4299.21) x 100 x 1 = -921
         let a = &out.accounts["a1"];
         assert_eq!(a.closed_position_ids, vec!["p1".to_string()]);
         assert_eq!(a.close_reasons, vec!["stop_loss".to_string()]);
-        assert_eq!(a.transactions, vec![Txn { kind: "TRADE_PNL".into(), amount: "-928".into() }]);
+        assert_eq!(a.transactions, vec![Txn { kind: "TRADE_PNL".into(), amount: "-921".into() }]);
         // the same scenario without the markup: nothing closes
         let raw = Scenario::from_json(&std::fs::read_to_string(scenario_dir().join("27-sell-markup-sl-at-account-ask.json")).unwrap().replace(r#""spreadMarkup": "1.5""#, r#""spreadMarkup": "0""#)).unwrap();
         assert!(evaluate(&raw).accounts["a1"].closed_position_ids.is_empty());

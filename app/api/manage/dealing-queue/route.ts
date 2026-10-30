@@ -59,7 +59,8 @@ export async function GET() {
   ]);
   const ruleWire = (o: (typeof pending)[number], bid?: Prisma.Decimal, ask?: Prisma.Decimal) => {
     const r = askRules.get(o.accountId, o.symbolId);
-    return r ? askRuleWire(r, bid, ask) : { askMarkup: "0", spreadRule: "markup" as const };
+    // symmetric markup: the wire carries BOTH sides, so the no-rule fallback must answer both as "nothing to add"
+    return r ? askRuleWire(r, bid, ask) : { askMarkup: "0", bidMarkup: "0", spreadRule: "markup" as const };
   };
 
   return NextResponse.json({

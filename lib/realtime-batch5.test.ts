@@ -16,7 +16,7 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/lib/account-auth", () => ({ getAccountSession: vi.fn() }));
 vi.mock("@/lib/nats", () => ({ publishTradingEvent: vi.fn().mockResolvedValue(undefined), publishAlertConfig: vi.fn().mockResolvedValue(undefined) }));
 
-import { effectiveAsk, spreadRuleFromPrice } from "@/lib/trade-api";
+import { effectiveAsk, effectiveBid, spreadRuleFromPrice } from "@/lib/trade-api";
 import { withConfigEvent } from "@/lib/config-events";
 import { publishTradingEvent } from "@/lib/nats";
 import { getAdminSession } from "@/lib/auth";
@@ -62,7 +62,7 @@ async function asAdmin(fx: Fx) {
 async function priceRow(fx: Fx) {
   asTrader(fx);
   const { GET } = await import("@/app/api/trade/prices/route");
-  const rows = (await (await GET(new Request("https://t.local/api/trade/prices"))).json()) as { symbol: string; bid: string; ask: string; askMarkup: string; spreadRule?: "markup" | "target"; targetSpread?: string }[];
+  const rows = (await (await GET(new Request("https://t.local/api/trade/prices"))).json()) as { symbol: string; bid: string; ask: string; askMarkup: string; bidMarkup: string; spreadRule?: "markup" | "target"; targetSpread?: string }[];
   const row = rows.find((r) => r.symbol === fx.symbolName);
   expect(row, "symbol in /api/trade/prices").toBeDefined();
   return row!;
@@ -99,28 +99,42 @@ afterAll(async () => {
   await prisma.$disconnect();
 }, 30000);
 
-describe("quote = fill: the shared test vectors (C# SpreadRule tests use the same numbers)", () => {
+// SYMMETRIC MARKUP (2026-10-29): the wire carries HALF the markup per side, and the spread the trader pays is now
+// split around the raw mid instead of being piled on the ask. Raw 4456.35 / 4456.53, mid 4456.44:
+//   markup 2 pips (0.20) -> wire 0.10 each side -> 4456.25 / 4456.63, spread 0.38 (raw 0.18 + 0.20), mid unmoved
+//   target 0.30          -> mid +/- 0.15        -> 4456.29 / 4456.59, spread exactly 0.30,        mid unmoved
+// The POINTS a trader pays are unchanged -- they are measured between THIS account's two prices, not off the raw bid.
+describe("quote = fill: the shared test vectors", () => {
   const rules = {
-    M: spreadRuleFromPrice({ askMarkup: "0.20", spreadRule: "markup" }),
-    T: spreadRuleFromPrice({ askMarkup: "0.12", spreadRule: "target", targetSpread: "0.30" }),
+    M: spreadRuleFromPrice({ askMarkup: "0.10", bidMarkup: "0.10", spreadRule: "markup" }),
+    T: spreadRuleFromPrice({ askMarkup: "0.06", bidMarkup: "0.06", spreadRule: "target", targetSpread: "0.30" }),
   };
-  it("markup: 4456.35 / 4456.53 + 0.20 -> buy 4456.73, 38 points", () => {
-    const b = effectiveAsk(rules, "M", 4456.53, 4456.35);
-    expect(b).toBeCloseTo(4456.73, 6);
-    expect(points(b, 4456.35)).toBe(38);
+  it("markup 0.20 split: 4456.35 / 4456.53 -> 4456.25 / 4456.63, 38 points, mid preserved", () => {
+    const a = effectiveAsk(rules, "M", 4456.53, 4456.35);
+    const b = effectiveBid(rules, "M", 4456.53, 4456.35);
+    expect(a).toBeCloseTo(4456.63, 6);
+    expect(b).toBeCloseTo(4456.25, 6);
+    expect(points(a, b)).toBe(38);
+    expect((a + b) / 2).toBeCloseTo(4456.44, 6);
   });
-  it("target 0.30, raw spread below it -> buy 4456.65, 30 points", () => {
-    const b = effectiveAsk(rules, "T", 4456.53, 4456.35);
-    expect(b).toBeCloseTo(4456.65, 6);
-    expect(points(b, 4456.35)).toBe(30);
+  it("target 0.30, raw spread below it -> 4456.29 / 4456.59, 30 points, mid preserved", () => {
+    const a = effectiveAsk(rules, "T", 4456.53, 4456.35);
+    const b = effectiveBid(rules, "T", 4456.53, 4456.35);
+    expect(a).toBeCloseTo(4456.59, 6);
+    expect(b).toBeCloseTo(4456.29, 6);
+    expect(points(a, b)).toBe(30);
+    expect((a + b) / 2).toBeCloseTo(4456.44, 6);
   });
-  it("target 0.30, raw spread 0.45 above it -> buy at raw ask 4456.80, 45 points (the markup computed at the last poll is NOT reused)", () => {
-    const b = effectiveAsk(rules, "T", 4456.8, 4456.35);
-    expect(b).toBeCloseTo(4456.8, 6);
-    expect(points(b, 4456.35)).toBe(45);
+  it("target 0.30, raw spread 0.45 above it -> BOTH sides stay raw, 45 points (the markup never tightens the book)", () => {
+    const a = effectiveAsk(rules, "T", 4456.8, 4456.35);
+    const b = effectiveBid(rules, "T", 4456.8, 4456.35);
+    expect(a).toBeCloseTo(4456.8, 6);
+    expect(b).toBeCloseTo(4456.35, 6);
+    expect(points(a, b)).toBe(45);
   });
-  it("no rule known yet -> raw ask", () => {
+  it("no rule known yet -> raw ask and raw bid", () => {
     expect(effectiveAsk({}, "X", 1.2345, 1.2)).toBe(1.2345);
+    expect(effectiveBid({}, "X", 1.2345, 1.2)).toBe(1.2);
   });
 });
 
@@ -131,8 +145,11 @@ describe("quote = fill, end to end: /api/trade/prices + effectiveAsk == the BUY 
     await prisma.groupSymbolConfig.create({ data: { groupId: fx.groupId, symbolId: fx.symbolId, spreadMarkup: D(2) } });
     const row = await priceRow(fx);
     expect(row.spreadRule).toBe("markup");
-    const quoted = effectiveAsk({ [fx.symbolName]: spreadRuleFromPrice(row) }, fx.symbolName, Number(row.ask), Number(row.bid));
-    expect(quoted).toBeCloseTo(4456.73, 6);
+    const rule = { [fx.symbolName]: spreadRuleFromPrice(row) };
+    const quoted = effectiveAsk(rule, fx.symbolName, Number(row.ask), Number(row.bid));
+    // 2 pips = 0.20 split: the client's BUY price is raw ask + 0.10, and its SELL price raw bid - 0.10
+    expect(quoted).toBeCloseTo(4456.63, 6);
+    expect(effectiveBid(rule, fx.symbolName, Number(row.ask), Number(row.bid))).toBeCloseTo(4456.25, 6);
     expect(await buy(fx, quoted)).toBeCloseTo(quoted, 6);
   });
 
@@ -143,8 +160,11 @@ describe("quote = fill, end to end: /api/trade/prices + effectiveAsk == the BUY 
     const row = await priceRow(fx);
     expect(row.spreadRule).toBe("target");
     expect(Number(row.targetSpread)).toBeCloseTo(0.3, 6);
-    const quoted = effectiveAsk({ [fx.symbolName]: spreadRuleFromPrice(row) }, fx.symbolName, Number(row.ask), Number(row.bid));
-    expect(quoted).toBeCloseTo(4456.65, 6);
+    const rule = { [fx.symbolName]: spreadRuleFromPrice(row) };
+    const quoted = effectiveAsk(rule, fx.symbolName, Number(row.ask), Number(row.bid));
+    // target 0.30 around the raw mid 4456.44, not stacked on the ask
+    expect(quoted).toBeCloseTo(4456.59, 6);
+    expect(effectiveBid(rule, fx.symbolName, Number(row.ask), Number(row.bid))).toBeCloseTo(4456.29, 6);
     expect(await buy(fx, quoted)).toBeCloseTo(quoted, 6);
   });
 
@@ -163,10 +183,12 @@ describe("quote = fill, end to end: /api/trade/prices + effectiveAsk == the BUY 
     if (!dbReachable) return;
     const fx = await fixture("4456.35", "4456.53");
     const cfg = await prisma.groupSymbolConfig.create({ data: { groupId: fx.groupId, symbolId: fx.symbolId, spreadMarkup: D(2) } });
-    expect(Number((await priceRow(fx)).askMarkup)).toBeCloseTo(0.2, 6);
+    // the wire carries HALF: 2 pips -> 0.10, then 5 pips -> 0.25, on BOTH sides
+    const first = await priceRow(fx);
+    expect([Number(first.askMarkup), Number(first.bidMarkup)]).toEqual([0.1, 0.1]);
     await prisma.groupSymbolConfig.update({ where: { id: cfg.id }, data: { spreadMarkup: D(5) } });
     const row = await priceRow(fx);
-    expect(Number(row.askMarkup)).toBeCloseTo(0.5, 6);
+    expect([Number(row.askMarkup), Number(row.bidMarkup)]).toEqual([0.25, 0.25]);
     const quoted = effectiveAsk({ [fx.symbolName]: spreadRuleFromPrice(row) }, fx.symbolName, Number(row.ask), Number(row.bid));
     expect(await buy(fx, quoted)).toBeCloseTo(quoted, 6);
   });

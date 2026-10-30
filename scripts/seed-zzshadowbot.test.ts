@@ -193,7 +193,8 @@ describe("zzshadowbot seed", () => {
     const lots = D(1);
     let balance = acct.balance;
 
-    // leg 1: SELL 1.00 at bid (the markup is ask-only), full margin, passes the pre-trade gate at MC 100
+    // leg 1: SELL 1.00. Margin here is deliberately taken off the RAW bid: this test is about the hedged-margin gate,
+    // not about the fill, and the gate's verdict is the same either way (symmetric markup would open it at 4297.00).
     const sellMargin = requiredMarginFor(lots, cs, bid, acct.leverage);
     expect(checkPreTradeMargin({ equity: balance, usedMargin: D(0), requiredMargin: sellMargin, marginCallLevel: acct.group.marginCallLevel })).toBeNull();
     balance = balance.sub(cfg.commissionPerLot!.mul(lots));
@@ -201,9 +202,11 @@ describe("zzshadowbot seed", () => {
     const levelAfterLeg1 = balance.add(sellFloat).div(sellMargin).mul(100);
     expect(levelAfterLeg1.gt(acct.group.stopOutLevel)).toBe(true); // not stopped out between the legs
 
-    // leg 2: BUY 1.00 at ask + 60 pips; the hedge takes used margin to 0, which the gate always allows
+    // leg 2: BUY 1.00 at ask + HALF of the 60-pip markup (symmetric: the other half comes off the bid); the hedge
+    // takes used margin to 0, which the gate always allows
     const buyFill = applySpreadMarkup({ side: "BUY", price: ask, spreadMarkup: cfg.spreadMarkup!, digits: 2 });
-    expect(buyFill.toNumber()).toBe(4306.3);
+    const accountBid = applySpreadMarkup({ side: "SELL", price: bid, spreadMarkup: cfg.spreadMarkup!, digits: 2 });
+    expect([buyFill.toNumber(), accountBid.toNumber()]).toEqual([4303.3, 4297]);
     const legs = [
       { symbolKey: "XAU", side: "SELL" as const, volume: lots, margin: sellMargin, hedgedMarginPct: pct },
       { symbolKey: "XAU", side: "BUY" as const, volume: lots, margin: requiredMarginFor(lots, cs, bid, acct.leverage), hedgedMarginPct: pct },
@@ -211,8 +214,10 @@ describe("zzshadowbot seed", () => {
     const used = hedgedUsedMargin(legs);
     expect(used.toNumber()).toBe(0);
     balance = balance.sub(cfg.commissionPerLot!.mul(lots));
-    const buyFloat = bid.sub(buyFill).mul(cs).mul(lots); // a BUY closes at bid
+    const buyFloat = accountBid.sub(buyFill).mul(cs).mul(lots); // a BUY closes at THIS ACCOUNT's bid, not the raw one
     const equity = balance.add(sellFloat).add(buyFloat);
+    // Unchanged at -160 by the symmetric change, and that is the point: the BUY now opens 3.00 lower and closes 3.00
+    // lower than under the ask-only rule, so the round trip costs the same 60 pips -- only where it is charged moved.
     expect(equity.toNumber()).toBe(-160);
     // lib/risk-monitor.ts: marginLevel = usedMargin > 0 ? ... : null, and null never stops out
     const marginLevel = used.gt(0) ? equity.div(used).mul(100) : null;

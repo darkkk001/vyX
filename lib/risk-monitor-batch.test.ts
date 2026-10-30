@@ -42,7 +42,8 @@ async function makeBook(tag: string): Promise<Book> {
   await prisma.brokerSymbol.create({ data: { brokerId: plain, symbolId: sym.id } });
   await prisma.brokerSymbol.create({ data: { brokerId: engine, symbolId: sym.id } });
   await prisma.groupSymbolConfig.create({ data: { groupId: gB, symbolId: sym.id, spreadMarkup: D(5) } });
-  // bid 80, ask 80.5 (pip 0.1): a SELL in gB closes at 81.0, the gC account with a 3-pip override at 80.8
+  // bid 80, ask 80.5 (pip 0.1), SYMMETRIC (half each side): a SELL in gB closes at 80.75, the gC account with a
+  // 3-pip override at 80.65
   await prisma.livePrice.upsert({ where: { symbol }, update: { bid: D(80), ask: D(80.5), tickAt: new Date() }, create: { symbol, bid: D(80), ask: D(80.5), tickAt: new Date() } });
   return { symbol, symbolId: sym.id, plain, engine, gA, gB, gC };
 }
@@ -69,9 +70,9 @@ async function scenario(book: Book): Promise<Record<string, string>> {
   await open(book, cascade, "BUY", 100);
   await open(book, cascade, "BUY", 90);
   await open(book, cascade, "BUY", 85);
-  const sellCall = await account(book.plain, book.gB, 60); // SELL at the group's ask 81.0: ~60 % -> margin call, no stop-out
+  const sellCall = await account(book.plain, book.gB, 60); // SELL at the group's ask 80.75: ~60 % -> margin call, no stop-out
   await open(book, sellCall, "SELL", 70);
-  const sellSl = await account(book.engine, book.gC, 1_000); // SL 80.6: hit only at the account's ask 80.8, not the raw 80.5
+  const sellSl = await account(book.engine, book.gC, 1_000); // SL 80.6: hit only at the account's ask 80.65, not the raw 80.5
   await prisma.accountSymbolConfig.create({ data: { accountId: sellSl.id, symbolId: book.symbolId, spreadMarkup: D(3) } });
   await open(book, sellSl, "SELL", 90, { sl: 80.6 });
   await open(book, sellSl, "SELL", 95);
@@ -156,7 +157,7 @@ describe("evaluateAccountsRisk (one shared read per symbol pass)", () => {
     expect(L.sellCall.inMarginCall).toBe(true);
     expect(L.sellCall.positions[0].status).toBe("OPEN");
     expect(L.sellSl.positions.map((p) => p.status)).toEqual(["CLOSED", "OPEN"]);
-    expect(L.sellSl.positions[0].close).toBe("80.8"); // the account's ask, not the raw 80.5
+    expect(L.sellSl.positions[0].close).toBe("80.65"); // the account's ask, not the raw 80.5
     expect(L.recovered.inMarginCall).toBe(false);
     expect(L.recovered.notes.some((n) => n.startsWith("MARGIN_CALL_CLEARED|trader"))).toBe(true);
     expect(L.idle.positions.map((p) => p.status)).toEqual(["OPEN", "OPEN"]);
