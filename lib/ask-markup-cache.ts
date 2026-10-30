@@ -1,107 +1,163 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { loadAskRules, NO_MARKUP, type AskRule, type AskRuleKey, type AskRules } from "@/lib/ask-markup";
+import { askRuleFromSpread, NO_MARKUP, RAW_RULE, type AskRule, type AskRuleKey, type AskRules } from "@/lib/ask-markup";
+import { resolvePricingV2 } from "@/lib/pricing-engine";
 
-// Per-cycle cache for the symmetric-markup rules (owner decision 2026-10-30: "no per-position query; markup-0
-// short-circuits; cache the config per cycle; cache-aside").
+// Per-cycle markup-config cache (owner decision 2026-10-30: "markup-0 short-circuits; non-zero comes from a
+// per-cycle cache of the CONFIG; no per-position query; query volume capped on config rows, not position count;
+// cache-aside").
 //
-// WHY THIS EXISTS. Under the ask-only rule a BUY closed at the RAW bid, so lib/ask-markup.ts's loader deliberately
-// resolved SELL positions only -- a book of only BUY positions issued no query at all. The symmetric rule marks the
-// bid down by the same half, so both sides need a rule, and that cheap case became "one batched read every pass".
-// loadAskRules was already BATCHED (5-6 reads over id arrays, never one per position), so the risk was never a query
-// storm; it was losing the zero-query steady state on a database whose compute quota has caused an outage before
-// (2026-09-26). This cache restores it: the configuration is read once and reused until it changes.
+// WHAT IS CACHED, AND WHY THAT SHAPE. The four pricing LEVELS and the two lookups they need -- not resolved
+// (account, symbol) answers. Measured on this platform 2026-10-30:
 //
-// CACHE-ASIDE. The caller asks for the pairs it needs; hits are served from the map, and ONLY the misses go to
-// loadAskRules in one batch, after which they are written back. Nothing here reads the database on its own schedule,
-// so a quiet platform makes no queries at all.
+//     BrokerSymbol        125      GroupSymbolConfig    50      AccountSymbolConfig   0
+//     Broker                8      Symbol               43      Account              62      = 288 rows
 //
-// NEGATIVE CACHING IS THE POINT. A pair that resolves to nothing (no BrokerSymbol row for the broker and symbol, an
-// account the batch could not see) is cached as NO_MARKUP rather than left absent. Without that, exactly the cheap
-// case this exists for -- an all-BUY book on symbols with no markup -- would miss on every pair on every cycle and
-// re-query forever, which is worse than having no cache.
+// All bounded and slow-changing (a markup edit, a new symbol, an account moving group). Resolution then happens IN
+// MEMORY, per (account, symbol), with exactly loadAskRules' precedence.
 //
-// MARKUP-0 SHORT-CIRCUIT. A resolved rule of zero markup needs no arithmetic either: halfMarkupPrice returns 0 and
-// markedDownBid / markedUpAsk hand back the raw bid and ask untouched. So for a symbol whose levels are all zero --
-// XAUUSD on a group with no GroupSymbolConfig row, where BrokerSymbol.spreadMarkup is 0 -- a BUY still closes at the
-// raw bid, exactly as before, and after the first cycle it costs no query either.
+// Caching RESOLVED pairs instead would have been wrong for this constraint: the key space is accounts x symbols
+// (62 x 43 = 2,666 here, and it grows with the business), so every pair not seen yet is a miss and a fresh read --
+// query volume would scale with account/symbol combinations rather than with the configuration. Caching the levels
+// caps it at the six reads below per TTL however many positions, accounts or symbols appear. This is the same shape
+// the engine already uses (engine/market-data/src/ask_markup.rs PricingSnapshot, held in memory and reloaded on a
+// config event, for the same Neon-compute reason -- the 2026-09-26 quota outage).
 //
-// STALENESS. A config change is picked up within TTL_MS, or at once via invalidateAskRules() wherever the app already
-// handles a ConfigChanged / AccountUpdated event (the api-gateway does the same thing for its own rule cache, see
-// services/api-gateway/src/client-ask.ts's comment on not keeping Neon awake). TTL_MS is deliberately short relative
-// to how often a markup is edited (rarely) and long relative to a pass (the margin monitor runs every 5 s).
+// MARKUP-0 SHORT-CIRCUIT. A resolved rule of zero markup costs nothing beyond the lookup: halfMarkupPrice returns 0
+// and markedDownBid / markedUpAsk hand back the raw bid and ask untouched. So for a symbol whose levels are all zero
+// -- XAUUSD, where every broker's BrokerSymbol.spreadMarkup is 0 and the group has no row -- a BUY still closes at
+// the raw bid, exactly as under the ask-only rule, and the hot path performs no query at all once warm.
+//
+// CACHE-ASIDE. A caller asks for the pairs it needs; if the levels are warm nothing is read. On a cold or expired
+// snapshot the six reads below run once and are written back. Nothing reads on its own schedule, so a quiet platform
+// makes no queries.
+//
+// STALENESS. A config change lands within TTL_MS, or at once via invalidateAskRules() wherever the app handles
+// ConfigChanged / AccountUpdated (the api-gateway does the same for its own rule cache).
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
-/** How long a resolved rule is reused. A markup edit lands within this long unless invalidateAskRules() is called. */
+/** How long the cached levels are reused. A markup edit lands within this long unless invalidateAskRules() runs. */
 export const ASK_RULE_TTL_MS = 60_000;
 
-/** Hard ceiling, so a long-lived server instance cannot grow the map without bound. On overflow the whole map is
- *  dropped rather than evicted one by one: it is a cache, and a cold pass costs one batched read. */
-const MAX_ENTRIES = 20_000;
+type Lvl = { spreadMarkup: Prisma.Decimal | null; targetTotalSpreadPips: Prisma.Decimal | null; commissionPerLot: Prisma.Decimal | null; swapLong: Prisma.Decimal | null; swapShort: Prisma.Decimal | null };
 
-type Entry = { rule: AskRule; at: number };
+type Levels = {
+  at: number;
+  /** account id -> its broker, group and whether that group is COVERAGE */
+  accounts: Map<string, { brokerId: string; groupId: string | null; coverageGroup: boolean }>;
+  /** broker id -> its pricing switches */
+  brokers: Map<string, { pricingEngineEnabled: boolean; coverageAccountId: string | null }>;
+  /** symbol id -> digits */
+  digits: Map<string, number>;
+  /** `brokerId|symbolId` -> BrokerSymbol (the only level that is NOT NULL when the row exists) */
+  brokerSymbol: Map<string, { spreadMarkup: Prisma.Decimal; commissionPerLot: Prisma.Decimal; swapLong: Prisma.Decimal; swapShort: Prisma.Decimal }>;
+  /** `groupId|symbolId` -> GroupSymbolConfig */
+  groupConfig: Map<string, Lvl>;
+  /** `accountId|symbolId` -> AccountSymbolConfig (read only for a pricing-engine broker) */
+  accountConfig: Map<string, Lvl>;
+};
 
-const cache = new Map<string, Entry>();
-const keyOf = (accountId: string, symbolId: string) => `${accountId}|${symbolId}`;
+let levels: Levels | null = null;
+let inflight: Promise<Levels> | null = null;
 
-/** Drop cached rules: everything, one account, or one (account, symbol). Call from the ConfigChanged /
- *  AccountUpdated handling so a markup edit is visible immediately instead of within ASK_RULE_TTL_MS. */
-export function invalidateAskRules(scope?: { accountId: string; symbolId?: string }): void {
-  if (!scope) {
-    cache.clear();
-    return;
-  }
-  if (scope.symbolId) {
-    cache.delete(keyOf(scope.accountId, scope.symbolId));
-    return;
-  }
-  const prefix = `${scope.accountId}|`;
-  for (const k of cache.keys()) if (k.startsWith(prefix)) cache.delete(k);
+/** Drop the cached configuration. Call from the ConfigChanged / AccountUpdated handling so a markup edit is visible
+ *  immediately instead of within ASK_RULE_TTL_MS. The levels are platform-wide, so this clears all of them; it is one
+ *  cheap reload, not a per-account invalidation. */
+export function invalidateAskRules(): void {
+  levels = null;
+  inflight = null;
 }
 
-/** Test / diagnostic view: how many rules are held right now. */
-export function askRuleCacheSize(): number {
-  return cache.size;
+/** Test / diagnostic view: how many config rows are held, and when they were read. */
+export function askRuleCacheStats(): { rows: number; at: number | null } {
+  if (!levels) return { rows: 0, at: null };
+  const l = levels;
+  return { rows: l.accounts.size + l.brokers.size + l.digits.size + l.brokerSymbol.size + l.groupConfig.size + l.accountConfig.size, at: l.at };
+}
+
+async function readLevels(db: Db, now: number): Promise<Levels> {
+  // Six reads of whole, bounded tables -- no id arrays, so the cost does not depend on what the caller asked for.
+  const [accounts, brokers, symbols, brokerSymbols, groupConfigs, accountConfigs] = await Promise.all([
+    db.account.findMany({ select: { id: true, brokerId: true, groupId: true, group: { select: { category: true } } } }),
+    db.broker.findMany({ select: { id: true, pricingEngineEnabled: true, coverageAccountId: true } }),
+    db.symbol.findMany({ select: { id: true, digits: true } }),
+    db.brokerSymbol.findMany({ select: { brokerId: true, symbolId: true, spreadMarkup: true, commissionPerLot: true, swapLong: true, swapShort: true } }),
+    db.groupSymbolConfig.findMany({ select: { groupId: true, symbolId: true, spreadMarkup: true, targetTotalSpreadPips: true, commissionPerLot: true, swapLong: true, swapShort: true } }),
+    db.accountSymbolConfig.findMany({ select: { accountId: true, symbolId: true, spreadMarkup: true, targetTotalSpreadPips: true, commissionPerLot: true, swapLong: true, swapShort: true } }),
+  ]);
+  const lvl = (c: { spreadMarkup: Prisma.Decimal | null; targetTotalSpreadPips: Prisma.Decimal | null; commissionPerLot: Prisma.Decimal | null; swapLong: Prisma.Decimal | null; swapShort: Prisma.Decimal | null }): Lvl => ({
+    spreadMarkup: c.spreadMarkup,
+    targetTotalSpreadPips: c.targetTotalSpreadPips,
+    commissionPerLot: c.commissionPerLot,
+    swapLong: c.swapLong,
+    swapShort: c.swapShort,
+  });
+  return {
+    at: now,
+    accounts: new Map(accounts.map((a) => [a.id, { brokerId: a.brokerId, groupId: a.groupId, coverageGroup: a.group?.category === "COVERAGE" }])),
+    brokers: new Map(brokers.map((b) => [b.id, { pricingEngineEnabled: b.pricingEngineEnabled, coverageAccountId: b.coverageAccountId }])),
+    digits: new Map(symbols.map((s) => [s.id, s.digits])),
+    brokerSymbol: new Map(brokerSymbols.map((b) => [`${b.brokerId}|${b.symbolId}`, { spreadMarkup: b.spreadMarkup, commissionPerLot: b.commissionPerLot, swapLong: b.swapLong, swapShort: b.swapShort }])),
+    groupConfig: new Map(groupConfigs.map((c) => [`${c.groupId}|${c.symbolId}`, lvl(c)])),
+    accountConfig: new Map(accountConfigs.map((c) => [`${c.accountId}|${c.symbolId}`, lvl(c)])),
+  };
+}
+
+/** Cache-aside: warm levels are reused, a cold or expired snapshot is read once. Concurrent callers share one read. */
+async function getLevels(db: Db, now: number): Promise<Levels> {
+  if (levels && now - levels.at < ASK_RULE_TTL_MS) return levels;
+  if (inflight) return inflight;
+  inflight = readLevels(db, now)
+    .then((l) => {
+      levels = l;
+      return l;
+    })
+    .finally(() => {
+      inflight = null;
+    });
+  return inflight;
+}
+
+/** One pair's rule from the cached levels, with EXACTLY loadAskRules' precedence (lib/ask-markup.ts): no BrokerSymbol
+ *  row = no rule; a coverage account = raw; pricing engine off = the group's markup else the broker's; on =
+ *  AccountSymbolConfig > GroupSymbolConfig > BrokerSymbol, a level's target winning within it. */
+function ruleFrom(l: Levels, accountId: string, symbolId: string): AskRule | null {
+  const a = l.accounts.get(accountId);
+  const digits = l.digits.get(symbolId);
+  if (!a || digits == null || a.groupId == null) return null;
+  const broker = l.brokers.get(a.brokerId);
+  const bs = l.brokerSymbol.get(`${a.brokerId}|${symbolId}`);
+  if (!broker || !bs) return null;
+  if (a.coverageGroup || broker.coverageAccountId === accountId) return RAW_RULE(digits);
+  const gsc = l.groupConfig.get(`${a.groupId}|${symbolId}`) ?? null;
+  if (!broker.pricingEngineEnabled) {
+    return { mode: "markup", markupPips: gsc?.spreadMarkup ?? bs.spreadMarkup, digits };
+  }
+  const resolved = resolvePricingV2({
+    accountSymbolConfig: l.accountConfig.get(`${accountId}|${symbolId}`) ?? null,
+    groupSymbolConfig: gsc,
+    brokerSpreadMarkup: bs.spreadMarkup,
+    brokerCommissionPerLot: bs.commissionPerLot,
+    brokerSwapLong: bs.swapLong,
+    brokerSwapShort: bs.swapShort,
+    accountSwapFree: null,
+    groupSwapFree: null,
+  });
+  return askRuleFromSpread(resolved.spread, digits);
 }
 
 /**
- * The rules for `pairs`, cache-aside: hits from the map, one batched `loadAskRules` for the misses, then written back.
+ * The rules for `pairs`, resolved in memory from the cached configuration.
  *
- * The returned `AskRules` answers for every pair asked for -- a pair that resolved to nothing answers `NO_MARKUP`
- * (raw on both sides), the same fallback the ask-only code used for a missing rule, so callers never have to handle
- * `null`. Pairs NOT asked for are not answered, exactly like `loadAskRules`.
+ * Answers for every pair asked for: a pair that resolves to nothing answers `NO_MARKUP` (raw on both sides), the same
+ * fallback the ask-only code used for a missing rule, so callers never handle `null`.
  */
 export async function askRulesCached(db: Db, pairs: AskRuleKey[], now: number = Date.now()): Promise<AskRules> {
+  if (pairs.length === 0) return { get: () => null };
+  const l = await getLevels(db, now);
   const resolved = new Map<string, AskRule>();
-  const misses: AskRuleKey[] = [];
-  const seen = new Set<string>();
-
-  for (const p of pairs) {
-    const k = keyOf(p.accountId, p.symbolId);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    const hit = cache.get(k);
-    if (hit && now - hit.at < ASK_RULE_TTL_MS) {
-      resolved.set(k, hit.rule);
-    } else {
-      if (hit) cache.delete(k); // expired
-      misses.push({ accountId: p.accountId, symbolId: p.symbolId });
-    }
-  }
-
-  if (misses.length > 0) {
-    const loaded = await loadAskRules(db, misses);
-    if (cache.size + misses.length > MAX_ENTRIES) cache.clear();
-    for (const m of misses) {
-      const k = keyOf(m.accountId, m.symbolId);
-      // negative result cached as NO_MARKUP on purpose -- see the module comment
-      const rule = loaded.get(m.accountId, m.symbolId) ?? NO_MARKUP;
-      resolved.set(k, rule);
-      cache.set(k, { rule, at: now });
-    }
-  }
-
-  return { get: (a, s) => resolved.get(keyOf(a, s)) ?? null };
+  for (const p of pairs) resolved.set(`${p.accountId}|${p.symbolId}`, ruleFrom(l, p.accountId, p.symbolId) ?? NO_MARKUP);
+  return { get: (a, s) => resolved.get(`${a}|${s}`) ?? null };
 }
 
 /** `askRulesCached` for a set of positions -- the cached counterpart of lib/ask-markup.ts loadCloseAskRules. */

@@ -69,7 +69,8 @@ async function oracle(args: { account: SimAccount; positions: SimPos[]; orders: 
       const cp = closePriceFor(p.side, b, a);
       const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(rate(p, t));
       equity = equity.add(pnl);
-      legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: b, ask: a, leverage: acct.leverage }).mul(rate(p, t)), hedgedMarginPct: p.hedgedMarginPct });
+      // the demo path carries no broker markup, so its quotes ARE the account's prices (see lib/demo-sweep-core.ts)
+      legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, accountBid: b, accountAsk: a, leverage: acct.leverage }).mul(rate(p, t)), hedgedMarginPct: p.hedgedMarginPct });
       if (!worst || pnl.lt(worst.pnl)) worst = { p, pnl, cp };
     }
     const used = hedgedUsedMargin(legs);
