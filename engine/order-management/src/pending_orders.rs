@@ -17,9 +17,12 @@
 
 use crate::calc::{self, load_account_state};
 use crate::{db, publish_best_effort, reject_order, PlaceOrderError};
+use market_data::ask_markup;
 use protocol::{Fill, OrderSide, OrderType, Tick, TradingEvent};
 use rust_decimal::Decimal;
 
+/// `tick` is THIS ACCOUNT's quote (see the caller), not the raw one: a BUY enters at the account's
+/// ask and a SELL at its bid, which is the price it will actually fill at.
 fn is_triggered(order: &db::PendingOrder, tick: &Tick) -> bool {
     match (order.side, order.order_type) {
         (OrderSide::Buy, OrderType::Limit) => tick.ask <= order.requested_price,
@@ -47,10 +50,18 @@ pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::C
     };
 
     for order in pending {
-        if !is_triggered(&order, tick) {
+        // FLIP L2 (2026-11-02): the entry is compared against THIS ACCOUNT's price, not the raw tick.
+        // It used to be the raw one while the fill carried a markup, so a BUY LIMIT triggered the
+        // moment the RAW ask reached the entry and then filled above it -- the trader got a worse
+        // price than the entry they set. The web path and the engine's own risk hook
+        // (market-data/src/risk_hook.rs `triggered`) have always compared the account's price; this
+        // scan was the odd one out. Resolved from levels the scan already read, so no extra query.
+        let rule = order.ask_levels.as_ref().and_then(ask_markup::resolve);
+        let quoted = crate::pricing::quoted_tick(tick, rule.as_ref());
+        if !is_triggered(&order, &quoted) {
             continue;
         }
-        if let Err(err) = trigger_order(pool, nats, &order, tick).await {
+        if let Err(err) = trigger_order(pool, nats, &order, &quoted).await {
             tracing::error!(?err, order_id = %order.id, "pending-order trigger: failed to process triggered order");
         }
     }
@@ -111,13 +122,10 @@ async fn trigger_order(
         return Ok(());
     }
 
-    // Broker's own markup on top of the raw tick — see pricing.rs and
-    // lib.rs's place_market_order (same logic, same fallback-to-raw for
-    // a missing Symbol row). Reuses the config fetched above.
-    let quoted_tick = match &symbol_config {
-        Some(cfg) => crate::pricing::apply_spread_markup(tick, cfg.spread_markup, cfg.digits),
-        None => tick.clone(),
-    };
+    // `tick` is ALREADY this account's quote: check_symbol_for_triggers resolved the rule from the
+    // levels the scan read and priced the tick with it, so the entry test and this fill cannot
+    // disagree -- and no second read happens per triggered order.
+    let quoted_tick = tick.clone();
 
     let fill = execution::execute_market_order(&order.id, &order.account_id, order.side, order.volume, &quoted_tick, execution::ExecutionStrategy::Internal);
 
@@ -178,11 +186,39 @@ mod tests {
             requested_price,
             sl_price: None,
             tp_price: None,
+            // these unit tests hand is_triggered a tick DIRECTLY, so the rule has already been
+            // applied by the caller; the levels on the order are only read in that caller
+            ask_levels: None,
         }
     }
 
     fn tick(bid: rust_decimal::Decimal, ask: rust_decimal::Decimal) -> Tick {
         Tick { symbol: "EURUSD".into(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() }
+    }
+
+    /// FLIP L2: `check_symbol_for_triggers` prices the tick with the account's rule BEFORE testing the
+    /// entry, so a markup moves the trigger exactly as it moves the fill. Previously the entry was
+    /// tested on the raw tick while the fill carried the markup, so a BUY LIMIT triggered when the RAW
+    /// ask reached the entry and then filled ABOVE it. This asserts the two now agree.
+    #[test]
+    fn the_entry_is_measured_against_the_account_price_the_fill_will_use() {
+        use market_data::ask_markup::AskRule;
+        // 1.5 pips on a 5-digit symbol = 0.00015 of spread, half (0.000075) each side, rounded away
+        // from the client: ask ceil(1.09000 + 0.000075) = 1.09008, bid floor(1.08980 - 0.000075) = 1.08972
+        let rule = AskRule::Markup { markup_pips: dec!(1.5), digits: 5 };
+        let raw = tick(dec!(1.08980), dec!(1.09000));
+        let quoted = crate::pricing::quoted_tick(&raw, Some(&rule));
+        assert_eq!((quoted.bid, quoted.ask), (dec!(1.08972), dec!(1.09008)));
+
+        // a BUY LIMIT at the raw ask: the RAW tick would trigger it, the account's ask has not reached it
+        let buy_limit = order(OrderSide::Buy, OrderType::Limit, dec!(1.09000));
+        assert!(is_triggered(&buy_limit, &raw), "the raw ask reaches the entry");
+        assert!(!is_triggered(&buy_limit, &quoted), "the account's ask does not -- so it must NOT fill");
+
+        // a SELL STOP at the raw bid: symmetrically, the account's marked-down bid HAS fallen through it
+        let sell_stop = order(OrderSide::Sell, OrderType::Stop, dec!(1.08975));
+        assert!(!is_triggered(&sell_stop, &raw));
+        assert!(is_triggered(&sell_stop, &quoted), "the account's bid 1.08972 is below the entry");
     }
 
     #[test]

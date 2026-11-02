@@ -11,6 +11,7 @@
 //! same reason (no compile-time schema check available everywhere).
 
 use chrono::{DateTime, Utc};
+use market_data::ask_markup::{AskLevels, Level};
 use protocol::{OrderSide, OrderStatus, OrderType};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -474,6 +475,58 @@ pub async fn get_broker_symbol_config(
     ))
 }
 
+/// The account's resolved pricing rule for this symbol, read in one round-trip.
+///
+/// FLIP L2 (2026-11-02): the fill path used to take `BrokerSymbol.spreadMarkup` straight off
+/// `get_broker_symbol_config` above, which is only the BOTTOM of the hierarchy. The rule a trader is
+/// quoted at resolves account → group → broker and can be a target-spread rule rather than a markup
+/// (`market_data::ask_markup::resolve`, mirroring lib/ask-markup.ts), so the fill has to resolve the
+/// same way or it charges a different price from the one on screen.
+///
+/// Reads the levels fresh rather than from `PricingSnapshot`'s cache on purpose: this runs once per
+/// order, not once per tick, so a round-trip is cheap here and a stale markup on a FILL is not an
+/// acceptable trade for it. The column set and the COVERAGE test mirror `PricingSnapshot::levels`
+/// exactly — a COVERAGE group, or being the broker's own coverage account, prices raw.
+///
+/// `None` = no such `Symbol` row, the same benign case `get_broker_symbol_config` returns `None` for.
+pub async fn get_ask_levels(
+    pool: &PgPool,
+    broker_id: &str,
+    account_id: &str,
+    symbol: &str,
+) -> Result<Option<AskLevels>, sqlx::Error> {
+    type Row = (i32, bool, bool, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>);
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT s.digits,
+                  COALESCE(b."pricingEngineEnabled", false),
+                  COALESCE(g.category::text = 'COVERAGE', false) OR COALESCE(b."coverageAccountId" = a.id, false),
+                  bs."spreadMarkup",
+                  gsc."spreadMarkup", gsc."targetTotalSpreadPips",
+                  acs."spreadMarkup", acs."targetTotalSpreadPips"
+             FROM "Symbol" s
+             LEFT JOIN "Broker" b ON b.id = $1
+             LEFT JOIN "Account" a ON a.id = $2
+             LEFT JOIN "Group" g ON g.id = a."groupId"
+             LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = $1
+             LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = s.id AND gsc."groupId" = a."groupId"
+             LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = s.id AND acs."accountId" = $2
+             WHERE s.name = $3"#,
+    )
+    .bind(broker_id)
+    .bind(account_id)
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(digits, pricing_engine, coverage, broker, g_markup, g_target, a_markup, a_target)| AskLevels {
+        pricing_engine,
+        coverage,
+        digits,
+        broker,
+        group: Level { markup: g_markup, target: g_target },
+        account_symbol: Level { markup: a_markup, target: a_target },
+    }))
+}
+
 /// §2.1 step 5's account-wide half: `Broker.maxOpenPositionsPerAccount`.
 /// A broker row not existing (shouldn't happen for an order already tied
 /// to a valid `broker_id`) collapses to the same `None`/no-limit result
@@ -568,6 +621,11 @@ pub struct PendingOrder {
     pub requested_price: Decimal,
     pub sl_price: Option<Decimal>,
     pub tp_price: Option<Decimal>,
+    /// This order's account's pricing levels, read in the same query as the order (see
+    /// `get_pending_orders_for_symbol`). `None` = no `Symbol` row, the benign fallback-to-raw case.
+    /// Carried on the order so the per-tick scan still costs ONE query: the entry test and the fill
+    /// then price off the same resolved rule, which is the whole point -- see pending_orders.rs.
+    pub ask_levels: Option<AskLevels>,
 }
 
 /// Every ACCEPTED LIMIT/STOP order for one symbol — narrowed by symbol
@@ -579,38 +637,69 @@ pub async fn get_pending_orders_for_symbol(
     pool: &PgPool,
     symbol: &str,
 ) -> Result<Vec<PendingOrder>, sqlx::Error> {
-    #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, String, String, String, Decimal, Decimal, Option<Decimal>, Option<Decimal>)> =
-        sqlx::query_as(
-            r#"SELECT id, broker_id, account_id, symbol, side::text, type::text,
-                      volume, requested_price, sl_price, tp_price
-               FROM orders
-               WHERE symbol = $1 AND status = 'ACCEPTED'::order_status
-                 AND type IN ('LIMIT'::order_type, 'STOP'::order_type)"#,
-        )
-        .bind(symbol)
-        .fetch_all(pool)
-        .await?;
+    // The five config LEFT JOINs mirror `get_ask_levels` / `PricingSnapshot::levels` column for
+    // column, and ride along on the scan that was already happening once per tick: a resting order's
+    // entry has to be compared against THIS ACCOUNT's price, so the rule belongs here rather than in
+    // one extra read per order. Read by name (`sqlx::Row`, as book.rs does) because the row is wider
+    // than the 16 columns sqlx's tuple `FromRow` goes up to.
+    let rows = sqlx::query(
+        r#"SELECT o.id, o.broker_id, o.account_id, o.symbol, o.side::text AS side, o.type::text AS otype,
+                  o.volume, o.requested_price, o.sl_price, o.tp_price,
+                  s.digits AS digits,
+                  COALESCE(b."pricingEngineEnabled", false) AS pricing_engine,
+                  (COALESCE(g.category::text = 'COVERAGE', false) OR COALESCE(b."coverageAccountId" = a.id, false)) AS coverage,
+                  bs."spreadMarkup" AS broker_markup,
+                  gsc."spreadMarkup" AS group_markup, gsc."targetTotalSpreadPips" AS group_target,
+                  acs."spreadMarkup" AS account_markup, acs."targetTotalSpreadPips" AS account_target
+             FROM orders o
+             LEFT JOIN "Symbol" s ON s.name = o.symbol
+             LEFT JOIN "Broker" b ON b.id = o.broker_id
+             LEFT JOIN "Account" a ON a.id = o.account_id
+             LEFT JOIN "Group" g ON g.id = a."groupId"
+             LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = o.broker_id
+             LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = s.id AND gsc."groupId" = a."groupId"
+             LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = s.id AND acs."accountId" = o.account_id
+            WHERE o.symbol = $1 AND o.status = 'ACCEPTED'::order_status
+              AND o.type IN ('LIMIT'::order_type, 'STOP'::order_type)"#,
+    )
+    .bind(symbol)
+    .fetch_all(pool)
+    .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, broker_id, account_id, symbol, side, order_type, volume, requested_price, sl_price, tp_price)| {
-                PendingOrder {
-                    id,
-                    broker_id,
-                    account_id,
-                    symbol,
-                    side: side_from_str(&side),
-                    order_type: type_from_str(&order_type),
-                    volume,
-                    requested_price,
-                    sl_price,
-                    tp_price,
-                }
-            },
-        )
-        .collect())
+    use sqlx::Row;
+    rows.iter()
+        .map(|r| {
+            let side: String = r.try_get("side")?;
+            let order_type: String = r.try_get("otype")?;
+            // digits is NULL only when no "Symbol" row joined, which is exactly the no-rule
+            // (fall back to the raw tick) case both fill sites have always allowed for.
+            let digits: Option<i32> = r.try_get("digits")?;
+            let ask_levels = match digits {
+                Some(digits) => Some(AskLevels {
+                    pricing_engine: r.try_get("pricing_engine")?,
+                    coverage: r.try_get("coverage")?,
+                    digits,
+                    broker: r.try_get("broker_markup")?,
+                    group: Level { markup: r.try_get("group_markup")?, target: r.try_get("group_target")? },
+                    account_symbol: Level { markup: r.try_get("account_markup")?, target: r.try_get("account_target")? },
+                }),
+                None => None,
+            };
+            Ok(PendingOrder {
+                id: r.try_get("id")?,
+                broker_id: r.try_get("broker_id")?,
+                account_id: r.try_get("account_id")?,
+                symbol: r.try_get("symbol")?,
+                side: side_from_str(&side),
+                order_type: type_from_str(&order_type),
+                volume: r.try_get("volume")?,
+                requested_price: r.try_get("requested_price")?,
+                sl_price: r.try_get("sl_price")?,
+                tp_price: r.try_get("tp_price")?,
+                ask_levels,
+            })
+        })
+        .collect()
 }
 
 /// Atomically claims a pending order for routing — `UPDATE ... WHERE

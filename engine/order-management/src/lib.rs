@@ -25,6 +25,7 @@ pub mod reconcile;
 
 use chrono::Duration as ChronoDuration;
 use crate::calc::{close_price_for, floating_pnl};
+use market_data::ask_markup;
 use market_data::cache::TickCache;
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;
@@ -234,13 +235,18 @@ pub async fn place_market_order(
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
 
-    // Broker's own markup on top of Market Data Core's raw price — see
-    // pricing.rs. Reuses the config fetched above rather than a second
-    // round-trip.
-    let quoted_tick = match &symbol_config {
-        Some(cfg) => pricing::apply_spread_markup(&current_tick, cfg.spread_markup, cfg.digits),
-        None => current_tick.clone(),
-    };
+    // The ACCOUNT's own price on top of Market Data Core's raw tick — see pricing.rs.
+    //
+    // FLIP L2 (2026-11-02): this used to be `apply_spread_markup(.., cfg.spread_markup, ..)` off the
+    // BrokerSymbol row fetched above, which is only the bottom level of the hierarchy and moved the
+    // ask alone. A group or account override, and any target-spread rule, was dropped on the floor,
+    // and a SELL filled at the raw bid while the trader was quoted the marked-down one. Resolving the
+    // rule costs one extra round-trip per order (not per tick) and is read fresh, never cached, so a
+    // markup edit can never be stale on a fill.
+    let ask_rule = db::get_ask_levels(pool, &req.broker_id, &req.account_id, &req.symbol)
+        .await?
+        .and_then(|levels| ask_markup::resolve(&levels));
+    let quoted_tick = pricing::quoted_tick(&current_tick, ask_rule.as_ref());
 
     let fill = execution::execute_market_order(
         &order_id,
