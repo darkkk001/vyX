@@ -354,7 +354,7 @@ async fn the_pending_scan_carries_each_orders_resolved_rule() {
             .await
             .unwrap();
 
-            let pending = order_management::db::get_pending_orders_for_symbol(&w_pool, &symbol_name).await.unwrap();
+            let pending = order_management::db::get_pending_orders_for_symbol(&w_pool, order_management::db::Book::Legacy, &symbol_name).await.unwrap();
             let mine = pending.iter().find(|o| o.id == id).expect("the resting order comes back from the scan");
             let rule = mine.ask_levels.as_ref().and_then(market_data::ask_markup::resolve);
 

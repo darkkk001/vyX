@@ -296,9 +296,13 @@ pub async fn place_market_order(
     // becomes reachable the moment the order is created elsewhere -- which is both what
     // pending_orders::trigger_order already does (the order was resting, two ticks can race for it)
     // and what the cutover's own design ends at (§5b.2: the WEB creates the order row and the engine
-    // fills it, so the engine must lose cleanly when the web's fallback got there first). A mutation
-    // that makes this branch a no-op therefore survives every test of THIS function; the test that
-    // kills it drives the resting-order path, where the race is real.
+    // fills it, so the engine must lose cleanly when the web's fallback got there first).
+    //
+    // AND WHAT IT BUYS, measured (L2 Stage 6 mutation testing): not correctness. `"Position"`'s
+    // UNIQUE "originOrderId" is what makes a second position impossible -- ignore this answer and the
+    // loser's insert violates that index, its transaction aborts, and one position still stands. This
+    // turns that into a clean answer instead: a Rejected outcome rather than a 500, no constraint
+    // violation from inside a money transaction, and no error logged for a normal race.
     if !db::set_filled(&mut tx, book, &order_id, fill.price, fill.volume, Some(book_type.as_str())).await? {
         tx.rollback().await?;
         return Ok(PlaceMarketOrderOutcome::Rejected {

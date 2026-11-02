@@ -1054,3 +1054,212 @@ async fn without_the_stamp_the_hedge_is_never_queued() {
     );
     tx.rollback().await.unwrap();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// STAGE 6 — resting LIMIT / STOP orders on the same book
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The scan finds a resting order the WEB wrote, with the account's pricing rule attached.
+///
+/// Status PENDING, joined through `"symbolId"` -- the two things the Prisma query had to change, and
+/// the two that would silently return nothing if they were wrong.
+#[tokio::test]
+async fn the_scan_finds_a_resting_order_on_prismas_book_with_its_pricing_rule() {
+    let Some(pool) = pool().await else { return };
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    // the broker's own markup, so the rule the scan attaches is not the trivial one
+    sqlx::query(r#"UPDATE "BrokerSymbol" SET "spreadMarkup" = 2 WHERE "brokerId" = $1 AND "symbolId" = $2"#)
+        .bind(&fx.broker)
+        .bind(&fx.symbol_id)
+        .execute(&mut *setup)
+        .await
+        .unwrap();
+    let order_id = db::insert_order(&mut setup, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Limit, Some(dec!(4200)))).await.unwrap();
+    setup.commit().await.unwrap();
+
+    let found = db::get_pending_orders_for_symbol(&pool, Book::Prisma, &fx.symbol_name).await.unwrap();
+    assert_eq!(found.len(), 1, "the resting order must be visible to the scan");
+    let o = &found[0];
+    assert_eq!(o.id, order_id);
+    assert_eq!(o.broker_id, fx.broker);
+    assert_eq!(o.account_id, fx.account);
+    assert_eq!(o.symbol, fx.symbol_name, "resolved through the FK, not stored as text");
+    assert_eq!(o.requested_price, dec!(4200));
+    assert_eq!(o.volume, dec!(0.01));
+    // the rule rides along on the scan, so the entry test and the fill price cannot disagree
+    let levels = o.ask_levels.as_ref().expect("the account's levels came with the order");
+    assert_eq!(levels.digits, 2);
+    assert_eq!(levels.broker, Some(dec!(2)));
+
+    // a FILLED order is no longer resting, and the legacy query sees nothing here at all
+    sqlx::query(r#"UPDATE "Order" SET status = 'FILLED'::"OrderStatus" WHERE id = $1"#).bind(&order_id).execute(&pool).await.unwrap();
+    assert!(db::get_pending_orders_for_symbol(&pool, Book::Prisma, &fx.symbol_name).await.unwrap().is_empty());
+    assert!(db::get_pending_orders_for_symbol(&pool, Book::Legacy, &fx.symbol_name).await.unwrap().is_empty());
+
+    cleanup(&pool, &fx).await;
+}
+
+/// A MARKET order waiting in the dealer queue is also `status = 'PENDING'`, and must NOT be triggered
+/// by a price scan -- the dealer decides it. Only the `type` filter separates them.
+#[tokio::test]
+async fn a_market_order_in_the_dealer_queue_is_not_a_resting_order() {
+    let Some(pool) = pool().await else { return };
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    // WITH a requestedPrice, because that is what the web writes for a queued market order
+    // (app/api/trade/orders/route.ts:525 sets requestedPrice on the dealer-queue row). Without it this
+    // test would pass for the wrong reason -- the `requestedPrice IS NOT NULL` guard would exclude the
+    // order even if the type filter were gone. Found by mutation testing: dropping the type filter
+    // survived until this fixture matched the real row.
+    db::insert_order(&mut setup, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Market, Some(dec!(4299.13)))).await.unwrap();
+    setup.commit().await.unwrap();
+
+    assert!(
+        db::get_pending_orders_for_symbol(&pool, Book::Prisma, &fx.symbol_name).await.unwrap().is_empty(),
+        "a queued MARKET order must never be picked up by the price scan: a dealer decides it"
+    );
+    cleanup(&pool, &fx).await;
+}
+
+/// THE RACE, and the test Stage 3's surviving mutant was waiting for.
+///
+/// Two scans of the same tick run at once, as two ticks for one symbol landing together really do.
+/// Both see the order PENDING, both run the admission checks, and both reach the fill -- where exactly
+/// one wins the compare-and-set. The loser must roll back, NOT open a second position.
+///
+/// This is the only place that can prove the CALLER acts on the answer rather than merely asking:
+/// `place_market_order` creates its own order inside its own transaction, so its compare-and-set can
+/// never lose (see the comment there). Here the order was written earlier, so the race is real -- and
+/// a `trigger_order` that ignored the answer would either open two positions or die on
+/// `"Position"."originOrderId"`'s unique index.
+#[tokio::test]
+async fn two_concurrent_scans_of_one_resting_order_fill_it_once() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("two_concurrent_scans: ENGINE_TEST_NATS_URL not set, skipping");
+        return;
+    };
+    assert!(nats_url.contains("127.0.0.1") || nats_url.contains("localhost"), "refusing a non-local NATS: {nats_url}");
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "A_BOOK", dec!(3)).await;
+    // a BUY LIMIT at 4300, which the tick below has already fallen through
+    let order_id = db::insert_order(&mut setup, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Limit, Some(dec!(4300)))).await.unwrap();
+    setup.commit().await.unwrap();
+
+    let tick = protocol::Tick {
+        symbol: fx.symbol_name.clone(),
+        bid: dec!(4298.96),
+        ask: dec!(4299.13),
+        t0: None,
+        clock_offset_ms: None,
+        rtt_ms: None,
+        tick_ms: None,
+        broker_offset_sec: None,
+        bars: Vec::new(),
+    };
+    // both scans, at once, on the same pool -- the shape two ticks arriving together produce
+    let (a, b) = (
+        order_management::pending_orders::check_symbol_for_triggers(&pool, &nats, &tick),
+        order_management::pending_orders::check_symbol_for_triggers(&pool, &nats, &tick),
+    );
+    tokio::join!(a, b);
+
+    // ONE fill, ONE position, ONE deal, ONE commission charge
+    let (positions,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Position" WHERE "originOrderId" = $1"#)
+        .bind(&order_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(positions, 1, "two scans must not open two positions for one resting order");
+    let (status, filled, routing): (String, Option<Decimal>, Option<String>) =
+        sqlx::query_as(r#"SELECT status::text, "filledPrice", routing FROM "Order" WHERE id = $1"#)
+            .bind(&order_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "FILLED");
+    // a BUY fills at the account's ask; no markup configured on this fixture, so the raw one
+    assert_eq!(filled, Some(dec!(4299.13)));
+    assert_eq!(routing.as_deref(), Some("A_BOOK"));
+
+    let (deals,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Deal" WHERE "orderId" = $1"#).bind(&order_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(deals, 1, "one fill, one IN deal");
+    let (charges,): (i64,) = sqlx::query_as(
+        r#"SELECT count(*) FROM "Transaction" t JOIN "Position" p ON p.id = t."referenceId"
+            WHERE p."originOrderId" = $1 AND t.type = 'COMMISSION'"#,
+    )
+    .bind(&order_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(charges, 1, "the commission is charged once, not twice");
+    let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&pool).await.unwrap();
+    assert_eq!(balance, fx.balance - dec!(0.03), "and the balance moved once");
+
+    // the A-book hedge was queued once as well
+    let (effects,): (i64,) = sqlx::query_as(
+        r#"SELECT count(*) FROM "PostCloseEffect" e JOIN "Position" p ON p.id = e."positionId"
+            WHERE p."originOrderId" = $1 AND e.kind = 'POSITION_OPENED'"#,
+    )
+    .bind(&order_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(effects, 1);
+
+    // and the whole chain landed on the Prisma book only
+    let (legacy,): (i64,) = sqlx::query_as("SELECT count(*) FROM positions WHERE broker_id = $1").bind(&fx.broker).fetch_one(&pool).await.unwrap();
+    assert_eq!(legacy, 0);
+
+    cleanup(&pool, &fx).await;
+}
+
+/// A resting order whose entry the tick has NOT reached is left alone -- the scan is not a "fill
+/// everything pending" pass.
+#[tokio::test]
+async fn a_resting_order_the_price_has_not_reached_is_left_alone() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("a_resting_order_the_price_has_not_reached: ENGINE_TEST_NATS_URL not set, skipping");
+        return;
+    };
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    // a BUY LIMIT far below the market: the ask has to FALL to 4000 for this to trigger
+    let order_id = db::insert_order(&mut setup, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Limit, Some(dec!(4000)))).await.unwrap();
+    setup.commit().await.unwrap();
+
+    order_management::pending_orders::check_symbol_for_triggers(
+        &pool,
+        &nats,
+        &protocol::Tick {
+            symbol: fx.symbol_name.clone(),
+            bid: dec!(4298.96),
+            ask: dec!(4299.13),
+            t0: None,
+            clock_offset_ms: None,
+            rtt_ms: None,
+            tick_ms: None,
+            broker_offset_sec: None,
+            bars: Vec::new(),
+        },
+    )
+    .await;
+
+    let (status,): (String,) = sqlx::query_as(r#"SELECT status::text FROM "Order" WHERE id = $1"#).bind(&order_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(status, "PENDING", "the price never reached the entry, so the order still rests");
+    let (positions,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Position" WHERE "originOrderId" = $1"#)
+        .bind(&order_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(positions, 0);
+    cleanup(&pool, &fx).await;
+}

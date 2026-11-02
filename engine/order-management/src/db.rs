@@ -1187,8 +1187,12 @@ pub struct PendingOrder {
 /// symbol's price.
 pub async fn get_pending_orders_for_symbol(
     pool: &PgPool,
+    book: Book,
     symbol: &str,
 ) -> Result<Vec<PendingOrder>, sqlx::Error> {
+    if book == Book::Prisma {
+        return get_prisma_pending_orders_for_symbol(pool, symbol).await;
+    }
     // The five config LEFT JOINs mirror `get_ask_levels` / `PricingSnapshot::levels` column for
     // column, and ride along on the scan that was already happening once per tick: a resting order's
     // entry has to be compared against THIS ACCOUNT's price, so the rule belongs here rather than in
@@ -1218,40 +1222,43 @@ pub async fn get_pending_orders_for_symbol(
     .fetch_all(pool)
     .await?;
 
+    rows.iter().map(pending_order_from_row).collect()
+}
+
+/// One scanned row -> a `PendingOrder`. Shared by both books' queries, which alias their columns to
+/// the same names on purpose: the two statements differ in WHERE and in how they reach `"Symbol"`,
+/// never in what a row means.
+fn pending_order_from_row(r: &sqlx::postgres::PgRow) -> Result<PendingOrder, sqlx::Error> {
     use sqlx::Row;
-    rows.iter()
-        .map(|r| {
-            let side: String = r.try_get("side")?;
-            let order_type: String = r.try_get("otype")?;
-            // digits is NULL only when no "Symbol" row joined, which is exactly the no-rule
-            // (fall back to the raw tick) case both fill sites have always allowed for.
-            let digits: Option<i32> = r.try_get("digits")?;
-            let ask_levels = match digits {
-                Some(digits) => Some(AskLevels {
-                    pricing_engine: r.try_get("pricing_engine")?,
-                    coverage: r.try_get("coverage")?,
-                    digits,
-                    broker: r.try_get("broker_markup")?,
-                    group: Level { markup: r.try_get("group_markup")?, target: r.try_get("group_target")? },
-                    account_symbol: Level { markup: r.try_get("account_markup")?, target: r.try_get("account_target")? },
-                }),
-                None => None,
-            };
-            Ok(PendingOrder {
-                id: r.try_get("id")?,
-                broker_id: r.try_get("broker_id")?,
-                account_id: r.try_get("account_id")?,
-                symbol: r.try_get("symbol")?,
-                side: side_from_str(&side),
-                order_type: type_from_str(&order_type),
-                volume: r.try_get("volume")?,
-                requested_price: r.try_get("requested_price")?,
-                sl_price: r.try_get("sl_price")?,
-                tp_price: r.try_get("tp_price")?,
-                ask_levels,
-            })
-        })
-        .collect()
+    let side: String = r.try_get("side")?;
+    let order_type: String = r.try_get("otype")?;
+    // digits is NULL only when no "Symbol" row joined, which is exactly the no-rule
+    // (fall back to the raw tick) case both fill sites have always allowed for.
+    let digits: Option<i32> = r.try_get("digits")?;
+    let ask_levels = match digits {
+        Some(digits) => Some(AskLevels {
+            pricing_engine: r.try_get("pricing_engine")?,
+            coverage: r.try_get("coverage")?,
+            digits,
+            broker: r.try_get("broker_markup")?,
+            group: Level { markup: r.try_get("group_markup")?, target: r.try_get("group_target")? },
+            account_symbol: Level { markup: r.try_get("account_markup")?, target: r.try_get("account_target")? },
+        }),
+        None => None,
+    };
+    Ok(PendingOrder {
+        id: r.try_get("id")?,
+        broker_id: r.try_get("broker_id")?,
+        account_id: r.try_get("account_id")?,
+        symbol: r.try_get("symbol")?,
+        side: side_from_str(&side),
+        order_type: type_from_str(&order_type),
+        volume: r.try_get("volume")?,
+        requested_price: r.try_get("requested_price")?,
+        sl_price: r.try_get("sl_price")?,
+        tp_price: r.try_get("tp_price")?,
+        ask_levels,
+    })
 }
 
 /// Atomically claims a pending order for routing — `UPDATE ... WHERE
@@ -1261,10 +1268,70 @@ pub async fn get_pending_orders_for_symbol(
 /// `rows_affected() == 0` and treats that as "someone else is already
 /// handling this," not an error. Same idempotency pattern as
 /// `close_position_with_ledger_entry`.
+/// The Prisma book's resting LIMIT/STOP orders for one symbol, with the same five pricing LEFT JOINs.
+///
+/// Two differences from the legacy query, both forced by the schema rather than chosen:
+///
+/// - **`status = 'PENDING'`, not ACCEPTED.** That is what the web writes for a resting order
+///   (app/api/trade/orders/route.ts:855) and what the other pending scan already matches
+///   (`market-data/src/risk_hook.rs`). Prisma's `OrderStatus` has no ACCEPTED-then-ROUTING pair.
+/// - **joined on `"symbolId"`, not on the name.** The legacy table stores the symbol as text and the
+///   join was `s.name = o.symbol`; here the FK is the join, which also means a renamed symbol cannot
+///   orphan a resting order.
+///
+/// `requestedPrice IS NOT NULL` guards the same thing `risk_hook.rs` guards: a LIMIT/STOP with no
+/// entry cannot be triggered, and `PendingOrder.requested_price` is not nullable.
+async fn get_prisma_pending_orders_for_symbol(pool: &PgPool, symbol: &str) -> Result<Vec<PendingOrder>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"SELECT o.id, o."brokerId" AS broker_id, o."accountId" AS account_id, s.name AS symbol,
+                  o.side::text AS side, o.type::text AS otype,
+                  o.volume, o."requestedPrice" AS requested_price, o."slPrice" AS sl_price, o."tpPrice" AS tp_price,
+                  s.digits AS digits,
+                  COALESCE(b."pricingEngineEnabled", false) AS pricing_engine,
+                  (COALESCE(g.category::text = 'COVERAGE', false) OR COALESCE(b."coverageAccountId" = a.id, false)) AS coverage,
+                  bs."spreadMarkup" AS broker_markup,
+                  gsc."spreadMarkup" AS group_markup, gsc."targetTotalSpreadPips" AS group_target,
+                  acs."spreadMarkup" AS account_markup, acs."targetTotalSpreadPips" AS account_target
+             FROM "Order" o
+             JOIN "Symbol" s ON s.id = o."symbolId"
+             LEFT JOIN "Broker" b ON b.id = o."brokerId"
+             LEFT JOIN "Account" a ON a.id = o."accountId"
+             LEFT JOIN "Group" g ON g.id = a."groupId"
+             LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = o."brokerId"
+             LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = s.id AND gsc."groupId" = a."groupId"
+             LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = s.id AND acs."accountId" = o."accountId"
+            WHERE s.name = $1 AND o.status = 'PENDING'::"OrderStatus"
+              AND o.type IN ('LIMIT'::"OrderType", 'STOP'::"OrderType")
+              AND o."requestedPrice" IS NOT NULL"#,
+    )
+    .bind(symbol)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(pending_order_from_row).collect()
+}
+
+/// Claims the order for this pass.
+///
+/// LEGACY: ACCEPTED -> ROUTING, so a second scan skips it early.
+///
+/// PRISMA: **nothing to do, and that is deliberate.** Prisma's `OrderStatus` has no intermediate
+/// state to park the order in, and it does not need one: `lib/pending-trigger.ts` -- the WEB's own
+/// trigger for exactly these orders -- claims by going straight PENDING -> FILLED in ONE
+/// status-guarded update (`updateMany({ where: { id, status: "PENDING" } ... })`), which is the same
+/// compare-and-set `set_filled` does here. So the fill IS the claim.
+///
+/// What that costs: two passes for one tick both run the admission checks before one of them loses.
+/// What it buys: one atomic decision per order instead of two, no state a crash between them could
+/// leave the order stuck in, and the same discipline on both sides of the cutover. A reject is equally
+/// safe -- `set_rejected` is guarded on PENDING too, so only one answer lands.
 pub async fn try_claim_order_for_routing(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order_id: &str,
 ) -> Result<bool, sqlx::Error> {
+    if book == Book::Prisma {
+        return Ok(true);
+    }
     let result = sqlx::query(
         r#"UPDATE orders SET status = 'ROUTING'::order_status, updated_at = now()
            WHERE id = $1 AND status = 'ACCEPTED'::order_status"#,

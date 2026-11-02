@@ -28,7 +28,7 @@ import { openPositionFromOrder } from "../../lib/dealing";
 
 const url = process.env.DATABASE_URL ?? "";
 const verdict = testDbVerdict(url);
-if (!verdict.ok) throw new Error(`refusing this database: ${verdict.why}`);
+if (!verdict.ok) throw new Error(`refusing this database (${verdict.host}): ${verdict.reason}`);
 
 const prisma = new PrismaClient();
 const D = (v: string) => new Prisma.Decimal(v);

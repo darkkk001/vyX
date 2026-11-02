@@ -41,7 +41,9 @@ fn is_triggered(order: &db::PendingOrder, tick: &Tick) -> bool {
 /// are logged and don't stop the rest — same "one bad row doesn't take
 /// down the whole scan" rule as `monitor::run_once`.
 pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::Client, tick: &Tick) {
-    let pending = match db::get_pending_orders_for_symbol(pool, &tick.symbol).await {
+    // L2 Stage 6: one book for the whole pass, read once -- as the market path does per order.
+    let book = db::configured();
+    let pending = match db::get_pending_orders_for_symbol(pool, book, &tick.symbol).await {
         Ok(orders) => orders,
         Err(err) => {
             tracing::error!(?err, symbol = %tick.symbol, "pending-order trigger: failed to list pending orders");
@@ -61,7 +63,7 @@ pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::C
         if !is_triggered(&order, &quoted) {
             continue;
         }
-        if let Err(err) = trigger_order(pool, nats, &order, &quoted).await {
+        if let Err(err) = trigger_order(pool, nats, book, &order, &quoted).await {
             tracing::error!(?err, order_id = %order.id, "pending-order trigger: failed to process triggered order");
         }
     }
@@ -70,16 +72,19 @@ pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::C
 async fn trigger_order(
     pool: &sqlx::PgPool,
     nats: &async_nats::Client,
+    book: db::Book,
     order: &db::PendingOrder,
     tick: &Tick,
 ) -> Result<(), PlaceOrderError> {
-    let book = db::configured();
     let mut tx = pool.begin().await?;
 
     // Idempotent claim — see db.rs's try_claim_order_for_routing doc. If
     // this returns false, another concurrent scan already has it (two
     // ticks for the same symbol landing close together); nothing to do.
-    if !db::try_claim_order_for_routing(&mut tx, &order.id).await? {
+    // On the Prisma book there is no separate claim: the FILL is the claim (set_filled's
+    // compare-and-set), exactly as lib/pending-trigger.ts does on the web, so this returns true and
+    // the loser of the race is turned away further down instead of here.
+    if !db::try_claim_order_for_routing(&mut tx, book, &order.id).await? {
         tx.rollback().await?;
         return Ok(());
     }
@@ -135,8 +140,15 @@ async fn trigger_order(
 
     let fill = execution::execute_market_order(&order.id, &order.account_id, order.side, order.volume, &quoted_tick, execution::ExecutionStrategy::Internal);
 
-    // Stage 3's double-fill guard applies to a triggered resting order too: two ticks for the same
-    // symbol landing together both reach here, and only one may fill it.
+    // The race two ticks for one symbol really produce: both passes got here, and only one may fill.
+    //
+    // WHAT THIS CHECK ACTUALLY BUYS, measured rather than assumed (L2 Stage 6 mutation testing): what
+    // makes a double fill IMPOSSIBLE is `"Position"."originOrderId"` being UNIQUE. With this check
+    // removed the loser carries on, its position insert violates that index, its transaction aborts,
+    // and the database STILL ends with exactly one position -- so this is not what guarantees
+    // correctness. What it buys is that the loser exits CLEANLY: no constraint violation thrown from
+    // the middle of a money transaction, no error logged for a completely normal outcome, and no work
+    // done past the point where the answer was already decided.
     if !db::set_filled(&mut tx, book, &order.id, fill.price, fill.volume, Some(book_type.as_str())).await? {
         tx.rollback().await?;
         return Ok(());
