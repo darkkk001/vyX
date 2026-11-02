@@ -1,0 +1,71 @@
+name: Migrations CI
+
+# Bug #2 (2026-11-02): the prisma/migrations chain must replay on an empty database (CI, disaster recovery, a new
+# environment), and what it builds must match prisma/schema.prisma. Nothing checked either before: nextjs-ci.yml has
+# no database on purpose. This job uses its own throwaway postgres:16 service container, never a real database, so
+# the reasons nextjs-ci.yml gives for staying off Postgres (the shared Neon instance) do not apply.
+#   1. deploy/replay-migrations.sh: every migration from zero (the production-only data step stage3a is marked
+#      applied without running; deploy/replay-migrations.md says why).
+#   2. deploy/check-migration-drift.sh: `prisma migrate diff` against the schema must equal the reviewed baseline
+#      deploy/known-drift.sql (empty baseline = plain `migrate diff --exit-code`).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "prisma/**"
+      - "deploy/replay-migrations.sh"
+      - "deploy/check-migration-drift.sh"
+      - "deploy/known-drift.sql"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/migrations-ci.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "prisma/**"
+      - "deploy/replay-migrations.sh"
+      - "deploy/check-migration-drift.sh"
+      - "deploy/known-drift.sql"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/migrations-ci.yml"
+
+jobs:
+  replay-and-drift:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: replay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d replay"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # the service container above: local, throwaway, empty
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/replay"
+      DIRECT_URL: "postgresql://postgres:postgres@localhost:5432/replay"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Replay every migration from zero
+        run: bash deploy/replay-migrations.sh
+
+      - name: Schema drift against the known baseline
+        run: bash deploy/check-migration-drift.sh

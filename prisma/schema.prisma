@@ -1950,7 +1950,9 @@ model Order {
   tpPrice         Decimal?    @db.Decimal(18, 5)
   // Numeric ticket shown to traders (MT-style), assigned by the DB from a server-wide
   // sequence -- see prisma/migrations/20260911200000_numeric_ticket. Never the cuid.
-  ticket          Int         @unique @default(dbgenerated("nextval('\"order_ticket_seq\"')"))
+  // autoincrement() is how Prisma introspects that nextval() default (`prisma db pull`); the database is unchanged.
+  // dbgenerated("nextval(...)") made `migrate diff` want to DROP the sequence (deploy/replay-migrations.md).
+  ticket          Int         @unique @default(autoincrement())
   status          OrderStatus @default(PENDING)
   filledPrice     Decimal?    @db.Decimal(18, 5)
   filledAt        DateTime?   @db.Timestamptz(3)
@@ -2687,8 +2689,9 @@ enum DealReason {
 
 model Deal {
   id            String       @id @default(cuid())
-  // own sequence (deal_ticket_seq), never an order ticket
-  ticket        BigInt       @unique @default(dbgenerated("nextval('deal_ticket_seq'::regclass)"))
+  // own sequence (deal_ticket_seq), never an order ticket. autoincrement() = how Prisma introspects that nextval()
+  // default; dbgenerated("nextval(...)") made `migrate diff` want to DROP the sequence (deploy/replay-migrations.md)
+  ticket        BigInt       @unique @default(autoincrement())
   brokerId      String
   accountId     String
   positionId    String // Position.id (the position identifier)
