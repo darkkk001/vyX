@@ -174,6 +174,15 @@ pub async fn place_market_order(
     }
     let symbol_id = symbol_config.as_ref().map(|c| c.symbol_id.clone()).unwrap_or_default();
 
+    // L2 Stage 4: where this position's risk goes. `lib/group-pricing.ts resolveBookType` off the
+    // account's group category -- the same answer the web's order route computes before its own fill,
+    // so an engine fill and a web fill of the same account route identically. B_BOOK when the account
+    // has no group, which is the safe side.
+    let book_type = match book {
+        db::Book::Prisma => db::BookType::of_category(db::get_routing_category(pool, &req.account_id).await?.as_deref()),
+        db::Book::Legacy => db::BookType::BBook,
+    };
+
     let mut tx = pool.begin().await?;
 
     let order_id = db::insert_order(
@@ -183,7 +192,7 @@ pub async fn place_market_order(
             broker_id: req.broker_id.clone(),
             account_id: req.account_id.clone(),
             symbol: req.symbol.clone(),
-            symbol_id,
+            symbol_id: symbol_id.clone(),
             side: req.side,
             order_type: OrderType::Market,
             volume: req.volume,
@@ -276,9 +285,21 @@ pub async fn place_market_order(
         execution::ExecutionStrategy::Internal,
     );
 
+    // NewPosition takes req.broker_id by value below; the commission's ledger row needs it too.
+    let order_broker_id = req.broker_id.clone();
+
     // The double-fill guard: false = this order was already answered (a concurrent pass, the web's
     // own fill path during a failover, a retry). Roll back rather than open a second position for it.
-    if !db::set_filled(&mut tx, book, &order_id, fill.price, fill.volume, None).await? {
+    //
+    // NOT REACHABLE FROM HERE TODAY, and kept deliberately. This path creates its own order inside this
+    // same transaction, so no other writer can see it yet and the compare-and-set cannot lose. It
+    // becomes reachable the moment the order is created elsewhere -- which is both what
+    // pending_orders::trigger_order already does (the order was resting, two ticks can race for it)
+    // and what the cutover's own design ends at (§5b.2: the WEB creates the order row and the engine
+    // fills it, so the engine must lose cleanly when the web's fallback got there first). A mutation
+    // that makes this branch a no-op therefore survives every test of THIS function; the test that
+    // kills it drives the resting-order path, where the race is real.
+    if !db::set_filled(&mut tx, book, &order_id, fill.price, fill.volume, Some(book_type.as_str())).await? {
         tx.rollback().await?;
         return Ok(PlaceMarketOrderOutcome::Rejected {
             order_id,
@@ -286,27 +307,39 @@ pub async fn place_market_order(
         });
     }
 
-    let position_id = db::insert_position(
+    let (position_id, _opened_at) = db::insert_position(
         &mut tx,
+        book,
         &db::NewPosition {
             broker_id: req.broker_id,
             account_id: req.account_id.clone(),
             symbol: req.symbol,
+            symbol_id,
             origin_order_id: order_id.clone(),
             side: req.side,
             volume: fill.volume,
             open_price: fill.price,
             sl_price: req.sl_price,
             tp_price: req.tp_price,
+            book_type,
         },
     )
     .await?;
 
     // Flat per-lot commission, charged once at open (round-turn, not
     // split between open/close) — see BrokerSymbolConfig's doc comment
-    // and db.rs's record_commission.
-    let commission = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot * fill.volume);
-    db::record_commission(&mut tx, &position_id, &req.account_id, commission).await?;
+    // and db.rs's record_commission. On the Prisma book this DEBITS THE BALANCE, which the legacy
+    // path never did: see record_commission.
+    let commission_per_lot = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot);
+    db::record_commission(&mut tx, book, &order_broker_id, &req.account_id, &position_id, commission_per_lot, fill.volume).await?;
+
+    // L2 Stage 4: the IN deal, AFTER the commission -- it sums the charge back out of the ledger, so
+    // the order is not interchangeable (lib/deals.ts writeOpenDealInTx, called after chargeCommission
+    // for exactly this reason). CLIENT: a client's own market fill, as
+    // app/api/trade/orders/route.ts:794 writes it.
+    if book == db::Book::Prisma {
+        db::write_open_deal(&mut tx, &position_id, "CLIENT").await?;
+    }
 
     tx.commit().await?;
 

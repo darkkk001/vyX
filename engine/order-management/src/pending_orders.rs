@@ -117,6 +117,11 @@ async fn trigger_order(
         reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
         return Ok(());
     }
+    // Where this fill's risk goes -- resolved before the writes, as in place_market_order.
+    let book_type = match book {
+        db::Book::Prisma => db::BookType::of_category(db::get_routing_category(pool, &order.account_id).await?.as_deref()),
+        db::Book::Legacy => db::BookType::BBook,
+    };
     let max_open_positions = db::get_broker_max_open_positions(pool, &order.broker_id).await?;
     if let Err(reject_reason) = risk::check_max_open_positions(state.positions.len() as i64, max_open_positions) {
         reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
@@ -132,31 +137,40 @@ async fn trigger_order(
 
     // Stage 3's double-fill guard applies to a triggered resting order too: two ticks for the same
     // symbol landing together both reach here, and only one may fill it.
-    if !db::set_filled(&mut tx, book, &order.id, fill.price, fill.volume, None).await? {
+    if !db::set_filled(&mut tx, book, &order.id, fill.price, fill.volume, Some(book_type.as_str())).await? {
         tx.rollback().await?;
         return Ok(());
     }
 
-    let position_id = db::insert_position(
+    let (position_id, _opened_at) = db::insert_position(
         &mut tx,
+        book,
         &db::NewPosition {
             broker_id: order.broker_id.clone(),
             account_id: order.account_id.clone(),
             symbol: order.symbol.clone(),
+            symbol_id: symbol_config.as_ref().map(|c| c.symbol_id.clone()).unwrap_or_default(),
             origin_order_id: order.id.clone(),
             side: order.side,
             volume: fill.volume,
             open_price: fill.price,
             sl_price: order.sl_price,
             tp_price: order.tp_price,
+            book_type,
         },
     )
     .await?;
 
     // Same one-time open commission as place_market_order — see
     // BrokerSymbolConfig's doc comment and db.rs's record_commission.
-    let commission = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot * fill.volume);
-    db::record_commission(&mut tx, &position_id, &order.account_id, commission).await?;
+    let commission_per_lot = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot);
+    db::record_commission(&mut tx, book, &order.broker_id, &order.account_id, &position_id, commission_per_lot, fill.volume).await?;
+
+    // The IN deal, after the commission it sums (see db::write_open_deal). CLIENT: a resting order the
+    // client placed, filled by its own trigger -- the same reason the web gives a client market fill.
+    if book == db::Book::Prisma {
+        db::write_open_deal(&mut tx, &position_id, "CLIENT").await?;
+    }
 
     tx.commit().await?;
 

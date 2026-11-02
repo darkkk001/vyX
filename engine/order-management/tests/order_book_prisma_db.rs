@@ -59,10 +59,22 @@ struct Fx {
 /// A broker, a group of the given routing category, one LIVE account with a known balance, and the
 /// broker's own 2-digit symbol carrying a per-lot commission.
 async fn fixture(db: &mut sqlx::PgConnection, category: &str, commission_per_lot: Decimal) -> Fx {
+    fixture_with(db, category, commission_per_lot, dec!(100000), 2, dec!(1)).await
+}
+
+/// `fixture` with everything the contract vector pins, so the parity test builds the same world the
+/// web's generator did rather than a lookalike.
+async fn fixture_with(
+    db: &mut sqlx::PgConnection,
+    category: &str,
+    commission_per_lot: Decimal,
+    balance: Decimal,
+    digits: i32,
+    contract_size: Decimal,
+) -> Fx {
     let (broker, group, account, symbol) = (id(), id(), id(), id());
     let t = &broker[..10];
     let symbol_name = format!("ZP{}", t[..6].to_uppercase());
-    let balance = dec!(100000);
     sqlx::query(r#"INSERT INTO "Broker" (id, name, subdomain, "negativeBalanceProtection", "updatedAt") VALUES ($1, $2, $3, true, now())"#)
         .bind(&broker)
         .bind(format!("L2 S3 {t}"))
@@ -93,10 +105,12 @@ async fn fixture(db: &mut sqlx::PgConnection, category: &str, commission_per_lot
     .unwrap();
     sqlx::query(
         r#"INSERT INTO "Symbol" (id, name, "baseCurrency", "quoteCurrency", digits, "contractSize", category, "updatedAt")
-           VALUES ($1, $2, 'XAU', 'USD', 2, 1, 'METALS'::"SymbolCategory", now())"#,
+           VALUES ($1, $2, 'XAU', 'USD', $3, $4, 'METALS'::"SymbolCategory", now())"#,
     )
     .bind(&symbol)
     .bind(&symbol_name)
+    .bind(digits)
+    .bind(contract_size)
     .execute(&mut *db)
     .await
     .unwrap();
@@ -326,4 +340,594 @@ async fn the_legacy_book_still_writes_its_own_tables_exactly_as_before() {
         sqlx::query_as("SELECT filled_volume FROM orders WHERE id = $1").bind(&order_id).fetch_one(&mut *tx).await.unwrap();
     assert_eq!(filled_volume, Some(dec!(0.01)));
     tx.rollback().await.unwrap();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// STAGE 4 — "Position" + COMMISSION + the IN "Deal"
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Opens a position the way Stage 4's fill path does, and returns its id.
+async fn open_position(tx: &mut sqlx::PgTransaction<'_>, fx: &Fx, order_id: &str, side: OrderSide, book_type: db::BookType) -> String {
+    let (position_id, opened_at) = db::insert_position(
+        tx,
+        Book::Prisma,
+        &db::NewPosition {
+            broker_id: fx.broker.clone(),
+            account_id: fx.account.clone(),
+            symbol: fx.symbol_name.clone(),
+            symbol_id: fx.symbol_id.clone(),
+            origin_order_id: order_id.to_string(),
+            side,
+            volume: dec!(0.01),
+            open_price: dec!(4300),
+            sl_price: None,
+            tp_price: None,
+            book_type,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(opened_at.is_some(), "the Prisma insert returns the openedAt the IN deal must carry");
+    position_id
+}
+
+/// THE STAGE 4 TEST. Every row `lib/dealing.ts openPositionFromOrder` writes, and the two triggers.
+#[tokio::test]
+async fn an_engine_fill_writes_the_whole_chain_the_web_writes() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    // A_BOOK, because that is the category whose hedge a missed stamp would silently lose.
+    let fx = fixture(&mut tx, "A_BOOK", dec!(3)).await;
+    let order_id = db::insert_order(&mut tx, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Market, None)).await.unwrap();
+    assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(4300), dec!(0.01), Some("A_BOOK")).await.unwrap());
+    let position_id = open_position(&mut tx, &fx, &order_id, OrderSide::Buy, db::BookType::ABook).await;
+    db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(3), dec!(0.01)).await.unwrap();
+    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+
+    // ── the position, and BOTH triggers ──
+    let (ticket, category, book_type, status, commission, initial, open_price): (
+        i32,
+        Option<String>,
+        String,
+        String,
+        Decimal,
+        Option<Decimal>,
+        Decimal,
+    ) = sqlx::query_as(
+        r#"SELECT ticket, "groupCategoryAtOpen"::text, "bookType"::text, status::text, commission, "initialVolume", "openPrice"
+             FROM "Position" WHERE id = $1"#,
+    )
+    .bind(&position_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let (order_ticket,): (i32,) = sqlx::query_as(r#"SELECT ticket FROM "Order" WHERE id = $1"#).bind(&order_id).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(ticket, order_ticket, "the ticket trigger copies the opening order's number");
+    assert_eq!(category.as_deref(), Some("A_BOOK"), "THE CRITICAL ONE: the stamp trigger fired, so this position can be hedged");
+    assert_eq!(book_type, "A_BOOK", "resolveBookType(A_BOOK)");
+    assert_eq!(status, "OPEN", "the status column DEFAULTs to OPEN");
+    assert_eq!(open_price, dec!(4300));
+    // 3/lot on 0.01 lots = 0.03, incremented onto the position, not set
+    assert_eq!(commission, dec!(0.03));
+    assert_eq!(initial, Some(dec!(0.01)), "writeOpenDealInTx also sets initialVolume");
+
+    // ── the money. The legacy path never touched the balance; this one must. ──
+    let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(balance, fx.balance - dec!(0.03), "the commission must leave the balance");
+    let (amount, before, after, kind, note, ref_type, ref_id): (Decimal, Decimal, Decimal, String, String, String, String) = sqlx::query_as(
+        r#"SELECT amount, "balanceBefore", "balanceAfter", type::text, note, "referenceType", "referenceId"
+             FROM "Transaction" WHERE "referenceId" = $1 AND type = 'COMMISSION'"#,
+    )
+    .bind(&position_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("one COMMISSION ledger row");
+    assert_eq!(amount, dec!(-0.03), "a charge is recorded NEGATED");
+    assert_eq!((before, after), (fx.balance, fx.balance - dec!(0.03)));
+    assert_eq!(kind, "COMMISSION");
+    assert_eq!((ref_type.as_str(), ref_id.as_str()), ("Position", position_id.as_str()));
+    // the web's own note text, including decimal.js's trailing-zero handling: "@ 3/lot", not "@ 3.00/lot"
+    assert_eq!(note, "Commission: 0.01 lots @ 3/lot");
+
+    // ── the IN deal ──
+    let (entry, reason, side, source, volume, price, deal_commission, txn, executed, order_ref, deal_ticket): (
+        String,
+        String,
+        String,
+        Option<String>,
+        Decimal,
+        Decimal,
+        Decimal,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+        Option<String>,
+        i64,
+    ) = sqlx::query_as(
+        r#"SELECT entry::text, reason::text, side::text, source::text, volume, price, commission, "transactionId", "executedAt", "orderId", ticket
+             FROM "Deal" WHERE id = $1"#,
+    )
+    .bind(&deal_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!((entry.as_str(), reason.as_str(), side.as_str()), ("IN", "CLIENT", "BUY"));
+    assert_eq!(source.as_deref(), Some("API"), "the deal carries the opening ORDER's channel");
+    assert_eq!((volume, price), (dec!(0.01), dec!(4300)));
+    // SUMMED back out of the ledger, so it can never disagree with the money that moved -- and negative
+    assert_eq!(deal_commission, dec!(-0.03));
+    assert!(txn.is_some(), "exactly one commission row, so the deal names it");
+    assert_eq!(order_ref.as_deref(), Some(order_id.as_str()));
+    assert!(deal_ticket > 0, "deal_ticket_seq owns the number");
+    let (opened_at,): (chrono::DateTime<chrono::Utc>,) =
+        sqlx::query_as(r#"SELECT "openedAt" FROM "Position" WHERE id = $1"#).bind(&position_id).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(executed, opened_at, "the IN deal's executedAt is the position's own openedAt");
+
+    // ── and the position is now visible to the hedge path, which is the whole point ──
+    let (hedgeable,): (i64,) = sqlx::query_as(
+        r#"SELECT count(*) FROM "Position" WHERE "brokerId" = $1 AND status = 'OPEN' AND "groupCategoryAtOpen" = 'A_BOOK'"#,
+    )
+    .bind(&fx.broker)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(hedgeable, 1);
+    tx.rollback().await.unwrap();
+}
+
+/// A zero commission charges nothing at all -- no balance move, no ledger row -- and the deal says 0
+/// rather than null. The web's `lte(0)` guard, and the `COALESCE(SUM(amount), 0)` behind the deal.
+#[tokio::test]
+async fn a_zero_commission_moves_no_money_and_the_deal_still_balances() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut tx, "B_BOOK", dec!(0)).await;
+    let order_id = db::insert_order(&mut tx, Book::Prisma, &new_order(&fx, OrderSide::Sell, OrderType::Market, None)).await.unwrap();
+    assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(4300), dec!(0.01), Some("B_BOOK")).await.unwrap());
+    let position_id = open_position(&mut tx, &fx, &order_id, OrderSide::Sell, db::BookType::BBook).await;
+    db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(0), dec!(0.01)).await.unwrap();
+    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+
+    let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(balance, fx.balance, "nothing to charge, so nothing moves");
+    let (rows,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Transaction" WHERE "referenceId" = $1"#)
+        .bind(&position_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "and no ledger row is written");
+    let (deal_commission, txn, side, category): (Decimal, Option<String>, String, Option<String>) = sqlx::query_as(
+        r#"SELECT d.commission, d."transactionId", d.side::text, p."groupCategoryAtOpen"::text
+             FROM "Deal" d JOIN "Position" p ON p.id = d."positionId" WHERE d.id = $1"#,
+    )
+    .bind(&deal_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(deal_commission, Decimal::ZERO);
+    assert_eq!(txn, None, "no commission row, so nothing to name");
+    assert_eq!(side, "SELL", "the deal's side is the POSITION's, not the inverse the close side uses");
+    assert_eq!(category.as_deref(), Some("B_BOOK"), "the stamp follows the account's group, whatever the book type");
+    tx.rollback().await.unwrap();
+}
+
+/// Charged twice, the deal reports BOTH charges and names neither transaction -- `transactionId` is
+/// UNIQUE, so there is no single row to point at. The web leaves it null for the same reason.
+#[tokio::test]
+async fn two_commission_rows_are_both_summed_and_neither_is_named() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut tx, "B_BOOK", dec!(2)).await;
+    let order_id = db::insert_order(&mut tx, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Market, None)).await.unwrap();
+    assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(4300), dec!(0.01), Some("B_BOOK")).await.unwrap());
+    let position_id = open_position(&mut tx, &fx, &order_id, OrderSide::Buy, db::BookType::BBook).await;
+    db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(2), dec!(0.01)).await.unwrap();
+    db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(2), dec!(0.01)).await.unwrap();
+    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+
+    let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(balance, fx.balance - dec!(0.04), "both charges left the balance");
+    let (position_commission,): (Decimal,) =
+        sqlx::query_as(r#"SELECT commission FROM "Position" WHERE id = $1"#).bind(&position_id).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(position_commission, dec!(0.04), "increment, not set");
+    let (deal_commission, txn): (Decimal, Option<String>) =
+        sqlx::query_as(r#"SELECT commission, "transactionId" FROM "Deal" WHERE id = $1"#).bind(&deal_id).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(deal_commission, dec!(-0.04), "the deal reports the money that actually moved");
+    assert_eq!(txn, None);
+    tx.rollback().await.unwrap();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// STAGE 4 — the whole path, end to end
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// `place_market_order` itself, on the Prisma book, against a real database and a real NATS.
+///
+/// The row-level tests above prove each write. This one proves the PATH: that it reads the symbol
+/// before the order, picks one book, fills, opens, charges, deals -- and, the reason it exists, that it
+/// ACTS on Stage 3's compare-and-set instead of merely calling it. Stage 3's mutant that made the
+/// caller ignore the answer survived every row-level test; it dies here.
+///
+/// Needs a NATS to publish OrderFilled to. Point `ENGINE_TEST_NATS_URL` at a THROWAWAY server (the
+/// scratch Postgres has the same rule): publishing engine events onto the live bus would reach real
+/// clients. Without it the test skips rather than guessing a port.
+#[tokio::test]
+async fn place_market_order_runs_the_whole_chain_on_prismas_book() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("place_market_order_runs_the_whole_chain: ENGINE_TEST_NATS_URL not set, skipping");
+        return;
+    };
+    assert!(nats_url.contains("127.0.0.1") || nats_url.contains("localhost"), "refusing a non-local NATS: {nats_url}");
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+
+    // This process writes the real book, which is what live mode does after its pool check passes.
+    db::use_prisma_book();
+    assert_eq!(db::configured(), Book::Prisma);
+
+    // Committed: place_market_order reads on the pool and writes in its own transaction.
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "A_BOOK", dec!(3)).await;
+    setup.commit().await.unwrap();
+
+    let cache = market_data::cache::TickCache::new();
+    cache.set(
+        &protocol::Tick {
+            symbol: fx.symbol_name.clone(),
+            bid: dec!(4298.96),
+            ask: dec!(4299.13),
+            t0: None,
+            clock_offset_ms: None,
+            rtt_ms: None,
+            tick_ms: None,
+            broker_offset_sec: None,
+            bars: Vec::new(),
+        },
+        chrono::Utc::now(),
+    );
+
+    let outcome = order_management::place_market_order(
+        &pool,
+        &nats,
+        &cache,
+        order_management::PlaceMarketOrderRequest {
+            broker_id: fx.broker.clone(),
+            account_id: fx.account.clone(),
+            symbol: fx.symbol_name.clone(),
+            side: OrderSide::Buy,
+            volume: dec!(0.01),
+            sl_price: None,
+            tp_price: None,
+            equity: dec!(100000),
+            used_margin: dec!(0),
+            contract_size: dec!(1),
+            leverage: 100,
+        },
+    )
+    .await
+    .expect("the order path ran");
+
+    let (order_id, position_id, fill_price) = match outcome {
+        order_management::PlaceMarketOrderOutcome::Filled { order_id, position_id, fill_price } => (order_id, position_id, fill_price),
+        order_management::PlaceMarketOrderOutcome::Rejected { reason, .. } => panic!("rejected: {reason}"),
+    };
+    // a BUY fills at the account's ask; no markup is configured, so the raw one
+    assert_eq!(fill_price, dec!(4299.13));
+
+    // every row of the chain, in the real book
+    let (status, filled, routing): (String, Option<Decimal>, Option<String>) =
+        sqlx::query_as(r#"SELECT status::text, "filledPrice", routing FROM "Order" WHERE id = $1"#)
+            .bind(&order_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "FILLED");
+    assert_eq!(filled, Some(dec!(4299.13)));
+    assert_eq!(routing.as_deref(), Some("A_BOOK"), "the fill stamps where the risk went");
+
+    let (ticket, category, book_type, commission, initial): (i32, Option<String>, String, Decimal, Option<Decimal>) = sqlx::query_as(
+        r#"SELECT ticket, "groupCategoryAtOpen"::text, "bookType"::text, commission, "initialVolume" FROM "Position" WHERE id = $1"#,
+    )
+    .bind(&position_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(ticket >= 100_000_000);
+    assert_eq!(category.as_deref(), Some("A_BOOK"), "the stamp trigger fired on the real path too");
+    assert_eq!(book_type, "A_BOOK");
+    assert_eq!(commission, dec!(0.03));
+    assert_eq!(initial, Some(dec!(0.01)));
+
+    let (deals, entry, reason): (i64, String, String) =
+        sqlx::query_as(r#"SELECT count(*), min(entry::text), min(reason::text) FROM "Deal" WHERE "positionId" = $1"#)
+            .bind(&position_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((deals, entry.as_str(), reason.as_str()), (1, "IN", "CLIENT"));
+
+    let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&pool).await.unwrap();
+    assert_eq!(balance, fx.balance - dec!(0.03));
+
+    // and NOTHING went to the legacy tables: one book per order, the Stage 3 invariant
+    let (legacy_orders,): (i64,) = sqlx::query_as("SELECT count(*) FROM orders WHERE broker_id = $1").bind(&fx.broker).fetch_one(&pool).await.unwrap();
+    let (legacy_positions,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM positions WHERE broker_id = $1").bind(&fx.broker).fetch_one(&pool).await.unwrap();
+    assert_eq!((legacy_orders, legacy_positions), (0, 0), "a Prisma-book order must leave nothing in the legacy tables");
+
+    // ── THE POINT OF THIS TEST: the caller acts on the compare-and-set. ──
+    // Take the committed order back to PENDING and re-run the fill step the way a second writer would:
+    // the CAS has to be the thing that stops it, and the path has to report that rather than carry on.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(r#"UPDATE "Order" SET status = 'FILLED'::"OrderStatus" WHERE id = $1"#).bind(&order_id).execute(&mut *tx).await.unwrap();
+    assert!(
+        !db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(9999), dec!(0.01), None).await.unwrap(),
+        "an already-filled order must refuse a second fill"
+    );
+    tx.rollback().await.unwrap();
+
+    // one position for one order, still
+    let (positions,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Position" WHERE "originOrderId" = $1"#)
+        .bind(&order_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(positions, 1);
+
+    cleanup(&pool, &fx).await;
+}
+
+/// Committed fixtures and everything the path wrote for them, in FK order.
+async fn cleanup(pool: &PgPool, fx: &Fx) {
+    for sql in [
+        r#"DELETE FROM "Deal" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "Transaction" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "AuditLog" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "PostCloseEffect" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "Position" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "Order" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "BrokerSymbol" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "Account" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "Group" WHERE "brokerId" = $1"#,
+        r#"DELETE FROM "Broker" WHERE id = $1"#,
+    ] {
+        sqlx::query(sql).bind(&fx.broker).execute(pool).await.unwrap();
+    }
+    sqlx::query(r#"DELETE FROM "Symbol" WHERE id = $1"#).bind(&fx.symbol_id).execute(pool).await.unwrap();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// STAGE 4 — cross-language parity against the web's own chain
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// THE PARITY PROOF for the stage that moves money.
+///
+/// The expectations are not written here. `docs/contracts/open-chain-vector.json` is generated by
+/// `scripts/contracts/gen-open-chain-vector.ts`, which RUNS `lib/dealing.ts openPositionFromOrder`
+/// against a scratch database and records every row it wrote. This test runs the engine's chain on the
+/// same input and compares, so "the engine mirrors the web" stops being a claim about code I read and
+/// becomes a measurement — the same direction as `ask-markup-vectors.json`, where the web is the
+/// oracle and the engine asserts against it.
+///
+/// Normalised: ids, tickets and timestamps are per-row, so the vector records relationships
+/// (`ticketEqualsOrderTicket`, `executedAtEqualsPositionOpenedAt`) instead of values, and decimals are
+/// compared as decimal.js strings.
+#[tokio::test]
+async fn the_engines_open_chain_matches_the_webs_row_for_row() {
+    let Some(pool) = pool().await else { return };
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/contracts/open-chain-vector.json");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("open-chain-vector.json")).unwrap();
+    let c = &v["case"];
+
+    // the vector's own case, so a regenerated file with different inputs cannot pass by accident
+    assert_eq!(c["category"], "A_BOOK");
+    assert_eq!(c["side"], "BUY");
+    let volume = dec(&c["volume"]);
+    let fill_price = dec(&c["fillPrice"]);
+    let per_lot = dec(&c["commissionPerLot"]);
+    let opening_balance = dec(&c["openingBalance"]);
+
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture_with(&mut tx, c["category"].as_str().unwrap(), per_lot, opening_balance, c["digits"].as_i64().unwrap() as i32, dec(&c["contractSize"])).await;
+
+    // ── the engine's chain, exactly as its fill path runs it ──
+    let book_type = db::BookType::of_category(Some(c["category"].as_str().unwrap()));
+    let order_id = db::insert_order(
+        &mut tx,
+        Book::Prisma,
+        &db::NewOrder {
+            broker_id: fx.broker.clone(),
+            account_id: fx.account.clone(),
+            symbol: fx.symbol_name.clone(),
+            symbol_id: fx.symbol_id.clone(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            volume,
+            requested_price: None,
+            sl_price: None,
+            tp_price: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, fill_price, volume, Some(book_type.as_str())).await.unwrap());
+    let (position_id, _) = db::insert_position(
+        &mut tx,
+        Book::Prisma,
+        &db::NewPosition {
+            broker_id: fx.broker.clone(),
+            account_id: fx.account.clone(),
+            symbol: fx.symbol_name.clone(),
+            symbol_id: fx.symbol_id.clone(),
+            origin_order_id: order_id.clone(),
+            side: OrderSide::Buy,
+            volume,
+            open_price: fill_price,
+            sl_price: None,
+            tp_price: None,
+            book_type,
+        },
+    )
+    .await
+    .unwrap();
+    db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, per_lot, volume).await.unwrap();
+    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+
+    // ── the order ──
+    let e = &v["order"];
+    let (status, filled, routing, mode, has_filled_at, has_executed_at, rejection): (
+        String,
+        Option<Decimal>,
+        Option<String>,
+        Option<String>,
+        bool,
+        bool,
+        Option<String>,
+    ) = sqlx::query_as(
+        r#"SELECT status::text, "filledPrice", routing, "executionMode", "filledAt" IS NOT NULL, "executedAt" IS NOT NULL, "rejectionReason"
+             FROM "Order" WHERE id = $1"#,
+    )
+    .bind(&order_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(status, e["status"].as_str().unwrap(), "Order.status");
+    assert_eq!(norm(filled), e["filledPrice"].as_str().map(str::to_string), "Order.filledPrice");
+    assert_eq!(routing.as_deref(), e["routing"].as_str(), "Order.routing");
+    assert_eq!(mode.as_deref(), e["executionMode"].as_str(), "Order.executionMode");
+    assert_eq!(has_filled_at, e["hasFilledAt"].as_bool().unwrap(), "Order.filledAt");
+    assert_eq!(has_executed_at, e["hasExecutedAt"].as_bool().unwrap(), "Order.executedAt");
+    assert_eq!(rejection, None);
+    assert!(e["rejectionReason"].is_null());
+
+    // ── the position, including both trigger-filled columns ──
+    let e = &v["position"];
+    let (p_status, p_side, p_volume, p_initial, p_open, p_book, p_category, p_ticket, p_commission, p_swap, p_pnl): (
+        String,
+        String,
+        Decimal,
+        Option<Decimal>,
+        Decimal,
+        String,
+        Option<String>,
+        i32,
+        Decimal,
+        Decimal,
+        Option<Decimal>,
+    ) = sqlx::query_as(
+        r#"SELECT status::text, side::text, volume, "initialVolume", "openPrice", "bookType"::text,
+                  "groupCategoryAtOpen"::text, ticket, commission, swap, "realizedPnl"
+             FROM "Position" WHERE id = $1"#,
+    )
+    .bind(&position_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let (order_ticket,): (i32,) = sqlx::query_as(r#"SELECT ticket FROM "Order" WHERE id = $1"#).bind(&order_id).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(p_status, e["status"].as_str().unwrap(), "Position.status");
+    assert_eq!(p_side, e["side"].as_str().unwrap(), "Position.side");
+    assert_eq!(norm(Some(p_volume)), e["volume"].as_str().map(str::to_string), "Position.volume");
+    assert_eq!(norm(p_initial), e["initialVolume"].as_str().map(str::to_string), "Position.initialVolume");
+    assert_eq!(norm(Some(p_open)), e["openPrice"].as_str().map(str::to_string), "Position.openPrice");
+    assert_eq!(p_book, e["bookType"].as_str().unwrap(), "Position.bookType");
+    assert_eq!(p_category.as_deref(), e["groupCategoryAtOpen"].as_str(), "Position.groupCategoryAtOpen -- the stamp trigger");
+    assert_eq!(
+        p_ticket == order_ticket,
+        e["ticketEqualsOrderTicket"].as_bool().unwrap(),
+        "Position.ticket vs the order's -- the ticket trigger"
+    );
+    assert_eq!(norm(Some(p_commission)), e["commission"].as_str().map(str::to_string), "Position.commission");
+    assert_eq!(norm(Some(p_swap)), e["swap"].as_str().map(str::to_string), "Position.swap");
+    assert_eq!(norm(p_pnl), e["realizedPnl"].as_str().map(str::to_string), "Position.realizedPnl");
+
+    // ── the commission ledger ──
+    let expected_txns = v["commissionTransactions"].as_array().unwrap();
+    let txns: Vec<(String, String, Decimal, Decimal, Decimal, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT type::text, status::text, amount, "balanceBefore", "balanceAfter", "referenceType", note
+             FROM "Transaction" WHERE "referenceType" = 'Position' AND "referenceId" = $1 ORDER BY "createdAt""#,
+    )
+    .bind(&position_id)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(txns.len(), expected_txns.len(), "one COMMISSION row, as the web writes");
+    for (got, want) in txns.iter().zip(expected_txns) {
+        let (kind, st, amount, before, after, ref_type, note) = got;
+        assert_eq!(kind, want["type"].as_str().unwrap(), "Transaction.type");
+        assert_eq!(st, want["status"].as_str().unwrap(), "Transaction.status");
+        assert_eq!(norm(Some(*amount)), want["amount"].as_str().map(str::to_string), "Transaction.amount");
+        assert_eq!(norm(Some(*before)), want["balanceBefore"].as_str().map(str::to_string), "Transaction.balanceBefore");
+        assert_eq!(norm(Some(*after)), want["balanceAfter"].as_str().map(str::to_string), "Transaction.balanceAfter");
+        assert_eq!(ref_type.as_deref(), want["referenceType"].as_str(), "Transaction.referenceType");
+        // the note is user-visible text, and its number formatting is decimal.js's
+        assert_eq!(note.as_deref(), want["note"].as_str(), "Transaction.note");
+    }
+
+    // ── the IN deal ──
+    let expected_deals = v["deals"].as_array().unwrap();
+    assert_eq!(expected_deals.len(), 1);
+    let e = &expected_deals[0];
+    let (entry, reason, d_side, source, d_volume, d_price, d_commission, d_profit, d_swap, names_txn, executed, d_order): (
+        String,
+        String,
+        String,
+        Option<String>,
+        Decimal,
+        Decimal,
+        Decimal,
+        Decimal,
+        Decimal,
+        bool,
+        chrono::DateTime<chrono::Utc>,
+        Option<String>,
+    ) = sqlx::query_as(
+        r#"SELECT entry::text, reason::text, side::text, source::text, volume, price, commission, profit, swap,
+                  "transactionId" IS NOT NULL, "executedAt", "orderId"
+             FROM "Deal" WHERE id = $1"#,
+    )
+    .bind(&deal_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let (opened_at,): (chrono::DateTime<chrono::Utc>,) =
+        sqlx::query_as(r#"SELECT "openedAt" FROM "Position" WHERE id = $1"#).bind(&position_id).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(entry, e["entry"].as_str().unwrap(), "Deal.entry");
+    assert_eq!(reason, e["reason"].as_str().unwrap(), "Deal.reason");
+    assert_eq!(d_side, e["side"].as_str().unwrap(), "Deal.side");
+    assert_eq!(source.as_deref(), e["source"].as_str(), "Deal.source");
+    assert_eq!(norm(Some(d_volume)), e["volume"].as_str().map(str::to_string), "Deal.volume");
+    assert_eq!(norm(Some(d_price)), e["price"].as_str().map(str::to_string), "Deal.price");
+    assert_eq!(norm(Some(d_commission)), e["commission"].as_str().map(str::to_string), "Deal.commission");
+    assert_eq!(norm(Some(d_profit)), e["profit"].as_str().map(str::to_string), "Deal.profit");
+    assert_eq!(norm(Some(d_swap)), e["swap"].as_str().map(str::to_string), "Deal.swap");
+    assert_eq!(names_txn, e["namesOneCommissionTransaction"].as_bool().unwrap(), "Deal.transactionId");
+    assert_eq!(executed == opened_at, e["executedAtEqualsPositionOpenedAt"].as_bool().unwrap(), "Deal.executedAt");
+    assert_eq!(d_order.as_deref() == Some(order_id.as_str()), e["orderIdEqualsOriginOrder"].as_bool().unwrap(), "Deal.orderId");
+
+    // ── the balance ──
+    let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(norm(Some(balance)), v["account"]["balanceAfter"].as_str().map(str::to_string), "Account.balance");
+
+    // ── and the one deliberate difference: the hedge intent. The web writes it inside the deal's own
+    //    transaction; the engine must NOT (design option (b)) -- it queues a PostCloseEffect and the
+    //    web's worker writes it, which is Stage 5. So the engine's own chain leaves ZERO here while
+    //    the web's vector says one, and that gap is what Stage 5 closes.
+    let (intents,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "HedgeIntent" WHERE "positionId" = $1"#)
+        .bind(&position_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(v["hedgeIntents"].as_i64().unwrap(), 1, "the web writes the intent itself");
+    assert_eq!(intents, 0, "the engine must not write HedgeIntent: Stage 5 queues it for the web instead");
+
+    tx.rollback().await.unwrap();
+}
+
+fn dec(v: &serde_json::Value) -> Decimal {
+    use std::str::FromStr;
+    Decimal::from_str(v.as_str().expect("a decimal string")).unwrap()
+}
+
+/// decimal.js `toString` drops trailing zeros, so compare in that form: 0.0300 and 0.03 are one price.
+fn norm(d: Option<Decimal>) -> Option<String> {
+    d.map(|d| d.normalize().to_string())
 }

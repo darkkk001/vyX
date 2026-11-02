@@ -380,44 +380,199 @@ pub async fn set_filled(
     Ok(result.rows_affected() == 1)
 }
 
+// ---- L2 Stage 4: the position insert against the triggers that complete it --------------------------
+
+#[cfg(test)]
+mod position_insert_tests {
+    use super::{prisma_position_insert_columns, BookType, PRISMA_POSITION_INSERT};
+
+    /// §7's top risk, caught at compile-and-test time rather than in production.
+    ///
+    /// The column list is PARSED OUT OF THE SQL that actually runs, so this is not a check against a
+    /// copy that could drift: adding `groupCategoryAtOpen` to the insert -- which would silently stop
+    /// the stamp trigger and open A-book positions unhedged -- fails here.
+    #[test]
+    fn the_position_insert_names_no_trigger_owned_column() {
+        let columns = prisma_position_insert_columns();
+        let bypassed = crate::book::triggers_bypassed_by(&columns);
+        assert!(
+            bypassed.is_empty(),
+            "the position insert names a column a BEFORE INSERT trigger fills: {:?}",
+            bypassed.iter().map(|t| (t.trigger, t.column, t.bypass_consequence)).collect::<Vec<_>>()
+        );
+        // not vacuous: the parse really did find the real column list
+        assert_eq!(columns.len(), 11, "parsed {columns:?}");
+        for required in ["id", "brokerId", "accountId", "symbolId", "originOrderId", "side", "volume", "openPrice", "bookType"] {
+            assert!(columns.contains(&required), "the insert must name {required}: {columns:?}");
+        }
+        // and the two the database owns are absent
+        for owned in ["ticket", "groupCategoryAtOpen"] {
+            assert!(!columns.contains(&owned), "{owned} belongs to a trigger, not to this insert");
+        }
+        // status is not named either: the column DEFAULTs to OPEN
+        assert!(!columns.contains(&"status"));
+        // the trigger columns are not smuggled in through the VALUES list or the RETURNING clause
+        assert!(!PRISMA_POSITION_INSERT.contains("groupCategoryAtOpen"), "the statement must not mention the stamp column at all");
+    }
+
+    /// `lib/group-pricing.ts resolveBookType`, every category it can be given. A_BOOK and COVERAGE are
+    /// market-facing; the rest stay in the broker's own book. Getting this wrong misroutes a hedge.
+    #[test]
+    fn the_book_type_matches_the_webs_rule_for_every_category() {
+        for category in ["A_BOOK", "COVERAGE"] {
+            assert_eq!(BookType::of_category(Some(category)), BookType::ABook, "{category}");
+        }
+        for category in ["B_BOOK", "DEALING", "REVERSAL"] {
+            assert_eq!(BookType::of_category(Some(category)), BookType::BBook, "{category}");
+        }
+        // an account with no group, and anything unrecognised, book B -- the safe side
+        assert_eq!(BookType::of_category(None), BookType::BBook);
+        assert_eq!(BookType::of_category(Some("SOMETHING_NEW")), BookType::BBook);
+        assert_eq!((BookType::ABook.as_str(), BookType::BBook.as_str()), ("A_BOOK", "B_BOOK"));
+    }
+}
+
+// ---- where a position's risk goes (L2 Stage 4) ------------------------------------------------------
+
+/// Prisma's `BookType`. Mirrors `lib/group-pricing.ts resolveBookType`, which is the ONLY thing that
+/// decides this on the web, so the engine must not invent its own rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BookType {
+    /// Market-facing exposure: bridged to a liquidity provider, or the broker's own hedge account.
+    ABook,
+    /// The broker's own book.
+    BBook,
+}
+
+impl BookType {
+    /// `resolveBookType(category)`: A_BOOK bridges to a real LP and COVERAGE is the offsetting leg of
+    /// a booked client position -- both are real market-facing exposure. B_BOOK / DEALING / REVERSAL
+    /// all stay in the broker's own book. An unknown or missing category books B, the safe side.
+    pub fn of_category(category: Option<&str>) -> Self {
+        match category {
+            Some("A_BOOK") | Some("COVERAGE") => Self::ABook,
+            _ => Self::BBook,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ABook => "A_BOOK",
+            Self::BBook => "B_BOOK",
+        }
+    }
+}
+
+/// The account's group's routing category, for `BookType::of_category`.
+///
+/// NOTE this is its own round-trip, once per order. It could ride along on `get_ask_levels` (which
+/// already LEFT JOINs the same `"Group"` row) at no extra cost, and should if the 200 ms fill budget
+/// ever needs it -- but that function's job is the pricing rule, and folding routing into it would
+/// make a pricing change able to break routing. Correctness first; the fold is a measured optimisation.
+///
+/// `None` = the account has no group (`Account.groupId` is nullable), which `of_category` books B.
+pub async fn get_routing_category(pool: &PgPool, account_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        r#"SELECT g.category::text FROM "Account" a LEFT JOIN "Group" g ON g.id = a."groupId" WHERE a.id = $1"#,
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(c,)| c))
+}
+
 pub struct NewPosition {
     pub broker_id: String,
     pub account_id: String,
     pub symbol: String,
+    /// `Symbol.id` -- Prisma's `"Position"."symbolId"` is a NOT NULL FK (L2 Stage 2).
+    pub symbol_id: String,
     pub origin_order_id: String,
     pub side: OrderSide,
     pub volume: Decimal,
     pub open_price: Decimal,
     pub sl_price: Option<Decimal>,
     pub tp_price: Option<Decimal>,
+    /// Where this position's risk goes. Legacy-book inserts ignore it.
+    pub book_type: BookType,
 }
 
+/// The `"Position"` insert, as ONE string, so the column list below can be checked against the SQL
+/// that actually runs instead of against a copy of it.
+///
+/// WHAT IS NOT IN IT, and must never be: `ticket` and `groupCategoryAtOpen`. Both are filled by BEFORE
+/// INSERT triggers (`crate::book::POSITION_OPEN_TRIGGERS`), and the second one fires only when the
+/// insert left it NULL -- so naming it would silently open A-book positions unhedged. The unit test
+/// `the_position_insert_names_no_trigger_owned_column` parses this very string and refuses that.
+const PRISMA_POSITION_INSERT: &str = r#"INSERT INTO "Position"
+    (id, "brokerId", "accountId", "symbolId", "originOrderId", side, volume, "openPrice", "slPrice", "tpPrice", "bookType")
+  VALUES ($1, $2, $3, $4, $5, $6::"OrderSide", $7, $8, $9, $10, $11::"BookType")
+  RETURNING "openedAt""#;
+
+/// The columns `PRISMA_POSITION_INSERT` names, in order. Derived from the SQL rather than maintained
+/// beside it: the text between its first pair of brackets, split on commas, unquoted.
+pub fn prisma_position_insert_columns() -> Vec<&'static str> {
+    let open = PRISMA_POSITION_INSERT.find('(').expect("the insert names its columns");
+    let close = PRISMA_POSITION_INSERT[open..].find(')').expect("the column list closes") + open;
+    PRISMA_POSITION_INSERT[open + 1..close]
+        .split(',')
+        .map(|c| c.trim().trim_matches('"'))
+        .collect()
+}
+
+/// Opens the position. Returns its id and, on the Prisma book, the `openedAt` the row ended up with
+/// (the column DEFAULTs to now(), and the IN deal's `executedAt` must be that exact value -- see
+/// `write_open_deal` and lib/deals.ts, which reads it off the position for the same reason).
+///
+/// `status` is not named on the Prisma book either: `"Position".status` DEFAULTs to OPEN.
 pub async fn insert_position(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     position: &NewPosition,
-) -> Result<String, sqlx::Error> {
+) -> Result<(String, Option<chrono::DateTime<Utc>>), sqlx::Error> {
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        r#"
+    match book {
+        Book::Legacy => {
+            sqlx::query(
+                r#"
         INSERT INTO positions
             (id, broker_id, account_id, symbol, origin_order_id, side, volume,
              open_price, sl_price, tp_price, status)
         VALUES ($1, $2, $3, $4, $5, $6::order_side, $7, $8, $9, $10, 'OPEN')
         "#,
-    )
-    .bind(&id)
-    .bind(&position.broker_id)
-    .bind(&position.account_id)
-    .bind(&position.symbol)
-    .bind(&position.origin_order_id)
-    .bind(side_to_str(position.side))
-    .bind(position.volume)
-    .bind(position.open_price)
-    .bind(position.sl_price)
-    .bind(position.tp_price)
-    .execute(&mut **tx)
-    .await?;
-    Ok(id)
+            )
+            .bind(&id)
+            .bind(&position.broker_id)
+            .bind(&position.account_id)
+            .bind(&position.symbol)
+            .bind(&position.origin_order_id)
+            .bind(side_to_str(position.side))
+            .bind(position.volume)
+            .bind(position.open_price)
+            .bind(position.sl_price)
+            .bind(position.tp_price)
+            .execute(&mut **tx)
+            .await?;
+            Ok((id, None))
+        }
+        Book::Prisma => {
+            let (opened_at,): (chrono::DateTime<Utc>,) = sqlx::query_as(PRISMA_POSITION_INSERT)
+                .bind(&id)
+                .bind(&position.broker_id)
+                .bind(&position.account_id)
+                .bind(&position.symbol_id)
+                .bind(&position.origin_order_id)
+                .bind(side_to_str(position.side))
+                .bind(position.volume)
+                .bind(position.open_price)
+                .bind(position.sl_price)
+                .bind(position.tp_price)
+                .bind(position.book_type.as_str())
+                .fetch_one(&mut **tx)
+                .await?;
+            Ok((id, Some(opened_at)))
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -497,34 +652,181 @@ pub async fn update_position_sl_tp(
 /// exists alongside the ledger row instead of only the ledger row).
 /// No-op if `commission` is zero — a broker with no commission configured
 /// (the default) shouldn't write a $0 ledger entry for every trade.
+/// Charges the open commission.
+///
+/// LEGACY: the position's column plus a `ledger_entries` row. Note what it does NOT do -- **it never
+/// touched the balance**. On the engine's own tables that was invisible, because nothing reads them.
+///
+/// PRISMA: `lib/group-pricing.ts chargeCommission`, step for step, because this one moves real money:
+///   1. the `"Account"` row is locked FOR UPDATE and its balance read -- so two fills on one account
+///      cannot lose each other's charge (the same lock `lib/account-lock.ts` takes);
+///   2. the balance is written;
+///   3. a COMMISSION `"Transaction"` records the amount NEGATED with balanceBefore / balanceAfter, and
+///      `referenceType = 'Position'` / `referenceId` -- which is how `write_open_deal` finds it again,
+///      and how every commission report adds it up;
+///   4. `"Position".commission` is INCREMENTED, not set: the column is cumulative, and increment is
+///      also what makes a retry safe.
+///
+/// The note is the web's own text verbatim. `normalize()` matches decimal.js's `toString`, which drops
+/// trailing zeros, so a 3.00/lot charge reads "@ 3/lot" on both paths rather than "@ 3.00/lot" on one.
 pub async fn record_commission(
     tx: &mut sqlx::PgTransaction<'_>,
-    position_id: &str,
+    book: Book,
+    broker_id: &str,
     account_id: &str,
-    commission: Decimal,
+    position_id: &str,
+    commission_per_lot: Decimal,
+    volume: Decimal,
 ) -> Result<(), sqlx::Error> {
-    if commission.is_zero() {
+    let commission = commission_per_lot * volume;
+    // `lte(0)` on the web: a zero or negative per-lot rate charges nothing at all.
+    if commission <= Decimal::ZERO {
         return Ok(());
     }
 
-    sqlx::query(r#"UPDATE positions SET commission = commission + $1 WHERE id = $2"#)
-        .bind(commission)
+    match book {
+        Book::Legacy => {
+            sqlx::query(r#"UPDATE positions SET commission = commission + $1 WHERE id = $2"#)
+                .bind(commission)
+                .bind(position_id)
+                .execute(&mut **tx)
+                .await?;
+
+            sqlx::query(
+                r#"INSERT INTO ledger_entries (id, account_id, entry_type, amount, related_position_id)
+           VALUES ($1, $2, 'COMMISSION'::ledger_entry_type, $3, $4)"#,
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(account_id)
+            .bind(-commission)
+            .bind(position_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Book::Prisma => {
+            let (balance_before,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1 FOR UPDATE"#)
+                .bind(account_id)
+                .fetch_one(&mut **tx)
+                .await?;
+            let balance_after = balance_before - commission;
+
+            sqlx::query(r#"UPDATE "Account" SET balance = $1, "updatedAt" = now() WHERE id = $2"#)
+                .bind(balance_after)
+                .bind(account_id)
+                .execute(&mut **tx)
+                .await?;
+
+            sqlx::query(
+                r#"INSERT INTO "Transaction"
+                     (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter",
+                      "referenceType", "referenceId", note, "updatedAt")
+                   VALUES ($1, $2, $3, 'COMMISSION'::"TransactionType", 'COMPLETED'::"TransactionStatus",
+                           $4, $5, $6, 'Position', $7, $8, now())"#,
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(broker_id)
+            .bind(account_id)
+            .bind(-commission)
+            .bind(balance_before)
+            .bind(balance_after)
+            .bind(position_id)
+            .bind(format!("Commission: {} lots @ {}/lot", volume.normalize(), commission_per_lot.normalize()))
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(r#"UPDATE "Position" SET commission = commission + $1 WHERE id = $2"#)
+                .bind(commission)
+                .bind(position_id)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// The IN `"Deal"` for a position just opened in this transaction, plus `"Position".initialVolume`.
+/// Prisma-book only: the legacy tables have no deal model at all.
+///
+/// `lib/deals.ts writeOpenDealInTx`, with two details that matter and are easy to get wrong:
+///
+/// - **the commission is SUMMED back out of the ledger**, not passed in. The Transaction rows are the
+///   record; summing them means the deal can never disagree with the money that actually moved, and a
+///   position charged twice reports both. The sum is NEGATIVE, because `record_commission` writes the
+///   amount negated -- do not flip it, every reader expects a charge.
+/// - **`transactionId` is set only when there is exactly ONE commission row.** The column is UNIQUE,
+///   so pointing two deals at one transaction is impossible; with several rows there is no single one
+///   to name, and the web leaves it null for the same reason.
+///
+/// `executedAt` is the position's own `openedAt`, `source` the opening order's, and `reason` the
+/// caller's (CLIENT for a client fill -- app/api/trade/orders/route.ts:794). `ticket` is not supplied:
+/// `deal_ticket_seq` owns it.
+pub async fn write_open_deal(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    reason: &str,
+) -> Result<String, sqlx::Error> {
+    let (broker_id, account_id, symbol_id, side, volume, open_price, opened_at, origin_order_id, source): (
+        String,
+        String,
+        String,
+        String,
+        Decimal,
+        Decimal,
+        chrono::DateTime<Utc>,
+        String,
+        String,
+    ) = sqlx::query_as(
+        r#"SELECT p."brokerId", p."accountId", p."symbolId", p.side::text, p.volume, p."openPrice",
+                  p."openedAt", p."originOrderId", o.source::text
+             FROM "Position" p JOIN "Order" o ON o.id = p."originOrderId"
+            WHERE p.id = $1"#,
+    )
+    .bind(position_id)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    let (commission, rows, only_id): (Decimal, i64, Option<String>) = sqlx::query_as(
+        r#"SELECT COALESCE(SUM(amount), 0), count(*), CASE WHEN count(*) = 1 THEN min(id) END
+             FROM "Transaction"
+            WHERE "referenceType" = 'Position' AND "referenceId" = $1 AND type = 'COMMISSION'::"TransactionType""#,
+    )
+    .bind(position_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    debug_assert!(rows >= 0);
+
+    let deal_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"INSERT INTO "Deal"
+             (id, "brokerId", "accountId", "positionId", "orderId", "symbolId", side, entry, reason, source,
+              volume, price, commission, "transactionId", "executedAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7::"OrderSide", 'IN'::"DealEntry", $8::"DealReason", $9::"OrderSource",
+                   $10, $11, $12, $13, $14)"#,
+    )
+    .bind(&deal_id)
+    .bind(&broker_id)
+    .bind(&account_id)
+    .bind(position_id)
+    .bind(&origin_order_id)
+    .bind(&symbol_id)
+    .bind(&side)
+    .bind(reason)
+    .bind(&source)
+    .bind(volume)
+    .bind(open_price)
+    .bind(commission)
+    .bind(&only_id)
+    .bind(opened_at)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(r#"UPDATE "Position" SET "initialVolume" = volume WHERE id = $1"#)
         .bind(position_id)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query(
-        r#"INSERT INTO ledger_entries (id, account_id, entry_type, amount, related_position_id)
-           VALUES ($1, $2, 'COMMISSION'::ledger_entry_type, $3, $4)"#,
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(account_id)
-    .bind(-commission)
-    .bind(position_id)
-    .execute(&mut **tx)
-    .await?;
-
-    Ok(())
+    Ok(deal_id)
 }
 
 #[derive(Debug)]
