@@ -22,6 +22,10 @@
 //!   ENGINE_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5499/vyx_test \
 //!   VYX_REQUIRE_DB_TESTS=1 cargo test -p order-management --test order_book_prisma_db
 
+// Each assertion reads one query's row as a tuple, so several are wide. Naming a type per row would
+// hide which columns an assertion is about, which is the thing a reader needs here.
+#![allow(clippy::type_complexity)]
+
 use order_management::db::{self, Book};
 use protocol::{OrderSide, OrderStatus, OrderType};
 use rust_decimal::Decimal;
@@ -382,7 +386,7 @@ async fn an_engine_fill_writes_the_whole_chain_the_web_writes() {
     assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(4300), dec!(0.01), Some("A_BOOK")).await.unwrap());
     let position_id = open_position(&mut tx, &fx, &order_id, OrderSide::Buy, db::BookType::ABook).await;
     db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(3), dec!(0.01)).await.unwrap();
-    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap().deal_id;
 
     // ── the position, and BOTH triggers ──
     let (ticket, category, book_type, status, commission, initial, open_price): (
@@ -485,7 +489,7 @@ async fn a_zero_commission_moves_no_money_and_the_deal_still_balances() {
     assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(4300), dec!(0.01), Some("B_BOOK")).await.unwrap());
     let position_id = open_position(&mut tx, &fx, &order_id, OrderSide::Sell, db::BookType::BBook).await;
     db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(0), dec!(0.01)).await.unwrap();
-    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap().deal_id;
 
     let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&mut *tx).await.unwrap();
     assert_eq!(balance, fx.balance, "nothing to charge, so nothing moves");
@@ -522,7 +526,7 @@ async fn two_commission_rows_are_both_summed_and_neither_is_named() {
     let position_id = open_position(&mut tx, &fx, &order_id, OrderSide::Buy, db::BookType::BBook).await;
     db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(2), dec!(0.01)).await.unwrap();
     db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(2), dec!(0.01)).await.unwrap();
-    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap().deal_id;
 
     let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&mut *tx).await.unwrap();
     assert_eq!(balance, fx.balance - dec!(0.04), "both charges left the balance");
@@ -770,7 +774,7 @@ async fn the_engines_open_chain_matches_the_webs_row_for_row() {
     .await
     .unwrap();
     db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, per_lot, volume).await.unwrap();
-    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+    let deal_id = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap().deal_id;
 
     // ── the order ──
     let e = &v["order"];
@@ -930,4 +934,123 @@ fn dec(v: &serde_json::Value) -> Decimal {
 /// decimal.js `toString` drops trailing zeros, so compare in that form: 0.0300 and 0.03 are one price.
 fn norm(d: Option<Decimal>) -> Option<String> {
     d.map(|d| d.normalize().to_string())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// STAGE 5 — the hedge intent, queued for the web (design option (b))
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The engine's half of the handshake. It must write a `"PostCloseEffect"` of kind POSITION_OPENED
+/// with `payload.dealId`, and must write NO `"HedgeIntent"`.
+///
+/// The web's half is `lib/post-close-open.test.ts`, which builds this exact row and asserts the intent
+/// that comes out of it. Both sides assert the shape rather than assume it, so the two cannot drift:
+/// kind POSITION_OPENED, dedupeKey `open:<positionId>:<dealId>`, payload `{ dealId }`.
+#[tokio::test]
+async fn an_a_book_fill_queues_the_hedge_for_the_web_and_writes_no_intent() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut tx, "A_BOOK", dec!(3)).await;
+    let order_id = db::insert_order(&mut tx, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Market, None)).await.unwrap();
+    assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(4300), dec!(0.01), Some("A_BOOK")).await.unwrap());
+    let position_id = open_position(&mut tx, &fx, &order_id, OrderSide::Buy, db::BookType::ABook).await;
+    db::record_commission(&mut tx, Book::Prisma, &fx.broker, &fx.account, &position_id, dec!(3), dec!(0.01)).await.unwrap();
+
+    let opened = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+    assert_eq!(opened.group_category_at_open.as_deref(), Some("A_BOOK"), "read BACK from the row, not assumed");
+    assert!(db::enqueue_position_opened(&mut tx, &position_id, &opened).await.unwrap(), "an A-book fill must queue its hedge");
+
+    let (kind, dedupe, status, payload, broker, account, effect_position): (String, String, String, serde_json::Value, String, String, Option<String>) =
+        sqlx::query_as(
+            r#"SELECT kind, "dedupeKey", status, payload, "brokerId", "accountId", "positionId"
+                 FROM "PostCloseEffect" WHERE "positionId" = $1"#,
+        )
+        .bind(&position_id)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("exactly one queued effect");
+    assert_eq!(kind, "POSITION_OPENED", "the kind lib/post-close.ts dispatches on");
+    assert_eq!(dedupe, format!("open:{position_id}:{}", opened.deal_id), "the dedupeKey the web's test builds");
+    assert_eq!(status, "PENDING", "the dispatcher picks up PENDING rows");
+    assert_eq!(payload["dealId"].as_str(), Some(opened.deal_id.as_str()), "the intent is keyed on the IN deal");
+    assert_eq!((broker.as_str(), account.as_str()), (fx.broker.as_str(), fx.account.as_str()));
+    assert_eq!(effect_position.as_deref(), Some(position_id.as_str()));
+
+    // AND NOTHING IN "HedgeIntent": the engine is not the intent writer, and has no privilege to be
+    // (authority::ORDER_PATH_PRIVILEGES omits the table on purpose).
+    let (intents,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "HedgeIntent" WHERE "positionId" = $1"#)
+        .bind(&position_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(intents, 0);
+
+    // a replay queues one row, not two (dedupeKey is unique, the insert is ON CONFLICT DO NOTHING)
+    assert!(!db::enqueue_position_opened(&mut tx, &position_id, &opened).await.unwrap(), "a retried fill must not queue a second row");
+    let (rows,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "PostCloseEffect" WHERE "positionId" = $1"#)
+        .bind(&position_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+    tx.rollback().await.unwrap();
+}
+
+/// A B-book fill queues nothing: that is nearly every fill, and the row would only be declined by the
+/// web anyway. The gate is the stamp the trigger wrote, which is `isHedgedCategory`'s own first test.
+#[tokio::test]
+async fn a_b_book_fill_queues_nothing() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    for category in ["B_BOOK", "DEALING", "REVERSAL"] {
+        let fx = fixture(&mut tx, category, dec!(0)).await;
+        let order_id = db::insert_order(&mut tx, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Market, None)).await.unwrap();
+        assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(4300), dec!(0.01), Some("B_BOOK")).await.unwrap());
+        let position_id = open_position(&mut tx, &fx, &order_id, OrderSide::Buy, db::BookType::BBook).await;
+        let opened = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+        assert_eq!(opened.group_category_at_open.as_deref(), Some(category));
+        assert!(!db::enqueue_position_opened(&mut tx, &position_id, &opened).await.unwrap(), "{category} must queue nothing");
+        let (rows,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "PostCloseEffect" WHERE "positionId" = $1"#)
+            .bind(&position_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "{category}");
+    }
+    tx.rollback().await.unwrap();
+}
+
+/// §7's top risk, one more time, from the hedge's own end: if the stamp trigger did not fire, the
+/// engine queues nothing and the position is unhedged. That is the failure the trigger check
+/// (`authority::verify_order_path_pool`) and the column guard (`book::triggers_bypassed_by`) exist to
+/// make impossible -- this test is what says out loud what happens if they are ever bypassed.
+#[tokio::test]
+async fn without_the_stamp_the_hedge_is_never_queued() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut tx, "A_BOOK", dec!(0)).await;
+    let order_id = db::insert_order(&mut tx, Book::Prisma, &new_order(&fx, OrderSide::Buy, OrderType::Market, None)).await.unwrap();
+    assert!(db::set_filled(&mut tx, Book::Prisma, &order_id, dec!(4300), dec!(0.01), Some("A_BOOK")).await.unwrap());
+    // the mistake, made by hand: the insert supplies the column, so the trigger does not fire
+    let position_id = id();
+    sqlx::query(
+        r#"INSERT INTO "Position" (id, "brokerId", "accountId", "symbolId", "originOrderId", side, volume, "openPrice", "bookType", "groupCategoryAtOpen")
+           VALUES ($1, $2, $3, $4, $5, 'BUY'::"OrderSide", 0.01, 4300, 'A_BOOK'::"BookType", 'B_BOOK'::"RoutingCategory")"#,
+    )
+    .bind(&position_id)
+    .bind(&fx.broker)
+    .bind(&fx.account)
+    .bind(&fx.symbol_id)
+    .bind(&order_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    let opened = db::write_open_deal(&mut tx, &position_id, "CLIENT").await.unwrap();
+    assert_eq!(opened.group_category_at_open.as_deref(), Some("B_BOOK"), "the supplied value stood");
+    assert!(
+        !db::enqueue_position_opened(&mut tx, &position_id, &opened).await.unwrap(),
+        "and so the A-book position's hedge is never queued -- unhedged, with nothing raising an error"
+    );
+    tx.rollback().await.unwrap();
 }

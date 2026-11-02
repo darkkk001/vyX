@@ -338,7 +338,10 @@ pub async fn place_market_order(
     // for exactly this reason). CLIENT: a client's own market fill, as
     // app/api/trade/orders/route.ts:794 writes it.
     if book == db::Book::Prisma {
-        db::write_open_deal(&mut tx, &position_id, "CLIENT").await?;
+        let opened = db::write_open_deal(&mut tx, &position_id, "CLIENT").await?;
+        // L2 Stage 5: the hedge, queued for the web rather than written here -- see
+        // db::enqueue_position_opened for why the engine must not be the intent writer.
+        db::enqueue_position_opened(&mut tx, &position_id, &opened).await?;
     }
 
     tx.commit().await?;

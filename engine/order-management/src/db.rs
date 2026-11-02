@@ -765,8 +765,9 @@ pub async fn write_open_deal(
     tx: &mut sqlx::PgTransaction<'_>,
     position_id: &str,
     reason: &str,
-) -> Result<String, sqlx::Error> {
-    let (broker_id, account_id, symbol_id, side, volume, open_price, opened_at, origin_order_id, source): (
+) -> Result<OpenDeal, sqlx::Error> {
+    #[allow(clippy::type_complexity)]
+    let (broker_id, account_id, symbol_id, side, volume, open_price, opened_at, origin_order_id, source, category): (
         String,
         String,
         String,
@@ -776,9 +777,10 @@ pub async fn write_open_deal(
         chrono::DateTime<Utc>,
         String,
         String,
+        Option<String>,
     ) = sqlx::query_as(
         r#"SELECT p."brokerId", p."accountId", p."symbolId", p.side::text, p.volume, p."openPrice",
-                  p."openedAt", p."originOrderId", o.source::text
+                  p."openedAt", p."originOrderId", o.source::text, p."groupCategoryAtOpen"::text
              FROM "Position" p JOIN "Order" o ON o.id = p."originOrderId"
             WHERE p.id = $1"#,
     )
@@ -826,7 +828,70 @@ pub async fn write_open_deal(
         .execute(&mut **tx)
         .await?;
 
-    Ok(deal_id)
+    Ok(OpenDeal { deal_id, broker_id, account_id, group_category_at_open: category })
+}
+
+/// What the IN deal leaves behind for the hedge gate: the deal to key an intent on, and the category
+/// the stamp trigger actually wrote (read back, never assumed -- a missed stamp must not be hedged on
+/// the engine's guess).
+#[derive(Debug, Clone)]
+pub struct OpenDeal {
+    pub deal_id: String,
+    pub broker_id: String,
+    pub account_id: String,
+    pub group_category_at_open: Option<String>,
+}
+
+/// L2 Stage 5 -- the hedge intent, by design OPTION (b).
+///
+/// The engine does NOT write `"HedgeIntent"`. It queues a `"PostCloseEffect"` of kind
+/// `POSITION_OPENED` in the SAME transaction as the fill, and the web's worker
+/// (`lib/post-close.ts positionOpenedSteps`) writes the intent. Three reasons that is the right side
+/// of the line:
+///
+/// - the invariant "an intent exists if and only if its deal committed" stays in ONE place. The effect
+///   row commits with the deal, so a rolled-back fill queues nothing and a committed one always has
+///   its follow-up.
+/// - `lib/hedge.ts hedgeDealInTx` keeps being the only intent writer, so the full routing rule
+///   (`hedgeRouteOf`: the coverage-account check, the bookType/category disagreement case) is applied
+///   by the code that owns it rather than reimplemented here.
+/// - the engine needs no INSERT privilege on `"HedgeIntent"` at all -- see
+///   `authority::ORDER_PATH_PRIVILEGES`, which deliberately omits it.
+///
+/// THE GATE. Queued only when the stamp says `A_BOOK`, which is exactly `hedgeDealInTx`'s own first
+/// test (`isHedgedCategory`). That is the NECESSARY condition; the web still applies the sufficient
+/// one, so being wrong here can only ever queue a row the web then declines -- never skip a hedge the
+/// web would have written. A B-book fill, which is nearly all of them, costs nothing.
+///
+/// `kind` is plain text on `"PostCloseEffect"`, so this needs no migration. `dedupeKey` is unique and
+/// the insert is ON CONFLICT DO NOTHING, so a retried fill queues one row, as the close side does.
+///
+/// DEPLOY ORDER MATTERS: `lib/post-close.ts` THROWS on a kind it does not know, so the web must ship
+/// its branch BEFORE the engine ever writes this kind, or the worker error-loops on the row. (Rolling
+/// back is the reverse: engine first.)
+pub async fn enqueue_position_opened(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    opened: &OpenDeal,
+) -> Result<bool, sqlx::Error> {
+    if opened.group_category_at_open.as_deref() != Some("A_BOOK") {
+        return Ok(false);
+    }
+    let payload = serde_json::json!({ "dealId": opened.deal_id });
+    let result = sqlx::query(
+        r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", "positionId", payload)
+           VALUES ($1, 'POSITION_OPENED', $2, $3, $4, $5, $6::jsonb)
+           ON CONFLICT ("dedupeKey") DO NOTHING"#,
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(format!("open:{}:{}", position_id, opened.deal_id))
+    .bind(&opened.broker_id)
+    .bind(&opened.account_id)
+    .bind(position_id)
+    .bind(payload.to_string())
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 #[derive(Debug)]

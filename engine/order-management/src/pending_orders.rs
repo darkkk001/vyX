@@ -169,7 +169,10 @@ async fn trigger_order(
     // The IN deal, after the commission it sums (see db::write_open_deal). CLIENT: a resting order the
     // client placed, filled by its own trigger -- the same reason the web gives a client market fill.
     if book == db::Book::Prisma {
-        db::write_open_deal(&mut tx, &position_id, "CLIENT").await?;
+        let opened = db::write_open_deal(&mut tx, &position_id, "CLIENT").await?;
+        // L2 Stage 5: the hedge, queued for the web rather than written here -- see
+        // db::enqueue_position_opened for why the engine must not be the intent writer.
+        db::enqueue_position_opened(&mut tx, &position_id, &opened).await?;
     }
 
     tx.commit().await?;

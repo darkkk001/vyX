@@ -60,6 +60,9 @@ type Row = {
 // dealId: the OUT deal the engine wrote with the close (deal model step 2); absent on rows from before that
 type ClosePayload = { closedLots: string; sourceVolumeBeforeClose: string; closePrice: string; realizedPnl: string; marginLevel?: string; stopOutLevel?: string; dealId?: string };
 type MarginCallPayload = { marginLevel: string; marginCallLevel: string };
+// L2 Stage 5: dealId is the IN deal the engine wrote with the fill (engine db.rs write_open_deal), which the
+// hedge intent is keyed on -- the open-side mirror of ClosePayload.dealId above
+type PositionOpenedPayload = { dealId?: string };
 
 const D = (v: string) => new Prisma.Decimal(v);
 
@@ -211,6 +214,40 @@ function marginCallClearedSteps(row: Row): { name: string; work: (tx: Prisma.Tra
   ];
 }
 
+// L2 Stage 5 (design option (b), C:\vyx\handoff\l2-cutover-design.md section 3): when the ENGINE owns the fill path
+// it must not write "HedgeIntent" itself. It queues this row inside the fill's own transaction and the intent is
+// written here, so lib/hedge.ts stays the only writer and the invariant "an intent exists iff its deal committed"
+// stays in one place. The engine queues it only for an A_BOOK stamp (isHedgedCategory's own first test); hedgeDealInTx
+// below applies the rest of the routing rule, so a row the engine should not have queued is simply declined.
+//
+// The open side of the "hedge" step in closeSteps, and idempotent the same two ways: the step marker makes it once,
+// and HedgeIntent.dealId is unique.
+function positionOpenedSteps(row: Row): { name: string; work: (tx: Prisma.TransactionClient) => Promise<void> }[] {
+  const p = row.payload as PositionOpenedPayload;
+  const positionId = row.positionId!;
+  return [
+    {
+      name: "hedge_open",
+      work: async (tx) => {
+        if (!p.dealId) {
+          // The engine always writes the IN deal before queuing this (db.rs: enqueue_position_opened takes the deal),
+          // so a row without one means those two drifted apart. An A-book open with no hedge is exactly the silent
+          // failure this whole design is built to avoid, so say so loudly rather than return quietly.
+          const cat = await tx.position.findUnique({ where: { id: positionId }, select: { groupCategoryAtOpen: true } });
+          if (isHedgedCategory(cat?.groupCategoryAtOpen)) throw new Error(`post-close ${row.id}: A-book open ${positionId} queued with no dealId, cannot hedge`);
+          return;
+        }
+        const deal = await tx.deal.findUnique({
+          where: { id: p.dealId },
+          select: { id: true, brokerId: true, accountId: true, positionId: true, side: true, entry: true, reason: true, volume: true, price: true },
+        });
+        if (!deal) throw new Error(`post-close ${row.id}: deal ${p.dealId} not found`);
+        await hedgeDealInTx(tx, deal);
+      },
+    },
+  ];
+}
+
 /** Harness-only: called with each phase's wall time (Stage 4.6 measurement, scripts/parity/post-close-server.ts). */
 export type PostCloseTiming = (phase: string, ms: number) => void;
 let harnessTiming: PostCloseTiming | undefined;
@@ -250,7 +287,16 @@ export async function runPostClose(id: string, opts?: { fault?: PostCloseFault; 
   lap("lease");
 
   try {
-    const steps = row.kind === "MARGIN_CALL" ? marginCallSteps(row) : row.kind === "MARGIN_CALL_CLEARED" ? marginCallClearedSteps(row) : row.kind === "POSITION_CLOSED" ? closeSteps(row) : null;
+    const steps =
+      row.kind === "MARGIN_CALL"
+        ? marginCallSteps(row)
+        : row.kind === "MARGIN_CALL_CLEARED"
+          ? marginCallClearedSteps(row)
+          : row.kind === "POSITION_CLOSED"
+            ? closeSteps(row)
+            : row.kind === "POSITION_OPENED"
+              ? positionOpenedSteps(row)
+              : null;
     if (!steps) throw new Error(`unknown PostCloseEffect kind ${row.kind}`);
     for (const step of steps) {
       fault(`before:${step.name}`);
@@ -324,7 +370,14 @@ export async function recordPostCloseFailure(id: string, error: string): Promise
 }
 
 export function outboxDeadNotification(r: { id: string; brokerId: string; accountId: string; positionId: string | null; kind: string; attempts: number; doneSteps: string[]; error: string }) {
-  const what = r.kind === "MARGIN_CALL" ? `the margin-call notice for account ${r.accountId}` : r.kind === "MARGIN_CALL_CLEARED" ? `the margin-call-over notice for account ${r.accountId}` : `the follow-up of automatic close ${r.positionId}`;
+  const what =
+    r.kind === "MARGIN_CALL"
+      ? `the margin-call notice for account ${r.accountId}`
+      : r.kind === "MARGIN_CALL_CLEARED"
+        ? `the margin-call-over notice for account ${r.accountId}`
+        : r.kind === "POSITION_OPENED"
+          ? `the hedge of engine-filled position ${r.positionId}`
+          : `the follow-up of automatic close ${r.positionId}`;
   return {
     brokerId: r.brokerId,
     type: "OUTBOX_DEAD",
