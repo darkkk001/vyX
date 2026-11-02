@@ -187,6 +187,21 @@ pub async fn verify_risk_pool(pool: &PgPool) -> Result<String, String> {
     .await
     .map_err(|e| e.to_string())?;
     if columns != 2 {
+        // information_schema.columns lists a column only when the current role holds SOME privilege on
+        // its table, so a role with no privilege on "Broker" sees zero columns and would be told the
+        // migration is missing. It is not: tell it the truth instead, or Stage 7's narrower role sends
+        // someone looking for a migration that is already applied.
+        let (broker_visible,): (bool,) = sqlx::query_as(
+            r#"SELECT to_regclass('"Broker"') IS NOT NULL AND has_table_privilege(current_user, '"Broker"', 'SELECT')"#,
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if !broker_visible {
+            return Err(format!(
+                "role {role} cannot read \"Broker\", so it cannot resolve who owns an account (authority::lock_owner_in_tx joins it on every write)"
+            ));
+        }
         return Err("Broker.riskAuthority / riskAuthorityDemoOnly are missing (the Stage 6 migration is not applied)".into());
     }
     let (beat_ok,): (bool,) = sqlx::query_as(
@@ -198,6 +213,178 @@ pub async fn verify_risk_pool(pool: &PgPool) -> Result<String, String> {
     .map_err(|e| e.to_string())?;
     if !beat_ok {
         return Err("the RiskEngineHeartbeat table is missing or not writable by this role (migration 20261007100000_risk_engine_heartbeat): without a heartbeat nobody counts the engine as alive".into());
+    }
+    Ok(role)
+}
+
+// ---- the start-up check of the Prisma-book order path (L2 Stage 2) ------------------------------------------------------
+//
+// WHY THIS IS SEPARATE FROM verify_risk_pool, AND NOT AN EXTENSION OF IT.
+//
+// `verify_risk_pool` above gates the mode that is live in production today. Everything it demands is
+// something the risk path actually writes. If the order path's extra requirements were added to it, then
+// a role granted exactly what risk needs would start refusing risk mode -- and a broker already set to
+// RUST would be left with no owner at all. The requirements are therefore split by what the mode writes,
+// and `live` mode must pass both.
+//
+// CHECK FIRST, GRANT LATER (owner, L2 Stage 2). This runs before the grant exists, on purpose: a role
+// holding half of this list must fail at start-up, loudly and completely, rather than mid-transaction on
+// a trader's fill. So every missing item is collected and reported together -- fixing them one error at
+// a time is exactly the slow partial grant this is meant to prevent.
+
+/// One table privilege the Prisma-book order path needs, and the write that needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TablePrivilege {
+    pub table: &'static str,
+    pub privilege: &'static str,
+    pub why: &'static str,
+}
+
+/// What the engine must be able to write once its order path writes Prisma's book instead of its own
+/// lowercase tables (design §2's delta, Stages 3-5).
+///
+/// Deliberately NOT here:
+/// - `"HedgeIntent"`: the cutover takes design option (b), so the engine queues a `"PostCloseEffect"` and
+///   the WEB writes the intent inside its own transaction. The invariant "an intent exists iff its deal
+///   committed" stays in one place, and the engine never needs this privilege. Already covered by
+///   `verify_risk_pool`'s `"PostCloseEffect"` INSERT.
+/// - `"Account"` UPDATE, `"Transaction"` INSERT, `"AuditLog"` INSERT: `verify_risk_pool` already demands
+///   all three, and `live` mode runs both checks, so repeating them here would only produce two error
+///   messages for one missing grant.
+pub const ORDER_PATH_PRIVILEGES: &[TablePrivilege] = &[
+    TablePrivilege {
+        table: "Order",
+        privilege: "INSERT",
+        why: "Stage 3: the order row is what every later row hangs off (\"Position\".\"originOrderId\" is a NOT NULL FK to it)",
+    },
+    TablePrivilege {
+        table: "Order",
+        privilege: "UPDATE",
+        why: "Stage 3: the order moves NEW -> FILLED, and a compare-and-set on its status is what stops a fill happening twice (design §5b.3)",
+    },
+    TablePrivilege {
+        table: "Position",
+        privilege: "INSERT",
+        why: "Stage 4: opening the position. This is the write that makes an engine fill visible to margin, P&L and the UI at all",
+    },
+    TablePrivilege {
+        table: "Deal",
+        privilege: "INSERT",
+        why: "Stage 4: the IN deal. lib/hedge.ts keys a hedge off a Deal, so without this an A-book fill cannot be hedged",
+    },
+];
+
+/// Sequences the order path's INSERTs consume through a column DEFAULT or a trigger, so the role needs
+/// USAGE even though no engine code names them.
+///
+/// The easiest half of a grant to forget, and the failure is a hard error on the first fill rather than
+/// anything visible at start-up -- which is the whole reason it is checked here.
+pub const ORDER_PATH_SEQUENCES: &[(&str, &str)] = &[
+    (
+        "order_ticket_seq",
+        "\"Order\".ticket DEFAULTs to nextval of it, and \"Position\"'s ticket trigger falls back to it when an origin order is missing",
+    ),
+    ("deal_ticket_seq", "\"Deal\".ticket DEFAULTs to nextval of it"),
+];
+
+/// Can this pool run the order path against Prisma's book? Returns every reason it cannot, at once.
+///
+/// Three kinds of answer, all of them about the database rather than about this process:
+/// 1. the table privileges of [`ORDER_PATH_PRIVILEGES`];
+/// 2. USAGE on the ticket sequences of [`ORDER_PATH_SEQUENCES`];
+/// 3. that both of `crate::book::POSITION_OPEN_TRIGGERS` exist on `"Position"` AND are enabled.
+///
+/// (3) is here because of what it prevents. A `prisma db push` builds a schema from schema.prisma, which
+/// does not describe triggers, so it produces a `"Position"` with neither of them -- and an insert into
+/// that table succeeds. The ticket would come from nowhere and `groupCategoryAtOpen` would stay NULL,
+/// which `book::POSITION_OPEN_TRIGGERS` spells out as an A-book position that opens unhedged with no
+/// error anywhere. A start-up refusal is the only place that failure is still cheap.
+pub async fn verify_order_path_pool(pool: &PgPool) -> Result<String, String> {
+    let mut missing: Vec<String> = Vec::new();
+
+    let (tables, privileges): (Vec<&str>, Vec<&str>) = ORDER_PATH_PRIVILEGES.iter().map(|p| (p.table, p.privilege)).unzip();
+    // format('%I') quotes each identifier in the database rather than in a Rust format string, so the
+    // table names stay data all the way down even though they are compile-time constants here.
+    // NULL = no such table. has_table_privilege RAISES on an unknown relation rather than returning
+    // false, so the to_regclass guard is what turns "the table is not there" into a reportable answer
+    // instead of an opaque driver error.
+    let rows: Vec<(String, String, Option<bool>)> = sqlx::query_as(
+        r#"SELECT t.tbl, t.priv,
+                  CASE WHEN to_regclass(format('%I', t.tbl)) IS NULL THEN NULL
+                       ELSE has_table_privilege(current_user, format('%I', t.tbl), t.priv) END
+             FROM unnest($1::text[], $2::text[]) AS t(tbl, priv)"#,
+    )
+    .bind(&tables)
+    .bind(&privileges)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("could not check the order path's privileges: {e}"))?;
+    for (table, privilege, ok) in rows {
+        if ok == Some(true) {
+            continue;
+        }
+        let why = ORDER_PATH_PRIVILEGES
+            .iter()
+            .find(|p| p.table == table && p.privilege == privilege)
+            .map(|p| p.why)
+            .unwrap_or("");
+        match ok {
+            Some(_) => missing.push(format!("{privilege} on \"{table}\" ({why})")),
+            None => missing.push(format!("table \"{table}\" does not exist ({why})")),
+        }
+    }
+
+    let (names, reasons): (Vec<&str>, Vec<&str>) = ORDER_PATH_SEQUENCES.iter().copied().unzip();
+    let rows: Vec<(String, Option<bool>)> = sqlx::query_as(
+        r#"SELECT t.name, CASE WHEN to_regclass(format('%I', t.name)) IS NULL THEN NULL
+                                ELSE has_sequence_privilege(current_user, format('%I', t.name), 'USAGE') END
+             FROM unnest($1::text[]) AS t(name)"#,
+    )
+    .bind(&names)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("could not check the order path's sequences: {e}"))?;
+    for (name, ok) in rows {
+        let reason = reasons[names.iter().position(|v| *v == name).expect("a sequence this query asked about")];
+        match ok {
+            Some(true) => {}
+            Some(false) => missing.push(format!("USAGE on sequence {name} ({reason})")),
+            None => missing.push(format!("sequence {name} does not exist ({reason})")),
+        }
+    }
+
+    let trigger_names: Vec<&str> = crate::book::POSITION_OPEN_TRIGGERS.iter().map(|t| t.trigger).collect();
+    let rows: Vec<(String, bool, Option<String>)> = sqlx::query_as(
+        r#"SELECT t.name, g.tgname IS NOT NULL, g.tgenabled::text
+             FROM unnest($1::text[]) AS t(name)
+             LEFT JOIN pg_trigger g ON g.tgname = t.name AND g.tgrelid = to_regclass('"Position"') AND NOT g.tgisinternal"#,
+    )
+    .bind(&trigger_names)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("could not check \"Position\"'s triggers: {e}"))?;
+    for (name, present, enabled) in rows {
+        let trigger = crate::book::POSITION_OPEN_TRIGGERS.iter().find(|t| t.trigger == name).expect("a trigger this query asked about");
+        if !present {
+            missing.push(format!(
+                "trigger {name} is MISSING from \"Position\" (it fills {}: {}). A prisma db push recreates the table without it",
+                trigger.column, trigger.bypass_consequence
+            ));
+        // 'O' = fires for ordinary writes, 'A' = fires always. 'D' (disabled) and 'R' (replica only) both
+        // mean this INSERT would not fire it, which is indistinguishable from the trigger being absent.
+        } else if !matches!(enabled.as_deref(), Some("O") | Some("A")) {
+            missing.push(format!(
+                "trigger {name} on \"Position\" is not enabled for ordinary writes (tgenabled = {}); it fills {}: {}",
+                enabled.as_deref().unwrap_or("?"),
+                trigger.column,
+                trigger.bypass_consequence
+            ));
+        }
+    }
+
+    let (role,): (String,) = sqlx::query_as("SELECT current_user::text").fetch_one(pool).await.map_err(|e| e.to_string())?;
+    if !missing.is_empty() {
+        return Err(format!("role {role} cannot run the order path against Prisma's book: {}", missing.join("; ")));
     }
     Ok(role)
 }
@@ -549,6 +736,48 @@ mod tests {
         assert!(c.engine_owns("b2", "LIVE") && !c.engine_owns("b3", "LIVE"));
     }
 
+    // ---- L2 Stage 2: what the Prisma-book order path requires ----------------------------------------
+
+    #[test]
+    fn the_order_path_requires_exactly_the_writes_stages_3_to_5_make() {
+        use super::ORDER_PATH_PRIVILEGES;
+        let have: Vec<(&str, &str)> = ORDER_PATH_PRIVILEGES.iter().map(|p| (p.table, p.privilege)).collect();
+        assert_eq!(
+            have,
+            [("Order", "INSERT"), ("Order", "UPDATE"), ("Position", "INSERT"), ("Deal", "INSERT")],
+            "the order path's privilege list changed: re-read it against what Stages 3-5 actually write"
+        );
+        // HedgeIntent is the one a reader expects and must NOT find: design option (b) has the engine
+        // queue a PostCloseEffect and the WEB write the intent, so the engine never writes that table.
+        assert!(
+            !ORDER_PATH_PRIVILEGES.iter().any(|p| p.table == "HedgeIntent"),
+            "the engine must not need HedgeIntent: option (b) keeps the deal/intent invariant in the web"
+        );
+        // every entry says why, because the error message is the whole point of checking before granting
+        for p in ORDER_PATH_PRIVILEGES {
+            assert!(p.why.len() > 20, "{} {} has no usable reason", p.privilege, p.table);
+        }
+    }
+
+    #[test]
+    fn the_ticket_sequences_are_both_required() {
+        use super::ORDER_PATH_SEQUENCES;
+        let names: Vec<&str> = ORDER_PATH_SEQUENCES.iter().map(|(n, _)| *n).collect();
+        // No engine code names either sequence -- they are consumed by a column DEFAULT and by the
+        // ticket trigger's fallback -- which is exactly why a grant forgets them.
+        assert_eq!(names, ["order_ticket_seq", "deal_ticket_seq"]);
+        for (n, why) in ORDER_PATH_SEQUENCES {
+            assert!(why.len() > 20, "{n} has no usable reason");
+        }
+    }
+
+    /// The check asks the database about both triggers by name, so the names it asks about have to be
+    /// the ones the book module describes -- not a second copy that can drift.
+    #[test]
+    fn the_check_asks_about_the_triggers_the_book_module_names() {
+        let names: Vec<&str> = crate::book::POSITION_OPEN_TRIGGERS.iter().map(|t| t.trigger).collect();
+        assert_eq!(names, ["Position_ticket_from_origin_order", "position_stamp_group_category_at_open"]);
+    }
     // ---- L2 Stage 1: the mode matrix --------------------------------------------------------------
 
     #[test]

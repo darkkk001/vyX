@@ -1613,7 +1613,7 @@ async fn main() {
     // Left at its default (empty) when the subsystem is off, so the order routes keep failing
     // closed: with no monitor running they must refuse, never fill against an unwatched book.
     let thresholds_guard = Arc::new(std::sync::RwLock::new(ThresholdsGuardState::default()));
-    if order_management_on {
+    if order_management_on { 'orders: {
         if live_mode {
             tracing::warn!(monitor_interval_secs, "order management ENABLED (live mode): thresholds guard, per-tick triggers and swap roller running; the risk block below owns the pass, the outbox and the heartbeat");
         } else {
@@ -1621,6 +1621,25 @@ async fn main() {
                 monitor_interval_secs,
                 "order management ENABLED: margin monitor, per-tick triggers, thresholds guard and swap roller running against the engine's own tables. NO heartbeat is written in this mode: do not set a broker to RUST while it is on"
             );
+        }
+        // L2 Stage 2: in `live` mode the order path is on its way onto Prisma's book (Stages 3-5), so prove the
+        // pool can actually write it BEFORE anything starts -- including that "Position"'s two BEFORE INSERT
+        // triggers are there and enabled, because an insert into a trigger-less copy of that table succeeds and
+        // opens an A-book position unhedged with no error (order_management::book::POSITION_OPEN_TRIGGERS).
+        // Checked here while no grant exists yet, on purpose (owner, Stage 2): a half-granted role must fail at
+        // start-up rather than mid-fill.
+        //
+        // Refusing leaves the ORDER half off and the risk half below running, which is exactly today's
+        // production shape: the engine owns the risk of RUST-owned accounts and the web owns every fill. The
+        // thresholds guard stays empty, so the engine's own order routes keep refusing too (fail closed).
+        if live_mode {
+            match order_management::authority::verify_order_path_pool(&pool).await {
+                Ok(role) => tracing::info!(%role, "live mode: the pool can write Prisma's book and \"Position\"'s open triggers are enabled"),
+                Err(why) => {
+                    tracing::error!(%why, "ORDER PATH REFUSED: live mode starts the risk half only, so the engine keeps the risk of RUST-owned accounts and the web keeps every fill (the grant is L2 Stage 7)");
+                    break 'orders;
+                }
+            }
         }
         // Stage 6: every live mode acts only on the accounts the database says the engine owns (all brokers are WEB by default)
         order_management::authority::enforce();
@@ -1682,7 +1701,7 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
         order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
-    }
+    } }
     if risk_mode_requested { 'risk: {
         // Rust cutover Stage 6 (docs/STAGE6-PLAN.md): the engine is AUTHORITATIVE for the risk (SL / TP, margin call,
         // stop-out, resting-order triggers) of the accounts `Broker.riskAuthority` hands it (RUST; demo-only until the flag

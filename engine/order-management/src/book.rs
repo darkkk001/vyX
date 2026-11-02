@@ -29,6 +29,151 @@ pub fn fixed2(d: Decimal) -> String {
     format!("{:.2}", d.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero))
 }
 
+// ---- what the Prisma book fills in by itself (L2 Stage 2) -------------------------------------------------------------
+//
+// Prisma's `"Position"` has two BEFORE INSERT triggers. They exist precisely so that EVERY opener -- the
+// web's order route, an admin's manual entry, and from Stage 4 the engine -- stamps the same two columns
+// the same way, with no opener able to forget. The engine must therefore let them run rather than
+// computing either column itself.
+
+/// One of those triggers, and what bypassing it costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionOpenTrigger {
+    /// `pg_trigger.tgname`, as `authority::verify_order_path_pool` looks it up at start-up.
+    pub trigger: &'static str,
+    /// The column it fills.
+    pub column: &'static str,
+    /// Whether it fills the column ONLY when the INSERT left it NULL. When true, naming the column in an
+    /// INSERT -- even to give it a reasonable-looking default -- turns the trigger off for that row, and
+    /// Postgres reports nothing: the row inserts, and the damage is in what the column now says.
+    pub only_when_null: bool,
+    /// What a bypass actually causes. Not decoration: this is the text the guard reports.
+    pub bypass_consequence: &'static str,
+}
+
+/// Both triggers on `"Position"`, in the order `pg_trigger` returns them by name.
+///
+/// Kept as data rather than prose so three things can be checked instead of believed:
+/// `authority::verify_order_path_pool` asserts the database still has exactly these triggers (a
+/// `prisma db push` recreates a schema WITHOUT its triggers -- that is not hypothetical, it happened on
+/// the scratch database on 2026-10-31), the unit tests below assert the guard knows about them, and a
+/// `*_db.rs` test asserts they still do what this says.
+pub const POSITION_OPEN_TRIGGERS: &[PositionOpenTrigger] = &[
+    PositionOpenTrigger {
+        trigger: "Position_ticket_from_origin_order",
+        column: "ticket",
+        // Unconditional (`SELECT o."ticket" INTO NEW."ticket"`, migration 20260911200000_numeric_ticket),
+        // so a supplied ticket is overwritten rather than honoured. Harmless to the data, but a caller
+        // that supplies one is wrong about who owns the number, so the guard still names it.
+        only_when_null: false,
+        bypass_consequence: "a supplied ticket is silently overwritten by the opening order's; the trigger, not the caller, owns the number a trader quotes to support",
+    },
+    PositionOpenTrigger {
+        trigger: "position_stamp_group_category_at_open",
+        column: "groupCategoryAtOpen",
+        // `IF NEW."groupCategoryAtOpen" IS NULL THEN ... END IF` (migration
+        // 20261006090000_book_pnl_group_min_volume). Conditional, and therefore the dangerous one.
+        only_when_null: true,
+        // Traced through the real call chain: lib/hedge.ts hedgeDealInTx routes on
+        // lib/hedge-route.ts hedgeRouteOf, where groupCategoryAtOpen = A_BOOK is the ONLY thing that
+        // returns LIQUIDITY_PROVIDER. A NULL stamp on an A-book account whose bookType is A_BOOK falls to
+        // `bookType != "B_BOOK" -> NONE`: QoreBridge never sees the position AND the hedge account
+        // refuses it. The position is simply unhedged, and nothing anywhere errors.
+        bypass_consequence: "an A-book position opens UNHEDGED and silently: no HedgeIntent for QoreBridge (lib/hedge.ts keys on A_BOOK) and hedgeRouteOf returns NONE, so the hedge account will not take it either",
+    },
+];
+
+/// The triggers a `"Position"` INSERT naming these columns would turn off for the row it inserts.
+///
+/// Stage 4's insert passes its own column list through this, so the column list is checked against the
+/// triggers rather than reviewed by eye. Only the conditional triggers can actually be bypassed; an
+/// unconditional one is listed by [`POSITION_OPEN_TRIGGERS`] for the caller's sake but never returned
+/// here, because naming its column changes no data.
+pub fn triggers_bypassed_by(columns: &[&str]) -> Vec<&'static PositionOpenTrigger> {
+    POSITION_OPEN_TRIGGERS
+        .iter()
+        .filter(|t| t.only_when_null && columns.contains(&t.column))
+        .collect()
+}
+
+// ---- L2 Stage 2: the Position open-trigger contract --------------------------------------------------------------------
+
+#[cfg(test)]
+mod position_open_trigger_tests {
+    use super::{triggers_bypassed_by, POSITION_OPEN_TRIGGERS};
+
+    /// The column list Stage 4's INSERT is expected to name: everything a position needs EXCEPT the two
+    /// the database fills in. Written out here so that if Stage 4's list ever grows one of those two
+    /// columns, this test is the thing that notices.
+    const STAGE_4_COLUMNS: &[&str] = &[
+        "id",
+        "brokerId",
+        "accountId",
+        "symbolId",
+        "originOrderId",
+        "side",
+        "volume",
+        "initialVolume",
+        "openPrice",
+        "slPrice",
+        "tpPrice",
+        "status",
+        "bookType",
+        "openedAt",
+    ];
+
+    #[test]
+    fn the_engines_insert_leaves_both_trigger_columns_alone() {
+        assert!(
+            triggers_bypassed_by(STAGE_4_COLUMNS).is_empty(),
+            "the order path's INSERT names a column one of \"Position\"'s BEFORE INSERT triggers fills: {:?}",
+            triggers_bypassed_by(STAGE_4_COLUMNS).iter().map(|t| t.trigger).collect::<Vec<_>>()
+        );
+        // and it is not vacuous: these are real column names, not a list that happens to be empty
+        assert!(STAGE_4_COLUMNS.contains(&"symbolId"), "the list must be the real INSERT's columns");
+    }
+
+    /// THE Stage 2 invariant, and §7's top risk. `groupCategoryAtOpen` is filled only when the INSERT
+    /// left it NULL, so naming it -- with any value at all, including a plausible "B_BOOK" default --
+    /// turns the stamp off for that row. Nothing errors; an A-book position simply opens unhedged.
+    #[test]
+    fn naming_group_category_at_open_is_caught_as_a_bypass() {
+        let with_stamp = ["id", "accountId", "symbolId", "groupCategoryAtOpen"];
+        let caught = triggers_bypassed_by(&with_stamp);
+        assert_eq!(caught.len(), 1, "supplying groupCategoryAtOpen must be caught as a bypass");
+        assert_eq!(caught[0].trigger, "position_stamp_group_category_at_open");
+        assert!(
+            caught[0].bypass_consequence.contains("UNHEDGED"),
+            "the guard must say what a bypass costs, not just that one happened"
+        );
+    }
+
+    #[test]
+    fn the_ticket_trigger_is_unconditional_so_naming_its_column_changes_no_data() {
+        // Different failure, deliberately not reported as a bypass: the trigger overwrites a supplied
+        // ticket instead of deferring to it, so the row is still correct.
+        let ticket = POSITION_OPEN_TRIGGERS.iter().find(|t| t.column == "ticket").expect("the ticket trigger");
+        assert!(!ticket.only_when_null);
+        assert!(triggers_bypassed_by(&["id", "ticket"]).is_empty());
+    }
+
+    #[test]
+    fn both_triggers_are_described_and_each_once() {
+        assert_eq!(POSITION_OPEN_TRIGGERS.len(), 2, "\"Position\" has exactly two BEFORE INSERT triggers");
+        for t in POSITION_OPEN_TRIGGERS {
+            assert!(!t.trigger.is_empty() && !t.column.is_empty() && !t.bypass_consequence.is_empty());
+            assert_eq!(
+                POSITION_OPEN_TRIGGERS.iter().filter(|o| o.column == t.column).count(),
+                1,
+                "{} is claimed by two triggers",
+                t.column
+            );
+        }
+        // exactly one of them is the conditional, bypassable kind
+        assert_eq!(POSITION_OPEN_TRIGGERS.iter().filter(|t| t.only_when_null).count(), 1);
+    }
+}
+
 fn side_from_prisma(s: &str) -> protocol::OrderSide {
     match s {
         "SELL" => protocol::OrderSide::Sell,

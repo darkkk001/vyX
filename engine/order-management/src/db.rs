@@ -408,6 +408,15 @@ pub async fn get_order(pool: &PgPool, order_id: &str) -> Result<Option<OrderRow>
 // ─────────────────────────────────────────────────────────────────────
 
 pub struct BrokerSymbolConfig {
+    /// `Symbol.id`. The engine's own lowercase tables key a position by symbol NAME (`positions.symbol`),
+    /// but Prisma's book keys it by id (`"Position"."symbolId"`, a required FK), so the L2 cutover needs the
+    /// id on every path that opens a position. Resolved here rather than in a second query because this
+    /// function already joins `"Symbol"` by name for the digits.
+    ///
+    /// `Symbol.name` is globally UNIQUE (schema.prisma:1731), so the name -> id lookup is unambiguous and
+    /// needs no broker scoping -- a broker's own view of a symbol is the `"BrokerSymbol"` row LEFT JOINed
+    /// below, which may be absent without changing which `Symbol` this is.
+    pub symbol_id: String,
     pub digits: i32,
     pub spread_markup: Decimal,
     pub enabled: bool,
@@ -431,7 +440,7 @@ pub struct BrokerSymbolConfig {
 
 #[allow(clippy::type_complexity)]
 type BrokerSymbolConfigRow =
-    (i32, Decimal, bool, Decimal, Decimal, Decimal, Option<Decimal>, Decimal, Decimal, Decimal);
+    (String, i32, Decimal, bool, Decimal, Decimal, Decimal, Option<Decimal>, Decimal, Decimal, Decimal);
 
 /// `Symbol.digits` always resolves if the symbol exists at all; the LEFT
 /// JOIN means an unconfigured `BrokerSymbol` row (broker hasn't set up
@@ -445,7 +454,7 @@ pub async fn get_broker_symbol_config(
     symbol: &str,
 ) -> Result<Option<BrokerSymbolConfig>, sqlx::Error> {
     let row: Option<BrokerSymbolConfigRow> = sqlx::query_as(
-        r#"SELECT s.digits, COALESCE(bs."spreadMarkup", 0), COALESCE(bs.enabled, true),
+        r#"SELECT s.id, s.digits, COALESCE(bs."spreadMarkup", 0), COALESCE(bs.enabled, true),
                   COALESCE(bs."minLot", 0.01), COALESCE(bs."maxLot", 100), COALESCE(bs."lotStep", 0.01),
                   bs."maxExposure", COALESCE(bs."commissionPerLot", 0),
                   COALESCE(bs."swapLong", 0), COALESCE(bs."swapShort", 0)
@@ -458,8 +467,9 @@ pub async fn get_broker_symbol_config(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(
-        |(digits, spread_markup, enabled, min_lot, max_lot, lot_step, max_exposure, commission_per_lot, swap_long, swap_short)| {
+        |(symbol_id, digits, spread_markup, enabled, min_lot, max_lot, lot_step, max_exposure, commission_per_lot, swap_long, swap_short)| {
             BrokerSymbolConfig {
+                symbol_id,
                 digits,
                 spread_markup,
                 enabled,
