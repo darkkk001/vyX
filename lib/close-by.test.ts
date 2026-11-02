@@ -123,8 +123,9 @@ afterAll(async () => {
 // ever reaching a price fetch.
 async function refreshPrices() {
   const now = new Date();
-  await prisma.livePrice.update({ where: { symbol: "XAUUSD" }, data: { tickAt: now } });
-  await prisma.livePrice.update({ where: { symbol: "EURUSD" }, data: { tickAt: now } });
+  // upsert: a freshly migrated test database (CI) has no LivePrice rows; bid and ask differ so BUY / SELL closes do too
+  await prisma.livePrice.upsert({ where: { symbol: "XAUUSD" }, update: { tickAt: now }, create: { symbol: "XAUUSD", bid: "4000.00", ask: "4000.50", tickAt: now } });
+  await prisma.livePrice.upsert({ where: { symbol: "EURUSD" }, update: { tickAt: now }, create: { symbol: "EURUSD", bid: "1.10000", ask: "1.10020", tickAt: now } });
 }
 
 describe("closePositionsByEachOther (live DB, rolled back)", () => {
