@@ -704,7 +704,11 @@ pub async fn record_commission(
             .await?;
         }
         Book::Prisma => {
-            let (balance_before,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1 FOR UPDATE"#)
+            // FOR NO KEY UPDATE, not FOR UPDATE: the same lock lib/account-lock.ts takes, and the same
+            // one authority::lock_owner_in_tx takes for the same reason -- it serialises writers to
+            // the row without blocking the FK references other inserts in this transaction need.
+            // Found by comparing the two paths' statement logs during the L2 latency measurement.
+            let (balance_before,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1 FOR NO KEY UPDATE"#)
                 .bind(account_id)
                 .fetch_one(&mut **tx)
                 .await?;
