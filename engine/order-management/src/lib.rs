@@ -128,6 +128,12 @@ pub enum PlaceMarketOrderOutcome {
 pub enum PlaceOrderError {
     #[error(transparent)]
     Db(#[from] sqlx::Error),
+    /// L2 Stage 3: no `"Symbol"` row with this name. On the legacy book this was survivable -- the
+    /// admission checks were skipped and the order filled at the raw tick -- but Prisma's `"Order"`
+    /// and `"Position"` both require a `symbolId` FK, so there is no row to create and therefore no
+    /// order to reject. The caller gets a 400, not an order id.
+    #[error("unknown symbol {0}")]
+    UnknownSymbol(String),
 }
 
 /// The MARKET-order path conceptually passes through NEW -> VALIDATING ->
@@ -151,14 +157,33 @@ pub async fn place_market_order(
     cache: &TickCache,
     req: PlaceMarketOrderRequest,
 ) -> Result<PlaceMarketOrderOutcome, PlaceOrderError> {
+    // L2 Stage 3: ONE book for the whole order. Read once here rather than per write, so a single
+    // order can never leave half its rows in each book.
+    let book = db::configured();
+
+    // Moved AHEAD of the order row (it used to be read after the admission checks began) because
+    // Prisma's "Order" needs its symbolId to exist at all. Same single round-trip as before: this
+    // read already served the admission checks and the commission below.
+    //
+    // A `None` here is the rare, benign "no Symbol row" case -- on the legacy book the order still
+    // filled at the raw tick with the admission checks skipped, which is kept exactly as it was; on
+    // the Prisma book there is no row to write, so it is refused before anything is created.
+    let symbol_config = db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await?;
+    if book == db::Book::Prisma && symbol_config.is_none() {
+        return Err(PlaceOrderError::UnknownSymbol(req.symbol.clone()));
+    }
+    let symbol_id = symbol_config.as_ref().map(|c| c.symbol_id.clone()).unwrap_or_default();
+
     let mut tx = pool.begin().await?;
 
     let order_id = db::insert_order(
         &mut tx,
+        book,
         &db::NewOrder {
             broker_id: req.broker_id.clone(),
             account_id: req.account_id.clone(),
             symbol: req.symbol.clone(),
+            symbol_id,
             side: req.side,
             order_type: OrderType::Market,
             volume: req.volume,
@@ -193,14 +218,8 @@ pub async fn place_market_order(
         }
     };
 
-    // Fetched once, used for both admission checks below and the markup
-    // application further down — one DB round-trip covers both, since
-    // both live on the same BrokerSymbol row. A `None` here (the Symbol
-    // row itself doesn't exist) is a rare, benign case rather than a hard
-    // error — see get_broker_symbol_config's doc comment — so admission
-    // checks are skipped, matching the existing markup fallback.
-    let symbol_config = db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await?;
-
+    // `symbol_config` was read above, before the order row: see there for why, and for what a
+    // `None` means on each book.
     if let Some(cfg) = &symbol_config {
         if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
             let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
@@ -257,7 +276,15 @@ pub async fn place_market_order(
         execution::ExecutionStrategy::Internal,
     );
 
-    db::set_filled(&mut tx, &order_id, fill.price, fill.volume).await?;
+    // The double-fill guard: false = this order was already answered (a concurrent pass, the web's
+    // own fill path during a failover, a retry). Roll back rather than open a second position for it.
+    if !db::set_filled(&mut tx, book, &order_id, fill.price, fill.volume, None).await? {
+        tx.rollback().await?;
+        return Ok(PlaceMarketOrderOutcome::Rejected {
+            order_id,
+            reason: "the order was already answered by another writer".to_string(),
+        });
+    }
 
     let position_id = db::insert_position(
         &mut tx,
@@ -372,14 +399,26 @@ pub async fn place_pending_order(
     cache: &TickCache,
     req: PlacePendingOrderRequest,
 ) -> Result<PlacePendingOrderOutcome, PlaceOrderError> {
+    // L2 Stage 3, as in place_market_order: one book for the whole order, and the symbol resolved
+    // before the row exists because Prisma's "Order" requires its symbolId. Read here once -- the
+    // admission checks below used to read it a second time.
+    let book = db::configured();
+    let symbol_config = db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await?;
+    if book == db::Book::Prisma && symbol_config.is_none() {
+        return Err(PlaceOrderError::UnknownSymbol(req.symbol.clone()));
+    }
+    let symbol_id = symbol_config.as_ref().map(|c| c.symbol_id.clone()).unwrap_or_default();
+
     let mut tx = pool.begin().await?;
 
     let order_id = db::insert_order(
         &mut tx,
+        book,
         &db::NewOrder {
             broker_id: req.broker_id.clone(),
             account_id: req.account_id.clone(),
             symbol: req.symbol.clone(),
+            symbol_id,
             side: req.side,
             order_type: req.order_type,
             volume: req.volume,
@@ -417,7 +456,7 @@ pub async fn place_pending_order(
     // pending, rather than sitting there until trigger time only to
     // reject then. Lot size doesn't need rechecking at trigger time
     // (pending_orders.rs) since volume never changes after placement.
-    if let Some(cfg) = db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await? {
+    if let Some(cfg) = &symbol_config {
         if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
             let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
@@ -428,7 +467,9 @@ pub async fn place_pending_order(
         }
     }
 
-    db::set_status(&mut tx, &order_id, OrderStatus::Accepted).await?;
+    // On the Prisma book this is already the status insert_order wrote (PENDING = resting): see
+    // db::set_status, where making it anything else would hide the order from both pending scans.
+    db::set_status(&mut tx, book, &order_id, OrderStatus::Accepted).await?;
     tx.commit().await?;
 
     publish_best_effort(nats, &TradingEvent::OrderAccepted { order_id: order_id.clone(), account_id: req.account_id.clone() }).await;
@@ -455,8 +496,14 @@ pub(crate) async fn reject_order(
     account_id: &str,
     reason: String,
 ) -> Result<String, PlaceOrderError> {
-    db::set_rejected(&mut tx, order_id, &reason).await?;
+    // A false here means the order had already been answered, so there is nothing to reject and the
+    // reason below is this caller's own view, not the order's. Committing either way keeps the
+    // transaction's other work (there is none on this path) and the event consistent with the row.
+    let rejected = db::set_rejected(&mut tx, db::configured(), order_id, &reason).await?;
     tx.commit().await?;
+    if !rejected {
+        tracing::warn!(order_id, "reject skipped: the order was no longer PENDING (already filled, rejected or cancelled)");
+    }
     publish_best_effort(
         nats,
         &TradingEvent::OrderRejected(RiskRejection {

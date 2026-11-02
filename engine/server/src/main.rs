@@ -363,9 +363,14 @@ async fn place_market_order(
 
     let outcome = order_management::place_market_order(&state.pool, &state.nats, &state.tick_cache, req)
         .await
-        .map_err(|err| {
-            tracing::error!(?err, "place_market_order failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        .map_err(|err| match err {
+            // L2 Stage 3: the symbol does not exist, so no order row could be created to reject.
+            // A client error, not an internal one.
+            order_management::PlaceOrderError::UnknownSymbol(symbol) => (StatusCode::BAD_REQUEST, format!("unknown symbol {symbol}")),
+            err => {
+                tracing::error!(?err, "place_market_order failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
         })?;
 
     Ok(Json(outcome.into()))
@@ -435,9 +440,12 @@ async fn place_pending_order(
 
     let outcome = order_management::place_pending_order(&state.pool, &state.nats, &state.tick_cache, req)
         .await
-        .map_err(|err| {
-            tracing::error!(?err, "place_pending_order failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        .map_err(|err| match err {
+            order_management::PlaceOrderError::UnknownSymbol(symbol) => (StatusCode::BAD_REQUEST, format!("unknown symbol {symbol}")),
+            err => {
+                tracing::error!(?err, "place_pending_order failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
         })?;
 
     Ok(Json(outcome.into()))
@@ -1634,7 +1642,12 @@ async fn main() {
         // thresholds guard stays empty, so the engine's own order routes keep refusing too (fail closed).
         if live_mode {
             match order_management::authority::verify_order_path_pool(&pool).await {
-                Ok(role) => tracing::info!(%role, "live mode: the pool can write Prisma's book and \"Position\"'s open triggers are enabled"),
+                Ok(role) => {
+                    tracing::info!(%role, "live mode: the pool can write Prisma's book and \"Position\"'s open triggers are enabled");
+                    // L2 Stage 3: and only now, after the check passed, does the order path write it.
+                    // Set before the HTTP listener binds, so no order can be taken on the wrong book.
+                    order_management::db::use_prisma_book();
+                }
                 Err(why) => {
                     tracing::error!(%why, "ORDER PATH REFUSED: live mode starts the risk half only, so the engine keeps the risk of RUST-owned accounts and the web keeps every fill (the grant is L2 Stage 7)");
                     break 'orders;

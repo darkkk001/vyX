@@ -112,10 +112,71 @@ fn position_status_from_str(s: &str) -> PositionStatus {
     }
 }
 
+// ---- which book the order path writes (L2 Stage 3) ---------------------------------------------------
+//
+// The engine has always written its OWN lowercase `orders` / `positions` / `ledger_entries`, which
+// production never fills: every broker's book lives in Prisma's `"Order"` / `"Position"` / `"Deal"` /
+// `"Transaction"`, which is what margin, P&L, the UI and hedging all read (book.rs's module doc).
+// The L2 cutover moves the order path onto that book.
+//
+// The choice is an explicit parameter rather than a flag read inside each function, so that:
+//   - the legacy mode (`ENGINE_ORDER_MANAGEMENT=1|on|true|yes`) keeps writing the legacy tables and
+//     its behaviour does not change at all until Stage 8 removes it, and
+//   - a test can exercise either book without touching process-wide state.
+// `live` mode selects Prisma; everything else selects Legacy. See `configured()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Book {
+    /// The engine's own lowercase tables. Nothing in production reads them.
+    #[default]
+    Legacy,
+    /// Prisma's `"Order"` / `"Position"` / `"Deal"` / `"Transaction"` -- the real book.
+    Prisma,
+}
+
+/// Set once at start-up by `live` mode (engine/server/src/main.rs), before the HTTP listener binds.
+static PRISMA_BOOK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `live` mode announces that the order path writes the real book. Idempotent; never unset.
+pub fn use_prisma_book() {
+    PRISMA_BOOK.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The book this process's order path writes. Read ONCE per order by the paths in lib.rs /
+/// pending_orders.rs and then passed down, so one order can never write half of each.
+pub fn configured() -> Book {
+    if PRISMA_BOOK.load(std::sync::atomic::Ordering::Relaxed) {
+        Book::Prisma
+    } else {
+        Book::Legacy
+    }
+}
+
+// ---- L2 Stage 3: which book, and the fail-safe default ----------------------------------------------
+
+#[cfg(test)]
+mod book_tests {
+    use super::Book;
+
+    /// The default has to be the LEGACY book, and the flag has to be one-way. Every process that is
+    /// not `live` mode -- the legacy order-only mode, shadow, a test binary, a tool -- must write the
+    /// engine's own tables, because those are the ones nothing reads. Defaulting the other way would
+    /// mean any process that forgot to opt out wrote real client positions.
+    #[test]
+    fn a_process_that_says_nothing_writes_the_legacy_book() {
+        assert_eq!(Book::default(), Book::Legacy);
+        // configured() reads a process-wide flag, so this asserts the UNSET reading. The flag is only
+        // ever set by live mode in engine/server/src/main.rs, after verify_order_path_pool passed.
+        assert_eq!(super::configured(), Book::Legacy, "no process writes the real book until live mode says so");
+    }
+}
+
 pub struct NewOrder {
     pub broker_id: String,
     pub account_id: String,
     pub symbol: String,
+    /// `Symbol.id` -- required by Prisma's `"Order"."symbolId"` (a NOT NULL FK). Resolved by
+    /// `get_broker_symbol_config` (L2 Stage 2). Ignored by the legacy book, which keys by name.
+    pub symbol_id: String,
     pub side: OrderSide,
     pub order_type: OrderType,
     pub volume: Decimal,
@@ -124,43 +185,101 @@ pub struct NewOrder {
     pub tp_price: Option<Decimal>,
 }
 
-/// Inserts a new order row with status NEW. Callers move it through
+/// Inserts a new order row. Callers move it through
 /// `set_status`/`set_rejected`/`set_filled` from there — every write goes
-/// through this module so `orders` never gets a row written outside the
+/// through this module so the order table never gets a row written outside the
 /// legality checks in the `order-management` crate root.
+///
+/// LEGACY: status NEW in the engine's own `orders`.
+///
+/// PRISMA: status PENDING in `"Order"`, which is what the web writes for both a market order waiting
+/// on a decision and a resting LIMIT/STOP (`risk_hook.rs`'s pending scan reads exactly
+/// `status = 'PENDING' AND type IN ('LIMIT','STOP')`). Three columns are deliberately NOT supplied:
+///   - `ticket`, so the sequence DEFAULT assigns the number a trader quotes to support;
+///   - `createdAt` / `requestedAt`, which default to now().
+///
+/// `updatedAt` IS supplied: Prisma declares it `@updatedAt`, which Prisma Client fills in — the column
+/// is NOT NULL with no database default, so a plain SQL insert must set it or fail.
 pub async fn insert_order(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order: &NewOrder,
 ) -> Result<String, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        r#"
+    match book {
+        Book::Legacy => {
+            sqlx::query(
+                r#"
         INSERT INTO orders
             (id, broker_id, account_id, symbol, side, type, volume,
              requested_price, sl_price, tp_price, status)
         VALUES ($1, $2, $3, $4, $5::order_side, $6::order_type, $7, $8, $9, $10, 'NEW')
         "#,
-    )
-    .bind(&id)
-    .bind(&order.broker_id)
-    .bind(&order.account_id)
-    .bind(&order.symbol)
-    .bind(side_to_str(order.side))
-    .bind(type_to_str(order.order_type))
-    .bind(order.volume)
-    .bind(order.requested_price)
-    .bind(order.sl_price)
-    .bind(order.tp_price)
-    .execute(&mut **tx)
-    .await?;
+            )
+            .bind(&id)
+            .bind(&order.broker_id)
+            .bind(&order.account_id)
+            .bind(&order.symbol)
+            .bind(side_to_str(order.side))
+            .bind(type_to_str(order.order_type))
+            .bind(order.volume)
+            .bind(order.requested_price)
+            .bind(order.sl_price)
+            .bind(order.tp_price)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Book::Prisma => {
+            // idempotencyKey is UNIQUE per (accountId, key) and exists so a CLIENT retrying after a
+            // timeout gets its original answer instead of a second order. An engine-originated order
+            // has no client key to carry, so the row's own id -- already a v4 uuid -- is the honest
+            // value: unique, and never colliding with a client's. (In the cutover's own design the
+            // WEB creates the Order row and the engine only fills it; this path exists for the
+            // engine's own /v1/orders routes, which nothing calls today.)
+            //
+            // source API: these orders arrive through the engine's HTTP routes, which is what that
+            // enum value means. Not WEB (its default), which would misattribute them in reports.
+            sqlx::query(
+                r#"INSERT INTO "Order"
+                     (id, "brokerId", "accountId", "symbolId", side, type, volume,
+                      "requestedPrice", "slPrice", "tpPrice", status, "idempotencyKey", source, "updatedAt")
+                   VALUES ($1, $2, $3, $4, $5::"OrderSide", $6::"OrderType", $7, $8, $9, $10,
+                           'PENDING'::"OrderStatus", $11, 'API'::"OrderSource", now())"#,
+            )
+            .bind(&id)
+            .bind(&order.broker_id)
+            .bind(&order.account_id)
+            .bind(&order.symbol_id)
+            .bind(side_to_str(order.side))
+            .bind(type_to_str(order.order_type))
+            .bind(order.volume)
+            .bind(order.requested_price)
+            .bind(order.sl_price)
+            .bind(order.tp_price)
+            .bind(format!("engine:{id}"))
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
     Ok(id)
 }
 
+/// LEGACY only. The engine's `order_status` enum has NEW / VALIDATING / ACCEPTED / ROUTING states
+/// that Prisma's `OrderStatus` simply does not have, and the one that matters -- a resting LIMIT/STOP
+/// waiting for its price -- is `PENDING` on the Prisma book, which `insert_order` already wrote. So on
+/// Prisma a placed pending order needs no status move at all, and making one would be actively wrong:
+/// `ACCEPTED` there is invisible to the pending scans (`risk_hook.rs` and
+/// `get_pending_orders_for_symbol` both match `PENDING`), so the order would rest forever.
 pub async fn set_status(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order_id: &str,
     status: OrderStatus,
 ) -> Result<(), sqlx::Error> {
+    if book == Book::Prisma {
+        debug_assert_eq!(status, OrderStatus::Accepted, "the Prisma book has no intermediate order states");
+        return Ok(());
+    }
     sqlx::query(
         "UPDATE orders SET status = $1::order_status, updated_at = now() WHERE id = $2",
     )
@@ -171,38 +290,94 @@ pub async fn set_status(
     Ok(())
 }
 
+/// Rejects the order. On the Prisma book this is a compare-and-set for the same reason `set_filled`
+/// is: an order that has already been answered must not be answered again, and a reject landing on top
+/// of a fill would tell the trader their open position was refused.
 pub async fn set_rejected(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order_id: &str,
     reason: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"UPDATE orders SET status = 'REJECTED'::order_status, reject_reason = $1,
+) -> Result<bool, sqlx::Error> {
+    let result = match book {
+        Book::Legacy => {
+            sqlx::query(
+                r#"UPDATE orders SET status = 'REJECTED'::order_status, reject_reason = $1,
            updated_at = now() WHERE id = $2"#,
-    )
-    .bind(reason)
-    .bind(order_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
+            )
+            .bind(reason)
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await?
+        }
+        Book::Prisma => {
+            sqlx::query(
+                r#"UPDATE "Order" SET status = 'REJECTED'::"OrderStatus", "rejectionReason" = $1,
+                     "executedAt" = now(), "executionMode" = COALESCE("executionMode", 'AUTO'), "updatedAt" = now()
+                   WHERE id = $2 AND status = 'PENDING'::"OrderStatus""#,
+            )
+            .bind(reason)
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await?
+        }
+    };
+    Ok(result.rows_affected() == 1)
 }
 
+/// Marks the order filled. **Returns false when it was not this caller's to fill.**
+///
+/// THE DOUBLE-FILL GUARD (design §5b.3). On the Prisma book this is a compare-and-set on the status:
+/// `WHERE id = $1 AND status = 'PENDING'`. Only one writer can move a PENDING order to FILLED, so a
+/// second filler -- another engine pass, the web's own fill path during a failover, a retried request
+/// -- matches zero rows and must abort its transaction rather than open a second position for one
+/// order. That is the same discipline `lib/order-expiry.ts` already uses on the web side, and the
+/// reason it has to exist here is that `"Position"."originOrderId"` is UNIQUE: a second position for
+/// the same order would fail anyway, but as a constraint violation in the middle of a money
+/// transaction instead of a clean "someone else has this".
+///
+/// `routing` is the position's book type (A_BOOK / B_BOOK), which `lib/dealing.ts` writes in this same
+/// UPDATE; None leaves it alone (Stage 3 has not resolved it yet, Stage 4 passes it).
+///
+/// Prisma's `"Order"` has no filled-volume column -- a fill is whole there -- so `filled_volume` is
+/// legacy-only. `execution::execute_market_order` fills the whole requested volume on the Internal
+/// strategy, so nothing is lost; a partial-fill strategy would need a column first.
 pub async fn set_filled(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order_id: &str,
     filled_price: Decimal,
     filled_volume: Decimal,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"UPDATE orders SET status = 'FILLED'::order_status, filled_price = $1,
+    routing: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let result = match book {
+        Book::Legacy => {
+            sqlx::query(
+                r#"UPDATE orders SET status = 'FILLED'::order_status, filled_price = $1,
            filled_volume = $2, updated_at = now() WHERE id = $3"#,
-    )
-    .bind(filled_price)
-    .bind(filled_volume)
-    .bind(order_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
+            )
+            .bind(filled_price)
+            .bind(filled_volume)
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await?
+        }
+        Book::Prisma => {
+            sqlx::query(
+                r#"UPDATE "Order" SET status = 'FILLED'::"OrderStatus", "filledPrice" = $1,
+                     "filledAt" = now(), "executedAt" = now(),
+                     "executionMode" = COALESCE("executionMode", 'AUTO'),
+                     routing = COALESCE($2, routing), "updatedAt" = now()
+                   WHERE id = $3 AND status = 'PENDING'::"OrderStatus""#,
+            )
+            .bind(filled_price)
+            .bind(routing)
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await?
+        }
+    };
+    Ok(result.rows_affected() == 1)
 }
 
 pub struct NewPosition {

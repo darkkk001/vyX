@@ -73,6 +73,7 @@ async fn trigger_order(
     order: &db::PendingOrder,
     tick: &Tick,
 ) -> Result<(), PlaceOrderError> {
+    let book = db::configured();
     let mut tx = pool.begin().await?;
 
     // Idempotent claim — see db.rs's try_claim_order_for_routing doc. If
@@ -129,7 +130,12 @@ async fn trigger_order(
 
     let fill = execution::execute_market_order(&order.id, &order.account_id, order.side, order.volume, &quoted_tick, execution::ExecutionStrategy::Internal);
 
-    db::set_filled(&mut tx, &order.id, fill.price, fill.volume).await?;
+    // Stage 3's double-fill guard applies to a triggered resting order too: two ticks for the same
+    // symbol landing together both reach here, and only one may fill it.
+    if !db::set_filled(&mut tx, book, &order.id, fill.price, fill.volume, None).await? {
+        tx.rollback().await?;
+        return Ok(());
+    }
 
     let position_id = db::insert_position(
         &mut tx,
