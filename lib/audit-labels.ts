@@ -152,6 +152,7 @@ const LABELS: Record<string, string> = {
   DEALING_ORDER_REQUOTED: "Requoted dealing order",
   DEALING_ORDER_REQUOTE_ACCEPTED: "Client accepted requote",
   DEALING_ORDER_REQUOTE_REJECTED: "Client rejected requote",
+  DEALING_ORDER_EXPIRED: "Dealing order expired",
   DEALING_ORDER_AUTO_ACCEPTED: "Smart Dealer auto-accepted order",
   PENDING_ORDER_QUEUED_FOR_DEALING: "Triggered pending order queued for dealing",
   DEALING_ORDER_AUTO_REJECTED: "Smart Dealer auto-rejected order",

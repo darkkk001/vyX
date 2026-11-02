@@ -78,6 +78,8 @@ export function describeOrderAuditEvent(action: string, oldValue: Prisma.JsonVal
       return `Requote accepted: ${desc} filled @ ${after.filledPrice}`;
     case "DEALING_ORDER_REQUOTE_REJECTED":
       return `Requote rejected: ${desc}`;
+    case "DEALING_ORDER_EXPIRED":
+      return `Offer expired: ${desc} (${before.status === "REQUOTED" ? "requote not answered" : "not handled by the dealer"})`;
     case "DEALING_ORDER_ACCEPTED":
     case "DEALING_ORDER_AUTO_ACCEPTED":
     case "ORDER_FILLED":

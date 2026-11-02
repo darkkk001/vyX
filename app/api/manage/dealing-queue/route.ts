@@ -4,6 +4,7 @@ import { askRuleWire, loadAskRules } from "@/lib/ask-markup";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrices } from "@/lib/live-price";
+import { expireStaleOffers, offerExpiresAt } from "@/lib/order-expiry";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -29,6 +30,12 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session.brokerId!;
+
+  // dealer queue expiry (lib/order-expiry.ts): anything past its window leaves the queue before the desk sees it (the
+  // 5-minute sweep in app/api/internal/margin-monitor covers the time nobody is looking); every row carries expiresAt
+  // for the countdown
+  await expireStaleOffers(prisma, new Date(), brokerId);
+  const expiry = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { requoteExpirySeconds: true, offerExpirySeconds: true } });
 
   const [pending, requoted] = await Promise.all([
     prisma.order.findMany({
@@ -76,6 +83,7 @@ export async function GET() {
         volume: o.volume.toString(),
         requestedPrice: o.requestedPrice ? o.requestedPrice.toString() : null,
         createdAt: o.createdAt.toISOString(),
+        expiresAt: offerExpiresAt(o, expiry)!.toISOString(),
         liveBid: live ? live.bid.toString() : null,
         liveAsk: live ? live.ask.toString() : null,
         // the account's ask rule (price units; missing on an older server = raw)
@@ -100,6 +108,7 @@ export async function GET() {
       requestedPrice: o.requestedPrice ? o.requestedPrice.toString() : null,
       requotedPrice: o.requotedPrice ? o.requotedPrice.toString() : null,
       createdAt: o.createdAt.toISOString(),
+      expiresAt: offerExpiresAt(o, expiry)!.toISOString(),
       ...ruleWire(o),
       kind: o.closesPositionId ? "CLOSE" : "OPEN",
       closesPositionId: o.closesPositionId,

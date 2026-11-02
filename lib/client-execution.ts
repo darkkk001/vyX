@@ -73,6 +73,8 @@ const ORDER_FIELDS = [
   "id", "ticket", "symbolId", "side", "type", "volume", "requestedPrice", "slPrice", "tpPrice", "status", "filledPrice", "filledAt",
   "rejectionReason", "requotedPrice", "idempotencyKey", "source", "closesPositionId", "closeVolume", "closeByPositionId",
   "requestedAt", "executedAt", "platform", "createdAt", "updatedAt",
+  // computed, not a column: when a waiting offer (REQUOTED, or a MARKET order with the dealer) lapses (lib/order-expiry.ts)
+  "expiresAt",
   "symbol",
 ] as const;
 

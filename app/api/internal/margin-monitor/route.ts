@@ -4,6 +4,7 @@ import { runFullMarginPass } from "@/lib/margin-pass";
 import { bearerMatches } from "@/lib/internal-auth";
 import { evaluatePendingTriggers } from "@/lib/pending-trigger";
 import { marginPassGate } from "@/lib/live-price";
+import { expireStaleOffers } from "@/lib/order-expiry";
 
 // 2026-09-05 P0 fix -- the reliable floor beneath the tick-ingest trigger
 // (lib/price-feed.ts's ingestTicks -> evaluateRiskForSymbol), which is
@@ -80,5 +81,14 @@ export async function GET(request: NextRequest) {
   // who asked, for the RISK_CLOSE_WEB audit row (lib/risk-monitor.ts): Vercel's cron says so in its user agent; the
   // only other caller of the full pass is the engine's backstop
   const fullPassTrigger = (request.headers.get("user-agent") ?? "").startsWith("vercel-cron") ? "margin-monitor-cron" : "engine-backstop";
-  return NextResponse.json(await runFullMarginPass(fullPassTrigger));
+  // Dealer queue expiry (lib/order-expiry.ts): the periodic sweep rides the 5-minute cron only (never the engine's
+  // 5-second backstop, never the 1-minute risk-fallback) and only past the idle gate above, so it never wakes Neon on its
+  // own. One indexed query when nothing waits. The accept paths and the desk's queue read check expiry themselves.
+  const offers = fullPassTrigger === "margin-monitor-cron"
+    ? await expireStaleOffers().catch((err) => {
+        console.error("margin-monitor: offer expiry sweep failed", err);
+        return null;
+      })
+    : undefined;
+  return NextResponse.json({ ...(await runFullMarginPass(fullPassTrigger)), ...(offers !== undefined ? { offers } : {}) });
 }

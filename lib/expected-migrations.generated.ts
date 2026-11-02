@@ -114,5 +114,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261023150000_rejected_order_close_modify",
   "20261027120000_account_equity_snapshot",
   "20261027130000_shared_coverage_leg",
-  "20261028090000_slippage_cap"
+  "20261028090000_slippage_cap",
+  "20261102120000_dealer_queue_expiry"
 ];

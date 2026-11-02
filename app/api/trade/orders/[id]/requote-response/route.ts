@@ -12,6 +12,7 @@ import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { orderAuditFields } from "@/lib/order-audit";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { expireIfStale, OFFER_EXPIRED } from "@/lib/order-expiry";
 import { Prisma } from "@prisma/client";
 import {
   checkTradingHalted,
@@ -60,6 +61,11 @@ async function postInner(request: NextRequest, { params }: { params: Promise<{ i
   });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
+  }
+  // dealer queue expiry (lib/order-expiry.ts): a requote past its window is withdrawn here and can be neither accepted
+  // nor declined (the OrderCancelled event tells the client too)
+  if (order.status === "REQUOTED" && (await expireIfStale(prisma, id))) {
+    return NextResponse.json({ error: OFFER_EXPIRED }, { status: 409 });
   }
   if (order.status !== "REQUOTED" || order.requotedPrice == null) {
     return NextResponse.json({ error: "order is not awaiting a requote response" }, { status: 409 });

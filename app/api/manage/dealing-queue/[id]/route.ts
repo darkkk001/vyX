@@ -18,6 +18,7 @@ import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { expireIfStale, OFFER_EXPIRED, offerExpiresAt } from "@/lib/order-expiry";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -97,6 +98,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
   if (order.type !== "MARKET" || (order.status !== "PENDING" && order.status !== "REQUOTED")) {
     return NextResponse.json({ error: "order is not awaiting dealer review" }, { status: 409 });
+  }
+  // dealer queue expiry (lib/order-expiry.ts): an order past its window is withdrawn here, whatever the dealer clicked
+  // (an accept or a requote of a stale offer must never go through; a reject would only race the sweep)
+  if (await expireIfStale(prisma, id)) {
+    return NextResponse.json({ error: OFFER_EXPIRED, message: "This order expired before it was handled" }, { status: 409 });
   }
 
   // Requested + live at click time, for every action's audit row -- so
@@ -182,10 +188,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (requotedPrice.lte(0)) {
       return NextResponse.json({ error: "price must be positive" }, { status: 400 });
     }
+    const requotedAt = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       const result = await tx.order.updateMany({
         where: { id, status: "PENDING" },
-        data: { status: "REQUOTED", requotedPrice, executedAt: new Date(), executionMode: "DEALER" },
+        data: { status: "REQUOTED", requotedPrice, executedAt: requotedAt, executionMode: "DEALER" },
       });
       if (result.count === 0) throw new Error("RACED");
       await tx.auditLog.create({
@@ -204,13 +211,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!updated) {
       return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
     }
+    // the offer's deadline (lib/order-expiry.ts), for the client's requote prompt and the desk's countdown
+    const expiry = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { requoteExpirySeconds: true, offerExpirySeconds: true } });
+    const expiresAt = offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: requotedAt, updatedAt: requotedAt }, expiry)!.toISOString();
     await publishTradingEvent("OrderRequoted", {
       order_id: id,
       account_id: order.accountId,
       broker_id: brokerId,
       requoted_price: requotedPrice.toString(),
+      expires_at: expiresAt,
     });
-    return NextResponse.json({ id, status: "REQUOTED", requotedPrice: requotedPrice.toString() });
+    return NextResponse.json({ id, status: "REQUOTED", requotedPrice: requotedPrice.toString(), expiresAt });
   }
 
   // ACCEPT -- fills at exactly order.requestedPrice (see this route's own

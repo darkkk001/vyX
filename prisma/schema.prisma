@@ -449,6 +449,11 @@ model Broker {
   slippageCapXauPoints       Decimal?        @default(30) @db.Decimal(10, 2)
   slippageCapRefPrice        Decimal?        @default(4000) @db.Decimal(18, 5)
   slippageAction             SlippageAction  @default(REQUOTE)
+  // Dealer queue expiry (owner 2026-10-29, lib/order-expiry.ts): a REQUOTED offer to the client expires this many
+  // seconds after the requote; a client MARKET order waiting for the dealer expires offerExpirySeconds after it joined
+  // the queue. Expired = CANCELLED, rejectionReason OFFER_EXPIRED.
+  requoteExpirySeconds       Int             @default(60)
+  offerExpirySeconds         Int             @default(300)
   // Sum of open volume (lots) across every symbol for this broker. Null
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
   totalExposureLimit         Decimal?        @db.Decimal(18, 2)
@@ -1999,6 +2004,8 @@ model Order {
   @@index([brokerId])
   @@index([accountId])
   @@index([closesPositionId])
+  // the dealer queue expiry sweep (lib/order-expiry.ts): "any MARKET order still waiting?" without a table scan
+  @@index([status, type])
 }
 
 model Position {

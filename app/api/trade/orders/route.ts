@@ -57,6 +57,7 @@ import { traceRejectedOrder } from "@/lib/rejected-orders";
 import { withClientRefusals } from "@/lib/client-reason";
 import { firstRefusalOfEpisode, ORDER_RATE_LIMITED_MESSAGE, orderLimitsFor, takeOrderToken } from "@/lib/order-rate-limit";
 import { requestMeta } from "@/lib/order-execution";
+import { offerExpiresAt } from "@/lib/order-expiry";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
   await prisma.auditLog.create({
@@ -473,8 +474,9 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       );
       return rejected;
     }
+    const requotedAt = new Date();
     const requoted = await prisma.$transaction(async (tx) => {
-      const data = { status: "REQUOTED" as const, requotedPrice: liveRaw, executedAt: new Date(), executionMode: "AUTO" };
+      const data = { status: "REQUOTED" as const, requotedPrice: liveRaw, executedAt: requotedAt, executionMode: "AUTO" };
       const o = existing
         ? await tx.order.update({ where: { id: existing.id }, data })
         : await tx.order.create({
@@ -484,9 +486,13 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       return o;
     });
     await runAfterResponse("publish OrderRequoted", () =>
-      publishTradingEvent("OrderRequoted", { order_id: requoted.id, account_id: session.accountId, broker_id: session.brokerId, requoted_price: liveRaw.toString() })
+      publishTradingEvent("OrderRequoted", {
+        order_id: requoted.id, account_id: session.accountId, broker_id: session.brokerId, requoted_price: liveRaw.toString(),
+        // the offer's deadline (lib/order-expiry.ts): the client's requote prompt counts down to it
+        expires_at: offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: requotedAt, updatedAt: requotedAt }, broker)!.toISOString(),
+      })
     );
-    return requoted;
+    return { ...requoted, expiresAt: offerExpiresAt(requoted, broker) };
   };
 
   const dealerActivityBase = {
@@ -928,16 +934,21 @@ export async function GET(request: NextRequest) {
   // ORDERS_ALL_TAKE are what it needs; older rows will come through a
   // paged "load more" later. The pending view is naturally small and stays
   // unbounded. (2026-09-22)
-  const orders = await prisma.order.findMany({
-    where: {
-      accountId: session.accountId,
-      ...(showAll ? {} : { status: { in: ["PENDING", "REQUOTED"] } }),
-    },
-    include: { symbol: { select: { name: true, digits: true } }, closesPosition: { select: { ticket: true } } },
-    orderBy: { createdAt: "desc" },
-    ...(showAll ? { take: ORDERS_ALL_TAKE } : {}),
-  });
-  return NextResponse.json(toClientShape(orders));
+  const [orders, expiry] = await Promise.all([
+    prisma.order.findMany({
+      where: {
+        accountId: session.accountId,
+        ...(showAll ? {} : { status: { in: ["PENDING", "REQUOTED"] } }),
+      },
+      include: { symbol: { select: { name: true, digits: true } }, closesPosition: { select: { ticket: true } } },
+      orderBy: { createdAt: "desc" },
+      ...(showAll ? { take: ORDERS_ALL_TAKE } : {}),
+    }),
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { requoteExpirySeconds: true, offerExpirySeconds: true } }),
+  ]);
+  // dealer queue expiry (lib/order-expiry.ts): an offer still waiting (a requote, a MARKET order with the dealer) says
+  // when it lapses; null on everything else
+  return NextResponse.json(toClientShape(orders.map((o) => ({ ...o, expiresAt: offerExpiresAt(o, expiry) }))));
 }
 
 async function clientSafe(response: Response): Promise<NextResponse> {

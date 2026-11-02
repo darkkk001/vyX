@@ -2,6 +2,7 @@ import { parseIncidentReason } from "@/lib/incident-reason";
 import { NextRequest, NextResponse } from "next/server";
 import { getLivePriceRow } from "@/lib/live-price";
 import { SLIPPAGE_BASE_SYMBOL } from "@/lib/slippage-cap";
+import { MAX_EXPIRY_SECONDS, MIN_EXPIRY_SECONDS } from "@/lib/order-expiry";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -79,7 +80,9 @@ async function patchHandler(request: NextRequest) {
     "defaultMaxSlippagePips" in body ||
     "defaultMaxSlippagePoints" in body ||
     "slippageCapXauPoints" in body ||
-    "slippageAction" in body;
+    "slippageAction" in body ||
+    "requoteExpirySeconds" in body ||
+    "offerExpirySeconds" in body;
   if (touchesRiskFields && permissions.forbidUnless("RISK_SETTINGS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -207,6 +210,16 @@ async function patchHandler(request: NextRequest) {
     data.slippageAction = body.slippageAction;
     auditNewValue.slippageAction = body.slippageAction;
   }
+  // dealer queue expiry (owner 2026-10-29, lib/order-expiry.ts): whole seconds, 10 s to 1 day
+  for (const key of ["requoteExpirySeconds", "offerExpirySeconds"] as const) {
+    if (!(key in body)) continue;
+    const v = body[key];
+    if (typeof v !== "number" || !Number.isInteger(v) || v < MIN_EXPIRY_SECONDS || v > MAX_EXPIRY_SECONDS) {
+      return NextResponse.json({ error: `${key} must be a whole number of seconds from ${MIN_EXPIRY_SECONDS} to ${MAX_EXPIRY_SECONDS}` }, { status: 400 });
+    }
+    data[key] = v;
+    auditNewValue[key] = v;
+  }
 
   {
     // Whichever of the pair isn't in this request keeps its current
@@ -269,9 +282,12 @@ async function patchHandler(request: NextRequest) {
 }
 
 // the cap (lib/slippage-cap.ts) plus, for a backoffice from before it, the same base under its old broker-wide names
-function slippageFields(b: { slippageCapXauPoints: Prisma.Decimal | null; slippageCapRefPrice: Prisma.Decimal | null; slippageAction: string }) {
+function slippageFields(b: { slippageCapXauPoints: Prisma.Decimal | null; slippageCapRefPrice: Prisma.Decimal | null; slippageAction: string; requoteExpirySeconds: number; offerExpirySeconds: number }) {
   const points = b.slippageCapXauPoints;
   return {
+    // dealer queue expiry (lib/order-expiry.ts), in seconds
+    requoteExpirySeconds: b.requoteExpirySeconds,
+    offerExpirySeconds: b.offerExpirySeconds,
     slippageCapXauPoints: points ? points.toString() : null,
     slippageCapRefPrice: b.slippageCapRefPrice ? b.slippageCapRefPrice.toString() : null,
     slippageAction: b.slippageAction,
