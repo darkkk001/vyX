@@ -56,15 +56,18 @@ async function order(fx: Fx, o: { status: "PENDING" | "REQUOTED"; type?: "MARKET
       brokerId: fx.brokerId, accountId: fx.accountId, symbolId: fx.symbolId, side: "BUY", type: o.type ?? "MARKET", volume: D(1),
       requestedPrice: D("100.10"), requotedPrice: o.status === "REQUOTED" ? D("100.20") : null, executedAt: o.status === "REQUOTED" ? new Date() : null,
       idempotencyKey: `ox:${randomUUID()}`, status: o.status, closesPositionId: o.closesPositionId ?? null,
+      // as the real queue paths write it (a MARKET order joining the dealer queue)
+      queuedAt: (o.type ?? "MARKET") === "MARKET" ? new Date() : null,
     },
   });
 }
 
-/** Ages an order: executedAt (the requote) and updatedAt (joined the queue) `seconds` ago; createdAt optionally older. */
+/** Ages an order: executedAt (the requote) / queuedAt (joined the queue) `seconds` ago; createdAt optionally older.
+ *  updatedAt is left at "now" on purpose: expiry must never read it. */
 async function age(orderId: string, seconds: number, createdSecondsAgo?: number) {
   const at = new Date(Date.now() - seconds * 1000);
   const created = new Date(Date.now() - (createdSecondsAgo ?? seconds) * 1000);
-  await prisma.$executeRaw`UPDATE "Order" SET "updatedAt" = ${at}, "executedAt" = CASE WHEN "status" = 'REQUOTED' THEN ${at} ELSE "executedAt" END, "createdAt" = ${created} WHERE "id" = ${orderId}`;
+  await prisma.$executeRaw`UPDATE "Order" SET "queuedAt" = CASE WHEN "queuedAt" IS NULL THEN NULL ELSE ${at} END, "executedAt" = CASE WHEN "status" = 'REQUOTED' THEN ${at} ELSE "executedAt" END, "createdAt" = ${created}, "updatedAt" = now() WHERE "id" = ${orderId}`;
 }
 
 async function openPosition(fx: Fx) {
@@ -99,18 +102,22 @@ afterAll(async () => {
 describe("offerExpiresAt (pure)", () => {
   const broker = { requoteExpirySeconds: 60, offerExpirySeconds: 300 };
   const t = new Date("2026-11-02T12:00:00Z");
+  const old = new Date(0);
   it("REQUOTED: 60 s after the requote (executedAt)", () => {
-    expect(offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: t, updatedAt: new Date(0) }, broker)?.toISOString()).toBe("2026-11-02T12:01:00.000Z");
+    expect(offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: t, queuedAt: old, createdAt: old }, broker)?.toISOString()).toBe("2026-11-02T12:01:00.000Z");
   });
-  it("PENDING MARKET: 300 s after it joined the queue (updatedAt)", () => {
-    expect(offerExpiresAt({ status: "PENDING", type: "MARKET", executedAt: null, updatedAt: t }, broker)?.toISOString()).toBe("2026-11-02T12:05:00.000Z");
+  it("PENDING MARKET: 300 s after it joined the queue (queuedAt), not its createdAt", () => {
+    expect(offerExpiresAt({ status: "PENDING", type: "MARKET", executedAt: null, queuedAt: t, createdAt: old }, broker)?.toISOString()).toBe("2026-11-02T12:05:00.000Z");
+  });
+  it("PENDING MARKET without queuedAt falls back to createdAt (the earlier, safe end)", () => {
+    expect(offerExpiresAt({ status: "PENDING", type: "MARKET", executedAt: null, queuedAt: null, createdAt: t }, broker)?.toISOString()).toBe("2026-11-02T12:05:00.000Z");
   });
   it("resting LIMIT / STOP and finished orders: never", () => {
-    for (const type of ["LIMIT", "STOP"]) expect(offerExpiresAt({ status: "PENDING", type, executedAt: null, updatedAt: new Date(0) }, broker)).toBeNull();
-    for (const s of ["FILLED", "CANCELLED", "REJECTED"]) expect(offerExpiresAt({ status: s, type: "MARKET", executedAt: t, updatedAt: t }, broker)).toBeNull();
+    for (const type of ["LIMIT", "STOP"]) expect(offerExpiresAt({ status: "PENDING", type, executedAt: null, queuedAt: null, createdAt: old }, broker)).toBeNull();
+    for (const s of ["FILLED", "CANCELLED", "REJECTED"]) expect(offerExpiresAt({ status: s, type: "MARKET", executedAt: t, queuedAt: t, createdAt: t }, broker)).toBeNull();
   });
   it("expired exactly at the deadline", () => {
-    const o = { status: "REQUOTED", type: "MARKET", executedAt: t, updatedAt: t };
+    const o = { status: "REQUOTED", type: "MARKET", executedAt: t, createdAt: t };
     expect(isOfferExpired(o, broker, new Date(t.getTime() + 59_999))).toBe(false);
     expect(isOfferExpired(o, broker, new Date(t.getTime() + 60_000))).toBe(true);
   });
@@ -172,6 +179,41 @@ describe("expireStaleOffers (sweep)", () => {
     await age(o.id, 10, 86_400 * 3); // created 3 days ago as a LIMIT, turned MARKET (queued) 10 s ago
     expect((await expireStaleOffers(prisma, new Date(), fx.brokerId)).expired).toBe(0);
     expect((await status(o.id)).status).toBe("PENDING");
+  });
+
+  it("a queued CLOSE (lib/queued-close.ts) writes queuedAt when it joins the queue", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const pos = await openPosition(fx);
+    const { queueCloseInTx } = await import("@/lib/queued-close");
+    const t0 = Date.now();
+    const q = await prisma.$transaction((tx) =>
+      queueCloseInTx(tx, {
+        brokerId: fx.brokerId, accountId: fx.accountId, position: { id: pos.id, symbolId: pos.symbolId, side: "BUY", volume: pos.volume },
+        closeVolume: pos.volume, requestedPrice: "100.00", idempotencyKey: `ox-close:${randomUUID()}`, source: "WEB",
+        symbolName: fx.symbolName, accountNumber: "x", note: "test",
+      })
+    );
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: q.id }, select: { queuedAt: true } });
+    expect(row.queuedAt).not.toBeNull();
+    expect(row.queuedAt!.getTime()).toBeGreaterThanOrEqual(t0 - 1000);
+  });
+
+  it("an SL / TP edit (which moves updatedAt) never restarts the 300 s queue clock", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const o = await order(fx, { status: "PENDING" });
+    await age(o.id, 290); // joined the queue 290 s ago
+    const before = await prisma.order.findUniqueOrThrow({ where: { id: o.id }, select: { updatedAt: true, queuedAt: true } });
+    // the client edits SL then TP (app/api/trade/orders/[id] allows it on a PENDING order); Prisma stamps updatedAt
+    await prisma.order.update({ where: { id: o.id }, data: { slPrice: D("90.00") } });
+    await prisma.order.update({ where: { id: o.id }, data: { tpPrice: D("110.00") } });
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: o.id }, select: { updatedAt: true, queuedAt: true } });
+    expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
+    expect(after.queuedAt?.toISOString()).toBe(before.queuedAt?.toISOString()); // written once
+    // 11 s later it is past queuedAt + 300 even though the last edit was a moment ago
+    expect((await expireStaleOffers(prisma, new Date(Date.now() + 11_000), fx.brokerId)).expired).toBe(1);
+    expect(await status(o.id)).toEqual({ status: "CANCELLED", rejectionReason: OFFER_EXPIRED });
   });
 
   it("per-broker settings override the defaults", async () => {

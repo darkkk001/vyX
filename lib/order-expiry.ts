@@ -9,9 +9,11 @@ import { orderAuditFields } from "@/lib/order-audit";
 //   REQUOTED (the server's slippage cap or a dealer offered the client a new price): expires requoteExpirySeconds
 //     (Broker, default 60) after the requote, measured from executedAt (both requote paths set it).
 //   PENDING MARKET (a client order waiting for the dealer, an open or a queued CLOSE): expires offerExpirySeconds
-//     (Broker, default 300) after it entered the queue. Measured from updatedAt, not createdAt: a triggered LIMIT / STOP
-//     (lib/pending-trigger.ts) joins the queue by an update that turns it into a MARKET order and keeps its original,
-//     possibly days-old, createdAt.
+//     (Broker, default 300) after it joined the queue: Order.queuedAt, written once by every path that queues an order
+//     (app/api/trade/orders placement, lib/queued-close.ts, a triggered LIMIT / STOP in lib/pending-trigger.ts). Never
+//     updatedAt: a client SL / TP edit moves it and would restart the clock on every edit. Never createdAt alone: a
+//     triggered LIMIT / STOP keeps its original, possibly days-old, createdAt. A row without queuedAt (none after the
+//     migration's backfill) falls back to createdAt, the earlier and therefore safe end.
 //   Resting LIMIT / STOP orders never expire here.
 //
 // An expired order becomes CANCELLED with rejectionReason OFFER_EXPIRED (no new status: every client already knows
@@ -35,14 +37,15 @@ type ExpiryOrder = {
   status: string;
   type: string;
   executedAt: Date | null;
-  updatedAt: Date;
+  queuedAt?: Date | null;
+  createdAt: Date;
 };
 
 /** When this order's offer expires, or null when it is not an offer (a resting LIMIT / STOP, a filled order...). */
 export function offerExpiresAt(order: ExpiryOrder, broker: ExpirySettings): Date | null {
   if (order.type !== "MARKET") return null;
-  if (order.status === "REQUOTED") return new Date((order.executedAt ?? order.updatedAt).getTime() + broker.requoteExpirySeconds * 1000);
-  if (order.status === "PENDING") return new Date(order.updatedAt.getTime() + broker.offerExpirySeconds * 1000);
+  if (order.status === "REQUOTED") return new Date((order.executedAt ?? order.queuedAt ?? order.createdAt).getTime() + broker.requoteExpirySeconds * 1000);
+  if (order.status === "PENDING") return new Date((order.queuedAt ?? order.createdAt).getTime() + broker.offerExpirySeconds * 1000);
   return null;
 }
 
@@ -67,7 +70,7 @@ export type ExpirableOrder = ExpiryOrder & {
 
 const EXPIRABLE_SELECT = {
   id: true, ticket: true, brokerId: true, accountId: true, side: true, type: true, volume: true, status: true, requotedPrice: true,
-  executedAt: true, updatedAt: true, closesPositionId: true,
+  executedAt: true, queuedAt: true, createdAt: true, closesPositionId: true,
   symbol: { select: { name: true } },
   account: { select: { accountNumber: true } },
   broker: { select: { requoteExpirySeconds: true, offerExpirySeconds: true } },

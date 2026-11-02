@@ -489,7 +489,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       publishTradingEvent("OrderRequoted", {
         order_id: requoted.id, account_id: session.accountId, broker_id: session.brokerId, requoted_price: liveRaw.toString(),
         // the offer's deadline (lib/order-expiry.ts): the client's requote prompt counts down to it
-        expires_at: offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: requotedAt, updatedAt: requotedAt }, broker)!.toISOString(),
+        expires_at: offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: requotedAt, createdAt: requotedAt }, broker)!.toISOString(),
       })
     );
     return { ...requoted, expiresAt: offerExpiresAt(requoted, broker) };
@@ -535,6 +535,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
           tpPrice,
           idempotencyKey,
           status: "PENDING",
+          // the dealer queue clock (lib/order-expiry.ts): written once, here, when the order joins the queue
+          queuedAt: type === "MARKET" ? new Date() : null,
           source: orderSource,
           ...capture,
         },

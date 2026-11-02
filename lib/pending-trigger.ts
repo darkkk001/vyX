@@ -203,7 +203,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
     const originalRequestedPrice = order.requestedPrice?.toString() ?? null;
     const queued = await prisma.$transaction(async (tx) => {
       if (actor) await assertRiskActorInTx(tx, order.accountId, actor);
-      const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING", type: originalType }, data: { type: "MARKET", requestedPrice: triggerPrice } });
+      const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING", type: originalType }, data: { type: "MARKET", requestedPrice: triggerPrice, queuedAt: new Date() } });   // queuedAt: the dealer queue clock starts now, not at the LIMIT / STOP's createdAt (lib/order-expiry.ts)
       if (claimed.count === 0) return null;
       await tx.auditLog.create({
         data: {

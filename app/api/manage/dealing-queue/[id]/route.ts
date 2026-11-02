@@ -213,7 +213,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     // the offer's deadline (lib/order-expiry.ts), for the client's requote prompt and the desk's countdown
     const expiry = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { requoteExpirySeconds: true, offerExpirySeconds: true } });
-    const expiresAt = offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: requotedAt, updatedAt: requotedAt }, expiry)!.toISOString();
+    const expiresAt = offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: requotedAt, createdAt: requotedAt }, expiry)!.toISOString();
     await publishTradingEvent("OrderRequoted", {
       order_id: id,
       account_id: order.accountId,

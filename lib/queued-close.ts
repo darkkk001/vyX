@@ -72,6 +72,7 @@ export async function queueCloseInTx(tx: Prisma.TransactionClient, input: QueueC
       requestedPrice: new Prisma.Decimal(input.requestedPrice),
       idempotencyKey: input.idempotencyKey,
       status: "PENDING",
+      queuedAt: new Date(), // the dealer queue clock (lib/order-expiry.ts), written once
       source: input.source,
       closesPositionId: input.position.id,
       closeVolume: input.closeVolume,

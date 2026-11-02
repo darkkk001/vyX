@@ -1987,6 +1987,9 @@ model Order {
   // The reject reason stays rejectionReason; requestedPrice / filledPrice are above.
   requestedAt   DateTime? @default(now()) @db.Timestamptz(3)
   executedAt    DateTime? @db.Timestamptz(3)
+  // Dealer queue expiry (lib/order-expiry.ts): when this MARKET order joined the dealer queue (placement, a queued
+  // close, or a triggered LIMIT / STOP). Written once; an SL / TP edit (which moves updatedAt) never resets it.
+  queuedAt      DateTime? @db.Timestamptz(3)
   clientIp      String?
   platform      String?
   routing       String?
@@ -2004,8 +2007,6 @@ model Order {
   @@index([brokerId])
   @@index([accountId])
   @@index([closesPositionId])
-  // the dealer queue expiry sweep (lib/order-expiry.ts): "any MARKET order still waiting?" without a table scan
-  @@index([status, type])
 }
 
 model Position {
