@@ -202,16 +202,60 @@ pub async fn verify_risk_pool(pool: &PgPool) -> Result<String, String> {
     Ok(role)
 }
 
+// ---- which subsystems a mode asks for -----------------------------------------------------------------------------------
+
+/// What `ENGINE_ORDER_MANAGEMENT` asks the server to run. Parsed in ONE place so the server's wiring
+/// and the tests below cannot drift apart, and so the one invariant that matters is checkable:
+/// **the heartbeat lives in the risk half**, so a mode that runs orders without risk writes no
+/// heartbeat and must never be used on a broker set to RUST (it would leave those accounts with no
+/// risk owner at all — see `lib/risk-owner.ts`'s liveness test).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modes {
+    /// The engine owns the risk of RUST-owned accounts: the live pass, the fire lanes, the heartbeat.
+    pub risk: bool,
+    /// Order management: the thresholds guard, the per-tick triggers, the swap roller, the order routes.
+    pub orders: bool,
+    /// Decide everything, act on nothing.
+    pub shadow: bool,
+}
+
+impl Modes {
+    pub fn of(raw: Option<&str>) -> Self {
+        match raw.map(|m| m.trim().to_ascii_lowercase()).unwrap_or_default().as_str() {
+            // L2 Stage 1: both halves at once, which is what the cutover needs. Before this mode
+            // existed, turning orders on turned risk off, so the heartbeat stopped and every
+            // RUST-owned account fell back to the web within staleAfterSecs.
+            "live" => Self { risk: true, orders: true, shadow: false },
+            "risk" => Self { risk: true, orders: false, shadow: false },
+            "1" | "true" | "on" | "yes" => Self { risk: false, orders: true, shadow: false },
+            "shadow" => Self { risk: false, orders: false, shadow: true },
+            _ => Self::default(),
+        }
+    }
+
+    /// Does this mode write to the book? (shadow does not.)
+    pub fn any_live(self) -> bool {
+        self.risk || self.orders
+    }
+
+    /// Orders without risk: live fills with NO heartbeat. Legacy, kept only for back-compat.
+    pub fn orders_without_heartbeat(self) -> bool {
+        self.orders && !self.risk
+    }
+}
+
 // ---- the startup flip marker ------------------------------------------------------------------------------------------
 
 /// Stage 6 (owner answer (e), 2026-10-06): the engine stays in `ENGINE_ORDER_MANAGEMENT=shadow` until the flip. A live mode (`1` / `true` /
-/// `on` / `yes` = the legacy order management, `risk` = Stage 6) on a process without an explicit marker is most likely a mistake (a stray
+/// `on` / `yes` = the legacy order management, `risk` = Stage 6, `live` = both, L2 Stage 1) on a process without an explicit marker is most likely a mistake (a stray
 /// environment variable, a copied service file), so the server logs a WARNING at startup. The marker is `VYX_RISK_FLIP_INTENT=<broker
 /// subdomain>:<YYYY-MM-DD>` (e.g. `futurixglobal:2026-10-12`): who is being flipped and when. It does not authorise anything by itself (the
 /// per-broker flag in the database is the switch); it records that a person meant it. Returns the warning, or None when there is nothing to say.
 pub fn flip_marker_warning(mode: Option<&str>, intent: Option<&str>) -> Option<String> {
     let mode = mode.map(|m| m.trim().to_ascii_lowercase()).unwrap_or_default();
-    if !matches!(mode.as_str(), "1" | "true" | "on" | "yes" | "risk") {
+    // `live` belongs here too: it is the MOST live of the modes (risk and orders at once), so a
+    // process that lands on it by accident is the case this warning exists for.
+    if !Modes::of(Some(&mode)).any_live() {
         return None;
     }
     let intent = intent.map(str::trim).unwrap_or("");
@@ -503,5 +547,72 @@ mod tests {
         assert_eq!(c.owner("b2", "DEMO"), RiskOwner::Rust);
         assert_eq!(c.owner("b3", "DEMO"), RiskOwner::Web, "a broker not listed is WEB");
         assert!(c.engine_owns("b2", "LIVE") && !c.engine_owns("b3", "LIVE"));
+    }
+
+    // ---- L2 Stage 1: the mode matrix --------------------------------------------------------------
+
+    #[test]
+    fn the_mode_matrix_is_exactly_this() {
+        use super::Modes;
+        let m = |v: &str| Modes::of(Some(v));
+        // live: BOTH halves. This is the mode the L2 cutover runs, and the whole point of Stage 1.
+        assert_eq!(m("live"), Modes { risk: true, orders: true, shadow: false });
+        // risk: what production runs today. Unchanged by the merge -- the regression that would hurt most.
+        assert_eq!(m("risk"), Modes { risk: true, orders: false, shadow: false });
+        // the legacy order-only spellings, all four, unchanged
+        for v in ["1", "true", "on", "yes"] {
+            assert_eq!(m(v), Modes { risk: false, orders: true, shadow: false }, "{v}");
+        }
+        assert_eq!(m("shadow"), Modes { risk: false, orders: false, shadow: true });
+        // anything else runs nothing: an empty var, a typo, a stray value
+        for v in ["", "  ", "off", "0", "RISKY", "yes please"] {
+            assert_eq!(m(v), Modes::default(), "{v}");
+        }
+        assert_eq!(Modes::of(None), Modes::default());
+        // and the parse is case- and whitespace-insensitive, because service files are hand-edited
+        for v in ["LIVE", " live ", "Live", "\tRISK\n"] {
+            assert!(m(v).risk, "{v}");
+        }
+    }
+
+    /// THE invariant Stage 1 exists for. The heartbeat is written inside the risk half
+    /// (server/src/main.rs, the `risk_mode_requested` block). So any mode that runs risk beats, and a
+    /// dead engine hands RUST-owned accounts back to the web within staleAfterSecs
+    /// (lib/risk-owner.ts). If `live` ever stopped including risk, the L2 cutover would silently
+    /// surrender L1: 19 LIVE futurixglobal accounts would fall back to the web the moment the engine
+    /// was switched to it.
+    #[test]
+    fn every_mode_that_fills_orders_either_beats_or_is_the_legacy_one() {
+        use super::Modes;
+        assert!(Modes::of(Some("live")).risk, "live MUST include risk: the heartbeat lives there");
+        assert!(!Modes::of(Some("live")).orders_without_heartbeat(), "live must never fill without a heartbeat");
+        // exactly one mode fills orders without beating, and it is the back-compat one
+        let filling_without_heartbeat: Vec<&str> = ["live", "risk", "1", "true", "on", "yes", "shadow", ""]
+            .into_iter()
+            .filter(|v| Modes::of(Some(v)).orders_without_heartbeat())
+            .collect();
+        assert_eq!(filling_without_heartbeat, ["1", "true", "on", "yes"], "only the legacy spellings may fill with no heartbeat");
+    }
+
+    #[test]
+    fn shadow_never_shares_a_process_with_a_live_half() {
+        use super::Modes;
+        for v in ["live", "risk", "1", "true", "on", "yes"] {
+            assert!(!Modes::of(Some(v)).shadow, "{v} must not also run the shadow");
+        }
+        let sh = Modes::of(Some("shadow"));
+        assert!(!sh.any_live(), "shadow acts on nothing");
+    }
+
+    #[test]
+    fn the_flip_marker_warning_covers_live_too() {
+        // Before Stage 1 this matched on a hard-coded list that did not contain "live", so the most
+        // live mode of all would have started with no marker and no warning.
+        assert!(super::flip_marker_warning(Some("live"), None).is_some(), "live with no marker must warn");
+        assert!(super::flip_marker_warning(Some("live"), Some("futurixglobal:2026-11-02")).is_none(), "a valid marker silences it");
+        assert!(super::flip_marker_warning(Some("live"), Some("nonsense")).is_some(), "a malformed marker still warns");
+        // and the modes that act on nothing still never warn
+        assert!(super::flip_marker_warning(Some("shadow"), None).is_none());
+        assert!(super::flip_marker_warning(None, None).is_none());
     }
 }

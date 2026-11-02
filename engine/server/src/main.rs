@@ -1590,18 +1590,38 @@ async fn main() {
             tracing::warn!(%intent, "flip marker present: a live mode is intended for this process");
         }
     }
-    let risk_mode_requested = std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("risk")).unwrap_or(false);
-    let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
-        .unwrap_or(false);
+    // L2 Stage 1 (docs: C:\vyx\handoff\l2-cutover-design.md section 0): ONE variable, four modes, and the two live
+    // halves are no longer mutually exclusive.
+    //
+    //   live    both halves: the engine owns the risk of RUST-owned accounts AND runs order management
+    //   risk    risk only -- what production runs today; order routes stay refused, the web fills
+    //   1/on/   order management only -- kept for back-compat. It writes the engine's OWN lowercase
+    //   true/     tables (empty in production) and deliberately writes NO heartbeat: beating without a
+    //   yes       risk pass would tell the web the engine is alive while nothing watches RUST-owned
+    //             accounts, leaving them with no risk owner at all. See the heartbeat block below.
+    //   shadow  decides everything, acts on nothing
+    //
+    // Before this, `on` and `risk` were two arms of one if/else, so turning order management on turned
+    // risk OFF: the heartbeat stopped, and within staleAfterSecs every RUST-owned account fell back to
+    // the web (lib/risk-owner.ts). Correct and fail-safe, but it made the L2 cutover impossible to do
+    // without surrendering L1 on the way in.
+    let mode = std::env::var("ENGINE_ORDER_MANAGEMENT").unwrap_or_default().trim().to_ascii_lowercase();
+    let modes = order_management::authority::Modes::of(Some(&mode));
+    let live_mode = modes.risk && modes.orders;
+    let risk_mode_requested = modes.risk;
+    let order_management_on = modes.orders;
     // Left at its default (empty) when the subsystem is off, so the order routes keep failing
     // closed: with no monitor running they must refuse, never fill against an unwatched book.
     let thresholds_guard = Arc::new(std::sync::RwLock::new(ThresholdsGuardState::default()));
     if order_management_on {
-        tracing::warn!(
-            monitor_interval_secs,
-            "order management ENABLED: margin monitor, per-tick triggers, thresholds guard and swap roller running against the engine's own tables"
-        );
+        if live_mode {
+            tracing::warn!(monitor_interval_secs, "order management ENABLED (live mode): thresholds guard, per-tick triggers and swap roller running; the risk block below owns the pass, the outbox and the heartbeat");
+        } else {
+            tracing::warn!(
+                monitor_interval_secs,
+                "order management ENABLED: margin monitor, per-tick triggers, thresholds guard and swap roller running against the engine's own tables. NO heartbeat is written in this mode: do not set a broker to RUST while it is on"
+            );
+        }
         // Stage 6: every live mode acts only on the accounts the database says the engine owns (all brokers are WEB by default)
         order_management::authority::enforce();
         let monitor_guard = order_management::monitor::new_run_guard();
@@ -1609,14 +1629,20 @@ async fn main() {
         order_management::book::require_pricing_cache();
         pricing_used = true;
         let prices = order_management::book::PriceSource::Ticks(tick_cache.clone());
-        order_management::monitor::spawn(
-            pool.clone(),
-            nats.clone(),
-            std::time::Duration::from_secs(monitor_interval_secs),
-            monitor_guard.clone(),
-            prices.clone(),
-            Some(pricing.clone()),
-        );
+        // Both this and risk mode's spawn_risk_passes drive the same monitor::run_pass. In `live` only
+        // the risk one runs: it adds the run guard, the idle gate and authority::enforce, and an
+        // ungated second poller would defeat that gate (the ~880 queries/minute that stopped Neon ever
+        // idling -- see the comment above this block).
+        if !risk_mode_requested {
+            order_management::monitor::spawn(
+                pool.clone(),
+                nats.clone(),
+                std::time::Duration::from_secs(monitor_interval_secs),
+                monitor_guard.clone(),
+                prices.clone(),
+                Some(pricing.clone()),
+            );
+        }
         spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard, prices, pricing.clone())
             .await
             .expect("failed to subscribe tick-driven triggers to price.tick.*");
@@ -1625,14 +1651,18 @@ async fn main() {
         // stop-out / margin-call notices, the dealing queue) as "PostCloseEffect" rows; this hands them to the
         // web's /api/internal/post-close. Without the two env vars the rows still queue, and the web's
         // margin-monitor cron runs them after 2 minutes (a backstop, far slower: set both).
-        match order_management::outbox::DispatcherConfig::from_env() {
-            Some(cfg) => {
-                tracing::info!(url = %cfg.url, sweep_secs = cfg.sweep_interval.as_secs(), "post-close outbox dispatcher running");
-                order_management::outbox::spawn(pool.clone(), cfg);
+        // In `live` the risk block below spawns this, and REQUIRES it; two dispatchers would sweep the
+        // same PostCloseEffect rows. Only order-only mode spawns its own, optional, copy.
+        if !risk_mode_requested {
+            match order_management::outbox::DispatcherConfig::from_env() {
+                Some(cfg) => {
+                    tracing::info!(url = %cfg.url, sweep_secs = cfg.sweep_interval.as_secs(), "post-close outbox dispatcher running");
+                    order_management::outbox::spawn(pool.clone(), cfg);
+                }
+                None => tracing::warn!(
+                    "post-close outbox dispatcher NOT running (VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET unset): engine closes queue their follow-up for the web cron backstop only"
+                ),
             }
-            None => tracing::warn!(
-                "post-close outbox dispatcher NOT running (VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET unset): engine closes queue their follow-up for the web cron backstop only"
-            ),
         }
 
         // Risk item 2's startup/live-order guard -- synchronous initial load BEFORE the HTTP
@@ -1652,7 +1682,8 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
         order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
-    } else if risk_mode_requested { 'risk: {
+    }
+    if risk_mode_requested { 'risk: {
         // Rust cutover Stage 6 (docs/STAGE6-PLAN.md): the engine is AUTHORITATIVE for the risk (SL / TP, margin call,
         // stop-out, resting-order triggers) of the accounts `Broker.riskAuthority` hands it (RUST; demo-only until the flag
         // says otherwise), and ONLY those: authority::enforce makes every live pass, fire and write check the database's
@@ -1771,8 +1802,13 @@ async fn main() {
                 break 'risk;
             }
         }
-        tracing::warn!(monitor_interval_secs, authority_reload_secs = safety_secs, "RISK MODE ACTIVE: the engine is authoritative for the risk of RUST-owned accounts (per Broker.riskAuthority and its demo-only scope); the web skips them. No broker is RUST until the owner flips one.");
-    } } else if std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("shadow")).unwrap_or(false) { 'shadow: {
+        if live_mode {
+            tracing::warn!(monitor_interval_secs, authority_reload_secs = safety_secs, "LIVE MODE ACTIVE: the engine is authoritative for the risk of RUST-owned accounts AND runs order management; one heartbeat covers both, so a dead engine hands the risk back to the web exactly as in risk mode.");
+        } else {
+            tracing::warn!(monitor_interval_secs, authority_reload_secs = safety_secs, "RISK MODE ACTIVE: the engine is authoritative for the risk of RUST-owned accounts (per Broker.riskAuthority and its demo-only scope); the web skips them. No broker is RUST until the owner flips one.");
+        }
+    } }
+    if modes.shadow { 'shadow: {
         // Rust cutover Stage 5 (docs/RUST-CUTOVER-PLAN.md §5): the monitor evaluates every account exactly as at
         // cutover but ACTS ON NOTHING (monitor::Mode::Shadow): no close, no follow-up row, no margin-call edge, no
         // NATS event, no dispatcher; the thresholds guard stays empty, so the order routes keep refusing. The web
