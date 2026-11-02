@@ -32,7 +32,7 @@ export type ClosePositionInput = {
 };
 
 export type ClosePositionOutcome =
-  | { closed: true; position: Position; transaction: Transaction; partial: boolean; realizedPnl: Prisma.Decimal }
+  | { closed: true; position: Position; transaction: Transaction; partial: boolean; realizedPnl: Prisma.Decimal; hedged: boolean }
   | { closed: false }; // lost a race: another call already closed/reduced this position first
 
 // The one place a trade changes the account balance. Shared by the
@@ -241,7 +241,9 @@ export async function closePositionInTx(
   });
   // QoreBridge M5: an A-book close leaves its hedge-reduce intent for the volume this close applied (every web close
   // path comes through here; no query for any other book)
-  await hedgeDealInTx(tx, deal, ccy.groupCategoryAtOpen);
+  // `hedged`: an intent was written, so the caller that commits this close on its own can wake the bridge at once
+  // (lib/bulk-close.ts); every other caller ignores it and keeps the after-response nudge
+  const hedged = await hedgeDealInTx(tx, deal, ccy.groupCategoryAtOpen);
 
   if (creditUsed) {
     await tx.transaction.create({
@@ -273,7 +275,7 @@ export async function closePositionInTx(
 
   const updatedPosition = await tx.position.findUniqueOrThrow({ where: { id: position.id } });
 
-  return { closed: true, position: updatedPosition, transaction, partial: isPartial, realizedPnl };
+  return { closed: true, position: updatedPosition, transaction, partial: isPartial, realizedPnl, hedged };
 }
 
 // Negative-balance protection (2026-09-05 P0; timing owner 2026-10-23, docs/NBP-LAST-CLOSE-DESIGN.md): when the account

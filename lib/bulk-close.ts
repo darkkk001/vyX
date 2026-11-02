@@ -10,13 +10,16 @@ import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
+import { nudgeBridgeNow } from "@/lib/hedge";
+import { withDeadlockRetry } from "@/lib/tx-retry";
 
 // Replaces N sequential single-close HTTP round trips (WebTrader.tsx's
 // old closeManyBy/closeManyBySymbol, and the backoffice's per-position
-// close) with one request that closes every matching position in a
-// single DB transaction, at one fresh price snapshot per symbol taken
-// once up front -- so 30 positions in the same symbol all close at
-// exactly the same price, not 30 slightly-different ticks 500ms apart.
+// close) with one request that closes every matching position, each in
+// its own DB transaction (2026-11-02, see closeBulkForAccount), at one
+// fresh price snapshot per symbol taken once up front -- so 30 positions
+// in the same symbol all close at exactly the same price, not 30
+// slightly-different ticks 500ms apart.
 
 export type BulkCloseScope = "ALL" | "PROFIT" | "LOSS" | "SYMBOL";
 
@@ -150,51 +153,76 @@ export async function closeBulkForAccount(
 
   const results: BulkClosePositionResult[] = [];
   const closePriceByPositionId = new Map<string, Prisma.Decimal>();
+  // A real transaction per close only when `db` is the top-level client (every real caller); a test that passes its own
+  // transaction client runs every close inside it, as before
+  const commitsEachClose = "$transaction" in db && typeof db.$transaction === "function";
 
-  await withTx(db, async (tx) => {
-    for (const p of matching) {
-      const nextOpenAt = nextOpenBySymbolName.get(p.symbol.name);
-      if (nextOpenAt) {
-        results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "MARKET_CLOSED", nextOpenAt });
-        continue;
-      }
-      const live = priceBySymbol.get(p.symbol.name);
-      if (!live) {
-        results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "no live price" });
-        continue;
-      }
-      const closePrice = closePriceOf(p, live);
-      closePriceByPositionId.set(p.id, closePrice);
-      const outcome = await closePositionInTx(tx, {
-        position: {
-          id: p.id,
-          accountId: p.accountId,
-          brokerId: p.brokerId,
-          side: p.side,
-          openPrice: p.openPrice,
-          volume: p.volume,
-          symbol: { contractSize: p.symbol.contractSize },
-        },
-        closePrice,
-        note: `Bulk close (${scope})`,
-        deal: { reason: "BULK", source: params.dealSource ?? null, adminId: params.adminId ?? null, capture: { ...params.capture, routing: p.bookType, executionMode: params.adminId ? "DEALER" : "AUTO" } },
-      });
-      if (!outcome.closed) {
-        // Raced with something else closing this exact position between
-        // the read above and this transaction's own guarded UPDATE --
-        // same benign shape as the single-close route's own handling.
-        results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "already closed" });
-        continue;
-      }
-      results.push({
-        positionId: p.id,
-        closed: true,
-        closePrice: closePrice.toString(),
-        realizedPnl: outcome.realizedPnl.toString(),
-        error: null,
-      });
+  // ONE TRANSACTION PER POSITION (owner 2026-11-02). All closes used to share one transaction, so no hedge intent was
+  // visible to QoreBridge until the last close committed (~1.2 s for 13 closes, plus the after-response nudge: ~1.5 s of
+  // unhedged exposure). Now each close commits on its own and, when it wrote an A-book hedge intent, wakes the bridge
+  // at once, so the first leg is hedged while the next position is still closing.
+  // Accepted trade-off: no longer all-or-nothing. A close that fails rolls back alone (CLOSE_FAILED for that position)
+  // and every other position still closes; the caller gets one result per position either way. Double closes stay
+  // impossible: closePositionInTx claims the row with a guarded UPDATE (status OPEN), so a concurrent close of the same
+  // position, or a repeated request, gets "already closed" and writes nothing. Every close still uses the one price
+  // snapshot taken above.
+  for (const p of matching) {
+    const nextOpenAt = nextOpenBySymbolName.get(p.symbol.name);
+    if (nextOpenAt) {
+      results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "MARKET_CLOSED", nextOpenAt });
+      continue;
     }
-  });
+    const live = priceBySymbol.get(p.symbol.name);
+    if (!live) {
+      results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "no live price" });
+      continue;
+    }
+    const closePrice = closePriceOf(p, live);
+    const closeOne = () =>
+      withTx(db, (tx) =>
+        closePositionInTx(tx, {
+          position: {
+            id: p.id,
+            accountId: p.accountId,
+            brokerId: p.brokerId,
+            side: p.side,
+            openPrice: p.openPrice,
+            volume: p.volume,
+            symbol: { contractSize: p.symbol.contractSize },
+          },
+          closePrice,
+          note: `Bulk close (${scope})`,
+          deal: { reason: "BULK", source: params.dealSource ?? null, adminId: params.adminId ?? null, capture: { ...params.capture, routing: p.bookType, executionMode: params.adminId ? "DEALER" : "AUTO" } },
+        })
+      );
+    let outcome: Awaited<ReturnType<typeof closeOne>>;
+    try {
+      // a deadlock / serialization failure rolled the whole close back, so running it again is safe (tx-retry.ts)
+      outcome = commitsEachClose ? await withDeadlockRetry(closeOne) : await closeOne();
+    } catch (err) {
+      // this position's transaction rolled back: nothing of it was written; the others carry on
+      console.error("bulk-close: close failed", { positionId: p.id, accountId, scope }, err);
+      results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "CLOSE_FAILED" });
+      continue;
+    }
+    if (!outcome.closed) {
+      // Raced with something else closing this exact position between
+      // the read above and this transaction's own guarded UPDATE --
+      // same benign shape as the single-close route's own handling.
+      results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "already closed" });
+      continue;
+    }
+    closePriceByPositionId.set(p.id, closePrice);
+    // committed: its hedge intent is visible now, so the bridge can take it while the next position closes
+    if (outcome.hedged && commitsEachClose) nudgeBridgeNow(brokerId);
+    results.push({
+      positionId: p.id,
+      closed: true,
+      closePrice: closePrice.toString(),
+      realizedPnl: outcome.realizedPnl.toString(),
+      error: null,
+    });
+  }
 
   // Mirror hooks and the event publish both happen after the transaction
   // has committed, never inside it -- same rule as every other close site
