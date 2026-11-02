@@ -1,6 +1,4 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
-
-type Db = PrismaClient | Prisma.TransactionClient;
+import type { PrismaClient } from "@prisma/client";
 
 // Step 3b item 2b (owner 2026-10-07): Broker.auditRetentionDays. A broker with a value has its AuditLog rows older than
 // that many days deleted by the daily cron (app/api/internal/audit-retention); null keeps everything. The minimum is

@@ -5,7 +5,6 @@ import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { closeBulkForAccount, selectBulkCloseTargets, type BulkCloseScope, type BulkClosePositionResult } from "@/lib/bulk-close";
-import { closePriceFor } from "@/lib/trading";
 import { clientDealSource } from "@/lib/deals";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 import { requestMeta } from "@/lib/order-execution";

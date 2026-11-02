@@ -4,4 +4,5 @@
 // fix as desktop-tauri/webtrader-shell/postcss.config.mjs, which hit
 // this for real (a 500 error trying to resolve the root config's
 // @tailwindcss/postcss plugin instance).
-export default { plugins: {} };
+const config = { plugins: {} };
+export default config;

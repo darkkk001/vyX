@@ -1,7 +1,7 @@
 import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
-import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
+import { computeRealizedPnl } from "@/lib/trading";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
 import { valuationClosePrice } from "@/lib/ask-markup";
 import { closeAskRulesCached } from "@/lib/ask-markup-cache";

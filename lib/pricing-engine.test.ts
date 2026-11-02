@@ -285,7 +285,7 @@ describe("resolveSymbolPricingV2 (live DB, rolled back)", () => {
   it("with nothing configured anywhere, resolves to the broker/symbol base passed in", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
-      const { symbol, account, accountType } = await makeFixture(tx);
+      const { symbol, account } = await makeFixture(tx);
       const result = await resolveSymbolPricingV2(tx, {
         accountId: account.id,
         groupId: account.groupId,
@@ -304,7 +304,7 @@ describe("resolveSymbolPricingV2 (live DB, rolled back)", () => {
   it("an AccountSymbolConfig row overrides just spread; commission still falls through to the group", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
-      const { symbol, account, accountType, group } = await makeFixture(tx);
+      const { symbol, account, group } = await makeFixture(tx);
       await tx.accountSymbolConfig.create({ data: { accountId: account.id, symbolId: symbol.id, spreadMarkup: D("0.1") } });
       await tx.groupSymbolConfig.create({ data: { groupId: group.id, symbolId: symbol.id, commissionPerLot: D("2.5") } });
 

@@ -170,8 +170,9 @@ export default function PositionsManager() {
   // and just flips this flag, so TableErrorState renders instead of a
   // false "no open positions" empty state.
   const [loadError, setLoadError] = useState(false);
-  const rawRows = data?.rows ?? [];
-  const accounts = data?.accounts ?? [];
+  // memoised so the `?? []` fallback is one stable array, not a new one on every render (the memos below depend on them)
+  const rawRows = useMemo(() => data?.rows ?? [], [data?.rows]);
+  const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
   const symbols = data?.symbols ?? [];
   const groups = data?.groups ?? [];
   const ibOptions = data?.ibOptions ?? [];

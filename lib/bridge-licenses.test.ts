@@ -31,7 +31,10 @@ beforeAll(async () => {
   }
 });
 afterAll(async () => {
-  for (const [k, v] of Object.entries(saved)) (v === undefined ? delete process.env[k] : (process.env[k] = v));
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   if (ready) {
     const r = getRedis();
     for (const id of builds) await r.del(`client_build:${id}`);

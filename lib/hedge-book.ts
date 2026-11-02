@@ -6,7 +6,7 @@ import { getFreshPrice, getFreshPrices } from "@/lib/live-price";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
 import { valuationClosePrice } from "@/lib/ask-markup";
 import { closeAskRulesCached } from "@/lib/ask-markup-cache";
-import { closePriceFor, computeRealizedPnl } from "@/lib/trading";
+import { computeRealizedPnl } from "@/lib/trading";
 import { ensureCoverageAccount } from "@/lib/coverage";
 import { hedgeRouteOf } from "@/lib/hedge-route";
 import { writeOpenDealInTx } from "@/lib/deals";

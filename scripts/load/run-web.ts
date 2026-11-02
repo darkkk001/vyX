@@ -51,6 +51,7 @@ async function main() {
   }
   const all = passes.flatMap((p) => p.perAccountMs).sort((a, b) => a - b);
   const q = (f: number) => (all.length ? all[Math.min(all.length - 1, Math.floor(f * all.length))] : 0);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- perAccountMs is left out of the report on purpose
   const report = { passes: passes.map(({ perAccountMs, ...p }) => p), evaluateMs: { p50: q(0.5), p95: q(0.95), p99: q(0.99) } };
   fs.writeFileSync(process.argv[2], JSON.stringify(report, null, 1) + "\n");
   await prisma.$disconnect();

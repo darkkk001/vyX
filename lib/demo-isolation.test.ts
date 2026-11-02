@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { cleanDemoRedis, createOtherBroker, D, seedDemoTenant } from "@/lib/demo-test-fixtures";
-import { createGuestAccount, resetSandboxCache, writeDemoState } from "@/lib/demo";
+import { createGuestAccount, writeDemoState } from "@/lib/demo";
 import { demoQuoteAt } from "@/lib/demo-prices";
 import { runSwapRollover } from "@/lib/swap-rollover";
 import { evaluateRiskForSymbol } from "@/lib/risk-monitor";

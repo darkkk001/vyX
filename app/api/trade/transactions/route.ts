@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -20,7 +20,7 @@ const BALANCE_TYPES: TransactionType[] = [
   TransactionType.CREDIT_OUT,
 ];
 
-export async function GET(_request: NextRequest) {
+export async function GET() {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });

@@ -20,6 +20,7 @@ export default async function DownloadPage() {
   return (
     <main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "#0f1115", color: "#e8eaed", fontFamily: "system-ui, sans-serif" }}>
       <div style={{ width: "100%", maxWidth: 460, textAlign: "center" }}>
+        {/* eslint-disable-next-line @next/next/no-img-element -- the broker's own logo URL (any host) */}
         {broker.logoUrl ? <img src={broker.logoUrl} alt="" style={{ maxHeight: 56, maxWidth: 220, marginBottom: 16 }} /> : null}
         <h1 style={{ fontSize: 26, margin: "0 0 8px" }}>Download {broker.name}</h1>
         <p style={{ margin: "0 0 28px", color: "#9aa0a6" }}>Windows 10/11, installs without admin rights, updates itself.</p>

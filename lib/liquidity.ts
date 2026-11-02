@@ -4,6 +4,7 @@
 // (lib/account-structure.ts, app/api/portal/groups). Orders no longer ask (QoreBridge M5, fill first then hedge:
 // lib/dealing-routing.ts fills A_BOOK and lib/hedge.ts leaves the intent); whether accounts may join an A_BOOK group
 // with hedging pending is open question 11 of docs/qorebridge/00-current-state.md, so this stays NO for now.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- the signature callers pass a group to; read once an LP is connected
 export function isLpConnected(_group?: { category?: string } | null): boolean {
   return false;
 }

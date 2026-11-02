@@ -9,7 +9,7 @@ import { resolveBookType } from "@/lib/group-pricing";
 import { closePositionInTx, writeOffIfFlatInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
 import { lockAccountBalance, lockAccountFunds } from "@/lib/account-lock";
-import { accountClosePrice, loadAccountAskRules, markedDownBid, markedUpAsk, NO_MARKUP } from "@/lib/ask-markup";
+import { loadAccountAskRules, markedDownBid, markedUpAsk, NO_MARKUP } from "@/lib/ask-markup";
 import { markDealsVoidedInTx, writeFlipDealsInTx, writeOpenDealInTx } from "@/lib/deals";
 import { hedgeVoidInTx } from "@/lib/hedge";
 

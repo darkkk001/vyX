@@ -11,7 +11,6 @@ import {
   buildSymbolDef,
   createInitialMarket,
   tickMarket,
-  bucketStartMs,
   correctedBucketStart,
   resolveDayOpenFromD1,
   fmt,
@@ -2089,6 +2088,7 @@ export default function WebTrader({
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the socket is not reconnected when refreshSymbolsAndWatchlist's identity changes
   }, [refreshOrders, refreshPositions, refreshAccount, refreshAlerts, pushToast, refreshFundsHistory, demo]);
 
   // fix/realtime-sync §7 -- F5/Ctrl+R (Cmd+R on Mac) refetches this tab's
@@ -5335,6 +5335,7 @@ export default function WebTrader({
             <div className={`share-card${shareData.pnl < 0 ? " sell-mode" : ""}`}>
               <div className="share-header">
                 <div className="share-logo">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- the broker's own logo URL (any host), drawn into the share card */}
                   {brokerLogoUrl ? <img src={brokerLogoUrl} alt={brokerName} className="share-logo-img" /> : brokerName}
                 </div>
                 <div className="share-symbol-tag">{shareData.symbolLabel}</div>
@@ -5501,6 +5502,7 @@ export default function WebTrader({
                     Scan this with your authenticator app, or enter the key manually, then confirm with a code.
                   </p>
                   <div style={{ display: "flex", justifyContent: "center", margin: "0 0 8px" }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element -- a data: URI QR code, nothing for next/image to optimise */}
                     <img src={tfaSetupData.qrCodeDataUri} alt="2FA setup QR code" width={160} height={160} style={{ borderRadius: 6 }} />
                   </div>
                   <p className="mono" style={{ fontSize: 11, color: "var(--text-3)", wordBreak: "break-all", textAlign: "center", margin: "0 0 10px" }}>

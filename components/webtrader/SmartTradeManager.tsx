@@ -183,7 +183,7 @@ export default function SmartTradeManager({
     if (!m || !m.live || config.sl === "") return null;
     const sl = parseFloat(config.sl);
     if (isNaN(sl)) return null;
-    const ref = m.bid; // BUY reference is ask, SELL is bid; SL side depends on which hotkey fires, so validate against both and report the worse case
+    // BUY reference is ask, SELL is bid; SL side depends on which hotkey fires, so validate against both and report the worse case
     const validForBuy = sl < buyAsk;
     const validForSell = sl > m.bid;
     return { validForBuy, validForSell };

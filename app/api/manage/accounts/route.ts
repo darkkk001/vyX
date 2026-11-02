@@ -13,16 +13,8 @@ import { checkAccountStructure } from "@/lib/account-structure";
 import { AccountStructureError } from "@/lib/account-structure";
 import { LIVE_STARTING_BALANCE_NOTE } from "@/lib/initial-balance";
 
-async function requireManager() {
-  const session = await getAdminSession();
-  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
-    return null;
-  }
-  return session!;
-}
-
 // Phase 2 batch 4: the GET below is also open to the read-only SUPPORT role
-// (lib/permissions.ts isSupportReader); every write in this file keeps requireManager.
+// (lib/permissions.ts isSupportReader); the write (POST) keeps its own MANAGER / BROKER_ADMIN check.
 async function requireReader() {
   const session = await getAdminSession();
   return canReadAsManagerOrSupport(session) ? session! : null;

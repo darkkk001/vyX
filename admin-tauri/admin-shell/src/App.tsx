@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { AdminShell, type AdminNavGroup, type AdminNavItem } from "@/components/admin/AdminShell";
 import { LogoutButton } from "@/components/admin/LogoutButton";
 import { PageHeader } from "@/components/ui/PageHeader";

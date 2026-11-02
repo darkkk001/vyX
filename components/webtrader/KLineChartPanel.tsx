@@ -610,6 +610,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     return `vyx-chart-drawings:${symbolRef.current}:${timeframeRef.current}`;
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- refs only, so a new identity per render is harmless (see the useImperativeHandle deps)
   function persistDrawings() {
     const chart = chartRef.current;
     if (!chart) return;
@@ -632,6 +633,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   // callback returns false -- "observed, don't suppress klinecharts' own
   // default handling" -- these only ever track state and persist, never
   // change what a click/drag/keypress does.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- refs only, so a new identity per render is harmless (see the useImperativeHandle deps)
   function overlayLifecycleCallbacks() {
     return {
       onDrawStart: (event: OverlayLifecycleEvent) => {
@@ -920,8 +922,10 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       // said it was active, since that lives in React state untouched by
       // any of this. Reproduced live by watching the exact StrictMode
       // double-GET this file's own mount effect already fires in dev.
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- clears the set the ref holds at unmount, on purpose (comment above)
       activeIndicatorKeysRef.current.clear();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount / unmount only
   }, []);
 
   useEffect(() => {

@@ -72,6 +72,7 @@ export default function DesktopTitleBar({
         }}
       >
         {brokerLogoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- the broker's own logo URL (any host) in the desktop shell
           <img src={brokerLogoUrl} alt="" style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
         ) : (
           <span

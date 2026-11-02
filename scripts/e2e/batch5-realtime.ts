@@ -61,7 +61,7 @@ async function main() {
   // ---- seed (scratch DB only)
   const broker = await prisma.broker.create({ data: { name: `E2E B5 ${sfx}`, subdomain: `e2eb5${sfx}`, pricingEngineEnabled: true, dealingModeAt: null } });
   const sym = await prisma.symbol.create({ data: { name: `XE2E${sfx.toUpperCase()}`, baseCurrency: "XAU", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(100) } });
-  const bs = await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: sym.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH", enabled: true } });
+  await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: sym.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH", enabled: true } });
   await prisma.livePrice.create({ data: { symbol: sym.name, bid: D("4456.35"), ask: D("4456.53"), tickAt: new Date() } });
   const tickTimer = setInterval(() => { prisma.livePrice.update({ where: { symbol: sym.name }, data: { tickAt: new Date() } }).catch(() => {}); }, 1000);
   const group = await prisma.group.create({ data: { brokerId: broker.id, name: `Standard-${sfx}`, leverage: 100, dealingMode: "AUTO", isDefault: true } });

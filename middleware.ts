@@ -56,6 +56,7 @@ const SUPER_ADMIN_SUBDOMAIN = "admin";
 // nav, not a per-feature thing) -- keep this in sync with
 // app/(super-admin)/(shell)/*'s own directory listing if a page is ever
 // added or removed there.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for the manage gate commented out below (re-enable path)
 const MANAGE_GATE_COOKIE = "vyx_manage_gate";
 const SUPER_ADMIN_GATE_COOKIE = "vyx_admin_gate";
 
