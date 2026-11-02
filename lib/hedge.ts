@@ -102,6 +102,26 @@ export async function hedgeVoidInTx(tx: Tx, position: { id: string; brokerId: st
 const lastNudge = new Map<string, number>();
 const NUDGE_DEDUPE_MS = 20;
 
+/** Wake the bridge NOW, for a hedge intent whose transaction has ALREADY COMMITTED: a bulk close commits one close at a
+ *  time (lib/bulk-close.ts), so each close's intent is hedged while the next one is still closing, instead of every
+ *  intent waiting for the after-response nudge above (~1.5 s for 13 closes, owner 2026-11-02). Not awaited: the publish
+ *  runs alongside the next close and `after` keeps it alive past the response. A failed nudge only costs the bridge's
+ *  poll interval. */
+export function nudgeBridgeNow(brokerId: string): void {
+  let sent: Promise<void>;
+  try {
+    sent = publishBridgeNudge(brokerId).catch((err) => console.warn("hedge: bridge nudge failed", err));
+  } catch (err) {
+    console.warn("hedge: bridge nudge failed", err);
+    return;
+  }
+  try {
+    after(sent);
+  } catch {
+    // no request scope (tests, scripts): the publish simply runs
+  }
+}
+
 export function scheduleBridgeNudge(brokerId: string): void {
   try {
     after(async () => {
