@@ -90,7 +90,7 @@ describe("account plan, never the group (live DB)", () => {
     if (!ready) return;
     const { broker, group, account } = await fixture("Pro");
     const other = await prisma.group.create({ data: { brokerId: broker.id, name: `${SECRET_NAME}-2`, displayName: "Raw Spread", dealingMode: "AUTO" } as never });
-    await prisma.account.create({ data: { brokerId: broker.id, groupId: other.id, accountNumber: `${account.accountNumber.slice(0, 7)}9`, email: account.email, passwordHash: "x", fullName: "AP Second", accountMode: "DEMO", balance: D(500) } });
+    await prisma.account.create({ data: { brokerId: broker.id, groupId: other.id, accountNumber: `${account.accountNumber.slice(0, 7)}${account.accountNumber.endsWith("9") ? "8" : "9"}`, email: account.email, passwordHash: "x", fullName: "AP Second", accountMode: "DEMO", balance: D(500) } });
     const { GET } = await import("@/app/api/trade/linked-accounts/route");
     const list = (await (await GET()).json()) as Record<string, unknown>[];
     expect(list).toHaveLength(1);
