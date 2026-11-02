@@ -1675,9 +1675,44 @@ async fn main() {
                 Some(pricing.clone()),
             );
         }
-        spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard, prices, pricing.clone())
-            .await
-            .expect("failed to subscribe tick-driven triggers to price.tick.*");
+        // L2 Stage 6: NOT in live mode, and this is a deliberate refusal rather than an omission.
+        //
+        // This subscription does two things, and live mode already has a better owner for both:
+        //
+        // (a) the margin / stop-out pass. The risk block below runs it through spawn_risk_passes, with
+        //     the run guard, the idle gate and authority::enforce -- the same reason Stage 1 skips
+        //     monitor::spawn here.
+        //
+        // (b) the resting-order scan. THIS is the one that matters. `pending_orders::trigger_order`
+        //     applies THREE admission checks (free margin, symbol exposure, max open positions). The
+        //     web's own trigger for the same orders, `lib/pending-trigger.ts
+        //     triggerPendingOrderInner`, applies about twenty: account status, per-account trading
+        //     rights, broker trading-halted / close-only, symbol trading mode, trading SESSION, lot
+        //     step and the group's own lot rules, live-price freshness, group trading restriction /
+        //     halted / close-only / allowed-symbol, hedging-allowed, broker total exposure, max daily
+        //     loss, and the A-book-without-an-LP refusal. Running the native scan on the real book
+        //     would fill resting orders the web would have refused -- a suspended account's, a halted
+        //     broker's, one outside trading hours, one over the daily loss limit.
+        //
+        //     Nothing is lost by refusing: the engine ALREADY triggers these orders, and has since
+        //     Stage 6 of the risk cutover. market-data/src/risk_hook.rs detects the cross and calls
+        //     GET /api/internal/pending-trigger?symbols=X, and the web fills it as the RUST actor
+        //     (re-checking ownership in its own transaction), with every one of those gates applied.
+        //     The native path exists, is tested, and waits for that gate list to be ported or
+        //     delegated. Until then this is the fail-safe choice, not a gap.
+        if !risk_mode_requested {
+            spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard, prices, pricing.clone())
+                .await
+                .expect("failed to subscribe tick-driven triggers to price.tick.*");
+        } else {
+            tracing::warn!(
+                "live mode: the engine's NATIVE resting-order scan is NOT running. Resting LIMIT/STOP orders keep \
+                 going through risk_hook -> GET /api/internal/pending-trigger -> lib/pending-trigger.ts, which applies \
+                 ~20 admission gates the native path does not (account status, trading rights, sessions, group lot \
+                 rules, daily loss, broker exposure, A-book-without-an-LP). L2 Stage 6 built and tested the native \
+                 writes; enabling it needs that gate list first."
+            );
+        }
 
         // Rust cutover Stage 3: the monitor's closes queue the web's post-close follow-up (mirror, coverage,
         // stop-out / margin-call notices, the dealing queue) as "PostCloseEffect" rows; this hands them to the
