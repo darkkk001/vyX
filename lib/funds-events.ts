@@ -29,6 +29,7 @@ export async function notifyFundsRequestResolved(args: {
     entityType: "Transaction",
     entityId: args.transactionId,
   }).catch((err) => console.error("[funds-events] trader notification failed", err));
+  await publishRoomChanged(args.brokerId, [args.accountId], "funds"); // an open bell refetches now that the row exists
   await publishTradingEvent("FundsRequestResolved", {
     broker_id: args.brokerId,
     account_id: args.accountId,

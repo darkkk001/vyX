@@ -64,7 +64,7 @@ export default function NotificationBell() {
           {items.map((n) => (
             <div key={n.id} className="r-bell-row">
               <div style={{ fontSize: 13, fontWeight: n.read ? 400 : 600 }}>{n.title}</div>
-              <div style={{ fontSize: 12.5, color: "var(--r-text-2)", marginTop: 2, lineHeight: 1.5 }}>{n.body}</div>
+              {n.body ? <div style={{ fontSize: 12.5, color: "var(--r-text-2)", marginTop: 2, lineHeight: 1.5 }}>{n.body}</div> : null}
               <div className="mono" style={{ fontSize: 11, color: "var(--r-muted)", marginTop: 4 }}>{dayTime(n.at)}</div>
             </div>
           ))}

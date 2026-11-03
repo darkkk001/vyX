@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { validateKycDecision, applyKycDecision } from "@/lib/kyc-decision";
+import { notifyKycDecision } from "@/lib/kyc-events";
 
 async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
@@ -39,6 +40,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   const updated = await prisma.$transaction((tx) =>
     applyKycDecision(tx, { kycRecordId: id, brokerId, action, rejectionReason, adminId: session!.adminId })
   );
+  await notifyKycDecision({ brokerId, accountId: existing.accountId, entityType: "KycRecord", entityId: id, action, rejectionReason });
 
   return NextResponse.json(updated);
 }

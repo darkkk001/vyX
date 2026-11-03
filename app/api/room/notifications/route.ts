@@ -16,7 +16,7 @@ export async function GET() {
   ]);
   return NextResponse.json({
     unread,
-    items: rows.map((n) => ({ id: n.id, title: n.title, body: n.body, read: n.readAt !== null, at: n.createdAt.toISOString() })),
+    items: rows.map((n) => ({ id: n.id, title: n.title, body: n.body === n.title ? "" : n.body, read: n.readAt !== null, at: n.createdAt.toISOString() })),
   });
 }
 

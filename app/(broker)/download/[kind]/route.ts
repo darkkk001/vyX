@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isDownloadKind, originOf, readFeedInfo } from "@/lib/download-feed";
 
-// /download/terminal and /download/backoffice: 302 to the current Setup.exe of THIS broker's feed. The broker comes from
+// /download/backoffice: 302 to the current Setup.exe of THIS broker's feed (/download/terminal is its own page, beside this route). The broker comes from
 // the host (middleware.ts resolves it and sets x-broker-slug), never from a hard-coded name.
 export async function GET(request: Request, ctx: { params: Promise<{ kind: string }> }) {
   const { kind } = await ctx.params;

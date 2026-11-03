@@ -31,7 +31,7 @@ export default async function RoomDownloads() {
             </div>
             <div className="mono" style={meta}>Windows 10/11 · 64-bit{feed ? ` · v${feed.version}` : ""}</div>
             {feed
-              ? /* a file download (302 to the installer), never a client-side navigation */
+              ? /* the download page: a full page load, never a client-side navigation */
                 // eslint-disable-next-line @next/next/no-html-link-for-pages
                 <a className="r-btn" href="/download/terminal" style={{ padding: "11px 0", marginTop: "auto" }}>Download for Windows</a>
               : <span className="r-note" style={{ marginTop: "auto" }}>The installer is being updated. Try again shortly.</span>}

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { validateKycDecision, applyClientKycDecision } from "@/lib/kyc-decision";
+import { notifyKycDecision } from "@/lib/kyc-events";
 import { publishRoomChangedForClient } from "@/lib/room/events";
 
 async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -40,6 +41,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   const updated = await prisma.$transaction((tx) =>
     applyClientKycDecision(tx, { clientKycRecordId: id, brokerId, action, rejectionReason, adminId: session!.adminId })
   );
+  await notifyKycDecision({ brokerId, clientId: existing.clientId, entityType: "ClientKycRecord", entityId: id, action, rejectionReason });
   // the client's open Trader's Room shows the decision at once (room sockets only)
   await publishRoomChangedForClient(brokerId, existing.clientId, "kyc");
 
