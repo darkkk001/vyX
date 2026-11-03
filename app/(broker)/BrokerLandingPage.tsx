@@ -18,10 +18,13 @@ export default function BrokerLandingPage({
   brokerName,
   brokerLogoUrl,
   supportEmail,
+  terminalVersion,
 }: {
   brokerName: string;
   brokerLogoUrl: string | null;
   supportEmail: string | null;
+  // the version of this broker's own Windows installer in its update feed; null = no download offered
+  terminalVersion: string | null;
 }) {
   const year = new Date().getFullYear();
 
@@ -127,6 +130,15 @@ export default function BrokerLandingPage({
                 A full-featured trading terminal for your desktop, built for
                 fast execution and in-depth analysis.
               </p>
+              {terminalVersion ? (
+                <div className={styles.cardAction}>
+                  {/* a file download: /download/terminal answers 302 to this broker's own installer, never a page */}
+                  <a href="/download/terminal" className={styles.heroPrimaryBtn} download>
+                    Download for Windows
+                  </a>
+                  <span className={styles.cardMeta}>Windows 10/11 · 64-bit · v{terminalVersion}</span>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

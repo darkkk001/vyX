@@ -5,6 +5,7 @@ import BrokerLandingPage from "./BrokerLandingPage";
 import DemoEntry from "@/components/demo/DemoEntry";
 import { getAccountSession } from "@/lib/account-auth";
 import { isDemoTenant } from "@/lib/demo-policy";
+import { readFeedInfo, originOf } from "@/lib/download-feed";
 
 // Sole handler for "/". middleware.ts only attaches x-broker-* headers on
 // broker subdomains/custom domains — the root domain and admin.<root>
@@ -34,11 +35,17 @@ export default async function RootPage() {
     return <DemoEntry brokerName={broker.name} logoUrl={broker.logoUrl ?? ""} />;
   }
 
+  // Desktop Terminal download (2026-11-04): this broker's own installer from its update feed. No installer in the feed
+  // (or the feed unreachable) = no button, never a link that fails.
+  const slug = headerList.get("x-broker-slug");
+  const terminal = slug ? await readFeedInfo("terminal", slug, originOf(headerList)).catch(() => null) : null;
+
   return (
     <BrokerLandingPage
       brokerName={broker.name}
       brokerLogoUrl={broker.logoUrl}
       supportEmail={broker.supportEmail}
+      terminalVersion={terminal?.version ?? null}
     />
   );
 }
