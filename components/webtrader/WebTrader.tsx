@@ -38,7 +38,6 @@ import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
 import ChartCell from "./ChartCell";
-import CollapsibleSection from "./CollapsibleSection";
 import SettingsDialog from "./SettingsDialog";
 import KeyboardShortcutsDialog from "./KeyboardShortcutsDialog";
 import AboutDialog from "./AboutDialog";
@@ -49,7 +48,9 @@ import { INDICATOR_DEFS, OVERLAY_INDICATOR_KEYS, SUBPANE_INDICATOR_KEYS, type Ac
 import IndicatorConfigDialog from "./IndicatorConfigDialog";
 import { playSound } from "@/lib/sounds";
 import { filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
-import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
+import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, withColumnDefaults, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
+import { pointValue, riskReward } from "@/lib/ticket-figures";
+import { utcClock } from "@/lib/session-rows";
 import { plainError, tradeActionError, TRADE_TEXT } from "@/lib/plain-error";
 import { closesTotal, historyLines, type HistoryLine } from "@/lib/history-view";
 import { formatCsvNumber, formatMarginLevel, formatMoney, formatPercent, formatSigned, formatVolume, tone, viewAmount, type Tone } from "@/lib/format";
@@ -421,13 +422,15 @@ export default function WebTrader({
   const ORDER_PANEL_MIN = 260;
   const ORDER_PANEL_MAX = 420;
   const WATCHLIST_MIN = 220;
+  // the native terminal's market watch width, so SYMBOL / BID / ASK / SPRD / CHG% fit without clipping
+  const WATCHLIST_DEFAULT = 300;
   const WATCHLIST_MAX = 420;
   // Collapsible panel system -- the thin rail width the watchlist/order-
   // ticket panel shrinks to (its own resize handle is hidden below MIN
   // anyway, so this can safely sit well under WATCHLIST_MIN/ORDER_PANEL_MIN).
   const PANEL_RAIL_WIDTH = 36;
   const [orderPanelWidth, setOrderPanelWidth] = useState(ORDER_PANEL_MIN);
-  const [watchlistWidth, setWatchlistWidth] = useState(WATCHLIST_MIN);
+  const [watchlistWidth, setWatchlistWidth] = useState(WATCHLIST_DEFAULT);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(190);
   // Guards every save path (saveLayoutDebounced, and the columnPrefs
   // effect that calls it) against firing before the restore-effect right
@@ -448,7 +451,7 @@ export default function WebTrader({
   // gets corrected the next time the trader happens to drag it.
   useEffect(() => {
     const stored = loadStoredLayout();
-    if (stored.columnPrefs) setColumnPrefs(stored.columnPrefs);
+    if (stored.columnPrefs) setColumnPrefs(withColumnDefaults(stored.columnPrefs));
     if (stored.orderPanelWidth != null) {
       setOrderPanelWidth(Math.min(ORDER_PANEL_MAX, Math.max(ORDER_PANEL_MIN, stored.orderPanelWidth)));
     }
@@ -2364,14 +2367,16 @@ export default function WebTrader({
   // header and rows always resolve to the exact same pixel widths
   // regardless of what text either one happens to contain.
   const wlGridTemplate = useMemo(() => {
-    const widths = ["minmax(0,1fr)"]; // symbol
-    widths.push("minmax(0,0.95fr)"); // price
-    if (columnPrefs.change) widths.push("minmax(0,0.75fr)");
-    if (columnPrefs.spread) widths.push("minmax(0,0.7fr)");
-    if (columnPrefs.high) widths.push("minmax(0,0.8fr)");
-    if (columnPrefs.low) widths.push("minmax(0,0.8fr)");
-    return `18px ${widths.join(" ")} 20px`;
-  }, [columnPrefs]);
+    const widths = ["minmax(0,0.95fr)"]; // symbol
+    widths.push("minmax(0,1fr)"); // bid
+    if (columnPrefs.ask) widths.push("minmax(0,1fr)");
+    if (columnPrefs.spread) widths.push("minmax(0,0.5fr)");
+    if (columnPrefs.change) widths.push("minmax(0,0.8fr)");
+    if (columnPrefs.high) widths.push("minmax(0,0.9fr)");
+    if (columnPrefs.low) widths.push("minmax(0,0.9fr)");
+    // the drag handle shows on hover over the symbol's left edge (no column of its own); the alert bell only where alerts exist
+    return `0px ${widths.join(" ")} ${demo ? "0px" : "14px"}`;
+  }, [columnPrefs, demo]);
 
   // equity sparkline
   useEffect(() => {
@@ -2590,25 +2595,16 @@ export default function WebTrader({
     setVolume(vol);
   }
 
-  function buildSlTpPreview(symbolName: string, vol: number, currentPrice: number, sl: number, tp: number): string[] {
-    const lines: string[] = [];
-    const mm = market[symbolName];
-    if (!isNaN(sl) && sl !== currentPrice) {
-      const side = sl < currentPrice ? "BUY" : "SELL";
-      const pnl = pnlAtPrice(symbolName, side, currentPrice, vol, sl);
-      lines.push(`S/L (if hit): ${formatSigned(pnl)}`);
-    }
-    if (!isNaN(tp) && tp !== currentPrice) {
-      const side = tp > currentPrice ? "BUY" : "SELL";
-      const pnl = pnlAtPrice(symbolName, side, currentPrice, vol, tp);
-      lines.push(`T/P (if hit): ${formatSigned(pnl)}`);
-    }
-    void mm;
-    return lines;
-  }
   const ticketSl = parseFloat(slInput);
   const ticketTp = parseFloat(tpInput);
-  const ticketHintLines = buildSlTpPreview(activeSymbol, volume, m.bid, ticketSl, ticketTp);
+  // one whole price unit at the ticket's volume, in the account currency (null while the conversion is unpriced)
+  const ticketRate = rateFor(activeSymbol);
+  const ticketMoneyPerUnit = ticketRate == null ? null : m.def.contractSize * volume * ticketRate;
+  const ticketPointValue = pointValue(ticketMoneyPerUnit, m.def.digits);
+  const ticketRiskReward = riskReward(orderMode === "pending" && pendingPrice !== "" ? parseFloat(pendingPrice) : m.bid, ticketSl, ticketTp, ticketMoneyPerUnit);
+  const accountCcy = (account?.currency ?? "USD").toUpperCase();
+  const pendingKind: "limit" | "stop" = pendingType.endsWith("limit") ? "limit" : "stop";
+  const ema2050On = activeIndicators.some((a) => a.key === "EMA" && a.calcParams.join(",") === "20,50");
   // Session-enforcement pack -- server-authoritative (marketClosedBySymbol
   // comes straight from checkTradingSession via the prices poll); this is
   // a proactive UI hint, not a second copy of the rule the server would
@@ -2665,13 +2661,14 @@ export default function WebTrader({
     setPendingMarketSide((prev) => (prev === side ? null : side));
   }
 
-  async function placePendingOrder() {
+  async function placePendingOrder(pt: PendingType = pendingType) {
     if (!m.live) { pushToast("No live feed for this symbol"); return; }
     const price = parseFloat(pendingPrice);
     if (isNaN(price)) { pushToast("Enter a valid entry price"); return; }
-    if (!isValidPendingPrice(pendingType, price, m.bid)) { pushToast(pendingPriceRuleText(pendingType)); return; }
-    const side = pendingType.startsWith("buy") ? "BUY" : "SELL";
-    const type = pendingType.endsWith("limit") ? "LIMIT" : "STOP";
+    if (!isValidPendingPrice(pt, price, m.bid)) { pushToast(pendingPriceRuleText(pt)); return; }
+    setPendingType(pt);
+    const side = pt.startsWith("buy") ? "BUY" : "SELL";
+    const type = pt.endsWith("limit") ? "LIMIT" : "STOP";
     const sl = slInput === "" ? null : parseFloat(slInput);
     const tp = tpInput === "" ? null : parseFloat(tpInput);
     try {
@@ -2679,7 +2676,7 @@ export default function WebTrader({
         symbol: activeSymbol, side, type, volume, price, slPrice: sl, tpPrice: tp,
         idempotencyKey: crypto.randomUUID(),
       });
-      pushToast(`Pending ${pendingType.replace("_", " ")} placed for ${activeSymbol}`);
+      pushToast(`Pending ${pt.replace("_", " ")} placed for ${activeSymbol}`);
       await refreshOrders();
     } catch (err) {
       handleOrderError(err);
@@ -3668,11 +3665,8 @@ export default function WebTrader({
   // server-persisted ChartSettings blob, same optimistic-save shape as
   // changeColorMode above.
   function toggleCollapsed(key: "watchlistCollapsed" | "orderTicketPanelCollapsed" | "bottomPanelCollapsed" | "orderTicketSectionCollapsed" | "tradingSessionsSectionCollapsed" | "economicCalendarSectionCollapsed") {
-    if (key === "watchlistCollapsed" && !chartSettings.watchlistCollapsed) {
-      // Collapsing the watchlist rail also closes the embedded Smart
-      // Trade Manager -- it renders inline inside this same column (see
-      // .watchlist below), so it has nowhere sensible to live squeezed
-      // into a 36px rail.
+    if (key === "orderTicketPanelCollapsed" && !chartSettings.orderTicketPanelCollapsed) {
+      // Collapsing the right column also closes the Smart Trade Manager inside it: it has nowhere to live in a 36px rail.
       setStmOpen(false);
     }
     saveChartSettingsHandler({ ...chartSettings, [key]: !chartSettings[key] });
@@ -4100,19 +4094,26 @@ export default function WebTrader({
             </button>
           ) : (
             <>
-            <button type="button" className="panel-collapse-header" onClick={() => toggleCollapsed("watchlistCollapsed")} aria-expanded={true} title="Collapse watchlist">
-              <span className="wl-category-chevron">›</span>
-              <span>Watchlist</span>
-            </button>
-            <input className="wl-search mono" placeholder="Search symbol..." value={watchlistFilter} onChange={(e) => setWatchlistFilter(e.target.value)} />
+            <div className="nt-ph">
+              <button type="button" className="nt-ph-btn" onClick={() => toggleCollapsed("watchlistCollapsed")} aria-expanded={true} title="Collapse market watch">
+                <span className="nt-ph-code"><span className="nt-ph-num">1)</span> MW</span>
+                <span className="nt-ph-name">Market watch</span>
+              </button>
+              <span className="nt-ph-aside mono" suppressHydrationWarning>{new Date(dealingPendingNowMs).toISOString().slice(11, 19)} UTC</span>
+            </div>
             <div className="wl-header" style={{ gridTemplateColumns: wlGridTemplate }}>
               <span></span><span>Symbol</span>
-              <span>Price</span>
-              {columnPrefs.change ? <span>Chg%</span> : null}
-              {columnPrefs.spread ? <span>Spread</span> : null}
-              {columnPrefs.high ? <span>Day H</span> : null}
-              {columnPrefs.low ? <span>Day L</span> : null}
+              <span className="wl-num">Bid</span>
+              {columnPrefs.ask ? <span className="wl-num">Ask</span> : null}
+              {columnPrefs.spread ? <span className="wl-num">Sprd</span> : null}
+              {columnPrefs.change ? <span className="wl-num">Chg%</span> : null}
+              {columnPrefs.high ? <span className="wl-num">Day H</span> : null}
+              {columnPrefs.low ? <span className="wl-num">Day L</span> : null}
               <span></span>
+            </div>
+            <div className="nt-search-row">
+              <input className="wl-search" placeholder="Search symbols..." value={watchlistFilter} onChange={(e) => setWatchlistFilter(e.target.value)} />
+              <button type="button" className="nt-chip-btn" onClick={() => setAddSymbolOpen(true)} title="Add a symbol to the market watch">+ Add</button>
             </div>
             <div>
               {watchlistRenderRows.map((wlRow) => {
@@ -4169,7 +4170,7 @@ export default function WebTrader({
                   >
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
-                    <span className="wl-cell wl-price-cell">
+                    <span className="wl-cell wl-price-cell wl-num">
                       {/* Real bug fixed here (2026-09-05): this cell used
                           to also render B/S quick-trade buttons that fired a
                           real MARKET order straight from the watchlist --
@@ -4185,20 +4186,17 @@ export default function WebTrader({
                         <span className="wl-price mono" style={{ color: "var(--text-3)" }}>-</span>
                       )}
                     </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct === null ? "" : { profit: "wl-pos", loss: "wl-neg", neutral: "" }[tone(changePct)]}`}>{changePct !== null ? formatPercent(changePct, 2) : ""}</span> : null}
-                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), row.bid, row.def.digits) : ""}</span> : null}
-                    {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : ""}</span> : null}
-                    {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : ""}</span> : null}
+                    {columnPrefs.ask ? <span className={`wl-cell wl-num mono wl-price ${flash}`}>{hasEverTicked ? fmt(effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), row.def.digits) : ""}</span> : null}
+                    {columnPrefs.spread ? <span className="wl-cell wl-num mono">{hasEverTicked ? spreadPoints(effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), row.bid, row.def.digits) : ""}</span> : null}
+                    {columnPrefs.change ? <span className={`wl-cell wl-num mono ${changePct === null ? "" : { profit: "wl-up", loss: "wl-down", neutral: "" }[tone(changePct)]}`}>{changePct !== null ? formatPercent(changePct, 2) : ""}</span> : null}
+                    {columnPrefs.high ? <span className="wl-cell wl-num mono">{hasEverTicked ? fmt(row.high, row.def.digits) : ""}</span> : null}
+                    {columnPrefs.low ? <span className="wl-cell wl-num mono">{hasEverTicked ? fmt(row.low, row.def.digits) : ""}</span> : null}
                     {demo ? null : <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /></svg>
                     </button>}
                   </div>
                 );
               })}
-              <div className="wl-add-symbol-row" onClick={() => setAddSymbolOpen(true)}>
-                <span className="wl-add-symbol-icon">+</span>
-                <span>Add symbol</span>
-              </div>
             </div>
             {wlMenuOpen && wlContextMenu ? (
               <div className="wl-context-menu show" ref={wlContextMenuRef} style={{ left: wlContextMenu.x, top: wlContextMenu.y }}>
@@ -4250,15 +4248,14 @@ export default function WebTrader({
                 </div>
                 <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                 <div className="wl-ctx-title">Show columns</div>
-                {(["change", "spread", "high", "low"] as const).map((key) => (
+                {(["ask", "spread", "change", "high", "low"] as const).map((key) => (
                   <div key={key} className="wl-ctx-item" onClick={() => setColumnPrefs((prev) => ({ ...prev, [key]: !prev[key] }))}>
                     <span className="wl-ctx-check">{columnPrefs[key] ? "✓" : ""}</span>
-                    <span style={{ textTransform: "capitalize" }}>{key === "change" ? "Change %" : key === "high" ? "Daily high" : key === "low" ? "Daily low" : key}</span>
+                    <span style={{ textTransform: "capitalize" }}>{key === "change" ? "Change %" : key === "high" ? "Daily high" : key === "low" ? "Daily low" : key === "ask" ? "Ask" : key}</span>
                   </div>
                 ))}
               </div>
             ) : null}
-            <div className="wl-hint">Right-click for more columns</div>
             {addSymbolOpen ? (
               <AddSymbolDialog
                 allSymbols={allSymbols}
@@ -4269,36 +4266,17 @@ export default function WebTrader({
               />
             ) : null}
 
-            {/* ---------- Smart Trade Manager (embedded below the
-                Watchlist, always visible, instead of hidden behind the
-                rail icon) -- same rail button now just toggles this
-                section's collapse state. ---------- */}
-            <div
-              className="section-label"
-              style={{ cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}
-              onClick={() => setStmOpen((v) => !v)}
-            >
-              <span>Smart Trade Manager</span>
-              <span style={{ transform: stmOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
+            <div className="nt-ph nt-ph-section">
+              <button type="button" className="nt-ph-btn" onClick={() => toggleCollapsed("economicCalendarSectionCollapsed")} aria-expanded={!chartSettings.economicCalendarSectionCollapsed} title="Show or hide the economic calendar">
+                <span className="nt-ph-code"><span className="nt-ph-num">5)</span> ECO</span>
+                <span className="nt-ph-name">Economic calendar</span>
+              </button>
             </div>
-            {stmOpen ? (
-              <SmartTradeManager
-                embedded
-                open={stmOpen}
-                onClose={() => setStmOpen(false)}
-                symbols={allSymbols}
-                market={market}
-                askMarkupBySymbol={askMarkupBySymbol}
-                positions={positions}
-                positionPnl={positionPnl}
-                activeSymbol={activeSymbol}
-                selectedPositionIds={selectedPositionIds}
-                pushToast={pushToast}
-                refreshPositions={refreshPositions}
-                refreshHistory={refreshHistory}
-                refreshAccount={refreshAccount}
-              />
-            ) : null}
+            {chartSettings.economicCalendarSectionCollapsed ? null : (
+              <div className="nt-eco">
+                <NewsPanel events={calendarEvents} unavailable={calendarUnavailable} hideLabel />
+              </div>
+            )}
             </>
           )}
           </div>
@@ -4315,6 +4293,7 @@ export default function WebTrader({
           <div ref={centerRef} className={`center${isMobileView ? ` mobile${mobileTab === "chart" || mobileTab === "positions" ? " mobile-active" : ""}` : ""}`}>
             <div className="chart-header" style={isMobileView && mobileTab !== "chart" ? { display: "none" } : undefined}>
               <div className="chart-title" ref={symbolDropdownRef} style={{ position: "relative" }}>
+                <span className="nt-ph-code"><span className="nt-ph-num">2)</span> GP</span>
                 <div className="chart-symbol" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }} onClick={() => { setSymbolDropdownOpen((v) => !v); setSymbolSearch(""); }}>
                   {activeSymbol}
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
@@ -4395,46 +4374,10 @@ export default function WebTrader({
                 </div>
               ) : null}
               {chartLayout === "single" ? (
-                <div style={{ position: "relative", marginLeft: 8 }} ref={indicatorsMenuRef}>
-                  <button
-                    onClick={() => setIndicatorsMenuOpen((v) => !v)}
-                    title="Indicators"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 5,
-                      padding: "5px 10px",
-                      borderRadius: 7,
-                      border: "none",
-                      cursor: "pointer",
-                      background: activeIndicators.length > 0 || indicatorsMenuOpen ? "var(--bg-4)" : "var(--bg-2)",
-                      color: activeIndicators.length > 0 || indicatorsMenuOpen ? "var(--text-1)" : "var(--text-3)",
-                      fontSize: 11.5,
-                      fontWeight: 600,
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 17c3-8 5-8 8 0s5 8 8 0" /></svg>
+                <div style={{ position: "relative" }} ref={indicatorsMenuRef}>
+                  <button type="button" className={`nt-tool-btn${activeIndicators.length > 0 || indicatorsMenuOpen ? " active" : ""}`} onClick={() => setIndicatorsMenuOpen((v) => !v)} title="Indicators">
                     Indicators
-                    {activeIndicators.length > 0 ? (
-                      <span
-                        className="mono"
-                        style={{
-                          background: "var(--accent)",
-                          color: "#04140C",
-                          borderRadius: 9,
-                          minWidth: 15,
-                          height: 15,
-                          fontSize: 9.5,
-                          fontWeight: 700,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          padding: "0 3px",
-                        }}
-                      >
-                        {activeIndicators.length}
-                      </span>
-                    ) : null}
+                    {activeIndicators.length > 0 ? <span className="nt-count mono">{activeIndicators.length}</span> : null}
                   </button>
                   {indicatorsMenuOpen ? (
                     <div className="wl-context-menu show" style={{ position: "absolute", left: 0, top: "calc(100% + 6px)", maxHeight: 360, overflowY: "auto", minWidth: 200 }}>
@@ -4456,19 +4399,21 @@ export default function WebTrader({
                   ) : null}
                 </div>
               ) : null}
-              <div style={{ display: "flex", gap: 3, background: "var(--bg-2)", padding: 3, borderRadius: 8, marginLeft: 8 }}>
+              {chartLayout === "single" ? (
                 <button
-                  title="Single chart"
-                  onClick={() => setChartLayout("single")}
-                  style={{ width: 26, height: 24, borderRadius: 5, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: chartLayout === "single" ? "var(--bg-4)" : "transparent", color: chartLayout === "single" ? "var(--text-1)" : "var(--text-3)" }}
+                  type="button"
+                  className={`nt-tool-btn${ema2050On ? " active" : ""}`}
+                  title="EMA 20 and 50 on the chart"
+                  onClick={() => saveIndicatorsHandler(ema2050On ? activeIndicators.filter((a) => a.key !== "EMA") : [...activeIndicators.filter((a) => a.key !== "EMA"), { key: "EMA", calcParams: [20, 50] }])}
                 >
+                  EMA 20/50
+                </button>
+              ) : null}
+              <div className="nt-seg" role="group" aria-label="Chart layout">
+                <button type="button" title="Single chart" aria-pressed={chartLayout === "single"} className={chartLayout === "single" ? "active" : ""} onClick={() => setChartLayout("single")}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="1" /></svg>
                 </button>
-                <button
-                  title="2x2 grid"
-                  onClick={() => setChartLayout("grid")}
-                  style={{ width: 26, height: 24, borderRadius: 5, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: chartLayout === "grid" ? "var(--bg-4)" : "transparent", color: chartLayout === "grid" ? "var(--text-1)" : "var(--text-3)" }}
-                >
+                <button type="button" title="2x2 grid" aria-pressed={chartLayout === "grid"} className={chartLayout === "grid" ? "active" : ""} onClick={() => setChartLayout("grid")}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="8" height="8" rx="1" /><rect x="13" y="3" width="8" height="8" rx="1" /><rect x="3" y="13" width="8" height="8" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /></svg>
                 </button>
               </div>
@@ -4498,22 +4443,11 @@ export default function WebTrader({
                     </button>
                   </div>
                   {activeIndicators.length > 0 ? (
-                    <div style={{ position: "absolute", left: 44, top: 8, zIndex: 5, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: "calc(100% - 60px)" }}>
+                    <div className="nt-ind-chips">
                       {activeIndicators.map((a) => (
                         <div
                           key={a.key}
-                          className="mono"
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 5,
-                            background: "var(--bg-1)",
-                            border: "1px solid var(--border)",
-                            borderRadius: 6,
-                            padding: "3px 4px 3px 8px",
-                            fontSize: 11,
-                            color: "var(--text-2)",
-                          }}
+                          className="nt-ind-chip mono"
                         >
                           <span onClick={() => setIndicatorConfigKey(a.key)} style={{ cursor: "pointer" }} title="Edit parameters">
                             {INDICATOR_DEFS[a.key].label}
@@ -4656,19 +4590,20 @@ export default function WebTrader({
                   <span className={`wl-category-chevron${chartSettings.bottomPanelCollapsed ? " collapsed" : ""}`}>›</span>
                 </button>
                 <div className="tabs">
-                  <div className={`tab${activeBottomTab === "positions" ? " active" : ""}`} onClick={() => setActiveBottomTab("positions")}>Positions ({acctPositions.length})</div>
-                  <div className={`tab${activeBottomTab === "net" ? " active" : ""}`} onClick={() => setActiveBottomTab("net")}>Net positions ({netBySymbol.size})</div>
-                  <div className={`tab${activeBottomTab === "orders" ? " active" : ""}`} onClick={() => setActiveBottomTab("orders")}>Pending Orders ({pendingOrders.length})</div>
+                  <div className={`tab${activeBottomTab === "positions" ? " active" : ""}`} onClick={() => setActiveBottomTab("positions")}><span className="nt-ph-num">4)</span>&nbsp;Trade ({acctPositions.length})</div>
+                  <div className={`tab${activeBottomTab === "net" ? " active" : ""}`} onClick={() => setActiveBottomTab("net")}>Net ({netBySymbol.size})</div>
+                  <div className={`tab${activeBottomTab === "orders" ? " active" : ""}`} onClick={() => setActiveBottomTab("orders")}>Pending ({pendingOrders.length})</div>
                   <div className={`tab${activeBottomTab === "allOrders" ? " active" : ""}`} onClick={() => setActiveBottomTab("allOrders")}>Orders ({allOrders.length})</div>
                   <div className={`tab${activeBottomTab === "history" ? " active" : ""}`} onClick={() => setActiveBottomTab("history")}>History</div>
                   <div className={`tab${activeBottomTab === "analytics" ? " active" : ""}`} onClick={() => setActiveBottomTab("analytics")}>Analytics</div>
-                  <div className={`tab${activeBottomTab === "logs" ? " active" : ""}`} onClick={() => setActiveBottomTab("logs")}>Logs</div>
+                  <div className={`tab${activeBottomTab === "logs" ? " active" : ""}`} onClick={() => setActiveBottomTab("logs")}>Log</div>
                 </div>
                 {activeBottomTab === "positions" ? (
-                  <div className="bulk-actions">
-                    <button className="bulk-btn profit" disabled={!acctPositions.some((p) => positionPnl(p) >= 0)} onClick={() => closeManyBy("PROFIT", "Closed profitable")}>Close profit</button>
-                    <button className="bulk-btn loss" disabled={!acctPositions.some((p) => positionPnl(p) < 0)} onClick={() => closeManyBy("LOSS", "Closed losing")}>Close loss</button>
-                    <button className="bulk-btn all" disabled={acctPositions.length === 0} onClick={() => closeManyBy("ALL", "Closed all")}>Close all</button>
+                  <div className="bulk-actions" aria-label="Close positions">
+                    <span className="bulk-label">Close</span>
+                    <button className="bulk-btn profit" disabled={!acctPositions.some((p) => positionPnl(p) >= 0)} onClick={() => closeManyBy("PROFIT", "Closed profitable")} title="Close every position in profit">Profit</button>
+                    <button className="bulk-btn loss" disabled={!acctPositions.some((p) => positionPnl(p) < 0)} onClick={() => closeManyBy("LOSS", "Closed losing")} title="Close every position at a loss">Loss</button>
+                    <button className="bulk-btn all" disabled={acctPositions.length === 0} onClick={() => closeManyBy("ALL", "Closed all")} title="Close every position">All</button>
                   </div>
                 ) : null}
               </div>
@@ -5067,7 +5002,8 @@ export default function WebTrader({
             />
           )}
 
-          {/* ---------- ORDER PANEL (right) ---------- */}
+          {/* ---------- RIGHT COLUMN, in the native terminal's order: 3) OT order ticket, the Smart Trade Manager, sessions,
+              6) ACC account ---------- */}
           <div className={`order-panel${isMobileView ? ` mobile${mobileTab === "trade" ? " mobile-active" : ""}` : ""}`}>
           {chartSettings.orderTicketPanelCollapsed ? (
             <button type="button" className="panel-rail" onClick={() => toggleCollapsed("orderTicketPanelCollapsed")} title="Expand order ticket" aria-expanded={false}>
@@ -5076,50 +5012,103 @@ export default function WebTrader({
             </button>
           ) : (
             <>
-            <button type="button" className="panel-collapse-header" style={{ paddingLeft: 0 }} onClick={() => toggleCollapsed("orderTicketPanelCollapsed")} aria-expanded={true} title="Collapse order ticket">
-              <span className="wl-category-chevron">›</span>
-              <span>Order ticket</span>
-            </button>
-
-            <CollapsibleSection
-              title="Order ticket"
-              collapsed={chartSettings.orderTicketSectionCollapsed}
-              onToggle={() => toggleCollapsed("orderTicketSectionCollapsed")}
-            >
-            <div className="order-type-tabs">
-              <button className={`ot-tab${orderMode === "market" ? " active" : ""}`} onClick={() => setOrderMode("market")}>Market</button>
-              <button className={`ot-tab${orderMode === "pending" ? " active" : ""}`} onClick={() => {
-                setOrderMode("pending");
-                setPendingPrice(fmt(m.bid * 0.999, m.def.digits));
-              }}>Pending</button>
+            <div className="nt-ph">
+              <button type="button" className="nt-ph-btn" onClick={() => toggleCollapsed("orderTicketPanelCollapsed")} aria-expanded={true} title="Collapse the order ticket">
+                <span className="nt-ph-code"><span className="nt-ph-num">3)</span> OT</span>
+                <span className="nt-ph-name">Order ticket</span>
+              </button>
+              <span className="nt-ph-aside">{activeSymbol}</span>
             </div>
 
-            {orderMode === "pending" ? (
-              <>
-                <div style={{ marginBottom: 10 }}>
-                  <select className="pending-select" value={pendingType} onChange={(e) => setPendingType(e.target.value as PendingType)}>
-                    <option value="buy_limit">Buy limit</option>
-                    <option value="sell_limit">Sell limit</option>
-                    <option value="buy_stop">Buy stop</option>
-                    <option value="sell_stop">Sell stop</option>
-                  </select>
+            <div className="nt-tabs" role="tablist" aria-label="Order type">
+              <button type="button" role="tab" aria-selected={orderMode === "market"} className={`nt-tab${orderMode === "market" ? " active" : ""}`} onClick={() => setOrderMode("market")}>Market</button>
+              {(["limit", "stop"] as const).map((kind) => {
+                const active = orderMode === "pending" && pendingKind === kind;
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    className={`nt-tab${active ? " active" : ""}`}
+                    onClick={() => {
+                      if (orderMode !== "pending") setPendingPrice(fmt(m.bid, m.def.digits));
+                      setOrderMode("pending");
+                      setPendingType(`${pendingType.startsWith("sell") ? "sell" : "buy"}_${kind}` as PendingType);
+                      setPendingMarketSide(null);
+                    }}
+                  >
+                    {kind === "limit" ? "Limit" : "Stop"}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="nt-rows">
+              <div className="nt-row"><span className="nt-row-label">Symbol</span><span className="nt-row-value nt-strong">{activeSymbol}</span></div>
+              {orderMode === "pending" ? (
+                <div className="nt-row">
+                  <span className="nt-row-label">Entry price</span>
+                  <input className="nt-input mono" aria-label="Entry price" value={pendingPrice} onChange={(e) => setPendingPrice(e.target.value)} />
                 </div>
-                <div className="field-group">
-                  <div className="field">
-                    <span className="field-label">Entry price</span>
-                    <input className="mono" value={pendingPrice} onChange={(e) => setPendingPrice(e.target.value)} />
-                  </div>
-                </div>
-                {pendingPrice ? (
-                  <div className="margin-note" style={{ color: isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid) ? "var(--text-3)" : "var(--err)" }}>
-                    {isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid)
-                      ? `Current price ${fmt(m.bid, m.def.digits)}`
-                      : `${pendingPriceRuleText(pendingType)} (current ${fmt(m.bid, m.def.digits)})`}
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <div className="sentiment-box">
+              ) : null}
+              <div className="nt-row">
+                <span className="nt-row-label">Volume lots</span>
+                <span className="nt-stepper">
+                  <button type="button" className="nt-step" aria-label="Lower volume" onClick={() => setVolume((v) => Math.max(0.01, +(v - 0.01).toFixed(2)))}>−</button>
+                    <input
+                      className="nt-input nt-input-volume mono"
+                      aria-label="Volume in lots"
+                      value={volumeInput}
+                      onFocus={(e) => { volumeInputFocusedRef.current = true; e.target.select(); }}
+                      onBlur={() => { volumeInputFocusedRef.current = false; setVolumeInput(volume.toFixed(2)); }}
+                      onChange={(e) => {
+                        setVolumeInput(e.target.value);
+                        const v = parseFloat(e.target.value);
+                        if (!isNaN(v) && v > 0) setVolume(v);
+                      }}
+                      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    />
+                  <button type="button" className="nt-step" aria-label="Raise volume" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
+                </span>
+              </div>
+              <div className="nt-row nt-row-presets" aria-label="Lot size">
+                {[0.01, 0.1, 0.5, 1].map((lot) => (
+                  <button key={lot} type="button" className={`lot-preset${Math.abs(volume - lot) < 1e-9 ? " active" : ""}`} onClick={() => setVolume(lot)}>{lot.toFixed(2)}</button>
+                ))}
+              </div>
+              <div className="nt-row">
+                <span className="nt-row-label">Stop loss</span>
+                <span className="nt-input-wrap">
+                  <input className="nt-input mono" aria-label="Stop loss" placeholder="SL" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
+                  {slInput ? <button type="button" className="nt-clear" aria-label="Clear the stop loss" onClick={() => setSlInput("")}>✕</button> : null}
+                </span>
+              </div>
+              <div className="nt-row">
+                <span className="nt-row-label">Take profit</span>
+                <span className="nt-input-wrap">
+                  <input className="nt-input mono" aria-label="Take profit" placeholder="TP" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
+                  {tpInput ? <button type="button" className="nt-clear" aria-label="Clear the take profit" onClick={() => setTpInput("")}>✕</button> : null}
+                </span>
+              </div>
+              <div className="nt-row">
+                <span className="nt-row-label">Risk %</span>
+                <input className="nt-input mono" aria-label="Risk percent" placeholder="0.00" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
+              </div>
+              <div className="nt-row"><span className="nt-row-label">Leverage</span><span className="nt-row-value mono nt-strong">1:{account?.leverage ?? 100}</span></div>
+              <div className="nt-row">
+                <span className="nt-row-label">Margin needed</span>
+                <span className="nt-row-value"><span className="mono nt-strong">{account ? fmt(newOrderMarginInAccount(volume, m.def.contractSize, m.bid, account.leverage, rateFor(m.def.name)) ?? NaN, 2) : ""}</span><span className="nt-ccy">{accountCcy}</span></span>
+              </div>
+              <div className="nt-row">
+                <span className="nt-row-label">Point value</span>
+                <span className="nt-row-value"><span className="mono nt-strong">{ticketPointValue == null ? "" : fmt(ticketPointValue, 2)}</span><span className="nt-ccy">{accountCcy}</span></span>
+              </div>
+            </div>
+            {riskPct ? <div className="margin-note">Volume set from the risk % and the stop distance</div> : null}
+            {orderMode === "pending" && pendingPrice ? <div className="margin-note">Current price {fmt(m.bid, m.def.digits)}</div> : null}
+
+            <div className="sentiment-box">
                 {activeSymbolMarketClosed ? (
                   <div className="margin-note" style={{ textAlign: "center", padding: "10px 0" }}>Market closed, opens Sun 22:00 UTC</div>
                 ) : null}
@@ -5132,76 +5121,30 @@ export default function WebTrader({
                     ⚠ High-impact {soonHighImpactEvent.country} news in {Math.max(0, Math.round((new Date(soonHighImpactEvent.time).getTime() - calendarNowTick) / 60000))}m: {soonHighImpactEvent.event}
                   </div>
                 ) : null}
-                <div className="sentiment-prices">
-                  <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("SELL")}>
-                    <span className="sp-label">Sell</span>
-                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : ""}</span>
-                  </button>
-                  <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("BUY")}>
-                    <span className="sp-label">Buy</span>
-                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid), m.def.digits) : ""}</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {orderMode === "pending" ? (
-              <button className={`place-pending-btn ${pendingType.startsWith("buy") ? "buy" : "sell"}`} onClick={placePendingOrder}>Place pending order</button>
-            ) : null}
-
-            <div className="field-group">
-              <div className="field">
-                <span className="field-label">Volume (lots)</span>
-                <div className="lot-stepper">
-                  <button className="stepper-btn" onClick={() => setVolume((v) => Math.max(0.01, +(v - 0.01).toFixed(2)))}>−</button>
-                  <input
-                    className="mono"
-                    style={{ width: 44, textAlign: "center" }}
-                    value={volumeInput}
-                    onFocus={(e) => { volumeInputFocusedRef.current = true; e.target.select(); }}
-                    onBlur={() => { volumeInputFocusedRef.current = false; setVolumeInput(volume.toFixed(2)); }}
-                    onChange={(e) => {
-                      setVolumeInput(e.target.value);
-                      const v = parseFloat(e.target.value);
-                      if (!isNaN(v) && v > 0) setVolume(v);
-                    }}
-                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                  />
-                  <button className="stepper-btn" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
-                </div>
-              </div>
-              <div className="lot-presets" aria-label="Lot size">
-                {[0.01, 0.1, 0.5, 1].map((lot) => (
-                  <button key={lot} type="button" className={`lot-preset${Math.abs(volume - lot) < 1e-9 ? " active" : ""}`} onClick={() => setVolume(lot)}>{lot.toFixed(2)}</button>
-                ))}
-              </div>
-              <div className="field">
-                <span className="field-label">Risk %</span>
-                <input className="mono" placeholder="" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
-              </div>
-              <div className="field">
-                <span className="field-label">Stop loss</span>
-                <span className="input-with-clear">
-                  <input className="mono" placeholder="" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
-                  <button className="clear-input-btn" onClick={() => setSlInput("")}>✕</button>
-                </span>
-              </div>
-              <div className="field">
-                <span className="field-label">Take profit</span>
-                <span className="input-with-clear">
-                  <input className="mono" placeholder="" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
-                  <button className="clear-input-btn" onClick={() => setTpInput("")}>✕</button>
-                </span>
-              </div>
+                {orderMode === "market" ? (
+                  <div className="sentiment-prices">
+                    <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("SELL")}>
+                      <span className="sp-label">Sell</span>
+                      <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : ""}</span>
+                    </button>
+                    <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("BUY")}>
+                      <span className="sp-label">Buy</span>
+                      <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid), m.def.digits) : ""}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="sentiment-prices">
+                    <button className="sentiment-price-btn sell" disabled={priceStaleForTicket || activeSymbolMarketClosed} title={staleTicketTitle} onClick={() => placePendingOrder(`sell_${pendingKind}`)}>
+                      <span className="sp-label">Sell {pendingKind}</span>
+                      <span className="sp-value mono">{pendingPrice}</span>
+                    </button>
+                    <button className="sentiment-price-btn buy" disabled={priceStaleForTicket || activeSymbolMarketClosed} title={staleTicketTitle} onClick={() => placePendingOrder(`buy_${pendingKind}`)}>
+                      <span className="sp-label">Buy {pendingKind}</span>
+                      <span className="sp-value mono">{pendingPrice}</span>
+                    </button>
+                  </div>
+                )}
             </div>
-            {riskPct ? <div className="margin-note">Volume auto-calculated from risk % and stop distance</div> : null}
-
-            <div className="field-group">
-              <div className="field"><span className="field-label">Leverage</span><span className="mono" style={{ fontSize: 12.5 }}>1:{account?.leverage ?? 100}</span></div>
-            </div>
-
-            <div className="margin-note">Margin required <span className="mono">{account ? fmt(newOrderMarginInAccount(volume, m.def.contractSize, m.bid, account.leverage, rateFor(m.def.name)) ?? NaN, 2) : ""}</span> {(account?.currency ?? "USD").toUpperCase()}</div>
-            {ticketHintLines.length > 0 ? <div className="sltp-preview" dangerouslySetInnerHTML={{ __html: ticketHintLines.join("<br>") }} /> : null}
 
             {orderMode === "market" && pendingMarketSide ? (
               <button className={`confirm-market-btn ${pendingMarketSide === "BUY" ? "buy" : "sell"}`} onClick={() => { placeOrder(pendingMarketSide); setPendingMarketSide(null); }}>
@@ -5209,30 +5152,67 @@ export default function WebTrader({
               </button>
             ) : null}
 
-            <div className="occ-toggle-row">
-              <span className="field-label">One-click trading</span>
+            <div className="nt-rr" aria-label="Risk and reward at the stop and target">
+              <div><span>Risk</span><span className="mono">{fmt(ticketRiskReward.risk, 2)}</span></div>
+              <div><span>Reward</span><span className="mono">{fmt(ticketRiskReward.reward, 2)}</span></div>
+              <div><span>R:R</span><span className="mono">{fmt(ticketRiskReward.ratio, 2)}</span></div>
+            </div>
+
+            <div className="nt-row nt-row-switch">
+              <span className="nt-row-label">One-click trading</span>
               <label className="switch">
                 <input type="checkbox" checked={oneClick} onChange={(e) => { setChartSettingValue("oneClickDefault", e.target.checked); pushToast(e.target.checked ? "One-click trading enabled" : "One-click trading disabled"); if (e.target.checked) setPendingMarketSide(null); }} />
                 <span className="switch-slider" />
               </label>
             </div>
-            </CollapsibleSection>
 
-            <CollapsibleSection
-              title="Trading sessions"
-              collapsed={chartSettings.tradingSessionsSectionCollapsed}
-              onToggle={() => toggleCollapsed("tradingSessionsSectionCollapsed")}
-            >
-              <SessionClock hideLabel />
-            </CollapsibleSection>
+            <div className="nt-sec">
+              <button type="button" className="nt-sec-head" aria-expanded={stmOpen} onClick={() => setStmOpen((v) => !v)}>
+                <span>Smart trade manager</span>
+                <span className={`wl-category-chevron${stmOpen ? "" : " collapsed"}`}>›</span>
+              </button>
+              {stmOpen ? (
+                <SmartTradeManager
+                  embedded
+                    open={stmOpen}
+                    onClose={() => setStmOpen(false)}
+                    symbols={allSymbols}
+                    market={market}
+                    askMarkupBySymbol={askMarkupBySymbol}
+                    positions={positions}
+                    positionPnl={positionPnl}
+                    activeSymbol={activeSymbol}
+                    selectedPositionIds={selectedPositionIds}
+                    pushToast={pushToast}
+                    refreshPositions={refreshPositions}
+                    refreshHistory={refreshHistory}
+                    refreshAccount={refreshAccount}
+                />
+              ) : null}
+            </div>
 
-            <CollapsibleSection
-              title="Economic calendar"
-              collapsed={chartSettings.economicCalendarSectionCollapsed}
-              onToggle={() => toggleCollapsed("economicCalendarSectionCollapsed")}
-            >
-              <NewsPanel events={calendarEvents} unavailable={calendarUnavailable} hideLabel />
-            </CollapsibleSection>
+            <div className="nt-sec">
+              <button type="button" className="nt-sec-head" aria-expanded={!chartSettings.tradingSessionsSectionCollapsed} onClick={() => toggleCollapsed("tradingSessionsSectionCollapsed")}>
+                <span suppressHydrationWarning>Sessions · {utcClock(new Date(dealingPendingNowMs))} UTC</span>
+                <span className={`wl-category-chevron${chartSettings.tradingSessionsSectionCollapsed ? " collapsed" : ""}`}>›</span>
+              </button>
+              {chartSettings.tradingSessionsSectionCollapsed ? null : <SessionClock />}
+            </div>
+
+            <div className="nt-ph nt-ph-section">
+              <span className="nt-ph-btn nt-ph-static">
+                <span className="nt-ph-code"><span className="nt-ph-num">6)</span> ACC</span>
+                <span className="nt-ph-name">Account</span>
+              </span>
+            </div>
+            <div className="nt-rows">
+              <div className="nt-row"><span className="nt-row-label">Balance</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : account ? formatMoney(account.balance) : ""}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+              <div className="nt-row"><span className="nt-row-label">Equity</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(equity)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+              <div className="nt-row"><span className="nt-row-label">Open P/L</span><span className="nt-row-value"><span className="mono nt-strong" style={{ color: WT_TONE_COLOR[tone(floatingPnl)] }}>{balanceHidden ? "••••" : formatSigned(floatingPnl)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+              <div className="nt-row"><span className="nt-row-label">Margin used</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(usedMargin)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+              <div className="nt-row"><span className="nt-row-label">Free margin</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(freeMargin)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+              <div className="nt-row"><span className="nt-row-label">Margin level</span><span className="nt-row-value mono nt-strong">{balanceHidden ? "••••" : formatMarginLevel(marginLevel)}</span></div>
+            </div>
             </>
           )}
           </div>

@@ -14,9 +14,7 @@ const IMPACT_COLOR: Record<string, string> = {
 // (single shared fetch, since the chart markers and order-ticket warning
 // chip need the exact same data, not a second independent poll of the
 // same Finnhub-backed route).
-// hideLabel -- WebTrader.tsx now wraps this in its own CollapsibleSection
-// (title "Economic calendar"), which owns the header; this own internal
-// label would just duplicate it.
+// hideLabel -- WebTrader.tsx puts this under its own 5) ECO panel header, which would duplicate this label.
 export default function NewsPanel({ events, unavailable, hideLabel = false }: { events: CalendarEvent[] | null; unavailable: boolean; hideLabel?: boolean }) {
   // Default: only events still ahead of now -- see filterUpcomingEvents'
   // own comment for why this, not the raw `events` prop, is the right

@@ -24,12 +24,8 @@ import { tradeActionError, TRADE_TEXT } from "@/lib/plain-error";
 
 const STORAGE_KEY = "vyx-stm-config";
 
-// Compact override for .modal-btn's own shared padding/font-size (9px
-// 18px / 12.5px), sized for a full-width modal action -- STM's own
-// hotkey/action-row buttons live in a much narrower embedded sidebar
-// context (down to ~160px) and overflowed it at that size, reported
-// live (2026-09-04).
-const compactBtn = { padding: "5px 8px", fontSize: 11 } as const;
+// Native-terminal alignment (owner 2026-11-03): the panel uses the order ticket's label / value
+// rows (.nt-row) and compact segmented controls (.stm-seg), which fit the right column at its 260 px minimum.
 
 type OrderType = "MARKET" | "LIMIT" | "STOP";
 type CloseScope = "ALL_SYMBOLS" | "CURRENT_SYMBOL" | "SELECTED";
@@ -327,147 +323,118 @@ export default function SmartTradeManager({
   // the Watchlist (embedded=true, WebTrader.tsx's own toggle instead of
   // onClose). Only the chrome around it (overlay/backdrop/close button)
   // differs.
+  const tag = (v: { validForBuy: boolean; validForSell: boolean } | null) =>
+    v == null ? null
+      : v.validForBuy && v.validForSell ? <span className="stm-tag ok">Valid</span>
+      : v.validForBuy ? <span className="stm-tag buy">Buy only</span>
+      : v.validForSell ? <span className="stm-tag sell">Sell only</span>
+      : <span className="stm-tag err">Invalid</span>;
+  const invalid = (raw: string, v: { validForBuy: boolean; validForSell: boolean } | null) => raw !== "" && v != null && !v.validForBuy && !v.validForSell;
+
   const card = (
-    <div className="generic-modal-card" style={{ width: embedded ? "100%" : 420 }}>
-          <div className="generic-modal-title">Smart Trade Manager</div>
+    <div className={embedded ? "stm" : "generic-modal-card stm stm-modal"}>
+      {embedded ? null : <div className="generic-modal-title">Smart Trade Manager</div>}
+      <div className="stm-head">
+        <span className="stm-sub">Hotkey orders</span>
+        <button
+          type="button"
+          className={`stm-enable${config.smartExecution ? " on" : ""}`}
+          aria-pressed={config.smartExecution}
+          title={config.smartExecution ? "Smart Execution is on: the hotkeys place orders. Click to turn it off." : "Turn on Smart Execution"}
+          onClick={() => { if (config.smartExecution) setConfig((c) => ({ ...c, smartExecution: false })); else setConfirmEnable(true); }}
+        >
+          {config.smartExecution ? "On" : "Enable"}
+        </button>
+      </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Symbol</label>
-              {/* Compact override -- the shared .wt-root select rule
-                  (padding: 8px 10px, font-size: 12.5px) was sized for the
-                  full-width order ticket, not this half-width embedded
-                  grid cell (as narrow as ~75px in the docked Watchlist
-                  column), where it clipped option text like "XAUUSD" down
-                  to "XAUUS". Reported live (2026-09-04). */}
-              <select className="mono" style={{ width: "100%", padding: "5px 4px", fontSize: 11 }} value={config.symbol} onChange={(e) => setConfig((c) => ({ ...c, symbol: e.target.value }))}>
-                {symbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Order type</label>
-              <select className="mono" style={{ width: "100%", padding: "5px 4px", fontSize: 11 }} value={config.orderType} onChange={(e) => setConfig((c) => ({ ...c, orderType: e.target.value as OrderType }))}>
-                <option value="MARKET">Market</option>
-                <option value="LIMIT">Limit</option>
-                <option value="STOP">Stop</option>
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Lot size</label>
-              <input className="mono" style={{ width: "100%" }} type="number" step="0.01" min="0.01" value={config.lot}
-                onChange={(e) => setConfig((c) => ({ ...c, lot: parseFloat(e.target.value) || 0.01 }))} />
-            </div>
-            <div />
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>
-                Stop Loss {slValidity ? (
-                  <span style={{ color: slValidity.validForBuy || slValidity.validForSell ? "var(--ok)" : "var(--err)" }}>
-                    {slValidity.validForBuy && slValidity.validForSell ? "VALID" : slValidity.validForBuy ? "valid for BUY only" : slValidity.validForSell ? "valid for SELL only" : "INVALID"}
-                  </span>
-                ) : null}
-              </label>
-              <input
-                className="mono"
-                style={{ width: "100%", boxShadow: config.sl !== "" && slValidity && !slValidity.validForBuy && !slValidity.validForSell ? "inset 0 0 0 1.5px var(--err)" : undefined }}
-                type="number" step="any" value={config.sl}
-                onChange={(e) => setConfig((c) => ({ ...c, sl: e.target.value }))}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>
-                Take Profit {tpValidity ? (
-                  <span style={{ color: tpValidity.validForBuy || tpValidity.validForSell ? "var(--ok)" : "var(--err)" }}>
-                    {tpValidity.validForBuy && tpValidity.validForSell ? "VALID" : tpValidity.validForBuy ? "valid for BUY only" : tpValidity.validForSell ? "valid for SELL only" : "INVALID"}
-                  </span>
-                ) : null}
-              </label>
-              <input
-                className="mono"
-                style={{ width: "100%", boxShadow: config.tp !== "" && tpValidity && !tpValidity.validForBuy && !tpValidity.validForSell ? "inset 0 0 0 1.5px var(--err)" : undefined }}
-                type="number" step="any" value={config.tp}
-                onChange={(e) => setConfig((c) => ({ ...c, tp: e.target.value }))}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Buy hotkey</label>
-              {/* Compact override -- see the Symbol select's own comment
-                  above; .modal-btn's shared padding (9px 18px) was sized
-                  for a full-width modal action, not a half-width embedded
-                  grid cell. */}
-              <button className="modal-btn" style={{ width: "100%", padding: "5px 8px", fontSize: 11 }} onClick={() => setCapturingHotkey("buy")}>
-                {capturingHotkey === "buy" ? "Press a key…" : hotkeyToLabel(config.buyHotkey)}
-              </button>
-            </div>
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Sell hotkey</label>
-              <button className="modal-btn" style={{ width: "100%", padding: "5px 8px", fontSize: 11 }} onClick={() => setCapturingHotkey("sell")}>
-                {capturingHotkey === "sell" ? "Press a key…" : hotkeyToLabel(config.sellHotkey)}
-              </button>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", marginBottom: 12 }}>
-            <span style={{ fontWeight: 600 }}>Smart Execution</span>
-            <button
-              className={`modal-btn${config.smartExecution ? " primary" : ""}`}
-              onClick={() => { if (config.smartExecution) setConfig((c) => ({ ...c, smartExecution: false })); else setConfirmEnable(true); }}
-            >
-              {config.smartExecution ? "ON" : "OFF"}
-            </button>
-          </div>
-
-          <div className="generic-modal-title" style={{ fontSize: 13, marginBottom: 8 }}>Position actions</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Scope</label>
-              <select className="mono" style={{ width: "100%", padding: "5px 4px", fontSize: 11 }} value={closeScope} onChange={(e) => setCloseScope(e.target.value as CloseScope)}>
-                <option value="ALL_SYMBOLS">All symbols</option>
-                <option value="CURRENT_SYMBOL">Current symbol ({activeSymbol})</option>
-                <option value="SELECTED">Selected ({selectedPositionIds.size})</option>
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Direction</label>
-              <select className="mono" style={{ width: "100%", padding: "5px 4px", fontSize: 11 }} value={closeDirection} onChange={(e) => setCloseDirection(e.target.value as DirectionFilter)}>
-                <option value="ALL">All</option>
-                <option value="BUY">Buy</option>
-                <option value="SELL">Sell</option>
-              </select>
-            </div>
-          </div>
-
-          {/* flexWrap: wrap on all three rows below -- this card used to
-              only ever render at a fixed 420px (the non-embedded modal
-              width); embedded mode can now be as narrow as 160px (the
-              Watchlist column's own resize floor), and none of these rows
-              have any give at that width. Without wrapping, the row just
-              overflowed the card and (since nothing between here and
-              .watchlist had min-width: 0 to actually clip it) rendered
-              past the Watchlist column and over the chart. */}
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 6 }}>
-              <span style={{ fontSize: 11, color: "var(--text-3)", width: 90 }}>Break-even</span>
-              <input className="mono" style={{ width: 70, fontSize: 11 }} type="number" step="any" value={beOffset} onChange={(e) => setBeOffset(e.target.value)} title="Offset from entry price" />
-              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={breakEven}>Apply</button>
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 6 }}>
-              <span style={{ fontSize: 11, color: "var(--text-3)", width: 90 }}>Partial close</span>
-              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={() => partialClosePct(0.25)}>25%</button>
-              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={() => partialClosePct(0.5)}>50%</button>
-              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={() => partialClosePct(0.75)}>75%</button>
-              <input className="mono" style={{ width: 50, fontSize: 11 }} type="number" min="1" max="99" value={customPct} onChange={(e) => setCustomPct(e.target.value)} />
-              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={partialCloseCustom}>%</button>
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              <button className="modal-btn" disabled={busy} onClick={closeProfitable} style={{ ...compactBtn, flex: 1, minWidth: 90 }}>Close profitable</button>
-              <button className="modal-btn" disabled={busy} onClick={closeLosing} style={{ ...compactBtn, flex: 1, minWidth: 80 }}>Close losing</button>
-              <button className="modal-btn" disabled={busy} onClick={closeAll} style={{ ...compactBtn, flex: 1, minWidth: 70 }}>Close all</button>
-            </div>
-          </div>
+      <div className="nt-rows">
+        <div className="nt-row">
+          <span className="nt-row-label">Symbol</span>
+          <select className="nt-select mono" aria-label="Symbol" value={config.symbol} onChange={(e) => setConfig((c) => ({ ...c, symbol: e.target.value }))}>
+            {symbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+          </select>
         </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Order type</span>
+          <span className="stm-seg" role="group" aria-label="Order type">
+            {(["MARKET", "LIMIT", "STOP"] as const).map((t) => (
+              <button key={t} type="button" aria-pressed={config.orderType === t} className={config.orderType === t ? "active" : ""} onClick={() => setConfig((c) => ({ ...c, orderType: t }))}>{t}</button>
+            ))}
+          </span>
+        </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Lot size</span>
+          <input className="nt-input mono" aria-label="Lot size" type="number" step="0.01" min="0.01" value={config.lot}
+            onChange={(e) => setConfig((c) => ({ ...c, lot: parseFloat(e.target.value) || 0.01 }))} />
+        </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Stop loss {tag(slValidity)}</span>
+          <input className={`nt-input mono${invalid(config.sl, slValidity) ? " invalid" : ""}`} aria-label="Stop loss" placeholder="SL" type="number" step="any" value={config.sl}
+            onChange={(e) => setConfig((c) => ({ ...c, sl: e.target.value }))} />
+        </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Take profit {tag(tpValidity)}</span>
+          <input className={`nt-input mono${invalid(config.tp, tpValidity) ? " invalid" : ""}`} aria-label="Take profit" placeholder="TP" type="number" step="any" value={config.tp}
+            onChange={(e) => setConfig((c) => ({ ...c, tp: e.target.value }))} />
+        </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Buy key</span>
+          <button type="button" className={`stm-key buy${capturingHotkey === "buy" ? " capturing" : ""}`} onClick={() => setCapturingHotkey("buy")} title="Click, then press the key for a BUY">
+            {capturingHotkey === "buy" ? "Press a key" : hotkeyToLabel(config.buyHotkey)}
+          </button>
+        </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Sell key</span>
+          <button type="button" className={`stm-key sell${capturingHotkey === "sell" ? " capturing" : ""}`} onClick={() => setCapturingHotkey("sell")} title="Click, then press the key for a SELL">
+            {capturingHotkey === "sell" ? "Press a key" : hotkeyToLabel(config.sellHotkey)}
+          </button>
+        </div>
+      </div>
+
+      <div className="stm-head stm-head-sep"><span className="stm-sub">Position actions</span></div>
+      <div className="nt-rows">
+        <div className="nt-row">
+          <span className="nt-row-label">Scope</span>
+          <select className="nt-select" aria-label="Scope" value={closeScope} onChange={(e) => setCloseScope(e.target.value as CloseScope)}>
+            <option value="ALL_SYMBOLS">All symbols</option>
+            <option value="CURRENT_SYMBOL">{activeSymbol}</option>
+            <option value="SELECTED">Selected ({selectedPositionIds.size})</option>
+          </select>
+        </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Direction</span>
+          <span className="stm-seg" role="group" aria-label="Direction">
+            {(["ALL", "BUY", "SELL"] as const).map((d) => (
+              <button key={d} type="button" aria-pressed={closeDirection === d} className={`${d === "BUY" ? "buy" : d === "SELL" ? "sell" : ""}${closeDirection === d ? " active" : ""}`} onClick={() => setCloseDirection(d)}>{d}</button>
+            ))}
+          </span>
+        </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Break-even</span>
+          <span className="stm-inline">
+            <input className="nt-input mono stm-narrow" aria-label="Break-even offset from the entry price" placeholder="Offset" type="number" step="any" value={beOffset} onChange={(e) => setBeOffset(e.target.value)} />
+            <button type="button" className="stm-btn" disabled={busy} onClick={breakEven}>Apply</button>
+          </span>
+        </div>
+        <div className="nt-row">
+          <span className="nt-row-label">Partial close</span>
+          <span className="stm-inline">
+            <input className="nt-input mono stm-narrow" aria-label="Percent to close" type="number" min="1" max="99" value={customPct} onChange={(e) => setCustomPct(e.target.value)} />
+            <button type="button" className="stm-btn" disabled={busy} onClick={partialCloseCustom}>Close %</button>
+          </span>
+        </div>
+        <div className="nt-row nt-row-presets">
+          {[0.25, 0.5, 0.75].map((f) => (
+            <button key={f} type="button" className="lot-preset" disabled={busy} onClick={() => partialClosePct(f)}>{f * 100}%</button>
+          ))}
+        </div>
+      </div>
+      <div className="stm-close-row">
+        <button type="button" className="stm-btn" disabled={busy} onClick={closeProfitable}>Close profit</button>
+        <button type="button" className="stm-btn" disabled={busy} onClick={closeLosing}>Close loss</button>
+        <button type="button" className="stm-btn stm-btn-strong" disabled={busy} onClick={closeAll}>Close all</button>
+      </div>
+    </div>
   );
 
   return (
@@ -487,11 +454,11 @@ export default function SmartTradeManager({
             <div className="generic-modal-card" style={{ width: 380 }}>
               <div className="generic-modal-title">Enable Smart Execution?</div>
               <p style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 16 }}>
-                Smart Execution allows assigned hotkeys to immediately place or manage trades using your saved trading parameters. Make sure your hotkeys and order settings are correct before enabling this feature.
+                The hotkeys will place and manage trades at once, with the settings above.
               </p>
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button className="modal-btn" onClick={() => setConfirmEnable(false)}>Cancel</button>
-                <button className="modal-btn primary" onClick={() => { setConfig((c) => ({ ...c, smartExecution: true })); setConfirmEnable(false); }}>I Understand & Enable</button>
+                <button className="modal-btn primary" onClick={() => { setConfig((c) => ({ ...c, smartExecution: true })); setConfirmEnable(false); }}>Enable</button>
               </div>
             </div>
           </div>

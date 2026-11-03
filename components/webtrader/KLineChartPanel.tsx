@@ -396,6 +396,9 @@ function indicatorStyles(key: IndicatorKey, calcParams: number[], theme: "dark" 
   const upColor = wtColors(theme).tickUp;
   const downColor = wtColors(theme).tickDown;
   switch (key) {
+    case "EMA":
+      // the native terminal's EMA look: thin amber lines, the faster one lighter (ChartDrawOperation's EMA 20 / 50 paints)
+      return { lines: calcParams.map((_, i) => ({ ...line(i === 0 ? "rgba(245, 166, 35, 0.55)" : "rgba(245, 166, 35, 0.86)"), size: i === 0 ? 1 : 1.2 })) };
     case "BOLL":
       return { lines: [line(mutedBand), line(palette[0]), line(mutedBand)] };
     case "MACD":
@@ -752,6 +755,8 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           // separately.
           tooltip: { text: { color: AXIS_TEXT_COLOR, size: 11, family: MONO_FONT, weight: "normal" } },
         },
+        // indicator legends (EMA20: ..., RSI: ...) in the same mono face as the candle readout; the library default is a serif
+        indicator: { tooltip: { text: { size: 11, family: MONO_FONT, weight: "normal", color: AXIS_TEXT_COLOR } } },
         xAxis: {
           axisLine: { color: CHART_THEME_COLORS.dark.axisLine },
           tickText: { color: AXIS_TEXT_COLOR, family: MONO_FONT, size: 11, marginStart: 4, marginEnd: 4 },
@@ -1398,7 +1403,26 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
             high: { color: chartColors.axisText },
             low: { color: chartColors.axisText },
           },
-          tooltip: { showRule: settings.showOhlcBar ? "always" : "none", text: { color: chartColors.axisText } },
+          // the native chart header's hovered-candle readout: O / H / L / C in the axis grey with the values in the text
+          // colour, then the change from the previous close in the price-direction colours
+          tooltip: {
+            showRule: settings.showOhlcBar ? "always" : "none",
+            showType: "standard",
+            text: { color: chartColors.axisText },
+            custom: (data: { prev: { close: number } | null; current: { open: number; high: number; low: number; close: number } }) => {
+              const value = settings.theme === "light" ? "#14181F" : "#EDEFF2";
+              const c = data.current;
+              const legend = (title: string, v: number) => ({ title: { text: title, color: chartColors.axisText }, value: { text: `${v.toFixed(digits)}  `, color: value } });
+              const out = [legend("O ", c.open), legend("H ", c.high), legend("L ", c.low), legend("C ", c.close)];
+              if (data.prev && data.prev.close) {
+                const d = c.close - data.prev.close;
+                const pct = (d / data.prev.close) * 100;
+                const tones = wtColors(settings.theme);
+                out.push({ title: { text: "", color: chartColors.axisText }, value: { text: `${d >= 0 ? "+" : ""}${d.toFixed(digits)} (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`, color: d >= 0 ? tones.tickUp : tones.tickDown } });
+              }
+              return out;
+            },
+          },
         },
         xAxis: { axisLine: { color: chartColors.axisLine }, tickText: { color: chartColors.axisText } },
         yAxis: { axisLine: { color: chartColors.axisLine }, tickText: { color: chartColors.axisText } },
@@ -1411,7 +1435,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     } catch {
       // ignore
     }
-  }, [settings]);
+  }, [settings, digits]);
 
   useImperativeHandle(
     ref,
