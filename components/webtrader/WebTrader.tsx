@@ -765,7 +765,7 @@ export default function WebTrader({
   // order ticket's two-column lot/SL/TP fields realistically stop being
   // comfortably tappable side-by-side with anything else visible.
   const [isMobileView, setIsMobileView] = useState(false);
-  const [mobileTab, setMobileTab] = useState<"chart" | "trade" | "positions" | "watchlist">("chart");
+  const [mobileTab, setMobileTab] = useState<"watchlist" | "chart" | "trade" | "positions" | "account">("chart");
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 860px)");
     setIsMobileView(mq.matches);
@@ -3762,6 +3762,18 @@ export default function WebTrader({
 
   const serverName = account && !demo ? `${brokerName}-${account.accountMode === "LIVE" ? "Live" : "Demo"}` : brokerName;
 
+  // 6) ACC: the order column's account rows on desktop, the Account tab on a phone
+  const renderAccountRows = () => (
+  <div className="nt-rows">
+    <div className="nt-row"><span className="nt-row-label">Balance</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : account ? formatMoney(account.balance) : ""}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+    <div className="nt-row"><span className="nt-row-label">Equity</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(equity)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+    <div className="nt-row"><span className="nt-row-label">Open P/L</span><span className="nt-row-value"><span className="mono nt-strong" style={{ color: WT_TONE_COLOR[tone(floatingPnl)] }}>{balanceHidden ? "••••" : formatSigned(floatingPnl)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+    <div className="nt-row"><span className="nt-row-label">Margin used</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(usedMargin)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+    <div className="nt-row"><span className="nt-row-label">Free margin</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(freeMargin)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+    <div className="nt-row"><span className="nt-row-label">Margin level</span><span className="nt-row-value mono nt-strong">{balanceHidden ? "••••" : formatMarginLevel(marginLevel)}</span></div>
+  </div>
+  );
+
   return (
     <div className="wt-root" data-theme={theme} data-mode={chartSettings.theme}>
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
@@ -4046,7 +4058,7 @@ export default function WebTrader({
         </div>
 
         <div
-          className={`main${isMobileView ? " mobile" : ""}`}
+          className={`main${isMobileView ? ` mobile m-tab-${mobileTab}` : ""}`}
           style={
             isMobileView
               ? undefined
@@ -5205,14 +5217,7 @@ export default function WebTrader({
                 <span className="nt-ph-name">Account</span>
               </span>
             </div>
-            <div className="nt-rows">
-              <div className="nt-row"><span className="nt-row-label">Balance</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : account ? formatMoney(account.balance) : ""}</span><span className="nt-ccy">{accountCcy}</span></span></div>
-              <div className="nt-row"><span className="nt-row-label">Equity</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(equity)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
-              <div className="nt-row"><span className="nt-row-label">Open P/L</span><span className="nt-row-value"><span className="mono nt-strong" style={{ color: WT_TONE_COLOR[tone(floatingPnl)] }}>{balanceHidden ? "••••" : formatSigned(floatingPnl)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
-              <div className="nt-row"><span className="nt-row-label">Margin used</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(usedMargin)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
-              <div className="nt-row"><span className="nt-row-label">Free margin</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(freeMargin)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
-              <div className="nt-row"><span className="nt-row-label">Margin level</span><span className="nt-row-value mono nt-strong">{balanceHidden ? "••••" : formatMarginLevel(marginLevel)}</span></div>
-            </div>
+            {renderAccountRows()}
             </>
           )}
           </div>
@@ -5220,25 +5225,90 @@ export default function WebTrader({
 
         {/* ---------- MOBILE BOTTOM NAV (replaces the icon rail below
             the .mobile breakpoint) ---------- */}
-        {isMobileView ? (
-          <div className="mobile-nav">
-            <button className={`mobile-nav-item${mobileTab === "chart" ? " active" : ""}`} onClick={() => setMobileTab("chart")}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18" /><path d="M18.7 8.3 13 14l-4-4-5.3 5.3" /></svg>
-              <span>Chart</span>
-            </button>
-            <button className={`mobile-nav-item${mobileTab === "trade" ? " active" : ""}`} onClick={() => setMobileTab("trade")}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M2 12h20" /></svg>
-              <span>Trade</span>
-            </button>
-            <button className={`mobile-nav-item${mobileTab === "positions" ? " active" : ""}`} onClick={() => setMobileTab("positions")}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
-              <span>Positions{acctPositions.length > 0 ? ` (${acctPositions.length})` : ""}</span>
-            </button>
-            <button className={`mobile-nav-item${mobileTab === "watchlist" ? " active" : ""}`} onClick={() => setMobileTab("watchlist")}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2 3 14h7l-1 8 10-12h-7l1-8Z" /></svg>
-              <span>Watchlist</span>
-            </button>
+        {isMobileView && mobileTab === "account" ? (
+          <div className="m-account">
+            <div className="nt-ph">
+              <span className="nt-ph-btn nt-ph-static">
+                <span className="nt-ph-code"><span className="nt-ph-num">6)</span> ACC</span>
+                <span className="nt-ph-name">Account</span>
+              </span>
+              <span className="nt-ph-aside mono">{account?.accountNumber ?? ""}</span>
+            </div>
+            <div className="m-account-id">
+              <span className="m-account-name">{balanceHidden ? "••••••" : account?.fullName ?? ""}</span>
+              <span className="m-account-meta">
+                {account?.accountMode ? <span className="m-account-mode">{account.accountMode}</span> : null}
+                <span className="m-account-conn">
+                  <span className="m-dot" style={{ background: connected ? "var(--ok)" : "var(--warn)" }} />
+                  {connected ? `Connected · ${serverName}` : "Reconnecting…"}
+                </span>
+              </span>
+            </div>
+            {renderAccountRows()}
+            <div className="m-account-actions">
+              {demo ? null : (
+                <button type="button" className="m-action" onClick={() => { setFundsModalOpen(true); refreshFundsHistory(); }}>Deposit / withdraw</button>
+              )}
+              <button type="button" className="m-action" onClick={() => setBalanceHidden((v) => !v)}>{balanceHidden ? "Show balances" : "Hide balances"}</button>
+              <button type="button" className="m-action" onClick={() => changeColorMode(chartSettings.theme === "light" ? "dark" : "light")}>
+                {chartSettings.theme === "light" ? "Dark theme" : "Light theme"}
+              </button>
+              {demo ? null : (
+                <button type="button" className="m-action m-action-quiet" onClick={handleLogout}>Log out</button>
+              )}
+            </div>
           </div>
+        ) : null}
+
+        {/* the sticky Buy / Sell bar (owner item 7): the active symbol's SELL bid and BUY ask with the ticket's lots,
+            through the ticket's own confirmAndPlace (one-click or confirm, the same rules and refusals as the ticket) */}
+        {isMobileView && mobileTab !== "trade" && mobileTab !== "account" ? (
+          <div className="mtb" role="group" aria-label={`Trade ${activeSymbol}`}>
+            {pendingMarketSide ? (
+              <div className="mtb-confirm">
+                <button type="button" className={`mtb-confirm-btn ${pendingMarketSide === "BUY" ? "buy" : "sell"}`} onClick={() => { placeOrder(pendingMarketSide); setPendingMarketSide(null); }}>
+                  Confirm {pendingMarketSide} {fmt(volume, 2)} {activeSymbol}
+                </button>
+                <button type="button" className="mtb-cancel" aria-label="Cancel" onClick={() => setPendingMarketSide(null)}>Cancel</button>
+              </div>
+            ) : (
+              <>
+                <button type="button" className="mtb-side sell" disabled={sellDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("SELL")}>
+                  <span className="mtb-label">Sell</span>
+                  <span className="mtb-price mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : ""}</span>
+                </button>
+                <span className="mtb-lots">
+                  <button type="button" className="mtb-step" aria-label="Lower volume" onClick={() => setVolume((v) => Math.max(0.01, +(v - 0.01).toFixed(2)))}>−</button>
+                  <span className="mtb-lots-value">
+                    <span className="mono">{fmt(volume, 2)}</span>
+                    <span className="mtb-lots-sym">{activeSymbol}</span>
+                  </span>
+                  <button type="button" className="mtb-step" aria-label="Raise volume" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
+                </span>
+                <button type="button" className="mtb-side buy" disabled={buyDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("BUY")}>
+                  <span className="mtb-label">Buy</span>
+                  <span className="mtb-price mono">{m.lastTickAt > 0 ? fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid), m.def.digits) : ""}</span>
+                </button>
+              </>
+            )}
+          </div>
+        ) : null}
+
+        {isMobileView ? (
+          <nav className="mobile-nav" aria-label="Sections">
+            {([
+              ["watchlist", "Watchlist", <path key="w" d="M4 6h16M4 12h16M4 18h10" />],
+              ["chart", "Chart", <path key="c" d="M3 3v18h18M7 15l4-4 3 3 5-6" />],
+              ["trade", "Trade", <path key="t" d="M7 4v16M3 8l4-4 4 4M17 20V4M13 16l4 4 4-4" />],
+              ["positions", acctPositions.length > 0 ? `Positions ${acctPositions.length}` : "Positions", <path key="p" d="M4 5h16v14H4zM4 10h16M9 10v9" />],
+              ["account", "Account", <path key="a" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0" />],
+            ] as const).map(([tab, label, icon]) => (
+              <button key={tab} type="button" className={`mobile-nav-item${mobileTab === tab ? " active" : ""}`} aria-current={mobileTab === tab ? "page" : undefined} onClick={() => setMobileTab(tab)}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icon}</svg>
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
         ) : null}
 
         <div className="statusbar">

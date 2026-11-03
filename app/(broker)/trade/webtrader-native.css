@@ -327,3 +327,132 @@
   .wt-root .status-label { font-size: 10px; letter-spacing: .04em; }
   .wt-root .status-value { font-size: 11.5px; font-family: var(--wt-font-mono, 'JetBrains Mono'), ui-monospace, monospace; }
 }
+
+/* ---------- phone (owner item 7, 2026-11-03): bottom tab bar, sticky Buy / Sell bar, the native look ---------- */
+@media (max-width: 860px) {
+  /* header: brand and controls, then the five menus on their own strip (they fit 360 px, so no scroller clips
+     their dropdowns) */
+  .wt-root .topbar {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "brand right" "nav nav";
+    height: auto; padding: 0; column-gap: 8px; background: var(--bg-1); border-bottom: 1px solid var(--border);
+  }
+  .wt-root .topbar-center { grid-area: brand; justify-self: start; padding: 6px 10px; min-width: 0; }
+  .wt-root .topbar-right { grid-area: right; justify-self: end; padding: 6px 10px 6px 0; gap: 6px; }
+  .wt-root .topbar-left { grid-area: nav; border-top: 1px solid var(--border); padding: 0 6px; min-width: 0; }
+  .wt-root .nav { overflow: visible; margin-left: 0; gap: 0; height: 30px; width: 100%; justify-content: space-between; }
+  .wt-root .nav .item { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 6px 6px; color: var(--text-2); }
+  .wt-root .broker-logo-text { display: none; }
+  .wt-root .topbar-right .avatar { display: none; }
+  .wt-root .statusbar { display: none; }
+
+  /* every section flush to the edges; the drawing strip is a desktop tool (touch drawing comes with step 2) */
+  .wt-root .main.mobile > .order-panel, .wt-root .main.mobile > .watchlist { padding: 0; background: var(--bg-1); }
+  .wt-root .chart-area:has(> .drawing-toolbar) { padding-left: 0; }
+  .wt-root .drawing-toolbar { display: none; }
+  .wt-root .main.mobile.m-tab-account { display: none; }
+
+  /* the Account tab */
+  .m-account { flex: 1; min-height: 0; overflow-y: auto; background: var(--bg-1); padding-bottom: 12px; }
+  .m-account-id { display: flex; flex-direction: column; gap: 4px; padding: 10px 10px 8px; border-bottom: 1px solid var(--border); }
+  .m-account-name { font-size: 14px; font-weight: 600; color: var(--text-1); }
+  .m-account-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--text-2); }
+  .m-account-mode {
+    font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent);
+    border: 1px solid var(--border-strong); border-radius: var(--radius, 3px); padding: 1px 6px;
+  }
+  .m-account-conn { display: inline-flex; align-items: center; gap: 6px; }
+  .m-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .m-account-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 12px 10px 0; }
+  .m-action {
+    height: 38px; border: 1px solid var(--border-strong); border-radius: var(--radius, 3px); background: var(--bg-2);
+    color: var(--text-1); font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .m-action-quiet { color: var(--text-2); }
+
+  /* the sticky Buy / Sell bar, above the tabs */
+  .mtb {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; flex-shrink: 0;
+    padding: 6px 8px; background: var(--bg-1); border-top: 1px solid var(--border);
+  }
+  .mtb-side {
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 1px; min-width: 0;
+    height: 46px; padding: 0 10px; border: none; border-radius: var(--radius, 3px); color: #FFFFFF; cursor: pointer;
+  }
+  .mtb-side.sell { background: linear-gradient(180deg, color-mix(in srgb, var(--sell) 86%, #FFFFFF), var(--sell)); }
+  .mtb-side.buy { align-items: flex-end; background: linear-gradient(180deg, color-mix(in srgb, var(--buy) 86%, #FFFFFF), var(--buy)); }
+  .mtb-side:disabled { opacity: .45; cursor: default; }
+  .mtb-label { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; opacity: .92; }
+  .mtb-price { font-size: 16px; font-weight: 600; white-space: nowrap; }
+  .mtb-lots { display: flex; align-items: center; gap: 3px; }
+  .mtb-step {
+    width: 28px; height: 46px; border: 1px solid var(--border-strong); border-radius: var(--radius, 3px);
+    background: var(--bg-2); color: var(--text-1); font-size: 16px; cursor: pointer; padding: 0;
+  }
+  .mtb-lots-value { display: flex; flex-direction: column; align-items: center; min-width: 54px; font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .mtb-lots-sym { font-size: 9.5px; font-weight: 500; color: var(--text-3); letter-spacing: .03em; }
+  .mtb-confirm { grid-column: 1 / -1; display: flex; gap: 6px; }
+  .mtb-confirm-btn { flex: 1; height: 46px; border: none; border-radius: var(--radius, 3px); color: #FFFFFF; font-size: 13px; font-weight: 700; cursor: pointer; }
+  .mtb-confirm-btn.buy { background: var(--buy); }
+  .mtb-confirm-btn.sell { background: var(--sell); }
+  .mtb-cancel {
+    height: 46px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius, 3px);
+    background: var(--bg-2); color: var(--text-2); font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+
+  /* watchlist: no drag handle on touch; chart header: no panel code or desktop layout switch */
+  /* the handle keeps its 0 px grid cell (display: none would shift every cell one column left) */
+  .wt-root .wl-drag-handle { visibility: hidden; pointer-events: none; }
+  .wt-root .chart-title > .nt-ph-code { display: none; }
+  .wt-root .chart-header .nt-seg { display: none; }
+
+  /* Positions tab: the trade panel's tab strip swipes inside itself, the Close group sits under it */
+  .wt-root .bottom-panel.mobile { background: var(--bg-1); }
+  .wt-root .bottom-panel.mobile .tabs-row { flex-wrap: wrap; padding: 0; align-items: stretch; background: var(--bg-1); }
+  .wt-root .bottom-panel.mobile .tabs { flex: 1 1 100%; min-width: 0; overflow-x: auto; gap: 0; scrollbar-width: none; }
+  .wt-root .bottom-panel.mobile .tabs::-webkit-scrollbar { display: none; }
+  .wt-root .bottom-panel.mobile .tab {
+    padding: 9px 10px 7px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3);
+  }
+  .wt-root .bottom-panel.mobile .tab.active { color: var(--text-1); border-bottom-color: var(--accent); }
+  .wt-root .bottom-panel.mobile .bulk-actions {
+    flex: 1 1 100%; margin: 0; padding: 6px 10px; justify-content: flex-end; align-items: center; border-top: 1px solid var(--border);
+  }
+  .wt-root .bottom-panel.mobile .panel-body { padding: 0; overflow-x: auto; }
+  .wt-root .bottom-panel.mobile .bulk-label { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); }
+
+  /* open positions as cards: symbol, side, lots and P/L / price, stop, target / the row's actions */
+  .wt-root .bottom-panel.mobile .pos-table-header { display: none; }
+  .wt-root .bottom-panel.mobile .position-row {
+    display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "side sym lots pnl" "price price sl tp" "act act act act";
+    column-gap: 10px; row-gap: 4px; padding: 9px 10px 6px 12px; border-bottom: 1px solid var(--border); align-items: center;
+  }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(1),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(2),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(7),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(10),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(11),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(12) { display: none; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(3) { grid-area: sym; font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(4) { grid-area: side; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(5) { grid-area: lots; font-size: 12px; color: var(--text-2); }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(6) { grid-area: price; font-size: 12px; color: var(--text-2); }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(8) { grid-area: sl; font-size: 11.5px; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(9) { grid-area: tp; font-size: 11.5px; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(8)::before { content: "SL "; color: var(--text-3); font-size: 10px; letter-spacing: .04em; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(9)::before { content: "TP "; color: var(--text-3); font-size: 10px; letter-spacing: .04em; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(13) { grid-area: pnl; font-size: 14px; font-weight: 600; text-align: right; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(14) { grid-area: act; justify-content: flex-end; gap: 2px; }
+  .wt-root .bottom-panel.mobile .position-row .icon-btn { width: 34px; height: 30px; }
+  .wt-root .bottom-panel.mobile .pos-total-footer { padding: 8px 10px; }
+
+  /* the tab bar: the native's caps, accent marks the open section */
+  .wt-root .mobile-nav { background: var(--bg-1); border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
+  .wt-root .mobile-nav-item {
+    position: relative; min-width: 0; gap: 3px; padding: 7px 0 6px; color: var(--text-3);
+    font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .wt-root .mobile-nav-item span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-root .mobile-nav-item.active { color: var(--accent); }
+  .wt-root .mobile-nav-item.active::before { content: ""; position: absolute; top: -1px; left: 22%; right: 22%; height: 2px; background: var(--accent); }
+}
