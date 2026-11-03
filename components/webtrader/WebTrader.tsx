@@ -27,6 +27,7 @@ import { conversionRateNum, fxLookupNum, marginInAccount, newOrderMarginInAccoun
 import { tradeApi, serverNow, effectiveAsk, effectiveBid, effectiveClose, spreadRuleFromPrice, ApiError, type AccountPrice, type SpreadRule, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
 import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import AddSymbolDialog from "./AddSymbolDialog";
+import { MChartHead, MHistory, MQuotes, MSettings, MTabBar, MTrade, type MHistRow, type MLinked, type MPeriod, type MobileTab, type MSummary } from "./MobileTrader";
 import ChartSettingsDialog from "./ChartSettingsDialog";
 import KLineChartPanel, {
   type KLineChartHandle,
@@ -765,7 +766,7 @@ export default function WebTrader({
   // order ticket's two-column lot/SL/TP fields realistically stop being
   // comfortably tappable side-by-side with anything else visible.
   const [isMobileView, setIsMobileView] = useState(false);
-  const [mobileTab, setMobileTab] = useState<"watchlist" | "chart" | "trade" | "positions" | "account">("chart");
+  const [mobileTab, setMobileTab] = useState<MobileTab>("charts");
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 860px)");
     setIsMobileView(mq.matches);
@@ -1504,6 +1505,41 @@ export default function WebTrader({
   // loaded up front like trade history already is, not gated behind a
   // modal the trader might never open.
   useEffect(() => { refreshFundsHistory(); }, [refreshFundsHistory]);
+
+  // phone only: History opens on WEEK (its chips have no ALL), the server summary per period, the linked accounts
+  const [mobileSummary, setMobileSummary] = useState<MSummary | undefined>(null);
+  useEffect(() => {
+    if (!isMobileView || mobileTab !== "history") return;
+    if (histPeriod === "all") { selectHistPeriod("7d"); return; }
+    if (!histFrom || !histTo) return;
+    let cancelled = false;
+    setMobileSummary(null);
+    tradeApi
+      .summary(localDayBoundary(histFrom, false), localDayBoundary(histTo, true))
+      .then((s) => {
+        if (cancelled) return;
+        const n = (v: string) => parseFloat(v) || 0;
+        const f = s.funds;
+        setMobileSummary({
+          profit: n(s.trades.grossPnl),
+          deposit: n(f.deposits) - n(f.withdrawals) + n(f.adjustments) + n(f.creditUsed) + n(f.transfersIn) - n(f.transfersOut) + n(f.nbp) + n(f.ibCommission),
+          swap: -n(s.trades.swap),
+          commission: -n(s.trades.commission),
+          balance: n(s.closingBalance),
+          trades: s.trades.count,
+          winRate: s.trades.winRate,
+          credit: n(account?.credit ?? "0"),
+        });
+      })
+      .catch(() => { if (!cancelled) setMobileSummary(undefined); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobileView, mobileTab, histPeriod, histFrom, histTo, history]);
+  useEffect(() => {
+    if (!isMobileView || mobileTab !== "settings" || demo) return;
+    tradeApi.linkedAccounts().then(setLinkedAccounts).catch(() => setLinkedAccounts([]));
+  }, [isMobileView, mobileTab, demo]);
+
   useEffect(() => { refreshPaymentMethods(); }, [refreshPaymentMethods]);
 
   async function openSecurityModal() {
@@ -3763,6 +3799,38 @@ export default function WebTrader({
   const serverName = account && !demo ? `${brokerName}-${account.accountMode === "LIVE" ? "Live" : "Demo"}` : brokerName;
 
   // 6) ACC: the order column's account rows on desktop, the Account tab on a phone
+  // ---------- the phone screens' data (MobileTrader.tsx is presentational) ----------
+  const mobileQuotes = watchlistOrder.flatMap((name) => {
+    const row = market[name];
+    if (!row) return [];
+    const ticked = row.lastTickAt > 0;
+    const sym = allSymbols.find((x) => x.name === name);
+    const pair = /^[A-Z]{6}$/.test(name) && sym?.category === "FOREX" ? `${name.slice(0, 3)}/${name.slice(3)}` : sym ? SYMBOL_CATEGORY_LABELS[sym.category].toUpperCase() : "";
+    return [{
+      name, digits: row.def.digits, bid: row.bid, ask: effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), ticked,
+      changePct: ticked && row.dayOpenKnown ? ((row.bid - row.dayOpen) / row.dayOpen) * 100 : null, sub: pair,
+    }];
+  });
+  const mobileHistoryRows: MHistRow[] = historyRows.map((row) => {
+    if (row.kind === "trade") {
+      const { line } = row;
+      const h = line.trade;
+      return {
+        kind: "trade", key: line.key, symbol: h.symbol.name, digits: h.symbol.digits, side: h.side, lots: line.lots,
+        open: parseFloat(h.openPrice), close: line.closePrice ? parseFloat(line.closePrice) : null,
+        net: line.pnl + (viewAmount("swap", line.swap, "client") ?? 0) + (viewAmount("commission", line.commission, "client") ?? 0),
+        openedAt: h.openedAt, at: line.at, voided: h.status === "VOIDED", partial: line.partial,
+      };
+    }
+    const f = row.funds;
+    return { kind: "funds", key: f.id, label: f.type === "DEPOSIT" ? "DEPOSIT" : f.type === "WITHDRAWAL" ? "WITHDRAWAL" : "ADJUSTMENT", amount: parseFloat(f.amount), note: f.note ?? "", at: f.createdAt };
+  });
+  // the header mark: the broker's logo; the public demo shows the QoreTrader gem (its logo is a wide lockup)
+  const mobileMark = demo ? "/qoretrader-demo/qoretrader-mark-light.svg" : brokerLogoUrl || null;
+  const mobileLinked: MLinked[] | null = linkedAccounts
+    ? linkedAccounts.map((la) => ({ accountNumber: la.accountNumber, accountMode: la.accountMode, balance: la.balance, currency: la.currency }))
+    : null;
+
   const renderAccountRows = () => (
   <div className="nt-rows">
     <div className="nt-row"><span className="nt-row-label">Balance</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : account ? formatMoney(account.balance) : ""}</span><span className="nt-ccy">{accountCcy}</span></span></div>
@@ -3775,7 +3843,7 @@ export default function WebTrader({
   );
 
   return (
-    <div className="wt-root" data-theme={theme} data-mode={chartSettings.theme}>
+    <div className={`wt-root${isMobileView ? " m-shell" : ""}`} data-theme={theme} data-mode={chartSettings.theme}>
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
       <div id="app">
         {demo ? <div className="demo-banner">{DEMO_BANNER_TEXT}</div> : null}
@@ -3786,6 +3854,7 @@ export default function WebTrader({
           Margin call, your margin level is below {marginCallLevel}%. Deposit funds or close positions to avoid stop-out.
         </div>
 
+        {isMobileView ? null : (
         <div className={`topbar${isDesktopApp ? " topbar-desktop" : ""}`}>
           <div className="topbar-left">
             <div className="nav" ref={topMenuContainerRef}>
@@ -4056,9 +4125,10 @@ export default function WebTrader({
             <div className="avatar">{account?.accountNumber?.slice(-2) ?? ""}</div>
           </div>
         </div>
+        )}
 
         <div
-          className={`main${isMobileView ? ` mobile m-tab-${mobileTab}` : ""}`}
+          className={`main${isMobileView ? ` mobile m-tab-${mobileTab}${mobileTab === "charts" || mobileTab === "order" ? "" : " m-hidden"}` : ""}`}
           style={
             isMobileView
               ? undefined
@@ -4096,7 +4166,7 @@ export default function WebTrader({
 
           {/* ---------- WATCHLIST (left) ---------- */}
           <div
-            className={`watchlist${isMobileView ? ` mobile${mobileTab === "watchlist" ? " mobile-active" : ""}` : ""}`}
+            className={`watchlist${isMobileView ? " mobile" : ""}`}
             onContextMenu={chartSettings.watchlistCollapsed ? undefined : (e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}
           >
           {chartSettings.watchlistCollapsed ? (
@@ -4268,7 +4338,7 @@ export default function WebTrader({
                 ))}
               </div>
             ) : null}
-            {addSymbolOpen ? (
+            {addSymbolOpen && !isMobileView ? (
               <AddSymbolDialog
                 allSymbols={allSymbols}
                 market={market}
@@ -4302,8 +4372,18 @@ export default function WebTrader({
           )}
 
           {/* ---------- CENTER (chart) ---------- */}
-          <div ref={centerRef} className={`center${isMobileView ? ` mobile${mobileTab === "chart" || mobileTab === "positions" ? " mobile-active" : ""}` : ""}`}>
-            <div className="chart-header" style={isMobileView && mobileTab !== "chart" ? { display: "none" } : undefined}>
+          <div ref={centerRef} className={`center${isMobileView ? ` mobile${mobileTab === "charts" ? " mobile-active" : ""}` : ""}`}>
+            {isMobileView ? (
+              <MChartHead
+                symbol={activeSymbol}
+                changePct={m.lastTickAt > 0 && m.dayOpenKnown ? ((m.bid - m.dayOpen) / m.dayOpen) * 100 : null}
+                tf={currentTf}
+                onTf={(tf) => setCurrentTf(tf)}
+                quotes={mobileQuotes}
+                onSelect={selectSymbol}
+              />
+            ) : null}
+            <div className="chart-header" style={isMobileView ? { display: "none" } : undefined}>
               <div className="chart-title" ref={symbolDropdownRef} style={{ position: "relative" }}>
                 <span className="nt-ph-code"><span className="nt-ph-num">2)</span> GP</span>
                 <div className="chart-symbol" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }} onClick={() => { setSymbolDropdownOpen((v) => !v); setSymbolSearch(""); }}>
@@ -4430,7 +4510,7 @@ export default function WebTrader({
                 </button>
               </div>
             </div>
-            <div className="chart-area" style={isMobileView && mobileTab !== "chart" ? { display: "none" } : undefined}>
+            <div className="chart-area" style={isMobileView && mobileTab !== "charts" ? { display: "none" } : undefined}>
               {chartLayout === "single" ? (
                 <>
                   <div className="drawing-toolbar">
@@ -4587,7 +4667,7 @@ export default function WebTrader({
               className={`bottom-panel${isMobileView ? " mobile" : ""}${chartSettings.bottomPanelCollapsed ? " collapsed" : ""}`}
               style={
                 isMobileView
-                  ? { display: mobileTab === "positions" ? "flex" : "none", height: "auto", flex: 1 }
+                  ? { display: "none" }
                   : { height: chartSettings.bottomPanelCollapsed ? 37 : bottomPanelHeight }
               }
             >
@@ -5016,7 +5096,17 @@ export default function WebTrader({
 
           {/* ---------- RIGHT COLUMN, in the native terminal's order: 3) OT order ticket, the Smart Trade Manager, sessions,
               6) ACC account ---------- */}
-          <div className={`order-panel${isMobileView ? ` mobile${mobileTab === "trade" ? " mobile-active" : ""}` : ""}`}>
+          <div className={`order-panel${isMobileView ? ` mobile${mobileTab === "order" ? " mobile-active" : ""}` : ""}`}>
+          {isMobileView ? (
+            <div className="m-head">
+              <button type="button" className="m-sq" aria-label="Back to trade" onClick={() => setMobileTab("trade")}>
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4L6 10L12 16" /></svg>
+              </button>
+              <span className="m-title">NEW ORDER</span>
+              <span className="m-spacer" />
+              <span className="m-title m-title-sym">{activeSymbol}</span>
+            </div>
+          ) : null}
           {chartSettings.orderTicketPanelCollapsed ? (
             <button type="button" className="panel-rail" onClick={() => toggleCollapsed("orderTicketPanelCollapsed")} title="Expand order ticket" aria-expanded={false}>
               <span className="wl-category-chevron collapsed">›</span>
@@ -5223,70 +5313,116 @@ export default function WebTrader({
           </div>
         </div>
 
-        {/* ---------- MOBILE BOTTOM NAV (replaces the icon rail below
-            the .mobile breakpoint) ---------- */}
-        {isMobileView && mobileTab === "account" ? (
-          <div className="m-account">
-            <div className="nt-ph">
-              <span className="nt-ph-btn nt-ph-static">
-                <span className="nt-ph-code"><span className="nt-ph-num">6)</span> ACC</span>
-                <span className="nt-ph-name">Account</span>
-              </span>
-              <span className="nt-ph-aside mono">{account?.accountNumber ?? ""}</span>
-            </div>
-            <div className="m-account-id">
-              <span className="m-account-name">{balanceHidden ? "••••••" : account?.fullName ?? ""}</span>
-              <span className="m-account-meta">
-                {account?.accountMode ? <span className="m-account-mode">{account.accountMode}</span> : null}
-                <span className="m-account-conn">
-                  <span className="m-dot" style={{ background: connected ? "var(--ok)" : "var(--warn)" }} />
-                  {connected ? `Connected · ${serverName}` : "Reconnecting…"}
-                </span>
-              </span>
-            </div>
-            {renderAccountRows()}
-            <div className="m-account-actions">
-              {demo ? null : (
-                <button type="button" className="m-action" onClick={() => { setFundsModalOpen(true); refreshFundsHistory(); }}>Deposit / withdraw</button>
-              )}
-              <button type="button" className="m-action" onClick={() => setBalanceHidden((v) => !v)}>{balanceHidden ? "Show balances" : "Hide balances"}</button>
-              <button type="button" className="m-action" onClick={() => changeColorMode(chartSettings.theme === "light" ? "dark" : "light")}>
-                {chartSettings.theme === "light" ? "Dark theme" : "Light theme"}
-              </button>
-              {demo ? null : (
-                <button type="button" className="m-action m-action-quiet" onClick={handleLogout}>Log out</button>
-              )}
-            </div>
-          </div>
+        {/* ---------- PHONE (max-width 860 px): the native mobile app's five tabs ---------- */}
+        {isMobileView && mobileTab === "quotes" ? (
+          <MQuotes
+            logoUrl={mobileMark}
+            brokerName={brokerName}
+            quotes={mobileQuotes.filter((q) => !watchlistFilter || q.name.toLowerCase().includes(watchlistFilter.toLowerCase()))}
+            filter={watchlistFilter}
+            onFilter={setWatchlistFilter}
+            onAdd={() => setAddSymbolOpen(true)}
+            onSelect={(name) => { selectSymbol(name); setMobileTab("charts"); }}
+          />
+        ) : null}
+        {isMobileView && addSymbolOpen ? (
+          <AddSymbolDialog allSymbols={allSymbols} market={market} watchlistNames={watchlistOrder} onAdd={addSymbolToWatchlist} onClose={() => setAddSymbolOpen(false)} />
+        ) : null}
+        {isMobileView && mobileTab === "trade" ? (
+          <MTrade
+            logoUrl={mobileMark}
+            brokerName={brokerName}
+            mode={account?.accountMode ?? null}
+            ccy={accountCcy}
+            leverage={account?.leverage ?? null}
+            hidden={balanceHidden}
+            figures={account ? { balance: parseFloat(account.balance), equity, margin: usedMargin, freeMargin, marginLevel, pnl: floatingPnl, marginCall } : null}
+            positions={acctPositions.map((p) => {
+              const q = market[p.symbol.name];
+              return {
+                id: p.id, label: p.ticket ? `#${p.ticket}` : `#${p.id.slice(-8)}`, symbol: p.symbol.name, digits: p.symbol.digits, side: p.side,
+                volume: parseFloat(p.volume), openPrice: parseFloat(p.openPrice), current: q && q.lastTickAt > 0 ? (p.side === "BUY" ? q.bid : q.ask) : null,
+                sl: p.slPrice ? parseFloat(p.slPrice) : null, tp: p.tpPrice ? parseFloat(p.tpPrice) : null, pnl: positionPnl(p), openedAt: p.openedAt,
+              };
+            })}
+            orders={pendingOrders.map((o) => ({ id: o.id, symbol: o.symbol.name, digits: o.symbol.digits, side: o.side, type: o.type, volume: parseFloat(o.volume), price: o.requestedPrice ? parseFloat(o.requestedPrice) : null, status: o.status }))}
+            viewKey={account?.accountNumber ?? "demo"}
+            onNewOrder={() => setMobileTab("order")}
+            onClose={closePositionFull}
+            onPartial={openPartialClose}
+            onCancelOrder={(id) => tradeApi.cancelOrder(id).then(refreshOrders).catch((err) => { handleOrderError(err); })}
+          />
+        ) : null}
+        {isMobileView && mobileTab === "history" ? (
+          <MHistory
+            logoUrl={mobileMark}
+            brokerName={brokerName}
+            rows={mobileHistoryRows}
+            summary={mobileSummary}
+            ccy={accountCcy}
+            hidden={balanceHidden}
+            period={histPeriod}
+            onPeriod={(v: MPeriod) => selectHistPeriod(v)}
+            from={histFrom}
+            to={histTo}
+            onFrom={setHistFrom}
+            onTo={setHistTo}
+            onExport={() => { setReportsOpen(true); setReportRows(null); }}
+          />
+        ) : null}
+        {isMobileView && mobileTab === "settings" ? (
+          <MSettings
+            logoUrl={mobileMark}
+            brokerName={brokerName}
+            server={serverName}
+            demo={demo}
+            hidden={balanceHidden}
+            account={account ? { number: account.accountNumber, name: account.fullName, mode: account.accountMode, plan: account.accountPlan ?? "Standard", currency: accountCcy, leverage: account.leverage, balance: parseFloat(account.balance) } : null}
+            linked={mobileLinked}
+            onSwitch={(la: MLinked) => { const t = linkedAccounts?.find((x) => x.accountNumber === la.accountNumber); if (t) { setSwitchTarget(t); setSwitchPassword(""); setSwitchError(null); setSwitchPendingToken(null); setSwitchTwoFactorCode(""); } }}
+            onAddAccount={() => { window.location.href = "/trade/login"; }}
+            oneClick={oneClick}
+            sounds={chartSettings.soundsEnabled}
+            light={chartSettings.theme === "light"}
+            chartLabel=""
+            onPassword={() => setChangePasswordOpen(true)}
+            onOneClick={() => toggleChartSetting("oneClickDefault")}
+            onSounds={() => toggleChartSetting("soundsEnabled")}
+            onTheme={() => changeColorMode(chartSettings.theme === "light" ? "dark" : "light")}
+            onChart={() => { setMobileTab("charts"); setChartSettingsOpen(true); }}
+            onDeposit={() => { setFundsTab("deposit"); setFundsModalOpen(true); refreshFundsHistory(); }}
+            onWithdraw={() => { setFundsTab("withdraw"); setFundsModalOpen(true); refreshFundsHistory(); }}
+            onLogout={handleLogout}
+          />
         ) : null}
 
-        {/* the sticky Buy / Sell bar (owner item 7): the active symbol's SELL bid and BUY ask with the ticket's lots,
-            through the ticket's own confirmAndPlace (one-click or confirm, the same rules and refusals as the ticket) */}
-        {isMobileView && mobileTab !== "trade" && mobileTab !== "account" ? (
+        {/* the chart's trade bar (native Charts tab): SELL bid | LOT stepper | BUY ask, through the ticket's own
+            confirmAndPlace (one-click or confirm, the same rules and refusals as the ticket) */}
+        {isMobileView && mobileTab === "charts" ? (
           <div className="mtb" role="group" aria-label={`Trade ${activeSymbol}`}>
             {pendingMarketSide ? (
               <div className="mtb-confirm">
                 <button type="button" className={`mtb-confirm-btn ${pendingMarketSide === "BUY" ? "buy" : "sell"}`} onClick={() => { placeOrder(pendingMarketSide); setPendingMarketSide(null); }}>
-                  Confirm {pendingMarketSide} {fmt(volume, 2)} {activeSymbol}
+                  CONFIRM {pendingMarketSide} {fmt(volume, 2)} {activeSymbol}
                 </button>
-                <button type="button" className="mtb-cancel" aria-label="Cancel" onClick={() => setPendingMarketSide(null)}>Cancel</button>
+                <button type="button" className="mtb-cancel" aria-label="Cancel" onClick={() => setPendingMarketSide(null)}>CANCEL</button>
               </div>
             ) : (
               <>
                 <button type="button" className="mtb-side sell" disabled={sellDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("SELL")}>
-                  <span className="mtb-label">Sell</span>
+                  <span className="mtb-label">SELL</span>
                   <span className="mtb-price mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : ""}</span>
                 </button>
                 <span className="mtb-lots">
-                  <button type="button" className="mtb-step" aria-label="Lower volume" onClick={() => setVolume((v) => Math.max(0.01, +(v - 0.01).toFixed(2)))}>−</button>
-                  <span className="mtb-lots-value">
-                    <span className="mono">{fmt(volume, 2)}</span>
-                    <span className="mtb-lots-sym">{activeSymbol}</span>
+                  <span className={`mtb-lots-label${oneClick ? " on" : ""}`}>LOT</span>
+                  <span className="mtb-lots-row">
+                    <button type="button" className="mtb-step" aria-label="Lower volume" onClick={() => setVolume((v) => Math.max(0.01, +(v - 0.01).toFixed(2)))}>{"\u2212"}</button>
+                    <span className="mtb-lots-value mono">{fmt(volume, 2)}</span>
+                    <button type="button" className="mtb-step" aria-label="Raise volume" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
                   </span>
-                  <button type="button" className="mtb-step" aria-label="Raise volume" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
                 </span>
                 <button type="button" className="mtb-side buy" disabled={buyDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("BUY")}>
-                  <span className="mtb-label">Buy</span>
+                  <span className="mtb-label">BUY</span>
                   <span className="mtb-price mono">{m.lastTickAt > 0 ? fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid), m.def.digits) : ""}</span>
                 </button>
               </>
@@ -5294,22 +5430,7 @@ export default function WebTrader({
           </div>
         ) : null}
 
-        {isMobileView ? (
-          <nav className="mobile-nav" aria-label="Sections">
-            {([
-              ["watchlist", "Watchlist", <path key="w" d="M4 6h16M4 12h16M4 18h10" />],
-              ["chart", "Chart", <path key="c" d="M3 3v18h18M7 15l4-4 3 3 5-6" />],
-              ["trade", "Trade", <path key="t" d="M7 4v16M3 8l4-4 4 4M17 20V4M13 16l4 4 4-4" />],
-              ["positions", acctPositions.length > 0 ? `Positions ${acctPositions.length}` : "Positions", <path key="p" d="M4 5h16v14H4zM4 10h16M9 10v9" />],
-              ["account", "Account", <path key="a" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0" />],
-            ] as const).map(([tab, label, icon]) => (
-              <button key={tab} type="button" className={`mobile-nav-item${mobileTab === tab ? " active" : ""}`} aria-current={mobileTab === tab ? "page" : undefined} onClick={() => setMobileTab(tab)}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icon}</svg>
-                <span>{label}</span>
-              </button>
-            ))}
-          </nav>
-        ) : null}
+        {isMobileView ? <MTabBar tab={mobileTab} onTab={setMobileTab} /> : null}
 
         <div className="statusbar">
           <div className="statusbar-left">

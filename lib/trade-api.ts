@@ -27,6 +27,8 @@ export type AccountInfo = {
   marginCallLevel: string;
   // Batch 5: broker or group trading halt / close-only (halted wins). Re-read on every ConfigChanged.
   tradingState?: "open" | "close_only" | "halted";
+  // the client-facing account plan (Group.displayName, "Standard" when none)
+  accountPlan?: string;
 };
 
 export type ApiSession = {
@@ -257,6 +259,12 @@ export type ApiAlert = {
   createdAt: string;
 };
 
+export type AccountSummaryWire = {
+  closingBalance: string;
+  trades: { count: number; winRate: string; grossPnl: string; commission: string; swap: string };
+  funds: { deposits: string; withdrawals: string; adjustments: string; creditUsed: string; transfersIn: string; transfersOut: string; nbp: string; ibCommission: string };
+};
+
 export const tradeApi = {
   // Public, no session needed -- see app/api/trade/broker-branding/
   // route.ts. Only meaningful for a bundled desktop shell, which has no
@@ -281,6 +289,8 @@ export const tradeApi = {
   // currently pending/requoted, unlike orders() above.
   allOrders: () => call<ApiOrder[]>("/api/trade/orders?status=all"),
   // closes: the terminal's view (every close of every position, an open position closed in part included)
+  // the server's account summary for a period (lib/account-summary.ts): the phone History tab's SUMMARY card
+  summary: (from: string, to: string) => call<AccountSummaryWire>(`/api/trade/summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
   history: (params: { from?: string; to?: string; symbol?: string; closes?: boolean }) => {
     const qs = new URLSearchParams();
     if (params.closes) qs.set("closes", "1");
