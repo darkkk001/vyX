@@ -78,6 +78,38 @@ export async function getAccount(accountId: string, brokerId: string): Promise<A
   };
 }
 
+/**
+ * The account AND the traded symbol's contract size, in ONE round trip (L2 optimization pass).
+ *
+ * These were two sequential awaits -- `getAccount` then `getSymbolContractSize` -- which measured 6 ms
+ * + 6 ms to Neon in front of every order. Same two answers, same meaning, one trip: a missing account
+ * is still no row (404), and a missing symbol is still a null contract size (400).
+ */
+export async function getAccountAndContractSize(
+  accountId: string,
+  brokerId: string,
+  symbol: string
+): Promise<{ account: AccountRow; contractSize: Decimal | null } | null> {
+  const { rows } = await pool.query(
+    `SELECT a.balance, a.credit, a.leverage, a.status, a."accountMode",
+            (SELECT s."contractSize" FROM "Symbol" s WHERE s.name = $3) AS contract_size
+       FROM "Account" a WHERE a.id = $1 AND a."brokerId" = $2`,
+    [accountId, brokerId, symbol]
+  );
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    account: {
+      balance: new Decimal(row.balance),
+      credit: new Decimal(row.credit),
+      leverage: row.leverage,
+      status: row.status,
+      accountMode: row.accountMode,
+    },
+    contractSize: row.contract_size == null ? null : new Decimal(row.contract_size),
+  };
+}
+
 export async function getSymbolContractSize(symbol: string): Promise<Decimal | null> {
   const { rows } = await pool.query(`SELECT "contractSize" FROM "Symbol" WHERE name = $1`, [symbol]);
   if (rows.length === 0) return null;

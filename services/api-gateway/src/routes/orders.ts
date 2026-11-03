@@ -21,7 +21,7 @@ import { Router } from "express";
 import type { AuthedRequest } from "../auth.js";
 import { requireTraderSession } from "../auth.js";
 import { rateLimitOrders } from "../rate-limit.js";
-import { getAccount, getLedgerSum, getOpenPositionsSummary, getSymbolContractSize, writeAuditLog } from "../db.js";
+import { getAccount, getAccountAndContractSize, getSymbolContractSize, writeAuditLog } from "../db.js";
 import { parseUpstreamJson } from "../http.js";
 import { recordOrderAckLatency } from "../ws.js";
 import { placeMarketOrderSchema, placePendingOrderSchema, validateBody } from "../validation.js";
@@ -98,12 +98,14 @@ router.post(
     const session = req.session!;
     const brokerId = req.headers["x-broker-id"] as string;
 
-    const account = await getAccount(session.accountId, brokerId);
-    mark("getAccount");
-    if (!account) {
+    // L2 optimization pass: the account and the symbol's contract size in ONE round trip
+    const loaded = await getAccountAndContractSize(session.accountId, brokerId, body.symbol);
+    mark("accountAndSymbol");
+    if (!loaded) {
       res.status(404).json({ error: "account not found" });
       return;
     }
+    const account = loaded.account;
     if (account.status !== "ACTIVE") {
       res.status(403).json({ error: "account is not active" });
       return;
@@ -117,8 +119,7 @@ router.post(
       return;
     }
 
-    const contractSize = await getSymbolContractSize(body.symbol);
-    mark("contractSize");
+    const contractSize = loaded.contractSize;
     if (!contractSize) {
       res.status(400).json({ error: `unknown symbol: ${body.symbol}` });
       return;

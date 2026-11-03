@@ -256,6 +256,9 @@ async fn verify_account_belongs_to_broker(
 ) -> Result<bool, sqlx::Error> {
     let row: Option<(String,)> =
         sqlx::query_as(r#"SELECT "brokerId" FROM "Account" WHERE id = $1"#)
+            // L2 optimization pass: unnamed statement -- pgbouncer's DEALLOCATE ALL makes a cached
+            // prepared statement cost an extra round trip (see db::open_position_one_call).
+            .persistent(false)
             .bind(account_id)
             .fetch_optional(pool)
             .await?;

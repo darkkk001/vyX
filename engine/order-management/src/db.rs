@@ -502,7 +502,13 @@ pub async fn get_open_snapshot(
              LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = sym.id AND bs."brokerId" = $1
              LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = sym.id AND gsc."groupId" = a."groupId"
              LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = sym.id AND acs."accountId" = $2
-            WHERE a.id = $2
+            -- L2 optimization pass, hardening found on the way past: the account must belong to the
+            -- broker the request names. This query joins "Broker" by $1 and filtered "Account" by id
+            -- alone, so on its own it would have answered for an account of a DIFFERENT broker. The
+            -- HTTP route checks this first (verify_account_belongs_to_broker), so it was never
+            -- reachable -- but the one read that every gate is judged on should not depend on a
+            -- caller having checked.
+            WHERE a.id = $2 AND a."brokerId" = $1
            )
            SELECT cfg.*, pos.*
              FROM cfg
@@ -514,6 +520,10 @@ pub async fn get_open_snapshot(
     );
 
     let rows = sqlx::query(&sql)
+        // L2 optimization pass: unnamed statement -- see open_position_one_call for why pgbouncer
+        // makes a cached prepared statement cost an extra round trip here. This call measured ~16 ms
+        // against 0.5 ms of execution.
+        .persistent(false)
         .bind(broker_id)
         .bind(account_id)
         .bind(symbol)
@@ -971,6 +981,14 @@ pub async fn open_position_one_call(
              FROM vyx_open_position($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
                                     $15, $16, $17, $18, $19, $20, $21, $22)"#,
     )
+    // L2 optimization pass: UNNAMED statement, not a cached prepared one.
+    //
+    // The engine reaches Neon through its pgbouncer, which issues DEALLOCATE ALL between transactions
+    // (seen 19 times in one statement delta). That empties sqlx's prepared-statement cache, so a
+    // "persistent" query re-prepares on nearly every call: Parse + Describe, then Bind + Execute --
+    // TWO round trips for one query. Unnamed sends it all in one flush, which is one round trip.
+    // Measured per-stage: this call was ~8 ms against 4.3 ms of actual execution.
+    .persistent(false)
     .bind(&order_id)
     .bind(&position_id)
     .bind(&deal_id)
