@@ -165,6 +165,10 @@ pub struct GateInputs {
     pub symbol_quote_currency: String,
     /// `Account.currency` -- what every money figure in the margin gate is denominated in.
     pub account_currency: String,
+    /// `Account.accountMode` (DEMO / LIVE). Read for the ingress scope's DEMO-only rule
+    /// (`ingress::mode_allowed`), which is checked on the database's answer rather than on the
+    /// environment variable someone maintained by hand. Costs nothing: it rides the one read.
+    pub account_mode: String,
     // aggregates
     /// The broker's OPEN client volume: the coverage account, COVERAGE groups and internal accounts are
     /// excluded, because those are the broker's own hedge legs and not client exposure (the web's audit
@@ -302,6 +306,7 @@ pub(crate) fn gate_inputs_from_row(r: &sqlx::postgres::PgRow) -> Result<GateInpu
         symbol_hedged_margin_pct: r.try_get("symbol_hedged_margin_pct")?,
         symbol_quote_currency: r.try_get("symbol_quote_currency")?,
         account_currency: r.try_get("account_currency")?,
+        account_mode: r.try_get("account_mode")?,
         broker_open_volume: r.try_get("broker_open_volume")?,
         realized_today: r.try_get("realized_today")?,
         broker_day_start: r.try_get("broker_day_start")?,
@@ -434,6 +439,7 @@ pub async fn get_open_snapshot(
                COALESCE(bs."hedgedMarginPct", 200) AS symbol_hedged_margin_pct,
                sym."quoteCurrency" AS symbol_quote_currency,
                a.currency AS account_currency,
+               a."accountMode"::text AS account_mode,
                COALESCE((SELECT SUM(p.volume) FROM "Position" p
                            JOIN "Account" pa ON pa.id = p."accountId"
                            LEFT JOIN "Group" pg ON pg.id = pa."groupId"

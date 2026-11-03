@@ -384,6 +384,17 @@ async fn place_market_order(
             // verify_account_belongs_to_broker above already said it was, so this is a client error
             // about an account that has just gone, not an engine fault.
             order_management::PlaceOrderError::UnknownAccount(account) => (StatusCode::BAD_REQUEST, format!("unknown account {account}")),
+            // L2 Step 3: this account is not in the engine's ingress scope. 403 and not 400, because
+            // nothing about the request is malformed -- the engine simply does not serve this account,
+            // and the caller's correct response is to use the web path.
+            order_management::PlaceOrderError::NotInIngress(account) => {
+                (StatusCode::FORBIDDEN, format!("account {account} is not served by the engine order path"))
+            }
+            // L2 Step 3: on the list, but not a DEMO account. Also 403, and the message names which of
+            // the two conditions failed so an operator fixes the right thing.
+            order_management::PlaceOrderError::IngressDemoOnly(account) => {
+                (StatusCode::FORBIDDEN, format!("account {account} is not a DEMO account; the engine order path is scoped to DEMO accounts"))
+            }
             err => {
                 tracing::error!(?err, "place_market_order failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
@@ -1663,6 +1674,33 @@ async fn main() {
         // production shape: the engine owns the risk of RUST-owned accounts and the web owns every fill. The
         // thresholds guard stays empty, so the engine's own order routes keep refusing too (fail closed).
         if live_mode {
+            // L2 Step 3 (INGRESS SCOPING, owner 2026-11-03): the cutover's first live exposure is ONE
+            // designated DEMO account, so live mode REFUSES TO START THE ORDER HALF without an
+            // explicit list of the accounts it may fill for.
+            //
+            // THIS IS THE FAIL-CLOSED DECISION. `order_management::ingress` treats "no list installed"
+            // as unrestricted, because the DB tests and parity harnesses place orders for their own
+            // fixtures -- and this block is what makes that safe: no production process can reach that
+            // state, because an empty or missing variable stops the order half here instead. An empty
+            // list means NOBODY, which is why it is refused rather than installed.
+            //
+            // Refusing leaves the risk half below running, exactly as a failed privilege check does:
+            // the engine keeps the risk of RUST-owned accounts and the web keeps every fill.
+            let ingress = order_management::ingress::parse_list(&std::env::var("ENGINE_INGRESS_ACCOUNT_IDS").unwrap_or_default());
+            if ingress.is_empty() {
+                tracing::error!(
+                    "ORDER PATH REFUSED: live mode requires ENGINE_INGRESS_ACCOUNT_IDS -- the accounts the engine may fill for.                      Empty or unset means nobody, so the order half stays off and the web keeps every fill (L2 Step 3)"
+                );
+                break 'orders;
+            }
+            // Installed BEFORE the privilege check and long before the listener binds, for the same
+            // reason `use_prisma_book()` is: no order can be taken before the rule governing it is in
+            // place.
+            order_management::ingress::restrict_to(ingress.clone());
+            tracing::warn!(
+                accounts = ingress.len(),
+                "live mode: the order path is SCOPED -- every account not on ENGINE_INGRESS_ACCOUNT_IDS is refused 403"
+            );
             match order_management::authority::verify_order_path_pool(&pool).await {
                 Ok(role) => {
                     tracing::info!(%role, "live mode: the pool can write Prisma's book and \"Position\"'s open triggers are enabled");

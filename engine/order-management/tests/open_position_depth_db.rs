@@ -856,7 +856,7 @@ async fn the_functions_position_insert_names_no_trigger_owned_column() {
     let (def,): (String,) = sqlx::query_as("SELECT pg_get_functiondef('vyx_open_position'::regproc)")
         .fetch_one(&pool)
         .await
-        .expect("vyx_open_position is installed (prisma/migrations/20261103100000_vyx_open_position)");
+        .expect("vyx_open_position is installed (prisma/migrations/20261103200000_vyx_open_position)");
 
     let marker = r#"INSERT INTO "Position""#;
     let at = def.find(marker).expect("the function inserts a position");

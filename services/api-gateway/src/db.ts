@@ -38,6 +38,10 @@ export interface AccountRow {
   credit: Decimal;
   leverage: number;
   status: string;
+  // L2 Step 3 ingress scoping: the engine order path serves DEMO accounts only for now, and this is
+  // the column that decides it -- read here so the check is on the DATABASE's answer, never on a list
+  // someone maintains by hand.
+  accountMode: string;
 }
 
 // Prisma's default (no @@map in schema.prisma) table/column names are
@@ -45,7 +49,7 @@ export interface AccountRow {
 // double-quoting throughout this file.
 export async function getAccount(accountId: string, brokerId: string): Promise<AccountRow | null> {
   const { rows } = await pool.query(
-    `SELECT balance, credit, leverage, status FROM "Account" WHERE id = $1 AND "brokerId" = $2`,
+    `SELECT balance, credit, leverage, status, "accountMode" FROM "Account" WHERE id = $1 AND "brokerId" = $2`,
     [accountId, brokerId]
   );
   if (rows.length === 0) return null;
@@ -55,6 +59,7 @@ export async function getAccount(accountId: string, brokerId: string): Promise<A
     credit: new Decimal(row.credit),
     leverage: row.leverage,
     status: row.status,
+    accountMode: row.accountMode,
   };
 }
 

@@ -13,6 +13,7 @@ pub mod db;
 pub mod events;
 pub mod fx;
 pub mod gates;
+pub mod ingress;
 pub mod monitor;
 pub mod outbox;
 pub mod pending_orders;
@@ -130,6 +131,18 @@ pub enum PlaceMarketOrderOutcome {
 pub enum PlaceOrderError {
     #[error(transparent)]
     Db(#[from] sqlx::Error),
+    /// L2 Step 3: a scope is installed and this account is not a DEMO account. Separate from
+    /// `NotInIngress` because the cause is different and so is the fix: the id is ON the list but the
+    /// list is wrong. Found by the Step 3 proof, which filled a LIVE account that had been put on the
+    /// list deliberately -- see `ingress::mode_allowed`.
+    #[error("account {0} is not a DEMO account; the engine order path is scoped to DEMO accounts")]
+    IngressDemoOnly(String),
+    /// L2 Step 3: this account is not on the engine's ingress list (`ingress::allows`). Not a
+    /// rejection -- a refusal to take the order at all, so the caller falls back to the web path and
+    /// NO `"Order"` row is written. See `ingress`'s module doc for the three layers this is the last
+    /// of, and why it is checked here even though the gateway checks it first.
+    #[error("account {0} is not on the engine's order-path ingress list")]
+    NotInIngress(String),
     /// L2 Step 2: no `"Account"` row for this request, or no `"Broker"` row. It used to surface as a
     /// foreign-key error from the order insert, because the row was written before anything was read;
     /// the one read comes first now and says so plainly. The HTTP route already checks the account
@@ -184,6 +197,19 @@ pub async fn place_market_order(
     // order can never leave half its rows in each book.
     let book = db::configured();
 
+    // L2 Step 3 (INGRESS SCOPING): before ANY read or write, is this account even allowed here?
+    //
+    // Checked on the Prisma book only, and before the one read, so a non-designated account costs
+    // nothing and leaves nothing behind -- no order row, no audit trail, no doubt. The gateway and the
+    // web route both check the same thing first; this is the layer that holds when neither ran,
+    // because the engine's own `/v1/orders/market` is reachable by anything holding the internal
+    // secret. `ingress`'s module doc has the rest, including why "no list" means unrestricted here and
+    // where the fail-closed decision actually lives (main.rs refuses to start the order path without
+    // a list in live mode).
+    if book == db::Book::Prisma && !ingress::allows(&req.account_id) {
+        return Err(PlaceOrderError::NotInIngress(req.account_id.clone()));
+    }
+
     // L2 Step 2 (DEPTH-CUT): ONE READ, and it is the only one this path makes on the Prisma book.
     //
     // It replaces eleven sequential round trips -- the symbol config, the routing category, the
@@ -218,6 +244,15 @@ pub async fn place_market_order(
         },
         db::Book::Legacy => None,
     };
+
+    // L2 Step 3: the DEMO-only half of the ingress scope, on the DATABASE's answer about the account
+    // rather than on the environment variable. Checked the moment the one read comes back and before
+    // anything at all is written, so a LIVE account on the list leaves no trace either.
+    if let Some(snap) = &snapshot {
+        if !ingress::mode_allowed(&snap.gates.account_mode) {
+            return Err(PlaceOrderError::IngressDemoOnly(req.account_id.clone()));
+        }
+    }
 
     // A `None` symbol config is the rare, benign "no Symbol row" case: on the legacy book the order
     // still fills at the raw tick with the admission checks skipped, which is kept exactly as it was.

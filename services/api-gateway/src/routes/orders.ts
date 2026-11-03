@@ -38,6 +38,40 @@ const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? "";
 function tradingCoreHeaders(): Record<string, string> {
   return { "content-type": "application/json", "x-internal-secret": INTERNAL_SERVICE_SECRET };
 }
+// ---- L2 Step 3: WHICH ACCOUNTS MAY REACH THE ENGINE (owner 2026-11-03) ----
+//
+// The cutover's first live exposure is ONE designated DEMO account. Everything else keeps filling on
+// the web and must be UNABLE to reach the engine, not merely unlikely to.
+//
+// FAIL CLOSED: an unset or empty variable allows NOBODY. That is the opposite of the usual
+// "unconfigured = unrestricted" default, and it is the point -- a deploy that forgets the variable
+// turns the engine ingress OFF, it does not open it to every account.
+//
+// TWO conditions, both required, because they fail differently:
+//   1. the account is on the list -- the deliberate, per-account opt-in;
+//   2. the account is `accountMode = DEMO` as the DATABASE says -- so a LIVE account id typed into the
+//      list by mistake is still refused. The list is a human artefact; this check is not.
+//
+// The engine repeats both itself (order_management::ingress): its own /v1/orders/market is reachable
+// by anything holding the internal secret, so this gateway must not be the only thing standing there.
+const ENGINE_INGRESS_ACCOUNT_IDS = (process.env.ENGINE_INGRESS_ACCOUNT_IDS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+type IngressVerdict = { ok: true } | { ok: false; why: string };
+
+export function engineIngressVerdict(
+  accountId: string,
+  accountMode: string,
+  allowList: string[] = ENGINE_INGRESS_ACCOUNT_IDS
+): IngressVerdict {
+  if (allowList.length === 0) return { ok: false, why: "the engine order path is not enabled here" };
+  if (!allowList.includes(accountId)) return { ok: false, why: "this account is not served by the engine order path" };
+  if (accountMode !== "DEMO") return { ok: false, why: "the engine order path serves DEMO accounts only" };
+  return { ok: true };
+}
+
 
 type PlaceMarketOrderBody = z.infer<typeof placeMarketOrderSchema>;
 
@@ -59,6 +93,14 @@ router.post(
     }
     if (account.status !== "ACTIVE") {
       res.status(403).json({ error: "account is not active" });
+      return;
+    }
+
+    // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
+    // engine simply does not serve this account, and the caller's correct answer is the web path.
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    if (!ingress.ok) {
+      res.status(403).json({ error: ingress.why });
       return;
     }
 
@@ -143,6 +185,14 @@ router.post(
       return;
     }
 
+    // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
+    // engine simply does not serve this account, and the caller's correct answer is the web path.
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    if (!ingress.ok) {
+      res.status(403).json({ error: ingress.why });
+      return;
+    }
+
     const contractSize = await getSymbolContractSize(body.symbol);
     if (!contractSize) {
       res.status(400).json({ error: `unknown symbol: ${body.symbol}` });
@@ -197,6 +247,14 @@ router.post("/:id/cancel", requireTraderSession, rateLimitOrders(30, 60), async 
   }
   if (account.status !== "ACTIVE") {
     res.status(403).json({ error: "account is not active" });
+    return;
+  }
+
+  // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
+  // engine simply does not serve this account, and the caller's correct answer is the web path.
+  const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+  if (!ingress.ok) {
+    res.status(403).json({ error: ingress.why });
     return;
   }
 
