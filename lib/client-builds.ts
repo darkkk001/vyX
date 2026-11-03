@@ -64,9 +64,10 @@ async function writeRedis(rec: ClientBuild): Promise<void> {
   await r.sadd(INDEX, rec.buildId);
 }
 
-export async function registerClientBuild(b: Omit<ClientBuild, "createdAt" | "revokedAt" | "status">): Promise<ClientBuild> {
+// `machineId` (bridge licenses only) is kept in Postgres alone: only /api/bridge/config reads it, never the hot path.
+export async function registerClientBuild(b: Omit<ClientBuild, "createdAt" | "revokedAt" | "status">, opts: { machineId?: string } = {}): Promise<ClientBuild> {
   const rec: ClientBuild = { ...b, status: "ACTIVE", createdAt: new Date().toISOString(), revokedAt: null };
-  await prisma.clientBuild.create({ data: recordToRow(rec) }); // durable first: a Redis failure cannot lose a publish
+  await prisma.clientBuild.create({ data: { ...recordToRow(rec), machineId: opts.machineId ?? null } }); // durable first: a Redis failure cannot lose a publish
   await writeRedis(rec);
   return rec;
 }

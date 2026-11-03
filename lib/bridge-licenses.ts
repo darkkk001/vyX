@@ -104,7 +104,8 @@ export async function issueBridgeLicense(input: { brokerSlug: string; machineId:
   } catch {
     throw new BridgeLicenseError("license signing is not configured", 503);
   }
-  await registerClientBuild({ buildId: licenseId, brokerId: broker.id, brokerSubdomain: broker.subdomain, app: "bridge", version: "license", note: (input.note ?? "").slice(0, 200) });
+  // the full machine hash too: /api/bridge/config checks the machine on every fetch (the audit row keeps 8 characters)
+  await registerClientBuild({ buildId: licenseId, brokerId: broker.id, brokerSubdomain: broker.subdomain, app: "bridge", version: "license", note: (input.note ?? "").slice(0, 200) }, { machineId });
   await prisma.auditLog.create({
     data: {
       brokerId: broker.id,

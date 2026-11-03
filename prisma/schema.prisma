@@ -2919,6 +2919,9 @@ model ClientBuild {
   revokedAt       DateTime? @db.Timestamptz(3)
   note            String    @default("")
   updatedAt       DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  // bridge licenses only: the full machine hash the license is bound to (`qorebridge.exe --machine-id`), checked on
+  // every config fetch (/api/bridge/config). Null on licenses issued before 2026-11-03: those are refused there.
+  machineId       String?
 
   @@index([brokerId])
 }
