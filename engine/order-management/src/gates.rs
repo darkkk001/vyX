@@ -240,6 +240,107 @@ pub fn hedging_allowed(hedging_allowed: bool, has_opposite_open_position: bool) 
     has_opposite_open_position.then(|| HEDGING_REFUSED_TEXT.to_string())
 }
 
+// ---- pre-trade margin (L2 Step 1c item D) ------------------------------------------------------
+
+/// `lib/margin.ts checkPreTradeMargin`.
+///
+/// The web judges the PROJECTED MARGIN LEVEL against the group's own call level, not free margin
+/// against the requirement -- which is a genuinely different rule from the engine's existing
+/// `risk::check_free_margin`, and stricter in the case that matters: an order that leaves free margin
+/// exactly covering the requirement still lands ON the call level, and must be refused (Stage 2 F3:
+/// `lte`, not `lt`, so it cannot open straight into margin call).
+pub fn pre_trade_margin_level(
+    equity: Decimal,
+    used_margin: Decimal,
+    required_margin: Decimal,
+    margin_call_level: Decimal,
+) -> Option<String> {
+    let projected = used_margin + required_margin;
+    if projected.is_zero() {
+        return None;
+    }
+    let level = equity / projected * Decimal::ONE_HUNDRED;
+    (level <= margin_call_level).then(|| "INSUFFICIENT_MARGIN".to_string())
+}
+
+/// `lib/margin.ts evaluatePreTradeMargin`, the decision half.
+///
+/// `used_margin_after` is the account's hedged used margin WITH the new leg included -- the engine
+/// already computes exactly that shape in `calc::used_margin` (per-symbol buy/sell netting at the
+/// symbol's `hedgedMarginPct`), so this takes the two totals rather than the leg list.
+///
+/// Three things the simpler free-margin check does not do, all of them the web's:
+/// - **an order that does not increase used margin is always allowed**, whatever the level. That is
+///   MT5 behaviour: hedging an open position at a hedged margin % below 200 can only make the account
+///   safer, so it is never refused.
+/// - the refusal distinguishes INSUFFICIENT_BALANCE -- the funds could not carry this order's margin
+///   even with nothing else open -- from INSUFFICIENT_MARGIN, where open positions are what leave too
+///   little. The client names them apart.
+/// - the level is judged against the GROUP's `marginCallLevel`, not a hardcoded 100.
+pub fn pre_trade_margin(
+    equity: Decimal,
+    used_margin: Decimal,
+    used_margin_after: Decimal,
+    balance: Decimal,
+    credit: Decimal,
+    margin_call_level: Decimal,
+) -> Option<String> {
+    if used_margin_after <= used_margin {
+        return None;
+    }
+    let required = used_margin_after - used_margin;
+    pre_trade_margin_level(equity, used_margin, required, margin_call_level)?;
+    let funds = balance + credit;
+    Some(if funds <= Decimal::ZERO || funds < required { "INSUFFICIENT_BALANCE" } else { "INSUFFICIENT_MARGIN" }.to_string())
+}
+
+// ---- where the order routes (L2 Step 1c item B) ------------------------------------------------
+
+/// `lib/dealing-routing.ts SYSTEM_ACCOUNT_ORDER.error`, verbatim -- pinned by the gate vectors.
+pub const SYSTEM_ACCOUNT_ORDER: &str = "This is the broker's system coverage account; client orders can't be placed on it.";
+
+/// The engine cannot queue an order for a dealer, so it must not take one either. This reason is the
+/// engine's OWN, not a port: the web does not refuse here, it QUEUES. Worded so a reader can tell the
+/// difference between "the platform refused this" and "this path cannot serve it".
+pub const DEALER_QUEUE_NOT_AVAILABLE: &str = "this account's orders are reviewed by a dealer; place it through the platform, not the engine";
+
+/// `lib/dealing-routing.ts deskIsOn`: the desk is ON when `Broker.dealingDeskAutoFillAt` is null.
+pub fn desk_is_on(dealing_desk_auto_fill_at: Option<chrono::DateTime<chrono::Utc>>) -> bool {
+    dealing_desk_auto_fill_at.is_none()
+}
+
+/// `lib/dealing-routing.ts orderRoute`, one for one. A missing group routes like B_BOOK.
+pub fn order_route(group_category: Option<&str>, force_dealing_mode: bool, desk_on: bool) -> &'static str {
+    match group_category.unwrap_or("B_BOOK") {
+        "DEALING" => {
+            if desk_on || force_dealing_mode {
+                "QUEUE"
+            } else {
+                "FILL"
+            }
+        }
+        "COVERAGE" => "SYSTEM",
+        // B_BOOK, REVERSAL, A_BOOK -- A_BOOK fills and is hedged afterwards (owner 2026-10-16), so an
+        // A-book group with no LP connected does NOT refuse orders. That gate is on ACCOUNT PLACEMENT
+        // (lib/account-structure.ts LP_NOT_CONNECTED), not on orders, and porting it here would make
+        // the engine stricter than the web.
+        _ => "FILL",
+    }
+}
+
+/// Refuse anything the web would not FILL.
+///
+/// THE ENGINE MUST NOT DECIDE ROUTING. Both non-FILL answers are a refusal here rather than an
+/// attempt to act: SYSTEM is the web's own refusal, reproduced word for word, and QUEUE belongs to the
+/// dealer desk, which lives on the web.
+pub fn routing(group_category: Option<&str>, force_dealing_mode: bool, desk_on: bool) -> Option<String> {
+    match order_route(group_category, force_dealing_mode, desk_on) {
+        "FILL" => None,
+        "SYSTEM" => Some(SYSTEM_ACCOUNT_ORDER.to_string()),
+        _ => Some(DEALER_QUEUE_NOT_AVAILABLE.to_string()),
+    }
+}
+
 // ---- the market's own hours --------------------------------------------------------------------
 
 /// `lib/risk.ts checkTradingSession`, via the engine's own port (`crate::session`), which is pinned to
@@ -333,7 +434,8 @@ pub fn evaluate_open(inputs: &crate::db::GateInputs, order: &OpenOrder<'_>) -> O
         .or_else(|| account_status_for_open(&inputs.account_status))
         .or_else(|| group_close_only(inputs.group_close_only))
         .or_else(|| group_allowed_symbol(inputs.group_restrict_symbols, &inputs.group_allowed_symbol_ids, order.symbol_id))
-        // orderRoute / SYSTEM sits here on the web -- NOT PORTED, see the module note
+        // the web's orderRoute / SYSTEM refusal sits exactly here
+        .or_else(|| routing(inputs.group_category.as_deref(), inputs.group_force_dealing_mode, inputs.desk_on))
         // --- the web's second wave, in its array order ---
         .or_else(|| max_open_positions(order.open_position_count, order.max_open_positions))
         .or_else(|| hedging_allowed(inputs.hedging_allowed, inputs.has_opposite_open_position))
@@ -372,8 +474,9 @@ fn normalized(d: Decimal) -> String {
 //                            `price` field at all (the engine prices from its own tick). The freshness
 //                            half is ported AND WIRED as `price_freshness` (L2 Step 1b item E).
 //   the slippage cap         the client's `maxSlippagePips` / the broker's cap. Not in the request.
-//   orderRoute / SYSTEM      the dealer-desk routing model (`orderRoute`, `deskIsOn`, the dealing
-//                            queue). A web concern; the engine should refuse to decide it.
+//   (orderRoute / SYSTEM is now PORTED AND WIRED -- L2 Step 1c item B -- as a REFUSAL: the engine
+//    reproduces the web's SYSTEM sentence and refuses anything the web would queue, rather than
+//    deciding routing itself.)
 //   (checkTradingSession is now PORTED AND WIRED -- L2 Step 1b item A -- against 228 oracle cases.)
 //   evaluatePreTradeMargin   the engine's `risk::check_free_margin` is the same idea but a narrower
 //                            model: the web's also resolves conversion rates (NO_CONVERSION_RATE) and

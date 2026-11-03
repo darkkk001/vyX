@@ -138,6 +138,14 @@ pub struct GateInputs {
     pub group_lot_step: Option<Decimal>,
     pub group_restrict_symbols: bool,
     pub group_allowed_symbol_ids: Vec<String>,
+    /// `Group.category`, for the routing refusal (L2 Step 1c item B). None = the account has no group,
+    /// which routes like B_BOOK.
+    pub group_category: Option<String>,
+    /// `Group.forceDealingMode` -- "always send to dealer", DEALING groups only.
+    pub group_force_dealing_mode: bool,
+    /// `lib/dealing-routing.ts deskIsOn`: the dealer desk is ON when `Broker.dealingDeskAutoFillAt` is
+    /// null. Resolved in SQL so the engine never holds a half-interpreted timestamp.
+    pub desk_on: bool,
     // the account
     pub account_status: String,
     pub account_trading_rights: String,
@@ -149,15 +157,20 @@ pub struct GateInputs {
     /// excluded, because those are the broker's own hedge legs and not client exposure (the web's audit
     /// note of 2026-09-24 -- counting them let every hedge eat into the clients' limit).
     pub broker_open_volume: Decimal,
-    /// Signed TRADE_PNL since the start of today. A loss is NEGATIVE.
+    /// Signed TRADE_PNL since the start of the BROKER DAY. A loss is NEGATIVE.
     ///
-    /// THE DAY BOUNDARY: `date_trunc('day', now() AT TIME ZONE 'UTC')`, i.e. UTC midnight. The web uses
-    /// `new Date(); setHours(0,0,0,0)` -- midnight in the SERVER PROCESS's timezone, which is UTC on
-    /// Vercel and therefore what production does today. It is deliberately NOT this platform's own
-    /// broker-day boundary (21:00 UTC, see the D1 candle convention): matching the web matters more
-    /// than being principled here, because a different boundary would make the engine refuse orders
-    /// the web allows for an hour or two every day. Flagged in the handoff doc.
+    /// THE BOUNDARY (L2 Step 1c, item C): broker-local midnight, from the live `broker_offset_sec` --
+    /// the identical arithmetic `market_data::broker_day_start` uses to bucket D1 candles, so it is
+    /// DST-aware (21:00 UTC in summer, 22:00 UTC in winter for a GMT+2/+3 server) rather than a fixed
+    /// hour. The web reads the same instant from the other end: `lib/trading-day.ts tradingDayStart`
+    /// takes the start of the latest D1 candle, which this engine wrote with that same function, and
+    /// `checkMaxDailyLoss` now receives it instead of computing a process-local midnight of its own.
+    ///
+    /// Pinned both ways by `docs/contracts/broker-day-vectors.json`.
     pub realized_today: Decimal,
+    /// The broker-day start this `realized_today` was summed from -- returned so a test can assert the
+    /// instant rather than only the sum.
+    pub broker_day_start: chrono::DateTime<Utc>,
     /// Is there an OPEN position on the other side of this symbol for this account?
     pub has_opposite_open_position: bool,
     // the trading-session gate (L2 Step 1b item A)
@@ -175,6 +188,10 @@ pub async fn get_gate_inputs(
     account_id: &str,
     symbol_id: &str,
     side: OrderSide,
+    // The broker server's UTC offset, from `market_data::broker_offset::BrokerOffsetTracker`. 0 (no
+    // tick has reported one yet) reduces the broker day to UTC midnight, exactly as
+    // `broker_day_start`'s own doc guarantees.
+    broker_offset_sec: i64,
 ) -> Result<Option<GateInputs>, sqlx::Error> {
     let opposite = if side == OrderSide::Buy { "SELL" } else { "BUY" };
     // Read by alias (sqlx::Row), not as a tuple: 19 columns is past the 16 that sqlx's tuple `FromRow`
@@ -192,6 +209,9 @@ pub async fn get_gate_inputs(
              g."minLotSize" AS group_min_lot,
              g."lotStep" AS group_lot_step,
              COALESCE(g."restrictSymbols", false) AS group_restrict_symbols,
+             g.category::text AS group_category,
+             COALESCE(g."forceDealingMode", false) AS group_force_dealing_mode,
+             (b."dealingDeskAutoFillAt" IS NULL) AS desk_on,
              COALESCE((SELECT array_agg(gs."symbolId") FROM "GroupSymbol" gs WHERE gs."groupId" = a."groupId"), ARRAY[]::text[]) AS group_allowed,
              a.status::text AS account_status,
              a."tradingRights"::text AS account_rights,
@@ -204,9 +224,13 @@ pub async fn get_gate_inputs(
                           AND NOT pa."isInternal"
                           AND COALESCE(pg.category::text, '') <> 'COVERAGE'
                           AND (b."coverageAccountId" IS NULL OR p."accountId" <> b."coverageAccountId")), 0) AS broker_open_volume,
+             -- broker-local midnight, the same arithmetic as market_data::broker_day_start: shift now
+             -- by the broker's offset, truncate to its own day, shift back. date_trunc runs on a NAIVE
+             -- timestamp on purpose -- on a timestamptz it would truncate in the SESSION's timezone.
+             ((date_trunc('day', (now() AT TIME ZONE 'UTC') + make_interval(secs => $5)) - make_interval(secs => $5)) AT TIME ZONE 'UTC') AS broker_day_start,
              COALESCE((SELECT SUM(t.amount) FROM "Transaction" t
                         WHERE t."accountId" = $2 AND t.type = 'TRADE_PNL'
-                          AND t."createdAt" >= date_trunc('day', now() AT TIME ZONE 'UTC')), 0) AS realized_today,
+                          AND t."createdAt" >= ((date_trunc('day', (now() AT TIME ZONE 'UTC') + make_interval(secs => $5)) - make_interval(secs => $5)) AT TIME ZONE 'UTC')), 0) AS realized_today,
              EXISTS (SELECT 1 FROM "Position" p2
                       WHERE p2."accountId" = $2 AND p2."symbolId" = $3
                         AND p2.status = 'OPEN' AND p2.side::text = $4) AS has_opposite,
@@ -224,6 +248,7 @@ pub async fn get_gate_inputs(
     .bind(account_id)
     .bind(symbol_id)
     .bind(opposite)
+    .bind(broker_offset_sec as f64)
     .fetch_optional(pool)
     .await?;
 
@@ -242,12 +267,16 @@ pub async fn get_gate_inputs(
         group_lot_step: r.try_get("group_lot_step")?,
         group_restrict_symbols: r.try_get("group_restrict_symbols")?,
         group_allowed_symbol_ids: r.try_get("group_allowed")?,
+        group_category: r.try_get("group_category")?,
+        group_force_dealing_mode: r.try_get("group_force_dealing_mode")?,
+        desk_on: r.try_get("desk_on")?,
         account_status: r.try_get("account_status")?,
         account_trading_rights: r.try_get("account_rights")?,
         max_daily_loss: r.try_get("max_daily_loss")?,
         symbol_trading_mode: r.try_get("symbol_trading_mode")?,
         broker_open_volume: r.try_get("broker_open_volume")?,
         realized_today: r.try_get("realized_today")?,
+        broker_day_start: r.try_get("broker_day_start")?,
         has_opposite_open_position: r.try_get("has_opposite")?,
         symbol_category: r.try_get("symbol_category")?,
         sessions: {

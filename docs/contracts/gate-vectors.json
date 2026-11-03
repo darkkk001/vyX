@@ -508,6 +508,276 @@
         "reject": "this symbol is not enabled for this account's group"
       }
     ],
+    "order_route": [
+      {
+        "input": {
+          "category": "B_BOOK",
+          "forceDealingMode": false,
+          "deskOn": true
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "B_BOOK",
+          "forceDealingMode": false,
+          "deskOn": false
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "B_BOOK",
+          "forceDealingMode": true,
+          "deskOn": true
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "B_BOOK",
+          "forceDealingMode": true,
+          "deskOn": false
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "DEALING",
+          "forceDealingMode": false,
+          "deskOn": true
+        },
+        "reject": "QUEUE"
+      },
+      {
+        "input": {
+          "category": "DEALING",
+          "forceDealingMode": false,
+          "deskOn": false
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "DEALING",
+          "forceDealingMode": true,
+          "deskOn": true
+        },
+        "reject": "QUEUE"
+      },
+      {
+        "input": {
+          "category": "DEALING",
+          "forceDealingMode": true,
+          "deskOn": false
+        },
+        "reject": "QUEUE"
+      },
+      {
+        "input": {
+          "category": "A_BOOK",
+          "forceDealingMode": false,
+          "deskOn": true
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "A_BOOK",
+          "forceDealingMode": false,
+          "deskOn": false
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "A_BOOK",
+          "forceDealingMode": true,
+          "deskOn": true
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "A_BOOK",
+          "forceDealingMode": true,
+          "deskOn": false
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "REVERSAL",
+          "forceDealingMode": false,
+          "deskOn": true
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "REVERSAL",
+          "forceDealingMode": false,
+          "deskOn": false
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "REVERSAL",
+          "forceDealingMode": true,
+          "deskOn": true
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "REVERSAL",
+          "forceDealingMode": true,
+          "deskOn": false
+        },
+        "reject": "FILL"
+      },
+      {
+        "input": {
+          "category": "COVERAGE",
+          "forceDealingMode": false,
+          "deskOn": true
+        },
+        "reject": "SYSTEM"
+      },
+      {
+        "input": {
+          "category": "COVERAGE",
+          "forceDealingMode": false,
+          "deskOn": false
+        },
+        "reject": "SYSTEM"
+      },
+      {
+        "input": {
+          "category": "COVERAGE",
+          "forceDealingMode": true,
+          "deskOn": true
+        },
+        "reject": "SYSTEM"
+      },
+      {
+        "input": {
+          "category": "COVERAGE",
+          "forceDealingMode": true,
+          "deskOn": false
+        },
+        "reject": "SYSTEM"
+      },
+      {
+        "input": {
+          "category": null,
+          "forceDealingMode": false,
+          "deskOn": true
+        },
+        "reject": "FILL"
+      }
+    ],
+    "system_account_message": [
+      {
+        "input": {
+          "note": "lib/dealing-routing.ts SYSTEM_ACCOUNT_ORDER.error"
+        },
+        "reject": "This is the broker's system coverage account; client orders can't be placed on it."
+      }
+    ],
+    "pre_trade_margin_level": [
+      {
+        "input": {
+          "equity": "10000",
+          "usedMargin": "0",
+          "requiredMargin": "0",
+          "marginCallLevel": "100"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "equity": "10000",
+          "usedMargin": "0",
+          "requiredMargin": "100",
+          "marginCallLevel": "100"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "equity": "10000",
+          "usedMargin": "0",
+          "requiredMargin": "10000",
+          "marginCallLevel": "100"
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "equity": "10000",
+          "usedMargin": "0",
+          "requiredMargin": "9999",
+          "marginCallLevel": "100"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "equity": "10000",
+          "usedMargin": "5000",
+          "requiredMargin": "5000",
+          "marginCallLevel": "100"
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "equity": "10000",
+          "usedMargin": "5000",
+          "requiredMargin": "4999",
+          "marginCallLevel": "100"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "equity": "10000",
+          "usedMargin": "0",
+          "requiredMargin": "5000",
+          "marginCallLevel": "200"
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "equity": "10000",
+          "usedMargin": "0",
+          "requiredMargin": "4999",
+          "marginCallLevel": "200"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "equity": "100",
+          "usedMargin": "0",
+          "requiredMargin": "100",
+          "marginCallLevel": "50"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "equity": "0",
+          "usedMargin": "100",
+          "requiredMargin": "1",
+          "marginCallLevel": "100"
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      }
+    ],
     "price_freshness": [
       {
         "input": {

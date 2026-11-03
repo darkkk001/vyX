@@ -677,13 +677,26 @@ export function checkSlippage(params: {
 export async function checkMaxDailyLoss(
   db: Db,
   accountId: string,
-  maxDailyLoss: Prisma.Decimal | null
+  maxDailyLoss: Prisma.Decimal | null,
+  // L2 Step 1c (C): the BROKER DAY this limit resets on, passed in by the caller.
+  //
+  // It used to be computed here as `new Date(); setHours(0, 0, 0, 0)` -- midnight in the server
+  // PROCESS's own timezone, which is UTC on Vercel and CET on the VPS, so the same code cut the day at
+  // two different instants depending on where it ran. Neither was the broker day the rest of the
+  // platform uses: lib/trading-day.ts `tradingDayStart`, the start of the latest D1 candle, which the
+  // ENGINE buckets at the broker server's local midnight (market-data/src/lib.rs broker_day_start) --
+  // 21:00 UTC in summer and 22:00 UTC in winter, DST-aware, with a 22:00 UTC fallback.
+  //
+  // Required, not defaulted: resolving it in here would hide a candle read inside a risk gate, and
+  // every caller already has a cheaper place to do it (the orders route folds it into the parallel
+  // wave it already runs). The engine computes the identical instant in SQL from the same broker
+  // offset -- see engine/order-management/src/db.rs get_gate_inputs, pinned by
+  // docs/contracts/broker-day-vectors.json.
+  dayStart: Date
 ): Promise<string | null> {
   if (maxDailyLoss == null) return null;
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
   const agg = await db.transaction.aggregate({
-    where: { accountId, type: "TRADE_PNL", createdAt: { gte: startOfToday } },
+    where: { accountId, type: "TRADE_PNL", createdAt: { gte: dayStart } },
     _sum: { amount: true },
   });
   const realizedToday = agg._sum.amount ?? new Prisma.Decimal(0);

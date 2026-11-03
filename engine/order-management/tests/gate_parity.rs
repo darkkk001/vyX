@@ -100,6 +100,18 @@ fn verdict(gate: &str, i: &serde_json::Value) -> Option<String> {
             i["hasOppositeOpenPosition"].as_bool().unwrap(),
         ),
         "price_freshness" => gates::price_freshness(i["tickAgeMs"].as_i64()),
+        // L2 Step 1c (B): these two are not Option<String> gates. order_route returns the ROUTE, and
+        // the vector's "reject" field carries it; the message case carries the web's own sentence.
+        "order_route" => Some(
+            gates::order_route(i["category"].as_str(), i["forceDealingMode"].as_bool().unwrap(), i["deskOn"].as_bool().unwrap()).to_string(),
+        ),
+        "system_account_message" => Some(gates::SYSTEM_ACCOUNT_ORDER.to_string()),
+        "pre_trade_margin_level" => gates::pre_trade_margin_level(
+            dec(&i["equity"]),
+            dec(&i["usedMargin"]),
+            dec(&i["requiredMargin"]),
+            dec(&i["marginCallLevel"]),
+        ),
         other => panic!("the vector names a gate this test does not dispatch: {other}"),
     }
 }
@@ -110,7 +122,7 @@ fn every_ported_gate_agrees_with_the_web_on_every_case() {
     let gates_obj = v["gates"].as_object().expect("gates");
     // Pinned on purpose: if the generator grows a gate, this test must be re-read rather than quietly
     // covering less than it claims to.
-    assert_eq!(gates_obj.len(), 19, "the contract file's gate list changed");
+    assert_eq!(gates_obj.len(), 22, "the contract file's gate list changed");
 
     let mut checked = 0;
     let mut rejects = 0;
@@ -132,7 +144,7 @@ fn every_ported_gate_agrees_with_the_web_on_every_case() {
         }
     }
     assert!(mismatches.is_empty(), "{} of {checked} cases disagree:\n{}", mismatches.len(), mismatches.join("\n"));
-    assert_eq!(checked, 96, "the case count changed: re-read the vector");
+    assert_eq!(checked, 128, "the case count changed: re-read the vector");
     // and the file is not one-sided: a suite of only-passing cases would prove nothing
     assert!(rejects >= 30, "only {rejects} reject cases -- the vector must exercise both verdicts");
 }
@@ -179,4 +191,52 @@ fn a_breached_limit_always_refuses() {
     assert!(gates::group_trading_restriction("SELL_ONLY", OrderSide::Buy).is_some());
     assert!(gates::price_freshness(Some(10_000)).is_some());
     assert!(gates::price_freshness(None).is_some());
+}
+
+/// L2 Step 1c (B): the engine refuses everything the web would not FILL, and never decides routing.
+#[test]
+fn the_routing_gate_refuses_whatever_the_web_would_not_fill() {
+    // a COVERAGE group is the broker's own system account: the web's exact sentence
+    assert_eq!(gates::routing(Some("COVERAGE"), false, true).as_deref(), Some(gates::SYSTEM_ACCOUNT_ORDER));
+    assert_eq!(gates::routing(Some("COVERAGE"), false, false).as_deref(), Some(gates::SYSTEM_ACCOUNT_ORDER));
+    // DEALING with the desk ON is queued by the web, so the engine must not fill it
+    assert_eq!(gates::routing(Some("DEALING"), false, true).as_deref(), Some(gates::DEALER_QUEUE_NOT_AVAILABLE));
+    // ... and "always send to dealer" queues it even with the desk off
+    assert_eq!(gates::routing(Some("DEALING"), true, false).as_deref(), Some(gates::DEALER_QUEUE_NOT_AVAILABLE));
+    // DEALING with the desk off and no override auto-fills
+    assert!(gates::routing(Some("DEALING"), false, false).is_none());
+    // everything else fills -- including A_BOOK, which is hedged AFTER the fill (owner 2026-10-16), so
+    // an A-book group with no LP must NOT be refused here
+    for category in ["B_BOOK", "REVERSAL", "A_BOOK"] {
+        assert!(gates::routing(Some(category), false, true).is_none(), "{category} must fill");
+        assert!(gates::routing(Some(category), true, true).is_none(), "{category} must fill even with forceDealingMode");
+    }
+    // no group routes like B_BOOK
+    assert!(gates::routing(None, false, true).is_none());
+    // and the desk switch itself
+    assert!(gates::desk_is_on(None));
+    assert!(!gates::desk_is_on(Some(chrono::Utc::now())));
+}
+
+/// L2 Step 1c (D): the three things `evaluatePreTradeMargin` does that a plain free-margin check does
+/// not. Asserted as invariants, independently of the vector.
+#[test]
+fn the_pre_trade_margin_gate_follows_the_webs_richer_model() {
+    let d = |s: &str| Decimal::from_str(s).unwrap();
+    // 1. an order that does not INCREASE used margin is always allowed, whatever the level. MT5:
+    //    hedging an open position at a hedged margin % below 200 can only make the account safer.
+    assert!(gates::pre_trade_margin(d("1"), d("10000"), d("9000"), d("1"), d("0"), d("100")).is_none());
+    assert!(gates::pre_trade_margin(d("1"), d("10000"), d("10000"), d("1"), d("0"), d("100")).is_none());
+    // 2. INSUFFICIENT_BALANCE vs INSUFFICIENT_MARGIN. The funds could not carry it at all:
+    assert_eq!(gates::pre_trade_margin(d("50"), d("0"), d("500"), d("50"), d("0"), d("100")).as_deref(), Some("INSUFFICIENT_BALANCE"));
+    //    ... but here the funds could, and it is the open positions that leave too little:
+    assert_eq!(gates::pre_trade_margin(d("600"), d("500"), d("1000"), d("5000"), d("0"), d("100")).as_deref(), Some("INSUFFICIENT_MARGIN"));
+    //    credit counts towards the funds, so the same order on credit is a MARGIN refusal, not BALANCE
+    assert_eq!(gates::pre_trade_margin(d("600"), d("500"), d("1000"), d("0"), d("5000"), d("100")).as_deref(), Some("INSUFFICIENT_MARGIN"));
+    // 3. the level is judged against the GROUP's call level, not a hardcoded 100
+    assert!(gates::pre_trade_margin(d("10000"), d("0"), d("4999"), d("10000"), d("0"), d("200")).is_none());
+    assert_eq!(gates::pre_trade_margin(d("10000"), d("0"), d("5000"), d("10000"), d("0"), d("200")).as_deref(), Some("INSUFFICIENT_MARGIN"));
+    // and the boundary itself: landing exactly ON the call level is refused (lte, not lt)
+    assert!(gates::pre_trade_margin_level(d("10000"), d("0"), d("10000"), d("100")).is_some());
+    assert!(gates::pre_trade_margin_level(d("10000"), d("0"), d("9999"), d("100")).is_none());
 }

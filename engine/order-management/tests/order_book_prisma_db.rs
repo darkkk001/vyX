@@ -599,6 +599,7 @@ async fn place_market_order_runs_the_whole_chain_on_prismas_book() {
         &pool,
         &nats,
         &cache,
+        0,
         order_management::PlaceMarketOrderRequest {
             broker_id: fx.broker.clone(),
             account_id: fx.account.clone(),
@@ -1326,6 +1327,7 @@ async fn every_wired_gate_refuses_through_the_real_order_path() {
                 &pool,
                 &nats,
                 cache,
+                0,
                 order_management::PlaceMarketOrderRequest {
                     broker_id: fx.broker.clone(),
                     account_id: fx.account.clone(),
@@ -1455,6 +1457,20 @@ async fn every_wired_gate_refuses_through_the_real_order_path() {
             "daily loss limit of 100 reached",
         ),
         (
+            "coverage group is the broker's system account",
+            format!(r#"UPDATE "Group" SET category = 'COVERAGE' WHERE id = '{group_id}'"#),
+            format!(r#"UPDATE "Group" SET category = 'B_BOOK' WHERE id = '{group_id}'"#),
+            dec!(0.01),
+            "system coverage account",
+        ),
+        (
+            "dealing group with the desk on is queued, so the engine must not fill it",
+            format!(r#"UPDATE "Group" SET category = 'DEALING' WHERE id = '{group_id}'; UPDATE "Broker" SET "dealingDeskAutoFillAt" = NULL WHERE id = '{}'"#, fx.broker),
+            format!(r#"UPDATE "Group" SET category = 'B_BOOK' WHERE id = '{group_id}'"#),
+            dec!(0.01),
+            "reviewed by a dealer",
+        ),
+        (
             "max open positions",
             format!(r#"UPDATE "Broker" SET "maxOpenPositionsPerAccount" = 1 WHERE id = '{}'"#, fx.broker),
             format!(r#"UPDATE "Broker" SET "maxOpenPositionsPerAccount" = NULL WHERE id = '{}'"#, fx.broker),
@@ -1566,6 +1582,9 @@ async fn the_session_gate_refuses_a_closed_market_through_the_real_order_path() 
             &pool,
             &nats,
             &cache,
+            // broker offset 0: the broker day reduces to UTC midnight, which is all these tests need
+            // (the boundary itself is pinned by tests/broker_day_parity.rs)
+            0,
             order_management::PlaceMarketOrderRequest {
                 broker_id: fx.broker.clone(),
                 account_id: fx.account.clone(),
@@ -1657,6 +1676,9 @@ async fn a_tick_the_web_would_call_stale_is_refused_even_though_the_engine_still
             &pool,
             &nats,
             &cache,
+            // broker offset 0: the broker day reduces to UTC midnight, which is all these tests need
+            // (the boundary itself is pinned by tests/broker_day_parity.rs)
+            0,
             order_management::PlaceMarketOrderRequest {
                 broker_id: fx.broker.clone(),
                 account_id: fx.account.clone(),

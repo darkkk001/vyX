@@ -37,6 +37,8 @@ use std::sync::Arc;
 
 struct AppState {
     pool: PgPool,
+    // L2 Step 1c (C): the broker server's UTC offset, for the order path's broker-day boundary.
+    broker_offset_tracker: Arc<market_data::broker_offset::BrokerOffsetTracker>,
     // Where Candle / LivePrice rows are written and read -- Neon, the VPS
     // Postgres, or both during the migration soak (market_data::sink).
     // `pool` above stays the trade-data (Neon) pool for orders/positions.
@@ -361,7 +363,13 @@ async fn place_market_order(
         leverage: body.leverage,
     };
 
-    let outcome = order_management::place_market_order(&state.pool, &state.nats, &state.tick_cache, req)
+    let outcome = order_management::place_market_order(
+        &state.pool,
+        &state.nats,
+        &state.tick_cache,
+        state.broker_offset_tracker.current(),
+        req,
+    )
         .await
         .map_err(|err| match err {
             // L2 Stage 3: the symbol does not exist, so no order row could be created to reject.
@@ -1614,6 +1622,11 @@ async fn main() {
     // the web (lib/risk-owner.ts). Correct and fail-safe, but it made the L2 cutover impossible to do
     // without surrendering L1 on the way in.
     let mode = std::env::var("ENGINE_ORDER_MANAGEMENT").unwrap_or_default().trim().to_ascii_lowercase();
+    // L2 Step 1c (C): constructed BEFORE the order block, which needs its value for the
+    // daily-loss gate's broker-day boundary (db::GateInputs::broker_day_start).
+    // this crate ingests comes from the same MT5 terminal today.
+    let broker_offset_tracker = Arc::new(market_data::broker_offset::BrokerOffsetTracker::new());
+
     let modes = order_management::authority::Modes::of(Some(&mode));
     let live_mode = modes.risk && modes.orders;
     let risk_mode_requested = modes.risk;
@@ -2000,8 +2013,6 @@ async fn main() {
     let gap_fill_tracker = Arc::new(GapFillTracker::new());
     // See market_data::broker_offset::BrokerOffsetTracker's own doc
     // comment -- one shared value, not per-symbol, since every symbol
-    // this crate ingests comes from the same MT5 terminal today.
-    let broker_offset_tracker = Arc::new(market_data::broker_offset::BrokerOffsetTracker::new());
     // SL / TP execution trigger: the web app's minute cron was the only thing evaluating open
     // positions once the feed moved here (see market_data::risk_hook) -- with VYX_RISK_HOOK_URL /
     // VYX_RISK_HOOK_SECRET set, the tick that touches a level fires the evaluation at once, and
@@ -2170,6 +2181,7 @@ async fn main() {
 
     let state = Arc::new(AppState {
         pool,
+        broker_offset_tracker: broker_offset_tracker.clone(),
         market_pools,
         nats,
         price_feed_secret,

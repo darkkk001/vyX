@@ -156,6 +156,10 @@ pub async fn place_market_order(
     pool: &PgPool,
     nats: &async_nats::Client,
     cache: &TickCache,
+    // The broker server's UTC offset (`market_data::broker_offset::BrokerOffsetTracker::current`),
+    // which the daily-loss gate's broker-day boundary is computed from -- see
+    // `db::GateInputs::broker_day_start`. 0 reduces it to UTC midnight.
+    broker_offset_sec: i64,
     req: PlaceMarketOrderRequest,
 ) -> Result<PlaceMarketOrderOutcome, PlaceOrderError> {
     // L2 Stage 3: ONE book for the whole order. Read once here rather than per write, so a single
@@ -269,7 +273,9 @@ pub async fn place_market_order(
     // NOT complete: `checkTradingSession` and the dealer-desk `orderRoute`/SYSTEM refusal are not
     // ported -- see gates.rs's NOT_PORTED note. An engine entry point must not go live until they are.
     if book == db::Book::Prisma {
-        let Some(gate_inputs) = db::get_gate_inputs(pool, &req.broker_id, &req.account_id, &symbol_id, req.side).await? else {
+        let Some(gate_inputs) =
+            db::get_gate_inputs(pool, &req.broker_id, &req.account_id, &symbol_id, req.side, broker_offset_sec).await?
+        else {
             let reason = reject_order(tx, nats, &order_id, &req.account_id, "account not found".to_string()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         };

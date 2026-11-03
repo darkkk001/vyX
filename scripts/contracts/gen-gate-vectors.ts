@@ -39,6 +39,8 @@ import {
   checkPriceFreshness,
 } from "../../lib/risk";
 import { checkHedgingAllowed } from "../../lib/hedging";
+import { orderRoute, deskIsOn, SYSTEM_ACCOUNT_ORDER } from "../../lib/dealing-routing";
+import { checkPreTradeMargin } from "../../lib/margin";
 
 const D = (v: string) => new Prisma.Decimal(v);
 const dec = (v: string | null) => v;
@@ -206,7 +208,10 @@ async function aggregateGates() {
     );
   }
 
-  // daily loss -- realized is SIGNED and a loss is negative; the test is realized <= -max
+  // daily loss -- realized is SIGNED and a loss is negative; the test is realized <= -max.
+  // The day boundary is a parameter now (L2 Step 1c (C)) and the aggregate is stubbed, so the value
+  // passed here cannot affect the DECISION this vector pins; the boundary has its own oracle in
+  // docs/contracts/broker-day-vectors.json.
   for (const [realized, max] of [
     ["0", null],
     ["0", "100"],
@@ -219,7 +224,7 @@ async function aggregateGates() {
     add(
       "max_daily_loss",
       { realizedToday: dec(realized), maxDailyLoss: dec(max) },
-      await checkMaxDailyLoss(dbWith({ amountSum: realized }), "a1", max == null ? null : D(max))
+      await checkMaxDailyLoss(dbWith({ amountSum: realized }), "a1", max == null ? null : D(max), new Date("2026-11-02T22:00:00Z"))
     );
   }
 
@@ -241,6 +246,49 @@ async function aggregateGates() {
     "hedging_allowed",
     { hedgingAllowed: true, hasOppositeOpenPosition: true, note: "a NULL hedgingAllowed column resolves to true" },
     await checkHedgingAllowed(dbWith({ opposite: true }), { hedgingAllowed: null }, { accountId: "a1", symbolId: "s1", side: "BUY" })
+  );
+}
+
+// ---- where an order routes (L2 Step 1c item B) ----
+// The engine must not DECIDE routing -- that is a dealer-desk concern. It must refuse anything the web
+// would not FILL: a COVERAGE group (the broker's own system coverage account) and anything the web
+// would QUEUE for a dealer. These vectors pin the engine's port of orderRoute/deskIsOn.
+for (const category of ["B_BOOK", "DEALING", "A_BOOK", "REVERSAL", "COVERAGE"] as const) {
+  for (const forceDealingMode of [false, true]) {
+    for (const deskAutoFillAt of [null, new Date("2026-11-03T00:00:00Z")]) {
+      const deskOn = deskIsOn({ dealingDeskAutoFillAt: deskAutoFillAt });
+      add(
+        "order_route",
+        { category, forceDealingMode, deskOn },
+        orderRoute({ category, forceDealingMode }, deskOn)
+      );
+    }
+  }
+}
+// a missing group routes like B_BOOK
+add("order_route", { category: null, forceDealingMode: false, deskOn: true }, orderRoute(null, true));
+// and the SYSTEM refusal's exact sentence, which the engine must reproduce
+add("system_account_message", { note: "lib/dealing-routing.ts SYSTEM_ACCOUNT_ORDER.error" }, SYSTEM_ACCOUNT_ORDER.error);
+
+// ---- pre-trade margin (L2 Step 1c item D) ----
+// checkPreTradeMargin is the pure core of evaluatePreTradeMargin: the PROJECTED margin level against
+// the group's own call level. `lte`, not `lt` -- an order landing exactly ON the call level is refused.
+for (const [equity, usedMargin, requiredMargin, callLevel] of [
+  ["10000", "0", "0", "100"],
+  ["10000", "0", "100", "100"],
+  ["10000", "0", "10000", "100"],
+  ["10000", "0", "9999", "100"],
+  ["10000", "5000", "5000", "100"],
+  ["10000", "5000", "4999", "100"],
+  ["10000", "0", "5000", "200"],
+  ["10000", "0", "4999", "200"],
+  ["100", "0", "100", "50"],
+  ["0", "100", "1", "100"],
+] as [string, string, string, string][]) {
+  add(
+    "pre_trade_margin_level",
+    { equity, usedMargin, requiredMargin, marginCallLevel: callLevel },
+    checkPreTradeMargin({ equity: D(equity), usedMargin: D(usedMargin), requiredMargin: D(requiredMargin), marginCallLevel: D(callLevel) })
   );
 }
 

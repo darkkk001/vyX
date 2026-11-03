@@ -1,3 +1,4 @@
+import { tradingDayStart } from "@/lib/trading-day";
 import { NextRequest, NextResponse } from "next/server";
 import { toClientShape } from "@/lib/client-execution";
 import { canonicalSymbolName } from "@/lib/synthetic-symbols";
@@ -334,13 +335,16 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
         liveBaseSpreadPips: livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits)),
       }
     : null;
+  // L2 Step 1c (C): the broker day the daily-loss limit resets on, resolved in THIS wave rather than
+  // inside the gate -- so the boundary is explicit and costs no extra round trip.
+  const brokerDay = await tradingDayStart();
   const [riskResults, pricing, marginState] = await Promise.all([
     Promise.all([
       checkMaxOpenPositions(prisma, session.accountId, broker.maxOpenPositionsPerAccount),
       checkHedgingAllowed(prisma, broker, { accountId: session.accountId, symbolId: brokerSymbol.symbolId, side }),
       checkSymbolExposure(prisma, session.accountId, brokerSymbol.symbolId, volume, brokerSymbol.maxExposure),
       checkBrokerExposure(prisma, session.brokerId, volume, broker.totalExposureLimit),
-      checkMaxDailyLoss(prisma, session.accountId, account.maxDailyLoss),
+      checkMaxDailyLoss(prisma, session.accountId, account.maxDailyLoss, brokerDay.start),
     ]),
     type === "MARKET" && pricingInput ? resolveFillPricing(prisma, pricingInput) : Promise.resolve(null),
     loadAccountMarginState(prisma, session.accountId, account.leverage, [brokerSymbol.symbol.quoteCurrency], session.brokerId),
