@@ -1449,6 +1449,12 @@ model Client {
   // setup and only counts once a code from it was confirmed
   twoFactorSecret  String?
   twoFactorEnabled Boolean @default(false)
+  // Partner (IB) portal (CRM 2026-11-03): partnerAccountId = the client's account the broker made an IB (it receives the
+  // commissions, IbRelationship.ibAccountId); null = not a partner. referralCode = their link's code; referredByClientId =
+  // the partner whose link this client signed up through (their live accounts are attached to that partner).
+  partnerAccountId   String?
+  referralCode       String? @unique
+  referredByClientId String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -3097,4 +3103,48 @@ model SupportTicketMessage {
   createdAt     DateTime      @default(now()) @db.Timestamptz(3)
 
   @@index([ticketId, createdAt])
+}
+
+// Trader's Room journal (CRM 2026-11-03): the client's own notes on one closed trade. Every closed trade is in the
+// journal by itself (the list reads the positions); a row here exists only once the client saved tags, a note or the
+// rules check for it.
+model TradeJournalEntry {
+  id         String   @id @default(cuid())
+  positionId String   @unique
+  clientId   String
+  tags       String[] @default([])
+  note       String?
+  // {"plan":true,"confirmation":true,"risk":true,"breakeven":false}
+  checklist  Json?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([clientId])
+}
+
+// Partner portal rates card (CRM 2026-11-03): the broker's commission per lot for each plan (a client-selectable
+// Group). A referred client's live account gets an IbRelationship at its plan's rate.
+model IbPlanRate {
+  id         String   @id @default(cuid())
+  brokerId   String
+  groupId    String
+  ratePerLot Decimal  @db.Decimal(10, 4)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([brokerId, groupId])
+}
+
+// A partner asked for a payout from the Partner portal; staff pay it through the existing IB payout (backoffice IB tab).
+model IbPayoutRequest {
+  id          String        @id @default(cuid())
+  brokerId    String
+  clientId    String
+  ibAccountId String
+  amount      Decimal       @db.Decimal(18, 2)
+  status      RequestStatus @default(PENDING)
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  reviewedAt  DateTime?     @db.Timestamptz(3)
+
+  @@index([brokerId, status])
+  @@index([clientId, createdAt])
 }

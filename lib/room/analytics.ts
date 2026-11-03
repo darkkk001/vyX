@@ -21,7 +21,7 @@ export function periodStart(p: Period, now = new Date()): Date | null {
 }
 
 const SESSIONS = ["Asia", "London", "New York", "Rollover"] as const;
-function sessionOf(d: Date): (typeof SESSIONS)[number] {
+export function sessionOf(d: Date): (typeof SESSIONS)[number] {
   const h = d.getUTCHours();
   if (h >= 23 || h < 7) return "Asia";
   if (h < 12) return "London";
@@ -203,7 +203,7 @@ const FULL_DAY: Record<string, string> = { Mon: "Monday", Tue: "Tuesday", Wed: "
 
 /** Balance + credit at `at` from the ledger: today's value minus every completed equity-moving row booked since (the
  *  same rule as lib/equity-curve.ts ledgerAfter); null for an account opened after `at`. */
-async function equityAt(accountId: string, at: Date): Promise<number | null> {
+export async function equityAt(accountId: string, at: Date): Promise<number | null> {
   const a = await prisma.account.findUnique({ where: { id: accountId }, select: { balance: true, credit: true, createdAt: true } });
   if (!a || a.createdAt > at) return null;
   const rows = await prisma.$queryRaw<{ s: Prisma.Decimal | null }[]>`

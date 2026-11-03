@@ -40,3 +40,15 @@ ALTER TABLE "SupportTicket" ADD CONSTRAINT "SupportTicket_clientId_fkey" FOREIGN
 CREATE TABLE "SupportTicketMessage" ("id" TEXT NOT NULL, "ticketId" TEXT NOT NULL, "authorAdminId" TEXT, "body" TEXT NOT NULL, "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "SupportTicketMessage_pkey" PRIMARY KEY ("id"));
 CREATE INDEX "SupportTicketMessage_ticketId_createdAt_idx" ON "SupportTicketMessage"("ticketId", "createdAt");
 ALTER TABLE "SupportTicketMessage" ADD CONSTRAINT "SupportTicketMessage_ticketId_fkey" FOREIGN KEY ("ticketId") REFERENCES "SupportTicket"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+CREATE TABLE "TradeJournalEntry" ("id" TEXT NOT NULL, "positionId" TEXT NOT NULL, "clientId" TEXT NOT NULL, "tags" TEXT[] DEFAULT ARRAY[]::TEXT[], "note" TEXT, "checklist" JSONB, "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMPTZ(3) NOT NULL, CONSTRAINT "TradeJournalEntry_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "TradeJournalEntry_positionId_key" ON "TradeJournalEntry"("positionId");
+CREATE INDEX "TradeJournalEntry_clientId_idx" ON "TradeJournalEntry"("clientId");
+ALTER TABLE "Client" ADD COLUMN "partnerAccountId" TEXT;
+ALTER TABLE "Client" ADD COLUMN "referralCode" TEXT;
+ALTER TABLE "Client" ADD COLUMN "referredByClientId" TEXT;
+CREATE UNIQUE INDEX "Client_referralCode_key" ON "Client"("referralCode");
+CREATE TABLE "IbPlanRate" ("id" TEXT NOT NULL, "brokerId" TEXT NOT NULL, "groupId" TEXT NOT NULL, "ratePerLot" DECIMAL(10,4) NOT NULL, "updatedAt" TIMESTAMPTZ(3) NOT NULL, CONSTRAINT "IbPlanRate_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "IbPlanRate_brokerId_groupId_key" ON "IbPlanRate"("brokerId", "groupId");
+CREATE TABLE "IbPayoutRequest" ("id" TEXT NOT NULL, "brokerId" TEXT NOT NULL, "clientId" TEXT NOT NULL, "ibAccountId" TEXT NOT NULL, "amount" DECIMAL(18,2) NOT NULL, "status" "RequestStatus" NOT NULL DEFAULT 'PENDING', "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "reviewedAt" TIMESTAMPTZ(3), CONSTRAINT "IbPayoutRequest_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "IbPayoutRequest_brokerId_status_idx" ON "IbPayoutRequest"("brokerId", "status");
+CREATE INDEX "IbPayoutRequest_clientId_createdAt_idx" ON "IbPayoutRequest"("clientId", "createdAt");
