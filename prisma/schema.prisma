@@ -1074,6 +1074,9 @@ enum LeadStatus {
   QUALIFIED
   CONVERTED
   LOST
+  // CRM pipeline (2026-11-03): the client opened a demo / funded a live account
+  DEMO
+  FUNDED
 }
 
 // Prospective client, pre-Account -- CRM's "Leads" list. Conversion
@@ -1094,6 +1097,11 @@ model Lead {
 
   convertedAccountId String?  @unique
   convertedAccount   Account? @relation(fields: [convertedAccountId], references: [id])
+
+  // CRM pipeline (2026-11-03): L-<number>; the Client it became (sign-up or CONVERT); the last staff contact
+  number        Int       @unique @default(autoincrement())
+  clientId      String?
+  lastContactAt DateTime? @db.Timestamptz(3)
 
   // Step 2 (owner 2026-09-30, CRM "Assign to staff"): the staff member who owns this lead. Same broker, ACTIVE staff
   // only (app/api/manage/leads/[id] PATCH). null = unassigned. Removing the staff row un-assigns, never deletes.
@@ -1455,6 +1463,9 @@ model Client {
   partnerAccountId   String?
   referralCode       String? @unique
   referredByClientId String?
+  // CRM (2026-11-03): the staff member who owns the client, and where they came from ("WEBSITE", "IB · HK4210", ...)
+  ownerAdminId       String?
+  source             String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -3147,4 +3158,38 @@ model IbPayoutRequest {
 
   @@index([brokerId, status])
   @@index([clientId, createdAt])
+}
+
+// CRM notes and tasks (2026-11-03), on a lead or a client. Staff-only, never shown to the client.
+enum CrmEntity {
+  LEAD
+  CLIENT
+}
+
+model CrmNote {
+  id            String    @id @default(cuid())
+  brokerId      String
+  entityType    CrmEntity
+  entityId      String
+  authorAdminId String?
+  body          String
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([entityType, entityId, createdAt])
+}
+
+model CrmTask {
+  id                String    @id @default(cuid())
+  brokerId          String
+  entityType        CrmEntity
+  entityId          String
+  title             String
+  dueAt             DateTime? @db.Timestamptz(3)
+  doneAt            DateTime? @db.Timestamptz(3)
+  assignedAdminId   String?
+  createdByAdminId  String?
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([entityType, entityId])
+  @@index([brokerId, doneAt, dueAt])
 }

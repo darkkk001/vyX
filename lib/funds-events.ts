@@ -2,6 +2,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { publishRoomChanged } from "@/lib/room/events";
+import { advanceLead } from "@/lib/crm/leads";
 
 export type FundsRequestChange = "created" | "marked" | "unmarked" | "rejected" | "approved";
 
@@ -57,4 +58,9 @@ export async function publishFundsRequestChanged(args: {
   }).catch((err) => console.error("[funds-events] FundsRequestChanged publish failed", err));
   // the client's Trader's Room (room sockets only): its pending lists and history refresh at once
   await publishRoomChanged(args.brokerId, [args.accountId], "funds");
+  // CRM: a completed deposit on a live account moves the client's lead to FUNDED (never back)
+  if (args.change === "approved") {
+    const t = await prisma.transaction.findUnique({ where: { id: args.transactionId }, select: { type: true, status: true, account: { select: { accountMode: true, clientId: true } } } }).catch(() => null);
+    if (t?.type === "DEPOSIT" && t.status === "COMPLETED" && t.account.accountMode === "LIVE" && t.account.clientId) await advanceLead(args.brokerId, t.account.clientId, "FUNDED");
+  }
 }

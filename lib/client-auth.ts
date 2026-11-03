@@ -74,9 +74,10 @@ export async function consumeEmailVerificationToken(token: string): Promise<stri
   return getRedis().getdel(emailVerifyKey(token));
 }
 
-export async function issuePasswordResetToken(clientId: string): Promise<string> {
+// ttlSeconds: a CRM invitation (lead converted by staff) lives 72 h; a self-service reset keeps the default
+export async function issuePasswordResetToken(clientId: string, ttlSeconds: number = PASSWORD_RESET_TTL_SECONDS): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
-  await getRedis().set(passwordResetKey(token), clientId, "EX", PASSWORD_RESET_TTL_SECONDS);
+  await getRedis().set(passwordResetKey(token), clientId, "EX", ttlSeconds);
   return token;
 }
 

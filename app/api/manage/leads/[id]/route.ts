@@ -11,7 +11,7 @@ async function requireManager() {
   return session!;
 }
 
-const VALID_STATUS = ["NEW", "CONTACTED", "QUALIFIED", "CONVERTED", "LOST"];
+const VALID_STATUS = ["NEW", "CONTACTED", "QUALIFIED", "CONVERTED", "LOST", "DEMO", "FUNDED"];
 
 // Status changes (MANAGER+BROKER_ADMIN) and marking CONVERTED after the
 // caller has already created the Account via the existing POST

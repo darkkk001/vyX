@@ -24,7 +24,9 @@ export async function POST(request: NextRequest) {
   }
 
   const passwordHash = await hashPassword(password);
-  await prisma.client.update({ where: { id: clientId }, data: { passwordHash } });
+  // the link reached this person's inbox, so the e-mail is proven too (a CRM invitation arrives unverified)
+  const current = await prisma.client.findUnique({ where: { id: clientId }, select: { emailVerifiedAt: true } });
+  await prisma.client.update({ where: { id: clientId }, data: { passwordHash, ...(current && !current.emailVerifiedAt ? { emailVerifiedAt: new Date() } : {}) } });
   // A reset is the takeover remediation: every existing session dies with
   // the old credential (pentest 2026-09-18 #2). Nothing to keep -- this
   // flow never logs the client in.

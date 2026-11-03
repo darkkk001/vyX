@@ -11,6 +11,7 @@ import { Modal, ModalSection, ModalRow2, ModalActions } from "@/components/ui/Mo
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { PLAN_PRICING, formatUsd } from "@/lib/billing";
 import EngineSwitch from "./EngineSwitch";
+import CrmSwitch from "./CrmSwitch";
 import PricingEngineSwitch from "./PricingEngineSwitch";
 import BridgeLicenses from "./BridgeLicenses";
 import OrderRateLimit from "./OrderRateLimit";
@@ -27,6 +28,7 @@ export type BrokerRow = {
   status: "TRIAL" | "ACTIVE" | "SUSPENDED" | "DISABLED";
   executionEngine: "LEGACY" | "RUST";
   pricingEngineEnabled: boolean;
+  crmEnabled: boolean;
   orderBurst: number | null;
   orderPerMinute: number | null;
   staffTwoFactorRequired: boolean;
@@ -853,6 +855,13 @@ export default function BrokersManager() {
                 diffs before enabling for a real broker.
               </p>
               <PricingEngineSwitch brokerId={detailTarget.id} initialEnabled={detailTarget.pricingEngineEnabled} onSaved={reload} />
+            </ModalSection>
+
+            <ModalSection label="CRM module">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                On: the Trader&apos;s Room opens at /room on this broker&apos;s domain and its backoffice shows the CRM tab. Off: nothing changes for the broker.
+              </p>
+              <CrmSwitch key={detailTarget.id} brokerId={detailTarget.id} initialEnabled={detailTarget.crmEnabled} onSaved={reload} />
             </ModalSection>
 
             <ModalSection label="Order rate limit">

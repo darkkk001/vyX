@@ -10,6 +10,7 @@ import { GUEST_START_BALANCE } from "@/lib/demo";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
+import { advanceLead } from "@/lib/crm/leads";
 
 // Trader's Room Accounts screen.
 // GET ?mode=LIVE|DEMO -> the plans for that mode, each own account's leverage ceiling / choices / pending request,
@@ -83,6 +84,7 @@ export async function POST(request: NextRequest) {
         initialBalance: new Prisma.Decimal(GUEST_START_BALANCE), country: client.country, phone: client.phone, dateOfBirth: client.dateOfBirth,
         clientId: client.id, createdByAdminId: null,
       });
+      await advanceLead(session.brokerId, client.id, "DEMO");
       return NextResponse.json({ status: "created", accountNumber: account.accountNumber }, { status: 201 });
     } catch (error) {
       if (error instanceof AccountStructureError) return NextResponse.json({ error: "This plan is not available for demo." }, { status: 400 });

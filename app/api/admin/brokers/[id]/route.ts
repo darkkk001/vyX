@@ -36,6 +36,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // (lib/pricing-shadow-compare.ts) has been reviewed clean.
   const hasPricingEngineEnabled = "pricingEngineEnabled" in (body ?? {});
   const pricingEngineEnabled = hasPricingEngineEnabled ? body.pricingEngineEnabled === true : undefined;
+  // CRM module (owner brief 2026-11-03): the Trader's Room on the broker's host and the backoffice CRM tab, one switch,
+  // read per request (no redeploy). Super Admin only; the broker's CRM settings show it read-only.
+  const hasCrmEnabled = "crmEnabled" in (body ?? {});
+  const crmEnabled = hasCrmEnabled ? body.crmEnabled === true : undefined;
   const hasSupportEmail = "supportEmail" in (body ?? {});
   const supportEmail = hasSupportEmail ? (typeof body.supportEmail === "string" && body.supportEmail.trim() ? body.supportEmail.trim() : null) : undefined;
   const hasLogoUrl = "logoUrl" in (body ?? {});
@@ -70,8 +74,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "orderBurst and orderPerMinute must be a whole number from 0 to 100000, or null for the default" }, { status: 400 });
   }
 
-  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor && !hasEmailFromDomain && !hasEmailFromAddress && !hasEmailFromName && !hasEmailEnabled && !hasOrderBurst && !hasOrderPerMinute) {
-    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, supportEmail, logoUrl, primaryColor, an email config field, orderBurst or orderPerMinute is required" }, { status: 400 });
+  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasCrmEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor && !hasEmailFromDomain && !hasEmailFromAddress && !hasEmailFromName && !hasEmailEnabled && !hasOrderBurst && !hasOrderPerMinute) {
+    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, crmEnabled, supportEmail, logoUrl, primaryColor, an email config field, orderBurst or orderPerMinute is required" }, { status: 400 });
   }
 
   const existing = await prisma.broker.findUnique({ where: { id } });
@@ -147,6 +151,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           entityId: id,
           oldValue: { pricingEngineEnabled: existing.pricingEngineEnabled },
           newValue: { pricingEngineEnabled: broker.pricingEngineEnabled },
+        },
+      });
+    }
+
+    if (hasCrmEnabled) {
+      const broker = await tx.broker.update({ where: { id }, data: { crmEnabled } });
+      await tx.auditLog.create({
+        data: {
+          brokerId: id,
+          actorAdminId: session!.adminId,
+          action: "BROKER_CRM_TOGGLED",
+          entityType: "Broker",
+          entityId: id,
+          oldValue: { crmEnabled: existing.crmEnabled },
+          newValue: { crmEnabled: broker.crmEnabled },
         },
       });
     }
@@ -244,6 +263,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     primaryColor: updated.primaryColor,
     executionEngine: updated.executionEngine,
     pricingEngineEnabled: updated.pricingEngineEnabled,
+    crmEnabled: updated.crmEnabled,
     status: updated.status,
     trialEndsAt: updated.trialEndsAt,
     nextInvoiceAt: updated.nextInvoiceAt,

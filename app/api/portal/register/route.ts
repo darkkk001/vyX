@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { leadFromSignup } from "@/lib/crm/leads";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { hashPassword } from "@/lib/client-auth";
 import { sendClientVerificationEmail } from "@/lib/email/verification-email";
@@ -90,8 +91,11 @@ export async function POST(request: NextRequest) {
 
   const passwordHash = await hashPassword(password);
   const client = await prisma.client.create({
-    data: { brokerId, email, passwordHash, fullName, ...(referrer ? { referredByClientId: referrer.id } : {}) },
+    data: { brokerId, email, passwordHash, fullName, source: referrer ? `IB · ${ref}` : "WEBSITE", ...(referrer ? { referredByClientId: referrer.id } : {}) },
   });
+  // CRM module: every sign-up is a lead in the pipeline (lib/crm/leads.ts); brokers without it get none
+  const crm = await prisma.broker.findUnique({ where: { id: brokerId }, select: { crmEnabled: true } });
+  if (crm?.crmEnabled) await leadFromSignup({ brokerId, clientId: client.id, fullName, email, source: client.source ?? "WEBSITE" });
 
   // The verification e-mail lives in lib/email/verification-email.ts, shared with
   // app/api/portal/resend-verification so the two can never drift apart.

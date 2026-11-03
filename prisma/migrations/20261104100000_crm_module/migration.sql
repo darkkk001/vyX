@@ -52,3 +52,17 @@ CREATE UNIQUE INDEX "IbPlanRate_brokerId_groupId_key" ON "IbPlanRate"("brokerId"
 CREATE TABLE "IbPayoutRequest" ("id" TEXT NOT NULL, "brokerId" TEXT NOT NULL, "clientId" TEXT NOT NULL, "ibAccountId" TEXT NOT NULL, "amount" DECIMAL(18,2) NOT NULL, "status" "RequestStatus" NOT NULL DEFAULT 'PENDING', "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "reviewedAt" TIMESTAMPTZ(3), CONSTRAINT "IbPayoutRequest_pkey" PRIMARY KEY ("id"));
 CREATE INDEX "IbPayoutRequest_brokerId_status_idx" ON "IbPayoutRequest"("brokerId", "status");
 CREATE INDEX "IbPayoutRequest_clientId_createdAt_idx" ON "IbPayoutRequest"("clientId", "createdAt");
+ALTER TYPE "LeadStatus" ADD VALUE IF NOT EXISTS 'DEMO';
+ALTER TYPE "LeadStatus" ADD VALUE IF NOT EXISTS 'FUNDED';
+ALTER TABLE "Lead" ADD COLUMN "number" SERIAL NOT NULL;
+CREATE UNIQUE INDEX "Lead_number_key" ON "Lead"("number");
+ALTER TABLE "Lead" ADD COLUMN "clientId" TEXT;
+ALTER TABLE "Lead" ADD COLUMN "lastContactAt" TIMESTAMPTZ(3);
+ALTER TABLE "Client" ADD COLUMN "ownerAdminId" TEXT;
+ALTER TABLE "Client" ADD COLUMN "source" TEXT;
+CREATE TYPE "CrmEntity" AS ENUM ('LEAD', 'CLIENT');
+CREATE TABLE "CrmNote" ("id" TEXT NOT NULL, "brokerId" TEXT NOT NULL, "entityType" "CrmEntity" NOT NULL, "entityId" TEXT NOT NULL, "authorAdminId" TEXT, "body" TEXT NOT NULL, "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "CrmNote_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "CrmNote_entityType_entityId_createdAt_idx" ON "CrmNote"("entityType", "entityId", "createdAt");
+CREATE TABLE "CrmTask" ("id" TEXT NOT NULL, "brokerId" TEXT NOT NULL, "entityType" "CrmEntity" NOT NULL, "entityId" TEXT NOT NULL, "title" TEXT NOT NULL, "dueAt" TIMESTAMPTZ(3), "doneAt" TIMESTAMPTZ(3), "assignedAdminId" TEXT, "createdByAdminId" TEXT, "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "CrmTask_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "CrmTask_entityType_entityId_idx" ON "CrmTask"("entityType", "entityId");
+CREATE INDEX "CrmTask_brokerId_doneAt_dueAt_idx" ON "CrmTask"("brokerId", "doneAt", "dueAt");
