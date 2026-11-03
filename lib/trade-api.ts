@@ -309,7 +309,11 @@ export const tradeApi = {
     // No `position` key when dealing mode queued the order for manual
     // dealer review instead of auto-filling -- see
     // app/api/trade/orders/route.ts's dealingModeAt branch.
-    call<{ order: { id: string }; position?: { id: string } }>("/api/trade/orders", {
+    // wave-B (L2 Step 5): the answer carries the FULL position and the new balance, not just ids, so
+    // the terminal can put them straight into local state instead of re-fetching both. The server has
+    // always sent them (app/api/trade/orders/route.ts answers `{ order, position, balance }`); this
+    // type simply stopped the client from seeing them.
+    call<{ order: { id: string }; position?: ApiPosition; balance?: string; executedBy?: string }>("/api/trade/orders", {
       method: "POST",
       body: JSON.stringify({ ...body, maxSlippagePips: body.maxSlippagePips ?? "unlimited" }),
     }),

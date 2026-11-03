@@ -2645,7 +2645,21 @@ export default function WebTrader({
         // what just happened.
         playSound("orderFilled", chartSettingsRef.current);
         pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${activeSymbol} @ ${fmt(refPrice, m.def.digits)}`);
-        await Promise.all([refreshPositions(), refreshAccount()]);
+        // wave-B (L2 Step 5): the fill's own answer already carries the new position and the new
+        // balance, so apply them and do not WAIT on a re-fetch of either. This used to await
+        // refreshPositions() and refreshAccount() -- two more client round trips after the order had
+        // already been answered, which is the slowest part of the fill a trader actually feels.
+        //
+        // The re-fetch still runs, un-awaited, so anything the response does not carry (another
+        // device's position, a swap, a hedge leg) still converges a moment later. What changed is that
+        // the UI no longer blocks on it.
+        if (result.position) {
+          setPositions((prev) => (prev.some((p) => p.id === result.position!.id) ? prev : [result.position!, ...prev]));
+        }
+        if (result.balance !== undefined) {
+          setAccount((prev) => (prev ? { ...prev, balance: result.balance! } : prev));
+        }
+        void Promise.all([refreshPositions(), refreshAccount()]);
       } else {
         pushToast(`${activeSymbol} order submitted, awaiting dealer approval`);
         await refreshOrders();
