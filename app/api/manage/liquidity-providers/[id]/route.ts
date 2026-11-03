@@ -69,9 +69,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 }
 
 // Step 2 (owner 2026-09-30): LP "Delete provider…". BROKER_ADMIN (the same gate as PATCH). Refused (409, with the
-// reason) while any routing rule points at the provider -- the owner's rule: never delete the rules with it. The audit
-// row keeps a full snapshot of the provider record. A provider record is broker notes only (no LP bridge exists), so
-// nothing else references it.
+// reason) while any routing rule points at the provider -- the owner's rule: never delete the rules with it -- and while
+// a bridge connection (LpConnection, A.1.3) belongs to it (its foreign key would refuse the delete as a 500 otherwise).
+// The audit row keeps a full snapshot of the provider record.
 export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
@@ -87,6 +87,10 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
     const rules = await tx.lpRoutingRule.count({ where: { liquidityProviderId: id } });
     if (rules > 0) {
       return { status: 409 as const, error: `${rules} routing rule${rules === 1 ? " points" : "s point"} at this provider: delete or move ${rules === 1 ? "it" : "them"} first` };
+    }
+    const connections = await tx.lpConnection.count({ where: { liquidityProviderId: id } });
+    if (connections > 0) {
+      return { status: 409 as const, error: `this provider has ${connections === 1 ? "a bridge connection" : `${connections} bridge connections`}: delete ${connections === 1 ? "it" : "them"} first` };
     }
     await tx.liquidityProvider.delete({ where: { id } });
     await tx.auditLog.create({
