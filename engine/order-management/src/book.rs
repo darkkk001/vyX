@@ -548,6 +548,55 @@ async fn load_sessions(conn: &mut sqlx::PgConnection, broker_ids: &[String], nam
     Ok(sessions)
 }
 
+// ---- L2 Step 2 (DEPTH-CUT): the order path composes its ONE book read from these ---------------
+//
+// Exposed rather than copied. The order path's fill used to pay ELEVEN sequential round trips just to
+// read: five config queries, then BEGIN / SET TRANSACTION / funds / positions / sessions / ROLLBACK.
+// They are now one statement (db::get_open_snapshot), and that statement is composed from the same
+// projection, decoded by the same decoder and priced by the same function as every other book read --
+// so there is no second definition of "what an open position is" to drift from this one.
+//
+// A SINGLE STATEMENT IS A SINGLE SNAPSHOT, which is strictly stronger than what it replaced: the
+// funds and the positions came from a REPEATABLE READ transaction (the 2026-10-01 torn read), and one
+// statement gives that guarantee without the three round trips that set it up and tore it down.
+
+/// The SELECT list of a position read (`RAW_COLUMNS`).
+pub const POSITION_COLUMNS: &str = RAW_COLUMNS;
+
+/// Its FROM clause (`RAW_FROM`).
+pub const POSITION_FROM: &str = RAW_FROM;
+
+/// Trading-session windows by (brokerId, symbol name) -- what `price_order_path_rows` judges "this
+/// position's market is closed" on.
+pub type SymbolSessions = Sessions;
+
+/// `raw_from_row`, for one row of the order path's combined read.
+pub fn position_from_row(r: &sqlx::postgres::PgRow) -> Result<RawPosition, sqlx::Error> {
+    raw_from_row(r)
+}
+
+/// Each row's account ask rule, from the pricing cache in scope -- ZERO statements once that cache is
+/// loaded, which is how production runs (`market_data::pricing`, kept current out of band). Without a
+/// cache in scope (tests, harnesses) it loads the configuration of exactly these rows, as before.
+pub async fn resolve_position_rules(pool: &PgPool, rows: &mut [RawPosition]) -> Result<(), sqlx::Error> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut conn = pool.acquire().await?;
+    resolve_rules(&mut conn, rows).await
+}
+
+/// `price_rows` for the ORDER PATH: priced from the engine's own ticks, with the sessions handed in
+/// rather than read, no pin and no live-fire hint (those belong to the risk monitor). No database.
+pub fn price_order_path_rows(
+    rows: &[RawPosition],
+    sessions: &SymbolSessions,
+    cache: &std::sync::Arc<market_data::cache::TickCache>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<OpenPositionWithMarket> {
+    price_rows(rows, sessions, &PriceSource::Ticks(cache.clone()), None, now, &DbPrices::default())
+}
+
 /// The FX conversion symbols these rows may need (quote -> account currency, fx.rs), deduplicated.
 fn fx_symbols_of<'a>(rows: impl IntoIterator<Item = &'a RawPosition>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();

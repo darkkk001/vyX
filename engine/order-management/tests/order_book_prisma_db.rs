@@ -599,6 +599,7 @@ async fn place_market_order_runs_the_whole_chain_on_prismas_book() {
         &pool,
         &nats,
         &cache,
+        None,
         0,
         order_management::PlaceMarketOrderRequest {
             broker_id: fx.broker.clone(),
@@ -1327,6 +1328,7 @@ async fn every_wired_gate_refuses_through_the_real_order_path() {
                 &pool,
                 &nats,
                 cache,
+                None,
                 0,
                 order_management::PlaceMarketOrderRequest {
                     broker_id: fx.broker.clone(),
@@ -1593,6 +1595,7 @@ async fn the_pre_trade_margin_gate_refuses_through_the_real_order_path() {
                 &pool,
                 &nats,
                 cache,
+                None,
                 0,
                 order_management::PlaceMarketOrderRequest {
                     broker_id: fx.broker.clone(),
@@ -1755,6 +1758,7 @@ async fn the_session_gate_refuses_a_closed_market_through_the_real_order_path() 
             &cache,
             // broker offset 0: the broker day reduces to UTC midnight, which is all these tests need
             // (the boundary itself is pinned by tests/broker_day_parity.rs)
+            None,
             0,
             order_management::PlaceMarketOrderRequest {
                 broker_id: fx.broker.clone(),
@@ -1849,6 +1853,7 @@ async fn a_tick_the_web_would_call_stale_is_refused_even_though_the_engine_still
             &cache,
             // broker offset 0: the broker day reduces to UTC midnight, which is all these tests need
             // (the boundary itself is pinned by tests/broker_day_parity.rs)
+            None,
             0,
             order_management::PlaceMarketOrderRequest {
                 broker_id: fx.broker.clone(),

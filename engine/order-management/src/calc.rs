@@ -43,6 +43,12 @@ pub fn position_close_price(p: &db::OpenPositionWithMarket, bid: Decimal, ask: D
 }
 
 pub struct AccountState {
+    /// THE ORDER PATH ONLY EVER USES THIS AS A SUM WITH `credit`, and that is why a mutant swapping
+    /// the two survives the L2 Step 2 sweep rather than being a gap in the tests: the pre-trade margin
+    /// gate's funds are `balance + credit` (`gates::pre_trade_margin`) and its equity is
+    /// `effective_balance + credit + floating` ([`equity`]), so no decision on this path can tell them
+    /// apart. They are NOT interchangeable anywhere money moves -- `vyx_open_position` debits
+    /// `"Account".balance` by name -- which is why both are carried separately all the same.
     pub effective_balance: Decimal,
     pub credit: Decimal,
     pub leverage: u32,

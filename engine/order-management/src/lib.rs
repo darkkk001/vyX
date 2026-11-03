@@ -31,6 +31,7 @@ use market_data::cache::TickCache;
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 // Same 15s staleness window market_data::db::get_live_price's own SQL
 // enforces -- kept as one function so the in-memory cache and the
@@ -129,6 +130,12 @@ pub enum PlaceMarketOrderOutcome {
 pub enum PlaceOrderError {
     #[error(transparent)]
     Db(#[from] sqlx::Error),
+    /// L2 Step 2: no `"Account"` row for this request, or no `"Broker"` row. It used to surface as a
+    /// foreign-key error from the order insert, because the row was written before anything was read;
+    /// the one read comes first now and says so plainly. The HTTP route already checks the account
+    /// belongs to the broker, so reaching this means it went away in between.
+    #[error("unknown account {0}")]
+    UnknownAccount(String),
     /// L2 Stage 3: no `"Symbol"` row with this name. On the legacy book this was survivable -- the
     /// admission checks were skipped and the order filled at the raw tick -- but Prisma's `"Order"`
     /// and `"Position"` both require a `symbolId` FK, so there is no row to create and therefore no
@@ -161,6 +168,12 @@ pub async fn place_market_order(
     // silent read of the database's stale "LivePrice". So this path has to be able to PUT the engine's
     // ticks in scope, and that takes the shared handle. `&state.tick_cache` passes unchanged.
     cache: &std::sync::Arc<TickCache>,
+    // The account ask rules the book prices its positions with (market_data::pricing). REQUIRED in
+    // live mode: `book::require_pricing_cache` makes a book read without one an error rather than a
+    // silent per-fill reload of the whole pricing configuration -- which is five round trips, and
+    // which L2 Step 1d's margin gate was paying until this was wired (measured, trips 10-14 of 17).
+    // None is for tests and harnesses: each read then loads the configuration of exactly its own rows.
+    pricing: Option<&std::sync::Arc<market_data::pricing::PricingCache>>,
     // The broker server's UTC offset (`market_data::broker_offset::BrokerOffsetTracker::current`),
     // which the daily-loss gate's broker-day boundary is computed from -- see
     // `db::GateInputs::broker_day_start`. 0 reduces it to UTC midnight.
@@ -171,47 +184,93 @@ pub async fn place_market_order(
     // order can never leave half its rows in each book.
     let book = db::configured();
 
-    // Moved AHEAD of the order row (it used to be read after the admission checks began) because
-    // Prisma's "Order" needs its symbolId to exist at all. Same single round-trip as before: this
-    // read already served the admission checks and the commission below.
+    // L2 Step 2 (DEPTH-CUT): ONE READ, and it is the only one this path makes on the Prisma book.
     //
-    // A `None` here is the rare, benign "no Symbol row" case -- on the legacy book the order still
-    // filled at the raw tick with the admission checks skipped, which is kept exactly as it was; on
-    // the Prisma book there is no row to write, so it is refused before anything is created.
-    let symbol_config = db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await?;
-    if book == db::Book::Prisma && symbol_config.is_none() {
-        return Err(PlaceOrderError::UnknownSymbol(req.symbol.clone()));
-    }
+    // It replaces eleven sequential round trips -- the symbol config, the routing category, the
+    // exposure aggregates, the gate inputs, the ask levels, and then the BEGIN / SET TRANSACTION /
+    // funds / positions / sessions / ROLLBACK of `calc::load_book_state`. About 55 ms of pure waiting
+    // per fill on Neon's p50 link, for data that one statement answers in one. It is also a STRONGER
+    // snapshot than what it replaced, not a weaker one -- see `db::get_open_snapshot`.
+    //
+    // THE LEGACY BOOK still reads the old way, one query at a time, because its behaviour is frozen
+    // until Stage 8 drops it.
+    let snapshot = match book {
+        // Both book sources in scope, as every other book read runs: the TICKS because that is what
+        // positions are priced from (never the database's "LivePrice", which live mode refuses
+        // outright), and the PRICING CACHE because each position's ask rule is resolved from it --
+        // zero statements once loaded, five if it is missing. Measured: without this the fill paid
+        // five extra round trips re-reading the whole pricing configuration.
+        db::Book::Prisma => match crate::book::with_book_sources(
+            crate::book::PriceSource::Ticks(cache.clone()),
+            pricing.cloned(),
+            db::get_open_snapshot(pool, cache, &req.broker_id, &req.account_id, &req.symbol, req.side, broker_offset_sec),
+        )
+        .await?
+        {
+            db::OpenSnapshotResult::Found(s) => Some(s),
+            // no `"Symbol"` row, so there is no symbolId for `"Order"` and `"Position"` to reference
+            // and no row to reject: a 400, not a rejection.
+            db::OpenSnapshotResult::UnknownSymbol => return Err(PlaceOrderError::UnknownSymbol(req.symbol.clone())),
+            // Before this step the order row was written before anything was read, so a missing
+            // account surfaced as a foreign-key error from that insert. The read comes first now and
+            // can say so plainly -- and there is still no row to write a rejection on.
+            db::OpenSnapshotResult::AccountNotFound => return Err(PlaceOrderError::UnknownAccount(req.account_id.clone())),
+        },
+        db::Book::Legacy => None,
+    };
+
+    // A `None` symbol config is the rare, benign "no Symbol row" case: on the legacy book the order
+    // still fills at the raw tick with the admission checks skipped, which is kept exactly as it was.
+    let symbol_config = match &snapshot {
+        Some(s) => Some(s.symbol.clone()),
+        None => db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await?,
+    };
     let symbol_id = symbol_config.as_ref().map(|c| c.symbol_id.clone()).unwrap_or_default();
 
     // L2 Stage 4: where this position's risk goes. `lib/group-pricing.ts resolveBookType` off the
     // account's group category -- the same answer the web's order route computes before its own fill,
     // so an engine fill and a web fill of the same account route identically. B_BOOK when the account
-    // has no group, which is the safe side.
-    let book_type = match book {
-        db::Book::Prisma => db::BookType::of_category(db::get_routing_category(pool, &req.account_id).await?.as_deref()),
-        db::Book::Legacy => db::BookType::BBook,
+    // has no group, which is the safe side. The category came from its own query until L2 Step 2; it
+    // is the same `"Group".category` the gates already read.
+    let book_type = match &snapshot {
+        Some(s) => db::BookType::of_category(s.gates.group_category.as_deref()),
+        None => db::BookType::BBook,
     };
 
-    let mut tx = pool.begin().await?;
+    let new_order = db::NewOrder {
+        broker_id: req.broker_id.clone(),
+        account_id: req.account_id.clone(),
+        symbol: req.symbol.clone(),
+        symbol_id: symbol_id.clone(),
+        side: req.side,
+        order_type: OrderType::Market,
+        volume: req.volume,
+        requested_price: None,
+        sl_price: req.sl_price,
+        tp_price: req.tp_price,
+    };
 
-    let order_id = db::insert_order(
-        &mut tx,
-        book,
-        &db::NewOrder {
-            broker_id: req.broker_id.clone(),
-            account_id: req.account_id.clone(),
-            symbol: req.symbol.clone(),
-            symbol_id: symbol_id.clone(),
-            side: req.side,
-            order_type: OrderType::Market,
-            volume: req.volume,
-            requested_price: None,
-            sl_price: req.sl_price,
-            tp_price: req.tp_price,
-        },
-    )
-    .await?;
+    // L2 Step 2 (DEPTH-CUT): ON THE PRISMA BOOK NOTHING IS OPEN HERE -- no transaction, and no
+    // `"Order"` row yet.
+    //
+    // It used to open a transaction and insert the row PENDING before the first gate ran, purely so a
+    // refusal had a row to land on. That cost two round trips and, worse, held a pooled connection
+    // across every admission read while the gates waited on them. Both ends are now single statements
+    // that write the identical rows: a refusal INSERTs the order already REJECTED
+    // (`db::insert_rejected_order`), and a fill writes the whole chain in one call
+    // (`db::open_position_one_call`). The id is generated here all the same, because the caller is
+    // answered with it either way.
+    //
+    // THE LEGACY BOOK IS UNCHANGED: its row and its transaction are opened here exactly as before.
+    // That path writes tables nothing reads and is deliberately frozen until Stage 8 drops it.
+    let mut legacy_tx = match book {
+        db::Book::Legacy => Some(pool.begin().await?),
+        db::Book::Prisma => None,
+    };
+    let order_id = match &mut legacy_tx {
+        Some(tx) => db::insert_order(tx, book, &new_order).await?,
+        None => Uuid::new_v4().to_string(),
+    };
 
     // Market Data Core's own current view, not a value the caller handed
     // in — see PlaceMarketOrderRequest's doc comment. Read the in-memory
@@ -232,7 +291,7 @@ pub async fn place_market_order(
     let current_tick = match current_tick {
         Some(tick) => tick,
         None => {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id,format!("no live price for {}", req.symbol)).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, format!("no live price for {}", req.symbol)).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     };
@@ -241,11 +300,11 @@ pub async fn place_market_order(
     // `None` means on each book.
     if let Some(cfg) = &symbol_config {
         if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
         if let Err(reject_reason) = risk::check_lot_size(req.volume, cfg.min_lot, cfg.max_lot, cfg.lot_step) {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     }
@@ -257,7 +316,7 @@ pub async fn place_market_order(
     if book == db::Book::Legacy {
         let required = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage);
         if let Err(reject_reason) = risk::check_free_margin(req.equity, req.used_margin, required) {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     }
@@ -267,8 +326,10 @@ pub async fn place_market_order(
     // checks (enabled, lot size, margin) reject first. Both aggregates
     // fetched in one round trip -- see get_exposure_and_max_positions's
     // doc comment.
-    let (exposure, max_open_positions) =
-        db::get_exposure_and_max_positions(pool, book, &req.broker_id, &req.account_id, &req.symbol, &symbol_id).await?;
+    let (exposure, max_open_positions) = match &snapshot {
+        Some(s) => (s.exposure.clone(), s.max_open_positions),
+        None => db::get_exposure_and_max_positions(pool, book, &req.broker_id, &req.account_id, &req.symbol, &symbol_id).await?,
+    };
     let max_exposure = symbol_config.as_ref().and_then(|cfg| cfg.max_exposure);
     // L2 Step 1 Part B: the web's own admission gates, ported (gates.rs) and run in the web's order.
     //
@@ -284,13 +345,8 @@ pub async fn place_market_order(
     // COMPLETE as of L2 Step 1d: all 23 of the web's open gates are ported and wired, the last of
     // them the pre-trade margin decision further down (it needs the fill price, so it cannot run in
     // this block). What remains deliberately unported is listed in gates.rs's NOT_PORTED note.
-    let gate_inputs = if book == db::Book::Prisma {
-        let Some(gate_inputs) =
-            db::get_gate_inputs(pool, &req.broker_id, &req.account_id, &symbol_id, req.side, broker_offset_sec).await?
-        else {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id, "account not found".to_string()).await?;
-            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
-        };
+    let gate_inputs = if let Some(snap) = &snapshot {
+        let gate_inputs = &snap.gates;
         // The tick's OWN time (ingest::resolve_tick_time, the same value "LivePrice".tickAt carries),
         // never Tick.t0 -- see gates::OpenOrder::tick_age_ms.
         let gate_now = chrono::Utc::now();
@@ -309,8 +365,8 @@ pub async fn place_market_order(
             max_open_positions,
             tick_age_ms,
         };
-        if let Some(reject_reason) = gates::evaluate_open(&gate_inputs, &order_for_gates) {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id, reject_reason).await?;
+        if let Some(reject_reason) = gates::evaluate_open(gate_inputs, &order_for_gates) {
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
         // kept: the pre-trade margin gate needs four more of these, and it cannot run until the fill
@@ -321,11 +377,11 @@ pub async fn place_market_order(
     };
 
     if let Err(reject_reason) = risk::check_symbol_exposure(exposure.open_volume, req.volume, max_exposure) {
-        let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
+        let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
     if let Err(reject_reason) = risk::check_max_open_positions(exposure.open_position_count, max_open_positions) {
-        let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
+        let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
 
@@ -338,9 +394,13 @@ pub async fn place_market_order(
     // and a SELL filled at the raw bid while the trader was quoted the marked-down one. Resolving the
     // rule costs one extra round-trip per order (not per tick) and is read fresh, never cached, so a
     // markup edit can never be stale on a fill.
-    let ask_rule = db::get_ask_levels(pool, &req.broker_id, &req.account_id, &req.symbol)
-        .await?
-        .and_then(|levels| ask_markup::resolve(&levels));
+    // L2 Step 2: the levels came with the one read above, so this costs nothing. Still read FRESH
+    // rather than from the pricing cache -- see `db::get_ask_levels` on why a markup edit must never
+    // be stale on a fill.
+    let ask_rule = match &snapshot {
+        Some(s) => ask_markup::resolve(&s.ask_levels),
+        None => db::get_ask_levels(pool, &req.broker_id, &req.account_id, &req.symbol).await?.and_then(|levels| ask_markup::resolve(&levels)),
+    };
     let quoted_tick = pricing::quoted_tick(&current_tick, ask_rule.as_ref());
 
     let fill = execution::execute_market_order(
@@ -373,18 +433,11 @@ pub async fn place_market_order(
     // marked-up/marked-down price, which only exists once pricing has run. The web places it at
     // exactly this point as well: `marginGate(fillPrice)` in app/api/trade/orders/route.ts, after
     // applySpreadMarkup and before the transaction that writes the position.
-    if let Some(inputs) = &gate_inputs {
-        // The engine's ticks, not the database's "LivePrice": in live mode that table is stale by
-        // months, and `require_tick_source` turns reading it into an error instead of a wrong answer.
-        let Some(state) = crate::book::with_price_source(
-            crate::book::PriceSource::Ticks(cache.clone()),
-            calc::load_account_state(pool, book, &req.account_id),
-        )
-        .await?
-        else {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id, "account not found".to_string()).await?;
-            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
-        };
+    if let (Some(inputs), Some(snap)) = (&gate_inputs, &snapshot) {
+        // L2 Step 2: the funds and the priced positions came with the one read above -- the same
+        // snapshot the gates were judged on, which is what `calc::load_book_state`'s own REPEATABLE
+        // READ transaction was there to guarantee.
+        let state = &snap.account;
         let leg = calc::NewLeg {
             symbol: &req.symbol,
             side: req.side,
@@ -403,76 +456,98 @@ pub async fn place_market_order(
             ),
             hedged_margin_pct: inputs.symbol_hedged_margin_pct,
         };
-        if let Some(reject_reason) = calc::pre_trade_margin_decision(&state, &leg, inputs.margin_call_level) {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id, reject_reason).await?;
+        if let Some(reject_reason) = calc::pre_trade_margin_decision(state, &leg, inputs.margin_call_level) {
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     }
 
-    // NewPosition takes req.broker_id by value below; the commission's ledger row needs it too.
-    let order_broker_id = req.broker_id.clone();
-
-    // The double-fill guard: false = this order was already answered (a concurrent pass, the web's
-    // own fill path during a failover, a retry). Roll back rather than open a second position for it.
-    //
-    // NOT REACHABLE FROM HERE TODAY, and kept deliberately. This path creates its own order inside this
-    // same transaction, so no other writer can see it yet and the compare-and-set cannot lose. It
-    // becomes reachable the moment the order is created elsewhere -- which is both what
-    // pending_orders::trigger_order already does (the order was resting, two ticks can race for it)
-    // and what the cutover's own design ends at (§5b.2: the WEB creates the order row and the engine
-    // fills it, so the engine must lose cleanly when the web's fallback got there first).
-    //
-    // AND WHAT IT BUYS, measured (L2 Stage 6 mutation testing): not correctness. `"Position"`'s
-    // UNIQUE "originOrderId" is what makes a second position impossible -- ignore this answer and the
-    // loser's insert violates that index, its transaction aborts, and one position still stands. This
-    // turns that into a clean answer instead: a Rejected outcome rather than a 500, no constraint
-    // violation from inside a money transaction, and no error logged for a normal race.
-    if !db::set_filled(&mut tx, book, &order_id, fill.price, fill.volume, Some(book_type.as_str())).await? {
-        tx.rollback().await?;
-        return Ok(PlaceMarketOrderOutcome::Rejected {
-            order_id,
-            reason: "the order was already answered by another writer".to_string(),
-        });
-    }
-
-    let (position_id, _opened_at) = db::insert_position(
-        &mut tx,
-        book,
-        &db::NewPosition {
-            broker_id: req.broker_id,
-            account_id: req.account_id.clone(),
-            symbol: req.symbol,
-            symbol_id,
-            origin_order_id: order_id.clone(),
-            side: req.side,
-            volume: fill.volume,
-            open_price: fill.price,
-            sl_price: req.sl_price,
-            tp_price: req.tp_price,
-            book_type,
-        },
-    )
-    .await?;
-
-    // Flat per-lot commission, charged once at open (round-turn, not
-    // split between open/close) — see BrokerSymbolConfig's doc comment
-    // and db.rs's record_commission. On the Prisma book this DEBITS THE BALANCE, which the legacy
-    // path never did: see record_commission.
+    // Flat per-lot commission, charged once at open (round-turn, not split between open/close) -- see
+    // BrokerSymbolConfig's doc comment. On the Prisma book this DEBITS THE BALANCE, which the legacy
+    // path never did.
     let commission_per_lot = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot);
-    db::record_commission(&mut tx, book, &order_broker_id, &req.account_id, &position_id, commission_per_lot, fill.volume).await?;
 
-    // L2 Stage 4: the IN deal, AFTER the commission -- it sums the charge back out of the ledger, so
-    // the order is not interchangeable (lib/deals.ts writeOpenDealInTx, called after chargeCommission
-    // for exactly this reason). CLIENT: a client's own market fill, as
-    // app/api/trade/orders/route.ts:794 writes it.
-    if book == db::Book::Prisma {
-        let opened = db::write_open_deal(&mut tx, &position_id, "CLIENT").await?;
-        // L2 Stage 5: the hedge, queued for the web rather than written here -- see
-        // db::enqueue_position_opened for why the engine must not be the intent writer.
-        db::enqueue_position_opened(&mut tx, &position_id, &opened).await?;
-    }
-
-    tx.commit().await?;
+    // L2 Step 2 (DEPTH-CUT): THE WHOLE WRITE IN ONE ROUND TRIP, on the Prisma book.
+    //
+    // What used to be here: `set_filled`, `insert_position`, four statements of commission, three of
+    // deal, the hedge intent, and the surrounding BEGIN / COMMIT -- fourteen sequential round trips,
+    // about 70 ms of waiting at Neon's p50 and a quarter of a second at p99, for a fill the engine
+    // decides in under a microsecond. `vyx_open_position` is those same twelve statements in the same
+    // order, in one call. Nothing is recomputed in SQL; the amount, the note and the ids are all
+    // decided here and passed in, so there is no second implementation to drift.
+    let (position_id, order_id) = match book {
+        db::Book::Prisma => {
+            let call = db::OpenPositionCall {
+                broker_id: &req.broker_id,
+                account_id: &req.account_id,
+                symbol_id: &symbol_id,
+                side: req.side,
+                order_type: OrderType::Market,
+                volume: req.volume,
+                requested_price: None,
+                sl_price: req.sl_price,
+                tp_price: req.tp_price,
+                fill_price: fill.price,
+                filled_volume: fill.volume,
+                routing: Some(book_type.as_str()),
+                book_type,
+                commission_per_lot,
+                // CLIENT: a client's own market fill, as app/api/trade/orders/route.ts writes it
+                deal_reason: "CLIENT",
+                order_id: &order_id,
+                // this call owns the row: see the note where `legacy_tx` is opened
+                create_order: true,
+            };
+            // The double-fill guard. NOT REACHABLE FROM HERE TODAY -- this path's order row is created
+            // inside the same statement, so no other writer can see it and the compare-and-set cannot
+            // lose -- and kept because it becomes reachable the moment the order is created elsewhere,
+            // which is both what `pending_orders::trigger_order` already does and where the cutover
+            // ends (design section 5b.2: the WEB creates the row, the engine fills it).
+            //
+            // AND WHAT IT BUYS, measured (L2 Stage 6 mutation testing): not correctness.
+            // `"Position"`'s UNIQUE `"originOrderId"` is what makes a second position impossible. This
+            // turns that into a clean answer instead -- a Rejected outcome rather than a constraint
+            // violation from inside a money transaction, and no error logged for a normal race.
+            let Some(opened) = db::open_position_one_call(pool, &call).await? else {
+                return Ok(PlaceMarketOrderOutcome::Rejected {
+                    order_id,
+                    reason: "the order was already answered by another writer".to_string(),
+                });
+            };
+            (opened.position_id, opened.order_id)
+        }
+        db::Book::Legacy => {
+            let mut tx = legacy_tx.take().expect("the legacy book opened its transaction");
+            if !db::set_filled(&mut tx, book, &order_id, fill.price, fill.volume, Some(book_type.as_str())).await? {
+                tx.rollback().await?;
+                return Ok(PlaceMarketOrderOutcome::Rejected {
+                    order_id,
+                    reason: "the order was already answered by another writer".to_string(),
+                });
+            }
+            let (position_id, _opened_at) = db::insert_position(
+                &mut tx,
+                book,
+                &db::NewPosition {
+                    broker_id: req.broker_id.clone(),
+                    account_id: req.account_id.clone(),
+                    symbol: req.symbol.clone(),
+                    symbol_id: symbol_id.clone(),
+                    origin_order_id: order_id.clone(),
+                    side: req.side,
+                    volume: fill.volume,
+                    open_price: fill.price,
+                    sl_price: req.sl_price,
+                    tp_price: req.tp_price,
+                    book_type,
+                },
+            )
+            .await?;
+            db::record_commission(&mut tx, book, &req.broker_id, &req.account_id, &position_id, commission_per_lot, fill.volume).await?;
+            tx.commit().await?;
+            (position_id, order_id)
+        }
+    };
 
     publish_best_effort(
         nats,
@@ -605,13 +680,13 @@ pub async fn place_pending_order(
     let current_tick = match current_tick {
         Some(tick) => tick,
         None => {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id,format!("no live price for {}", req.symbol)).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id, format!("no live price for {}", req.symbol)).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
         }
     };
 
     if let Err(reason) = validate_pending_price_side(req.side, req.order_type, req.requested_price, &current_tick) {
-        let reason = reject_order(tx, nats, &order_id, &req.account_id,reason).await?;
+        let reason = reject_order(tx, nats, &order_id, &req.account_id, reason).await?;
         return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
     }
 
@@ -622,11 +697,11 @@ pub async fn place_pending_order(
     // (pending_orders.rs) since volume never changes after placement.
     if let Some(cfg) = &symbol_config {
         if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id, reject_reason.to_string()).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
         }
         if let Err(reject_reason) = risk::check_lot_size(req.volume, cfg.min_lot, cfg.max_lot, cfg.lot_step) {
-            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id, reject_reason.to_string()).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
         }
     }
@@ -653,6 +728,47 @@ pub async fn place_pending_order(
 /// commits and ends the transaction's life — there's nothing left for
 /// the caller to do with it. Returns the reason so each call site can
 /// still build its own `Outcome::Rejected` variant.
+/// Answers a refused market order on either book -- L2 Step 2.
+///
+/// PRISMA: ONE statement. There is no order row yet (see `place_market_order`), so the row is INSERTed
+/// already REJECTED, with the same column values insert-PENDING-then-UPDATE-REJECTED left behind --
+/// `createdAt`, `updatedAt` and `executedAt` were all one transaction's `now()` there too, and
+/// `executionMode` came out 'AUTO' either way.
+///
+/// LEGACY: unchanged. The row was inserted up front inside the transaction this takes; it moves to
+/// REJECTED and commits.
+///
+/// The NATS event is published either way, after the row, exactly as before.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn refuse(
+    pool: &PgPool,
+    nats: &async_nats::Client,
+    book: db::Book,
+    legacy_tx: &mut Option<sqlx::Transaction<'static, sqlx::Postgres>>,
+    order: &db::NewOrder,
+    order_id: &str,
+    account_id: &str,
+    reason: String,
+) -> Result<String, PlaceOrderError> {
+    match legacy_tx.take() {
+        Some(tx) => return reject_order(tx, nats, order_id, account_id, reason).await,
+        None => {
+            debug_assert_eq!(book, db::Book::Prisma, "only the Prisma book runs without a transaction");
+            db::insert_rejected_order(pool, order, order_id, &reason).await?;
+        }
+    }
+    publish_best_effort(
+        nats,
+        &TradingEvent::OrderRejected(RiskRejection {
+            order_id: order_id.to_string(),
+            account_id: account_id.to_string(),
+            reason: reason.clone(),
+        }),
+    )
+    .await;
+    Ok(reason)
+}
+
 pub(crate) async fn reject_order(
     mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
     nats: &async_nats::Client,

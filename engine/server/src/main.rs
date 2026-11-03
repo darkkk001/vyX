@@ -39,6 +39,10 @@ struct AppState {
     pool: PgPool,
     // L2 Step 1c (C): the broker server's UTC offset, for the order path's broker-day boundary.
     broker_offset_tracker: Arc<market_data::broker_offset::BrokerOffsetTracker>,
+    // The account ask rules every book read prices positions with (market_data::pricing). The order
+    // path needs it in scope for the same reason the monitor does -- and in live mode a book read
+    // without it is refused outright (book::require_pricing_cache).
+    pricing: Arc<market_data::pricing::PricingCache>,
     // Where Candle / LivePrice rows are written and read -- Neon, the VPS
     // Postgres, or both during the migration soak (market_data::sink).
     // `pool` above stays the trade-data (Neon) pool for orders/positions.
@@ -367,6 +371,7 @@ async fn place_market_order(
         &state.pool,
         &state.nats,
         &state.tick_cache,
+        Some(&state.pricing),
         state.broker_offset_tracker.current(),
         req,
     )
@@ -375,6 +380,10 @@ async fn place_market_order(
             // L2 Stage 3: the symbol does not exist, so no order row could be created to reject.
             // A client error, not an internal one.
             order_management::PlaceOrderError::UnknownSymbol(symbol) => (StatusCode::BAD_REQUEST, format!("unknown symbol {symbol}")),
+            // L2 Step 2: the account (or its broker) was not there when the order path read it.
+            // verify_account_belongs_to_broker above already said it was, so this is a client error
+            // about an account that has just gone, not an engine fault.
+            order_management::PlaceOrderError::UnknownAccount(account) => (StatusCode::BAD_REQUEST, format!("unknown account {account}")),
             err => {
                 tracing::error!(?err, "place_market_order failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
@@ -2182,6 +2191,7 @@ async fn main() {
     let state = Arc::new(AppState {
         pool,
         broker_offset_tracker: broker_offset_tracker.clone(),
+        pricing: pricing.clone(),
         market_pools,
         nats,
         price_feed_secret,
