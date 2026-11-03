@@ -81,12 +81,25 @@ router.post(
   rateLimitOrders(30, 60),
   validateBody(placeMarketOrderSchema),
   async (req: AuthedRequest, res) => {
+    // L2 Step 5: per-stage timing. The gateway added ~80 ms on top of a 24 ms engine call, and the
+    // first guess (connections being reaped) measured as no change at all -- so this says where
+    // rather than asking the next person to reason about it.
+    const t0 = Date.now();
+    let tMark = t0;
+    const stage: string[] = [];
+    const mark = (name: string) => {
+      const now = Date.now();
+      stage.push(`${name}=${now - tMark}ms`);
+      tMark = now;
+    };
+
     const body = req.body as PlaceMarketOrderBody;
 
     const session = req.session!;
     const brokerId = req.headers["x-broker-id"] as string;
 
     const account = await getAccount(session.accountId, brokerId);
+    mark("getAccount");
     if (!account) {
       res.status(404).json({ error: "account not found" });
       return;
@@ -105,6 +118,7 @@ router.post(
     }
 
     const contractSize = await getSymbolContractSize(body.symbol);
+    mark("contractSize");
     if (!contractSize) {
       res.status(400).json({ error: `unknown symbol: ${body.symbol}` });
       return;
@@ -150,6 +164,7 @@ router.post(
       body: JSON.stringify(payload),
     });
     recordOrderAckLatency(Date.now() - upstreamStartedAt);
+    mark("engine");
 
     const data = await parseUpstreamJson(upstream);
     if (upstream.ok) {
@@ -165,7 +180,9 @@ router.post(
         newValue: { accountId: session.accountId, symbol: body.symbol, side: body.side, volume: body.volume, result: data },
       }).catch((err) => console.error("audit log write failed", err));
     }
+    mark("parse");
     res.status(upstream.status).json(data);
+    console.log(`[order-timing] total=${Date.now() - t0}ms ${stage.join(" ")}`);
   }
 );
 
