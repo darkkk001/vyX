@@ -4,6 +4,7 @@ import DesktopTitleBar from "@/components/webtrader/DesktopTitleBar";
 import TradeLoginForm from "@/app/(broker)/trade/login/TradeLoginForm";
 import { tradeApi, type ApiBrokerBranding } from "@/lib/trade-api";
 import "@/app/(broker)/trade/webtrader.css";
+import "@/app/(broker)/trade/webtrader-native.css";
 
 // The bundled Client Trading Terminal's real entry point (desktop-tauri's
 // tauri.conf.json build.frontendDist points here) -- not a dev spike.

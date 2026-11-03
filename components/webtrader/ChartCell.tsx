@@ -120,7 +120,7 @@ export default function ChartCell({
             chart header. Only a cell whose symbol has never ticked at
             all this session falls back to "-". */}
         {m.lastTickAt > 0 ? (
-          <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: up ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</span>
+          <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: up ? "var(--tick-up)" : "var(--tick-down)" }}>{fmt(m.bid, m.def.digits)}</span>
         ) : (
           <span className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)" }}>-</span>
         )}

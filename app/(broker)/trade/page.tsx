@@ -7,6 +7,7 @@ import DemoEntry from "@/components/demo/DemoEntry";
 import DemoTradeShell from "@/components/demo/DemoTradeShell";
 import { isDemoTenant } from "@/lib/demo-policy";
 import "./webtrader.css";
+import "./webtrader-native.css";
 
 export default async function TradePage() {
   const session = await getAccountSession();
