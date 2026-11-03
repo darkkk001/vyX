@@ -350,6 +350,9 @@ model Broker {
   name                       String
   subdomain                  String          @unique // brokername.vyxtrader.com
   customDomain               String?         @unique // trade.brokername.com
+  // White-label domain check (2026-11-04): set when the platform saw customDomain answer through it (DNS points here,
+  // HTTPS works); only then does the broker's vyxtrader subdomain redirect to it. null = configured but not live yet.
+  customDomainVerifiedAt     DateTime?       @db.Timestamptz(3)
   tier                       BrokerTier      @default(STANDARD)
   status                     BrokerStatus    @default(ACTIVE)
   // See ExecutionEngine's own doc comment -- currently decorative.

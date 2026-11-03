@@ -79,6 +79,8 @@ type BrokerInfo = {
   logoUrl: string | null;
   primaryColor: string | null;
   customDomain: string | null;
+  // the custom domain answers here (DNS + HTTPS); only then do subdomain pages redirect to it
+  customDomainLive?: boolean;
 };
 
 // Module-scope cache, not Next.js's fetch Data Cache (a prior attempt using
@@ -104,17 +106,9 @@ type BrokerInfo = {
 // lib/broker-resolve-cache.ts holds the rules and their tests.
 const brokerResolver = createBrokerResolver<BrokerInfo>();
 
-// 2026-09-08 TEMPORARY, requested directly -- Futurix's customDomain
-// (futurixglobal.com) is correctly configured in the database and
-// already added to this Vercel project, but its DNS still points at its
-// registrar's own nameservers rather than Vercel (confirmed live: the
-// apex resolves to a non-Vercel IP), so redirecting there sends every
-// page to a domain that can't be reached at all right now. Skips the
-// customDomain redirect below for just this one broker until DNS is
-// fixed, keeping the subdomain (futurixglobal.vyxtrader.com) directly
-// usable in the meantime -- remove this once futurixglobal.com actually
-// resolves through Vercel.
-const CUSTOM_DOMAIN_REDIRECT_SKIP_SUBDOMAINS = new Set(["futurixglobal"]);
+// 2026-11-04: the redirect to a broker's custom domain waits until that domain was seen live
+// (Broker.customDomainVerifiedAt, set by the Super Admin domain check, lib/custom-domain.ts), for every broker.
+// This replaced the 2026-09-08 Futurix-only skip list, which existed because futurixglobal.com never pointed here.
 
 // 2026-09-08 -- friendly entry-point aliases, requested directly: a
 // broker's own staff/traders land on a clean, on-brand URL
@@ -333,8 +327,8 @@ async function route(request: NextRequest) {
     subdomain &&
     broker.customDomain &&
     broker.customDomain !== hostname &&
-    !request.nextUrl.pathname.startsWith("/api/") &&
-    !CUSTOM_DOMAIN_REDIRECT_SKIP_SUBDOMAINS.has(subdomain)
+    broker.customDomainLive === true &&
+    !request.nextUrl.pathname.startsWith("/api/")
   ) {
     const redirectUrl = new URL(
       `${request.nextUrl.pathname}${request.nextUrl.search}`,
