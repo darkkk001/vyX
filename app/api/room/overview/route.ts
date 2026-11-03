@@ -14,11 +14,11 @@ export async function GET() {
   const [client, accounts] = await Promise.all([
     prisma.client.findUnique({
       where: { id: session.clientId },
-      select: { fullName: true, email: true, clientNumber: true, prevLoginAt: true, kycRecord: { select: { status: true, documentFrontUrl: true, addressProofUrl: true, rejectionReason: true } } },
+      select: { fullName: true, email: true, clientNumber: true, prevLoginAt: true, passwordHash: true, kycRecord: { select: { status: true, documentFrontUrl: true, addressProofUrl: true, rejectionReason: true } } },
     }),
     prisma.account.findMany({
       where: { clientId: session.clientId, brokerId: session.brokerId, status: { not: "CLOSED" } },
-      select: { id: true, accountNumber: true, accountMode: true, currency: true, leverage: true, balance: true, credit: true, brokerId: true, createdAt: true, group: { select: { displayName: true } } },
+      select: { id: true, accountNumber: true, accountMode: true, currency: true, leverage: true, balance: true, credit: true, brokerId: true, createdAt: true, passwordHash: true, group: { select: { displayName: true } } },
       orderBy: [{ accountMode: "desc" }, { createdAt: "asc" }], // LIVE first
     }),
   ]);
@@ -32,6 +32,8 @@ export async function GET() {
     leverage: a.leverage,
     currency: a.currency,
     openedAt: a.createdAt.toISOString(),
+    // the portal password signs in to this account too (same hash; never the hash itself)
+    portalPassword: a.passwordHash === client?.passwordHash,
     figures: await accountFigures(a),
   })));
 

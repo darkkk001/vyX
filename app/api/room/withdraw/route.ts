@@ -5,6 +5,7 @@ import { roomApiSession, ownAccount } from "@/lib/room/context";
 import { withdrawable, payoutDestination } from "@/lib/room/funds";
 import { createFundsRequest } from "@/lib/funds-request-create";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { verifyTotp } from "@/lib/totp";
 
 // POST {accountId, payoutMethodId, amount}: a withdrawal request to one of the client's own saved payout methods.
 // KYC approved first (inside createFundsRequest), never more than the withdrawable amount (lib/room/funds.ts).
@@ -19,6 +20,13 @@ export async function POST(request: NextRequest) {
   const account = await ownAccount(session, body?.accountId);
   if (!account) return NextResponse.json({ error: "Account not found." }, { status: 404 });
   if (account.accountMode !== "LIVE") return NextResponse.json({ error: "Demo accounts have nothing to withdraw." }, { status: 400 });
+  // 2FA on: every withdrawal carries a code from the authenticator app
+  const tf = await prisma.client.findUniqueOrThrow({ where: { id: session.clientId }, select: { twoFactorEnabled: true, twoFactorSecret: true } });
+  if (tf.twoFactorEnabled && tf.twoFactorSecret) {
+    const code = typeof body?.code === "string" ? body.code.replace(/\s+/g, "") : "";
+    if (!code) return NextResponse.json({ error: "Enter the code from your authenticator app.", code: "TWO_FACTOR_REQUIRED" }, { status: 401 });
+    if (!verifyTotp(tf.twoFactorSecret, code)) return NextResponse.json({ error: "Wrong code.", code: "TWO_FACTOR_INVALID" }, { status: 401 });
+  }
   const payout = typeof body?.payoutMethodId === "string"
     ? await prisma.clientPayoutMethod.findFirst({ where: { id: body.payoutMethodId, clientId: session.clientId, removedAt: null } })
     : null;

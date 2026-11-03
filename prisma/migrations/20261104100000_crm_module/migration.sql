@@ -27,3 +27,16 @@ CREATE TABLE "ClientPayoutMethod" ("id" TEXT NOT NULL, "brokerId" TEXT NOT NULL,
 CREATE INDEX "ClientPayoutMethod_clientId_removedAt_idx" ON "ClientPayoutMethod"("clientId", "removedAt");
 ALTER TABLE "ClientPayoutMethod" ADD CONSTRAINT "ClientPayoutMethod_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "PaymentMethod" ADD COLUMN "processingTime" TEXT;
+ALTER TABLE "Broker" ADD COLUMN "androidAppUrl" TEXT;
+ALTER TABLE "Broker" ADD COLUMN "iosAppUrl" TEXT;
+ALTER TABLE "Client" ADD COLUMN "twoFactorSecret" TEXT;
+ALTER TABLE "Client" ADD COLUMN "twoFactorEnabled" BOOLEAN NOT NULL DEFAULT false;
+CREATE TYPE "SupportTicketStatus" AS ENUM ('OPEN', 'ANSWERED', 'RESOLVED');
+CREATE TABLE "SupportTicket" ("id" TEXT NOT NULL, "number" SERIAL NOT NULL, "brokerId" TEXT NOT NULL, "clientId" TEXT NOT NULL, "subject" TEXT NOT NULL, "status" "SupportTicketStatus" NOT NULL DEFAULT 'OPEN', "assignedAdminId" TEXT, "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "resolvedAt" TIMESTAMPTZ(3), CONSTRAINT "SupportTicket_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "SupportTicket_number_key" ON "SupportTicket"("number");
+CREATE INDEX "SupportTicket_brokerId_status_updatedAt_idx" ON "SupportTicket"("brokerId", "status", "updatedAt");
+CREATE INDEX "SupportTicket_clientId_updatedAt_idx" ON "SupportTicket"("clientId", "updatedAt");
+ALTER TABLE "SupportTicket" ADD CONSTRAINT "SupportTicket_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+CREATE TABLE "SupportTicketMessage" ("id" TEXT NOT NULL, "ticketId" TEXT NOT NULL, "authorAdminId" TEXT, "body" TEXT NOT NULL, "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "SupportTicketMessage_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "SupportTicketMessage_ticketId_createdAt_idx" ON "SupportTicketMessage"("ticketId", "createdAt");
+ALTER TABLE "SupportTicketMessage" ADD CONSTRAINT "SupportTicketMessage_ticketId_fkey" FOREIGN KEY ("ticketId") REFERENCES "SupportTicket"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

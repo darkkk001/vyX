@@ -525,6 +525,9 @@ model Broker {
   leverageChangeReview Boolean @default(false)
   // My Tier config: {"tiers":[{"name","minLots","benefits":[...]}]}; null = the defaults (Silver 0, Gold 150, Platinum 500)
   tierConfig           Json?
+  // Trader's Room Downloads: the broker's own store listings of the mobile app; null = that button is not shown
+  androidAppUrl        String?
+  iosAppUrl            String?
   // Shown in WebTrader's Help menu ("Contact support") instead of the
   // platform's own address -- a white-label promise means a broker's
   // trader emailing support reaches the broker, not us. Null = hide that
@@ -1442,6 +1445,10 @@ model Client {
   clientNumber Int       @unique @default(autoincrement())
   lastLoginAt  DateTime? @db.Timestamptz(3)
   prevLoginAt  DateTime? @db.Timestamptz(3)
+  // Trader's Room 2FA (TOTP, lib/totp.ts): asked at sign-in and on every withdrawal once enabled; the secret is set at
+  // setup and only counts once a code from it was confirmed
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -1453,6 +1460,7 @@ model Client {
   @@unique([brokerId, email])
   @@index([brokerId])
   payoutMethods ClientPayoutMethod[]
+  supportTickets SupportTicket[]
 }
 
 // One KYC submission per CLIENT (the person), not per account -- real
@@ -3052,4 +3060,41 @@ model ClientPayoutMethod {
   createdAt  DateTime          @default(now()) @db.Timestamptz(3)
 
   @@index([clientId, removedAt])
+}
+
+// Trader's Room support (CRM 2026-11-03): a client's ticket and its thread; staff answer in the backoffice.
+enum SupportTicketStatus {
+  OPEN // waiting for the broker
+  ANSWERED // the broker replied, waiting for the client
+  RESOLVED
+}
+
+model SupportTicket {
+  id              String              @id @default(cuid())
+  number          Int                 @unique @default(autoincrement())
+  brokerId        String
+  clientId        String
+  client          Client              @relation(fields: [clientId], references: [id])
+  subject         String
+  status          SupportTicketStatus @default(OPEN)
+  assignedAdminId String?
+  createdAt       DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime            @default(now()) @db.Timestamptz(3)
+  resolvedAt      DateTime?           @db.Timestamptz(3)
+  messages        SupportTicketMessage[]
+
+  @@index([brokerId, status, updatedAt])
+  @@index([clientId, updatedAt])
+}
+
+model SupportTicketMessage {
+  id            String        @id @default(cuid())
+  ticketId      String
+  ticket        SupportTicket @relation(fields: [ticketId], references: [id])
+  // null = written by the client; else the staff member
+  authorAdminId String?
+  body          String
+  createdAt     DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@index([ticketId, createdAt])
 }

@@ -33,6 +33,8 @@ export default function RoomWithdraw() {
   const payout = funds?.payoutMethods.find((p) => p.id === payoutId) ?? funds?.payoutMethods[0] ?? null;
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [needCode, setNeedCode] = useState(false);
+  const [code, setCode] = useState("");
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ type: "BANK_TRANSFER", bank: "", account: "", swift: "", address: "" });
   const [addMsg, setAddMsg] = useState("");
@@ -43,10 +45,12 @@ export default function RoomWithdraw() {
     if (!amountOk(amount)) { setMsg({ ok: false, text: "Enter an amount." }); return; }
     setBusy(true);
     setMsg(null);
-    const res = await fetch("/api/room/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountId: funds.account.id, payoutMethodId: payout.id, amount: cleanAmount(amount) }) });
+    const res = await fetch("/api/room/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountId: funds.account.id, payoutMethodId: payout.id, amount: cleanAmount(amount), ...(needCode ? { code } : {}) }) });
     const body = await res.json().catch(() => null);
     setBusy(false);
+    if (body?.code === "TWO_FACTOR_REQUIRED") { setNeedCode(true); setMsg({ ok: false, text: "Enter the code from your authenticator app." }); return; }
     if (!res.ok) { setMsg({ ok: false, text: body?.error ?? "Could not send the request." }); return; }
+    setCode("");
     setMsg({ ok: true, text: body.status === "COMPLETED" ? "Withdrawal approved." : "Request sent to your broker." });
     setAmount("");
     await Promise.all([reload(), refresh()]);
@@ -134,6 +138,12 @@ export default function RoomWithdraw() {
             )}
           </div>
 
+          {needCode ? (
+            <div className="r-field" style={{ maxWidth: 200 }}>
+              <label htmlFor="wcode" style={label}>Authenticator code</label>
+              <input id="wcode" className="r-input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} style={{ padding: "10px 12px" }} />
+            </div>
+          ) : null}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", borderTop: "1px solid var(--r-line)", paddingTop: 18 }}>
             <div style={{ fontSize: 12, color: "var(--r-muted)", maxWidth: 380, lineHeight: 1.6 }}>Withdrawals are paid only to accounts in your own name and are reviewed by your broker before payout.</div>
             <button type="button" className="r-btn" style={{ padding: "11px 24px" }} disabled={!funds || !payout || busy || funds.kyc !== "APPROVED"} onClick={submit}>{busy ? "Sending…" : "Request withdrawal"}</button>

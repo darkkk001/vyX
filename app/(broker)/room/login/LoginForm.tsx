@@ -7,6 +7,8 @@ export default function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
+  const [needCode, setNeedCode] = useState(false);
+  const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -19,13 +21,15 @@ export default function LoginForm() {
       const res = await fetch("/api/portal/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, remember }),
+        body: JSON.stringify({ email, password, remember, ...(needCode ? { code } : {}) }),
       });
       if (res.ok) {
         window.location.assign("/room");
         return;
       }
       const body = await res.json().catch(() => null);
+      if (body?.code === "TWO_FACTOR_REQUIRED") { setNeedCode(true); setError(""); return; }
+      if (body?.code === "TWO_FACTOR_INVALID") { setError("Wrong code. Try the next one."); return; }
       setError(res.status === 401 ? "Wrong email or password." : res.status === 429 ? "Too many attempts. Try again in a minute." : res.status === 403 ? "Verify your email first. Check your inbox." : body?.error ?? "Sign-in failed.");
     } catch {
       setError("No connection. Try again.");
@@ -51,6 +55,12 @@ export default function LoginForm() {
         </div>
         <input id="pw" className="r-input" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
       </div>
+      {needCode ? (
+        <div className="r-field">
+          <label htmlFor="code">Authenticator code</label>
+          <input id="code" className="r-input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} autoFocus value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
+        </div>
+      ) : null}
       <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13, color: "var(--r-text-2)", cursor: "pointer" }}>
         <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ width: 15, height: 15, accentColor: "var(--r-accent)" }} />
         Keep me signed in on this device
