@@ -293,7 +293,7 @@ describe("middleware on the demo host", () => {
       if (url.pathname === "/api/internal/schema-status") return Response.json({ behind: false });
       const sub = url.searchParams.get("subdomain");
       const dom = url.searchParams.get("customDomain");
-      if (dom === "demo.qoretrader.test" || sub === "qoredemo") return Response.json({ id: "demo-id", subdomain: "qoredemo", tier: "STANDARD", logoUrl: null, primaryColor: null, customDomain: "demo.qoretrader.test" });
+      if (dom === "demo.qoretrader.test" || sub === "qoredemo") return Response.json({ id: "demo-id", subdomain: "qoredemo", tier: "STANDARD", logoUrl: null, primaryColor: null, customDomain: "demo.qoretrader.test", customDomainLive: true });
       if (sub === "regular") return Response.json({ id: "r1", subdomain: "regular", tier: "STANDARD", logoUrl: null, primaryColor: null, customDomain: null });
       return new Response("nope", { status: 404 });
     });
