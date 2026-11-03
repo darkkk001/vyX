@@ -110,6 +110,12 @@ const brokerResolver = createBrokerResolver<BrokerInfo>();
 // (Broker.customDomainVerifiedAt, set by the Super Admin domain check, lib/custom-domain.ts), for every broker.
 // This replaced the 2026-09-08 Futurix-only skip list, which existed because futurixglobal.com never pointed here.
 
+const BROKER_SHORT_PATHS: Record<string, string> = {
+  "/login": "/portal/login",
+  "/register": "/portal/register",
+  "/webtrader": "/trade",
+};
+
 // 2026-09-08 -- friendly entry-point aliases, requested directly: a
 // broker's own staff/traders land on a clean, on-brand URL
 // (/manager/login, /traders/login) instead of the app's own internal
@@ -349,6 +355,15 @@ async function route(request: NextRequest) {
       refused.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
       return refused;
     }
+  }
+
+  // Short client paths on a broker's host (2026-11-04, white label): a broker's own site and e-mails can link to
+  // <domain>/login, /register and /webtrader. Page navigations only; the full paths stay the canonical ones.
+  const shortPath = BROKER_SHORT_PATHS[pathname];
+  if (shortPath) {
+    const to = request.nextUrl.clone(); // same host and query, only the path changes
+    to.pathname = shortPath;
+    return NextResponse.redirect(to, 308);
   }
 
   const requestHeaders = trustedHeaders(request);
