@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 import { roomPlans, groupCeiling, leverageOptions } from "@/lib/room/plans";
+import { tierLeverageCeiling } from "@/lib/room/tier";
 import { provisionAccount } from "@/lib/account-provisioning";
 import { AccountStructureError } from "@/lib/account-structure";
 import { GUEST_START_BALANCE } from "@/lib/demo";
@@ -33,13 +34,14 @@ export async function GET(request: NextRequest) {
     prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, leverageChangeReview: true } }),
   ]);
   const pendingBy = new Map(pending.map((p) => [p.accountId, p]));
+  const tierCeiling = await tierLeverageCeiling(session.brokerId, session.clientId);
   return NextResponse.json({
     mode,
     plans,
     currencies: [broker.defaultAccountCurrency],
     leverageReview: broker.leverageChangeReview,
     leverage: accounts.map((a) => {
-      const ceiling = a.group ? groupCeiling(a.group) : broker.defaultAccountLeverage;
+      const ceiling = Math.max(a.group ? groupCeiling(a.group) : broker.defaultAccountLeverage, tierCeiling ?? 0);
       const p = pendingBy.get(a.id);
       return { accountId: a.id, current: a.leverage, ceiling, options: leverageOptions(ceiling), pending: p ? { to: p.toLeverage, at: p.createdAt.toISOString() } : null };
     }),

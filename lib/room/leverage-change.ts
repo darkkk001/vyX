@@ -4,6 +4,7 @@ import { publishAccountUpdated } from "@/lib/account-events";
 import { marginLevelAfterLeverage } from "@/lib/group-leverage-apply";
 import { accountFigures } from "@/lib/room/figures";
 import { groupCeiling } from "@/lib/room/plans";
+import { tierLeverageCeiling } from "@/lib/room/tier";
 
 // A client's own leverage change from the Trader's Room. Margin is notional / leverage and is recomputed live, so a
 // new leverage moves the margin of every open position at once (lib/group-leverage-apply.ts). A change that would put
@@ -19,12 +20,15 @@ export type LeverageCheck = { from: number; to: number; ceiling: number; marginL
 export async function checkLeverageChange(accountId: string, to: number): Promise<LeverageCheck> {
   const a = await prisma.account.findUniqueOrThrow({
     where: { id: accountId },
-    select: { id: true, brokerId: true, leverage: true, balance: true, credit: true, status: true, accountMode: true, group: { select: { leverage: true, planMaxLeverage: true, stopOutLevel: true } }, broker: { select: { defaultAccountLeverage: true } } },
+    select: { id: true, brokerId: true, clientId: true, leverage: true, balance: true, credit: true, status: true, accountMode: true, group: { select: { leverage: true, planMaxLeverage: true, stopOutLevel: true } }, broker: { select: { defaultAccountLeverage: true } } },
   });
   if (a.status !== "ACTIVE") throw new LeverageChangeError("This account is not active.");
-  const ceiling = a.group ? groupCeiling(a.group) : a.broker.defaultAccountLeverage;
+  // the plan's ceiling, lifted by the client's tier when the broker gave the tier one (lib/room/tier.ts)
+  const planCeiling = a.group ? groupCeiling(a.group) : a.broker.defaultAccountLeverage;
+  const tierCeiling = a.clientId ? await tierLeverageCeiling(a.brokerId, a.clientId) : null;
+  const ceiling = Math.max(planCeiling, tierCeiling ?? 0);
   if (to === a.leverage) throw new LeverageChangeError(`The account is already on 1:${to}.`);
-  if (to > ceiling) throw new LeverageChangeError(`Your plan allows up to 1:${ceiling}.`);
+  if (to > ceiling) throw new LeverageChangeError(`Your plan${tierCeiling && tierCeiling > planCeiling ? " and tier allow" : " allows"} up to 1:${ceiling}.`);
   const figures = await accountFigures(a);
   // no price / fx right now: the stop-out check cannot be made, so a change with open positions waits
   if (!figures.priced && (await prisma.position.count({ where: { accountId, status: "OPEN" } })) > 0) {
