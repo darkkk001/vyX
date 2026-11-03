@@ -578,6 +578,7 @@ model Broker {
   notifications             Notification[]
   liquidityProviders        LiquidityProvider[]
   lpRoutingRules            LpRoutingRule[]
+  lpConnections             LpConnection[]
   mirrorRules               MirrorRule[]
   priceAlerts               PriceAlert[]
   positionActionRequests    PositionActionRequest[]
@@ -1744,6 +1745,7 @@ model Symbol {
   orders                   Order[]
   positions                Position[]
   lpRoutingRules           LpRoutingRule[]
+  lpConnectionSymbols      LpConnectionSymbol[]
   groupAllowlists          GroupSymbol[]
   groupSymbolConfigs       GroupSymbolConfig[]
   watchlistItems           WatchlistItem[]
@@ -2572,6 +2574,7 @@ model LiquidityProvider {
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   routingRules LpRoutingRule[]
+  connections  LpConnection[]
 
   @@index([brokerId])
 }
@@ -2601,6 +2604,86 @@ model LpRoutingRule {
   @@index([brokerId])
   @@index([liquidityProviderId])
   @@index([groupId])
+}
+
+// Platform API bridge config (owner decisions 2026-11-03, C:yx\handoff\platform-api-bridge-config-plan.md): the FIX
+// session a QoreBridge opens to a liquidity provider, served to the bridge by its license (A.1.2) instead of a
+// hand-edited [[lp]] table in qorebridge.toml. liquidityProviderId IS the bridge's [[lp]] id (routing rules name it).
+// Never here: the LP password (stays on the bridge server, [lp_secret.<id>]), a CA file path, raw-log settings.
+enum LpDialect {
+  FIX44 // plain FIX 4.4
+  CSERVER // Pepperstone cTrader: numeric tag 55, units in tag 38, closes name the LP position (721)
+}
+
+enum LpConnectionRole {
+  TRADE // the hedging session
+  QUOTE // a price session (the feed); not served by the config API yet
+}
+
+// The bridge's `tls` setting. A private CA file ("pem") is a path on the bridge server: local TOML only.
+enum LpTlsMode {
+  OFF
+  WEBPKI // bundled roots
+  NATIVE // the OS certificate store
+}
+
+model LpConnection {
+  id                  String            @id @default(cuid())
+  // the provider's broker, copied so every read is scoped by broker without a join (writes check it matches)
+  brokerId            String
+  broker              Broker            @relation(fields: [brokerId], references: [id])
+  liquidityProviderId String
+  liquidityProvider   LiquidityProvider @relation(fields: [liquidityProviderId], references: [id], onDelete: Restrict)
+  role                LpConnectionRole  @default(TRADE)
+  enabled             Boolean           @default(true)
+
+  host            String
+  port            Int
+  senderCompId    String
+  targetCompId    String
+  senderSubId     String?
+  targetSubId     String?
+  username        String?
+  tls             LpTlsMode // no default: the bridge refuses a session that does not say it
+  tlsServerName   String?
+  dialect         LpDialect @default(FIX44)
+  heartbeatSecs   Int       @default(30)
+  resetSeqOnLogon Boolean   @default(false)
+
+  // Super Admin only, never on a broker's screen; null = the bridge's own default (5000 ms, 15 s, 3, 10 s)
+  ackTimeoutMs         Int?
+  orderTtlSecs         Int?
+  maxAttempts          Int?
+  reconcileTimeoutSecs Int?
+
+  symbols LpConnectionSymbol[]
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([liquidityProviderId, role])
+  @@index([brokerId])
+}
+
+// How one LP connection trades a platform symbol (the bridge's [[lp.symbol]]). Units = platform lots x contractSize;
+// an order off the minUnits / stepUnits grid is refused by the bridge, never rounded. Pre-filled from
+// Symbol.contractSize and BrokerSymbol.minLot / lotStep, stored here because the LP's grid can differ.
+model LpConnectionSymbol {
+  id             String       @id @default(cuid())
+  lpConnectionId String
+  lpConnection   LpConnection @relation(fields: [lpConnectionId], references: [id], onDelete: Cascade)
+  symbolId       String
+  symbol         Symbol       @relation(fields: [symbolId], references: [id], onDelete: Restrict)
+  venueId        String // the LP's symbol (cServer: the numeric symbol id)
+  contractSize   Decimal      @db.Decimal(18, 4)
+  minUnits       Decimal      @db.Decimal(18, 4)
+  stepUnits      Decimal      @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([lpConnectionId, symbolId])
+  @@index([symbolId])
 }
 
 // Rust cutover Stage 3 (docs/RUST-CUTOVER-PLAN.md): the transactional outbox for what the web does AFTER an

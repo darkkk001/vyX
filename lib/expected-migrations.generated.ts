@@ -116,5 +116,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261027130000_shared_coverage_leg",
   "20261028090000_slippage_cap",
   "20261102120000_dealer_queue_expiry",
-  "20261103120000_drift_reconcile"
+  "20261103120000_drift_reconcile",
+  "20261103180000_lp_connection"
 ];
