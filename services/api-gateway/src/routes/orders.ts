@@ -110,11 +110,20 @@ router.post(
       return;
     }
 
-    const { usedMargin, floatingPnl } = await getOpenPositionsSummary(session.accountId, account.leverage);
-    const ledgerSum = await getLedgerSum(session.accountId);
-    const effectiveBalance = account.balance.plus(ledgerSum);
-    const equity = effectiveBalance.plus(account.credit).plus(floatingPnl);
-
+    // L2 Step 5 (latency): equity and used margin are NOT computed here any more, and the two Neon
+    // reads that produced them are gone.
+    //
+    // This file's header says every risk-check input is fetched here so a client cannot fake its own
+    // margin. That was right for the design it was written in -- the engine trusted these numbers.
+    // L2 Step 1d inverted it: `place_market_order` now reads the account's funds and open positions
+    // from the real book itself, in one snapshot (db::get_open_snapshot), and IGNORES these fields on
+    // the Prisma book entirely. Measured, not assumed: engine-direct fills sent equity "0" and
+    // used_margin "0" and produced correct fills with correct margin decisions.
+    //
+    // So computing them cost two Neon round trips per order and changed nothing. They stay in the
+    // payload as ZEROS rather than being removed, because the frozen LEGACY order mode still reads
+    // them -- and zero makes that path fail CLOSED (no equity, so `check_free_margin` refuses) rather
+    // than open, if anyone ever re-enables it.
     const payload = {
       broker_id: brokerId,
       account_id: session.accountId,
@@ -123,8 +132,8 @@ router.post(
       volume: body.volume,
       sl_price: body.sl_price,
       tp_price: body.tp_price,
-      equity: equity.toString(),
-      used_margin: usedMargin.toString(),
+      equity: "0",
+      used_margin: "0",
       contract_size: contractSize.toString(),
       leverage: account.leverage,
     };
@@ -144,7 +153,11 @@ router.post(
 
     const data = await parseUpstreamJson(upstream);
     if (upstream.ok) {
-      await writeAuditLog({
+      // L2 Step 5 (latency): NOT awaited. The audit row is a record, not part of the answer -- it was
+      // already best effort (its failure was caught and logged, never surfaced), so awaiting it only
+      // made every order wait on a Neon write that nothing reads back. Same reasoning as the engine's
+      // OrderFilled publish.
+      void writeAuditLog({
         brokerId,
         action: "GATEWAY_ORDER_PLACED",
         entityType: "Order",
