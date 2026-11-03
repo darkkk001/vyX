@@ -43,7 +43,8 @@ export async function validateTransferAccounts(db: Db, params: { brokerId: strin
 
 export async function executeTransfer(
   tx: Tx,
-  params: { brokerId: string; fromAccountId: string; toAccountId: string; amount: Prisma.Decimal; note: string; adminId: string; requestId?: string }
+  // adminId null = the client's own transfer from the Trader's Room (CRM 2026-11-03); clientId tags its audit row
+  params: { brokerId: string; fromAccountId: string; toAccountId: string; amount: Prisma.Decimal; note: string; adminId: string | null; requestId?: string; clientId?: string }
 ) {
   if (!params.amount.gt(0)) throw new TransferError("amount must be positive");
   const { from, to } = await validateTransferAccounts(tx, params);
@@ -80,6 +81,7 @@ export async function executeTransfer(
     data: {
       brokerId: params.brokerId,
       actorAdminId: params.adminId,
+      ...(params.clientId ? { clientId: params.clientId } : {}),
       action: "INTERNAL_TRANSFER",
       entityType: "Account",
       entityId: params.fromAccountId,

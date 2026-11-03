@@ -20,3 +20,10 @@ CREATE INDEX "LeverageChangeRequest_brokerId_status_createdAt_idx" ON "LeverageC
 CREATE INDEX "LeverageChangeRequest_accountId_status_idx" ON "LeverageChangeRequest"("accountId", "status");
 ALTER TABLE "LeverageChangeRequest" ADD CONSTRAINT "LeverageChangeRequest_brokerId_fkey" FOREIGN KEY ("brokerId") REFERENCES "Broker"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "LeverageChangeRequest" ADD CONSTRAINT "LeverageChangeRequest_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PaymentMethod" ADD COLUMN "bankDetails" JSONB;
+ALTER TABLE "Transaction" ADD COLUMN "paymentReference" TEXT;
+ALTER TABLE "Transaction" ADD COLUMN "payoutMethodId" TEXT;
+CREATE TABLE "ClientPayoutMethod" ("id" TEXT NOT NULL, "brokerId" TEXT NOT NULL, "clientId" TEXT NOT NULL, "type" "PaymentMethodType" NOT NULL, "holderName" TEXT NOT NULL, "details" JSONB NOT NULL, "verifiedAt" TIMESTAMPTZ(3), "removedAt" TIMESTAMPTZ(3), "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "ClientPayoutMethod_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "ClientPayoutMethod_clientId_removedAt_idx" ON "ClientPayoutMethod"("clientId", "removedAt");
+ALTER TABLE "ClientPayoutMethod" ADD CONSTRAINT "ClientPayoutMethod_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PaymentMethod" ADD COLUMN "processingTime" TEXT;

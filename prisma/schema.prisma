@@ -1452,6 +1452,7 @@ model Client {
 
   @@unique([brokerId, email])
   @@index([brokerId])
+  payoutMethods ClientPayoutMethod[]
 }
 
 // One KYC submission per CLIENT (the person), not per account -- real
@@ -1669,6 +1670,10 @@ model Transaction {
   // column's practical limit by the API route accepting it (frontend-
   // first: real object storage is Phase 2, alongside the real PSP).
   receiptDataUrl     String?        @db.Text
+  // Trader's Room (CRM 2026-11-03): the reference the client puts on a bank transfer (DEP-<account>-<4>), and the
+  // saved payout method a withdrawal was requested to
+  paymentReference   String?
+  payoutMethodId     String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   // First Transaction field to change after creation -- a PENDING
@@ -1723,6 +1728,11 @@ model PaymentMethod {
   // static address (a real per-transaction-generated address needs an
   // actual PSP/wallet integration, Phase 2). Null for BANK_TRANSFER.
   walletAddress String?
+  // Trader's Room deposit card (CRM 2026-11-03): the broker's own receiving details for a bank transfer,
+  // {"beneficiary","bank","iban","swift"}; null = only `instructions` is shown
+  bankDetails   Json?
+  // the line under the method in the Trader's Room ("credited after broker approval", "Same day"); null = none
+  processingTime String?
   pspProvider   String?
   pspApiKey     String?
 
@@ -3024,4 +3034,22 @@ model LeverageChangeRequest {
 
   @@index([brokerId, status, createdAt])
   @@index([accountId, status])
+}
+
+// Trader's Room saved payout methods (CRM 2026-11-03): where a client's withdrawals go. Own name only: a bank
+// account's holder must match the client's name; the broker marks a method checked (verifiedAt) after review.
+model ClientPayoutMethod {
+  id         String            @id @default(cuid())
+  brokerId   String
+  clientId   String
+  client     Client            @relation(fields: [clientId], references: [id])
+  type       PaymentMethodType
+  holderName String
+  // bank: {"bank","account","swift"}; crypto: {"address"}
+  details    Json
+  verifiedAt DateTime?         @db.Timestamptz(3)
+  removedAt  DateTime?         @db.Timestamptz(3)
+  createdAt  DateTime          @default(now()) @db.Timestamptz(3)
+
+  @@index([clientId, removedAt])
 }
