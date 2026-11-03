@@ -29,7 +29,7 @@ export default function RoomProfile() {
   const [p, setP] = useState<Profile | null>(null);
   const load = useCallback(async () => {
     const res = await fetch("/api/room/profile", { cache: "no-store" });
-    if (res.status === 401) { window.location.assign("/room/login"); return; }
+    if (res.status === 401) { window.location.assign("/portal/login"); return; }
     if (res.ok) setP(await res.json());
   }, []);
   useEffect(() => { void load(); }, [load]);
@@ -68,7 +68,7 @@ export default function RoomProfile() {
 
   async function endSession(id: string) {
     const res = await fetch(`/api/room/sessions?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-    if (id === "current") { window.location.assign("/room/login"); return; }
+    if (id === "current") { window.location.assign("/portal/login"); return; }
     if (res.ok) void load();
   }
 

@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ email: existing.email });
   }
 
-  // Partner portal (CRM 2026-11-03): a sign-up through a partner's link (?ref=CODE on /room/register) remembers the
+  // Partner portal (CRM 2026-11-03): a sign-up through a partner's link (?ref=CODE on /portal/register) remembers the
   // partner; their live accounts are attached to it later (lib/room/partner.ts). An unknown code is simply ignored.
   const ref = typeof body?.ref === "string" ? body.ref.trim().toUpperCase().slice(0, 16) : "";
   const referrer = ref ? await prisma.client.findFirst({ where: { brokerId, referralCode: ref }, select: { id: true } }) : null;

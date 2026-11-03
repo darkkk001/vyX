@@ -70,7 +70,7 @@ export default function LoginForm({ notice }: { notice: { ok: boolean; text: str
       <button className="r-btn" type="submit" disabled={busy} style={{ padding: "12px 0", fontSize: 14 }}>{busy ? "Signing in…" : "Sign in"}</button>
       <div style={{ borderTop: "1px solid var(--r-line)", paddingTop: 18, fontSize: 13, color: "var(--r-text-2)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <span>New client?</span>
-        <a href="/room/register" style={{ fontWeight: 600 }}>Open an account</a>
+        <a href="/portal/register" style={{ fontWeight: 600 }}>Open an account</a>
       </div>
     </form>
   );

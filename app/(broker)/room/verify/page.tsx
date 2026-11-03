@@ -13,9 +13,9 @@ export default async function RoomVerifyPage() {
   const broker = await roomBroker();
   if (!broker) notFound();
   const session = await getClientSession();
-  if (!session) redirect("/room/login");
+  if (!session) redirect("/portal/login");
   const c = await prisma.client.findUnique({ where: { id: session.clientId }, select: { phone: true, country: true, dateOfBirth: true, kycRecord: { select: { status: true, rejectionReason: true } } } });
-  if (!c) redirect("/room/login");
+  if (!c) redirect("/portal/login");
   const kyc = c.kycRecord?.status ?? null;
   return (
     <Onboarding brokerName={broker.name} logoUrl={broker.logoUrl} right={<a href="/room" style={{ fontWeight: 600 }}>Go to dashboard</a>}>

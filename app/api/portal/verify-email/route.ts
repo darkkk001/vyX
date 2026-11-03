@@ -10,10 +10,8 @@ import { requestOrigin } from "@/lib/request-origin";
 // (a link in an email), never fetch().
 export async function GET(request: NextRequest) {
   const origin = requestOrigin(request);
-  // a broker with the CRM module sends its clients to the Trader's Room sign-in, every other one to the portal's
-  const brokerId = request.headers.get("x-broker-id");
-  const crm = brokerId ? (await prisma.broker.findUnique({ where: { id: brokerId }, select: { crmEnabled: true } }))?.crmEnabled === true : false;
-  const login = crm ? "/room/login" : "/portal/login";
+  // one path for every broker: /portal/login shows the Trader's Room sign-in when the CRM module is on
+  const login = "/portal/login";
   const token = request.nextUrl.searchParams.get("token");
   if (!token) {
     return NextResponse.redirect(`${origin}${login}?verify=invalid`, { status: 303 });

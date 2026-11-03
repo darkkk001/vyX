@@ -22,6 +22,14 @@ export async function roomBroker(): Promise<RoomBroker | null> {
   return { id: b.id, name: b.name, subdomain: b.subdomain, logoUrl: b.logoUrl, primaryColor: b.primaryColor };
 }
 
+/** True only for a session the room shell will let in, so sign-in never bounces a suspended client back and forth. */
+export async function roomSignedIn(): Promise<boolean> {
+  const session = await getClientSession();
+  if (!session) return false;
+  const client = await prisma.client.findUnique({ where: { id: session.clientId }, select: { status: true } });
+  return client?.status === "ACTIVE";
+}
+
 export type RoomSession = ClientSessionPayload & { broker: RoomBroker };
 
 /** For /api/room/*: the session, or the response to send (404 when the module is off, 401 when signed out). */
