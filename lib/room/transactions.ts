@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma, TransactionType, TransactionStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { isInitialBalanceRow } from "@/lib/initial-balance";
 
 // Trader's Room money rows (Dashboard "Recent transactions", History "Transactions"). Balance movements only, the
 // rows hidden by a voided trade stay hidden (same filter as /api/trade/transactions). An internal transfer between two
@@ -53,13 +54,13 @@ function whereFor(f: RoomTxFilter): Prisma.TransactionWhereInput {
 }
 
 const SELECT = {
-  id: true, type: true, status: true, amount: true, note: true, createdAt: true, destinationAddress: true,
+  id: true, type: true, status: true, amount: true, note: true, createdAt: true, destinationAddress: true, payoutMethodId: true,
   account: { select: { accountNumber: true, currency: true } },
   paymentMethod: { select: { type: true } },
 } satisfies Prisma.TransactionSelect;
 type Raw = Prisma.TransactionGetPayload<{ select: typeof SELECT }>;
 
-function toRow(t: Raw, ownNumbers: Set<string>): RoomTxRow | null {
+function toRow(t: Raw, ownNumbers: Set<string>, payoutTitle: Map<string, string>): RoomTxRow | null {
   const own = t.account.accountNumber;
   let type: RoomTxType = "Adjustment";
   for (const k of ROOM_TX_TYPES) if (TYPE_GROUPS[k].includes(t.type)) type = k;
@@ -75,8 +76,12 @@ function toRow(t: Raw, ownNumbers: Set<string>): RoomTxRow | null {
     amount = t.amount.abs().toFixed(2);
     method = "Internal";
   } else if (type === "Withdrawal") {
-    const dest = maskAddress(t.destinationAddress);
-    method = [method, dest].filter(Boolean).join(" · ");
+    // a Trader's Room withdrawal names its saved payout method; an older one masks its free-text destination
+    const saved = t.payoutMethodId ? payoutTitle.get(t.payoutMethodId) : undefined;
+    method = saved ?? [method, maskAddress(t.destinationAddress)].filter(Boolean).join(" · ");
+  } else if (isInitialBalanceRow(t)) {
+    type = "Deposit";
+    method = "Starting balance";
   } else if (type === "Credit") {
     method = "Credit";
   } else if (type === "Adjustment" && !method) {
@@ -95,5 +100,11 @@ export async function roomTransactions(f: RoomTxFilter, ownNumbers: Set<string>,
     prisma.transaction.findMany({ where: countWhere, select: SELECT, orderBy: { createdAt: "desc" }, skip: page.skip, take: page.take }),
     prisma.transaction.count({ where: countWhere }),
   ]);
-  return { rows: raw.map((t) => toRow(t, ownNumbers)).filter((r): r is RoomTxRow => r !== null), total };
+  const payoutIds = [...new Set(raw.map((t) => t.payoutMethodId).filter((x): x is string => Boolean(x)))];
+  const payouts = payoutIds.length ? await prisma.clientPayoutMethod.findMany({ where: { id: { in: payoutIds } }, select: { id: true, type: true, details: true } }) : [];
+  const payoutTitle = new Map(payouts.map((p) => {
+    const d = (p.details ?? {}) as Record<string, string>;
+    return [p.id, p.type === "BANK_TRANSFER" ? `Bank · ${d.bank ?? ""} ····${(d.account ?? "").slice(-4)}` : `${METHOD[p.type] ?? p.type} · ${maskAddress(d.address)}`] as const;
+  }));
+  return { rows: raw.map((t) => toRow(t, ownNumbers, payoutTitle)).filter((r): r is RoomTxRow => r !== null), total };
 }
