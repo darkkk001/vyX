@@ -172,6 +172,30 @@ pub enum PlaceOrderError {
 /// succeeds, since an event about a transaction that might still roll
 /// back would be a lie. See ../../docs/api.md §2.1 for who consumes those
 /// events downstream.
+/// Where a fill's wall-clock time actually went (L2 Step 4).
+///
+/// The depth cut took the fill from 30 sequential round trips to 3, and `pg_stat_statements` then put
+/// Postgres's own execution at under 5 ms -- while the measured prod p50 was 76 ms. So about 65 ms was
+/// neither round trips nor SQL, and no amount of reading the code was going to say where. This does.
+///
+/// Each field is the wall time of one stage, in milliseconds. `db_*` stages include pool acquisition
+/// and the network, so subtracting the statement's own execution time (which
+/// `pg_stat_statements.mean_exec_time` reports) gives the acquisition + round trip for that call.
+#[derive(Default, Debug)]
+pub struct FillTiming {
+    /// `db::get_open_snapshot` -- the one read.
+    pub read_ms: f64,
+    /// `db::get_ask_levels` is folded into the read, so this is pricing + the in-memory fill decision.
+    pub decide_ms: f64,
+    /// `db::open_position_one_call` -- the one write.
+    pub write_ms: f64,
+    /// everything else inside this function (symbol resolution, gate evaluation, bookkeeping).
+    pub other_ms: f64,
+    /// pool depth as the fill saw it, so a cold acquisition is visible instead of mysterious.
+    pub pool_size: u32,
+    pub pool_idle: usize,
+}
+
 pub async fn place_market_order(
     pool: &PgPool,
     nats: &async_nats::Client,
@@ -196,6 +220,10 @@ pub async fn place_market_order(
     // L2 Stage 3: ONE book for the whole order. Read once here rather than per write, so a single
     // order can never leave half its rows in each book.
     let book = db::configured();
+    // L2 Step 4: wall-clock checkpoints. `t_fn` is the whole function; `t_mark` moves stage to stage.
+    let t_fn = std::time::Instant::now();
+    let mut t_mark = t_fn;
+    let mut timing = FillTiming::default();
 
     // L2 Step 3 (INGRESS SCOPING): before ANY read or write, is this account even allowed here?
     //
@@ -226,11 +254,11 @@ pub async fn place_market_order(
         // outright), and the PRICING CACHE because each position's ask rule is resolved from it --
         // zero statements once loaded, five if it is missing. Measured: without this the fill paid
         // five extra round trips re-reading the whole pricing configuration.
-        db::Book::Prisma => match crate::book::with_book_sources(
+        db::Book::Prisma => match { timing.other_ms += t_mark.elapsed().as_secs_f64() * 1000.0; t_mark = std::time::Instant::now(); crate::book::with_book_sources(
             crate::book::PriceSource::Ticks(cache.clone()),
             pricing.cloned(),
             db::get_open_snapshot(pool, cache, &req.broker_id, &req.account_id, &req.symbol, req.side, broker_offset_sec),
-        )
+        ) }
         .await?
         {
             db::OpenSnapshotResult::Found(s) => Some(s),
@@ -429,6 +457,9 @@ pub async fn place_market_order(
     // and a SELL filled at the raw bid while the trader was quoted the marked-down one. Resolving the
     // rule costs one extra round-trip per order (not per tick) and is read fresh, never cached, so a
     // markup edit can never be stale on a fill.
+    timing.read_ms = t_mark.elapsed().as_secs_f64() * 1000.0;
+    t_mark = std::time::Instant::now();
+
     // L2 Step 2: the levels came with the one read above, so this costs nothing. Still read FRESH
     // rather than from the pricing cache -- see `db::get_ask_levels` on why a markup edit must never
     // be stale on a fill.
@@ -496,6 +527,9 @@ pub async fn place_market_order(
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     }
+
+    timing.decide_ms = t_mark.elapsed().as_secs_f64() * 1000.0;
+    t_mark = std::time::Instant::now();
 
     // Flat per-lot commission, charged once at open (round-turn, not split between open/close) -- see
     // BrokerSymbolConfig's doc comment. On the Prisma book this DEBITS THE BALANCE, which the legacy
@@ -584,17 +618,54 @@ pub async fn place_market_order(
         }
     };
 
-    publish_best_effort(
-        nats,
-        &TradingEvent::OrderFilled(Fill {
+    timing.write_ms = t_mark.elapsed().as_secs_f64() * 1000.0;
+    timing.pool_size = pool.size();
+    timing.pool_idle = pool.num_idle();
+
+    // L2 Step 4: OFF THE CRITICAL PATH. This event tells the gateway -- and through it, open terminals
+    // -- that a fill happened. But the HTTP response this function is about to return already carries
+    // the order id, the position id and the fill price, so nothing the caller needs waits on it. It was
+    // already best effort: `publish_best_effort` logs a failure and carries on, so awaiting it never
+    // made a fill more correct, only slower. Spawned, and it logs its own duration, so the cost it used
+    // to add to every fill stays visible instead of disappearing.
+    //
+    // The only thing this changes is ORDERING: a client can see the HTTP response before the WebSocket
+    // event. That was already possible -- different transports, different hops -- and the response is
+    // the authoritative answer.
+    {
+        let nats = nats.clone();
+        let event = TradingEvent::OrderFilled(Fill {
             order_id: order_id.clone(),
             account_id: req.account_id.clone(),
             price: fill.price,
             volume: fill.volume,
             remaining_volume: fill.remaining_volume,
-        }),
-    )
-    .await;
+        });
+        let order_for_log = order_id.clone();
+        tokio::spawn(async move {
+            let t = std::time::Instant::now();
+            publish_best_effort(&nats, &event).await;
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            if ms > 1.0 {
+                tracing::info!(order_id = %order_for_log, publish_ms = %format!("{ms:.1}"), "OrderFilled published off the critical path");
+            }
+        });
+    }
+
+    let total_ms = t_fn.elapsed().as_secs_f64() * 1000.0;
+    let accounted = timing.read_ms + timing.decide_ms + timing.write_ms + timing.other_ms;
+    timing.other_ms += total_ms - accounted;
+    tracing::info!(
+        order_id = %order_id,
+        total_ms = %format!("{total_ms:.1}"),
+        read_ms = %format!("{:.1}", timing.read_ms),
+        decide_ms = %format!("{:.1}", timing.decide_ms),
+        write_ms = %format!("{:.1}", timing.write_ms),
+        other_ms = %format!("{:.1}", timing.other_ms),
+        pool_size = timing.pool_size,
+        pool_idle = timing.pool_idle,
+        "fill timing"
+    );
 
     Ok(PlaceMarketOrderOutcome::Filled {
         order_id,

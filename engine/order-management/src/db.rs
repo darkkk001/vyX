@@ -29,6 +29,25 @@ use uuid::Uuid;
 pub async fn connect_pool(database_url: &str, max_connections: u32) -> Result<PgPool, sqlx::Error> {
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(max_connections)
+        // L2 Step 4 (latency). Two sqlx defaults were costing the fill path far more than its SQL.
+        //
+        // test_before_acquire defaults to TRUE: every acquire pings the server before handing the
+        // connection over, which is a FULL ROUND TRIP. The fill path acquires three times, so it paid
+        // three extra Neon round trips -- about as much as all of its real queries put together. It is
+        // safe to turn off here because every caller already treats a broken connection as a normal
+        // error (a failed order is answered, not swallowed) and sqlx still removes a connection that
+        // errors; the ping only moves the discovery of a dead connection earlier, at the price of a
+        // round trip on every healthy one.
+        .test_before_acquire(false)
+        // min_connections defaults to 0, so a connection reaped by the idle timeout is re-established
+        // ON the next request -- TCP + TLS + startup through Neon's pooler, tens of milliseconds, and
+        // it lands on whichever order happens to be next. Keeping a floor warm takes that off the
+        // critical path. Sized against max_connections so a small pool is not asked for more than it
+        // has.
+        .min_connections(max_connections.min(4))
+        // and do not let a reaped-then-rebuilt connection be the common case: the fill path runs every
+        // few seconds at most, well inside this.
+        .idle_timeout(Some(std::time::Duration::from_secs(600)))
         .connect(database_url)
         .await
 }
