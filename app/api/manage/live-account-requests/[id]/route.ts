@@ -123,8 +123,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }),
   ]);
   const defaultGroup = await prisma.group.findFirst({ where: { brokerId, isDefault: true } });
-  const group = chosenGroup ?? (defaultGroup ? { id: defaultGroup.id, leverage: defaultGroup.leverage } : null);
-  const groupLeverage = group?.leverage ?? broker.defaultAccountLeverage;
+  // Trader's Room requests (CRM 2026-11-03) carry the plan and leverage the client picked: they are the defaults when
+  // the approver chooses no group. The client's leverage is kept only on that plan (it was checked against its ceiling).
+  const requestedGroup = !chosenGroup && existing.requestedGroupId
+    ? await prisma.group.findFirst({ where: { id: existing.requestedGroupId, brokerId } })
+    : null;
+  const requestedOk = requestedGroup && !checkAccountStructure({ accountMode: "LIVE", group: requestedGroup, allowCoverage: false }) ? requestedGroup : null;
+  const group = chosenGroup ?? (requestedOk ? { id: requestedOk.id, leverage: requestedOk.leverage } : defaultGroup ? { id: defaultGroup.id, leverage: defaultGroup.leverage } : null);
+  const groupLeverage = requestedOk && chosenLeverage == null && existing.requestedLeverage
+    ? existing.requestedLeverage
+    : group?.leverage ?? broker.defaultAccountLeverage;
   if (chosenLeverage != null && chosenLeverage !== groupLeverage && session!.role !== "BROKER_ADMIN" && !(await hasPermission(session, "ACCOUNT_FINANCE"))) {
     await releaseClaim().catch(() => {});
     return NextResponse.json(

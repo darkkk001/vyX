@@ -73,7 +73,7 @@
 
 /* shell */
 .r-shell { display: flex; flex-wrap: wrap; min-height: 100vh; }
-.r-side { flex: 1 1 236px; max-width: 260px; background: var(--r-side); border-right: 1px solid var(--r-line); padding: 22px 14px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+.r-side { flex: 1 1 236px; max-width: 260px; background: var(--r-side); border-right: 1px solid var(--r-line); padding: 22px 14px; display: flex; flex-direction: column; gap: 2px; align-self: stretch; }
 .r-brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 20px; color: var(--r-text); }
 .r-brand img { max-height: 28px; max-width: 170px; object-fit: contain; }
 .r-wordmark { font-family: var(--r-head); font-weight: 600; letter-spacing: 3px; font-size: 13.5px; text-transform: uppercase; }
@@ -141,7 +141,7 @@
 .r-auth-box h1 { margin: 0; font-family: var(--r-head); font-size: 23px; font-weight: 600; }
 
 @media (max-width: 760px) {
-  .r-side { position: static; height: auto; max-width: none; flex-basis: 100%; }
+  .r-side { max-width: none; flex-basis: 100%; }
   .r-head, .r-body { padding-left: 16px; padding-right: 16px; }
   .r-auth-brand { padding: 32px 24px; }
 }
