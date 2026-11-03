@@ -1,11 +1,16 @@
 import type { RoomBroker } from "@/lib/room/context";
+import { readInfraSummary } from "@/lib/infra-health";
+import { roomServiceStatus } from "@/lib/room/service-status";
 import RoomBrand from "@/components/room/RoomBrand";
 import LoginForm from "./LoginForm";
 import ServerClock from "./ServerClock";
 
 // Trader's Room sign-in (artboard "Login"): split brand panel + form, "Powered by QoreTrader" footer. Served at
 // /portal/login for a broker with the CRM module.
-export default function RoomLoginView({ broker, verify }: { broker: RoomBroker; verify?: string }) {
+export default async function RoomLoginView({ broker, verify }: { broker: RoomBroker; verify?: string }) {
+  // what a client depends on: the way in and the prices (readInfraSummary never throws; no report shows no line)
+  const checks = await Promise.all([readInfraSummary("caddy"), readInfraSummary("qorebridge-feed")]);
+  const status = roomServiceStatus(checks.map((c) => c.state));
   return (
     <div className="r-auth">
       <section className="r-auth-brand">
@@ -29,9 +34,12 @@ export default function RoomLoginView({ broker, verify }: { broker: RoomBroker; 
             </div>
           </div>
           <div className="mono" style={{ display: "flex", gap: 22, fontSize: 11.5, color: "var(--r-muted)", flexWrap: "wrap" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-              <span className="r-dot" style={{ color: "var(--r-ok)", width: 5, height: 5 }} />SERVERS ONLINE
-            </span>
+            {status ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                <span className="r-dot" style={{ color: status === "ONLINE" ? "var(--r-ok)" : "var(--r-pending)", width: 5, height: 5 }} />
+                {status === "ONLINE" ? "SERVERS ONLINE" : "SOME SERVICES AFFECTED"}
+              </span>
+            ) : null}
             <ServerClock />
           </div>
         </div>

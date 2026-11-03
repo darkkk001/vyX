@@ -2,11 +2,13 @@
 
 import type { ReactNode } from "react";
 import { useRoom } from "./RoomData";
+import NotificationBell from "./NotificationBell";
 import { money } from "./format";
 
 // The page header on every Trader's Room screen: title, the account picker, its balance. `right` replaces the picker
-// on screens whose artboard shows something else there (Support's "New ticket", Profile's "Sign out").
-export default function RoomHeader({ title, right, picker = true }: { title: string; right?: ReactNode; picker?: boolean }) {
+// on screens whose artboard shows something else there (Support's "New ticket", Profile's "Sign out"). `bell` adds the
+// notifications bell, on the screens whose artboard shows it (Dashboard).
+export default function RoomHeader({ title, right, picker = true, bell = false }: { title: string; right?: ReactNode; picker?: boolean; bell?: boolean }) {
   const { data, selected, select } = useRoom();
   return (
     <header className="r-head">
@@ -33,6 +35,7 @@ export default function RoomHeader({ title, right, picker = true }: { title: str
             ) : null}
           </>
         ) : null}
+        {bell ? <NotificationBell /> : null}
       </div>
     </header>
   );

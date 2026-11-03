@@ -130,6 +130,12 @@
 .r-input { background: var(--r-card-2); border: 1px solid var(--r-input); border-radius: 6px; color: var(--r-text); font-size: 14px; padding: 11px 13px; width: 100%; }
 .r-input.mono { font-size: 13.5px; }
 .r-input:focus { outline: 1px solid var(--r-accent); outline-offset: 0; }
+.r-bell { position: relative; display: flex; }
+.r-bell-btn { position: relative; background: none; border: none; padding: 6px; cursor: pointer; color: var(--r-text-2); display: flex; }
+.r-bell-btn:hover { color: var(--r-text); }
+.r-bell-count { position: absolute; top: 0; right: 0; min-width: 14px; height: 14px; padding: 0 3px; box-sizing: border-box; border-radius: 7px; background: var(--r-accent); color: var(--r-on-accent); font-size: 9.5px; font-weight: 700; line-height: 14px; text-align: center; }
+.r-bell-panel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 320px; max-width: calc(100vw - 32px); max-height: 380px; overflow-y: auto; background: var(--r-card); border: 1px solid var(--r-border); border-radius: 8px; }
+.r-bell-row { padding: 10px 14px; border-top: 1px solid var(--r-line); }
 .r-note { font-size: 12px; color: var(--r-muted); line-height: 1.6; }
 .r-error { font-size: 12.5px; color: var(--r-loss); }
 .r-okmsg { font-size: 12.5px; color: var(--r-ok); }
@@ -143,6 +149,7 @@
 .r-auth-box h1 { margin: 0; font-family: var(--r-head); font-size: 23px; font-weight: 600; }
 
 @media (max-width: 760px) {
+  .r-bell-panel { position: fixed; top: 72px; left: 16px; right: 16px; width: auto; max-width: none; }
   .r-side { max-width: none; flex-basis: 100%; }
   .r-head, .r-body { padding-left: 16px; padding-right: 16px; }
   .r-auth-brand { padding: 32px 24px; }

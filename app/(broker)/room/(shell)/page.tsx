@@ -20,7 +20,7 @@ export default function RoomDashboard() {
   const firstName = data?.client.fullName.split(/\s+/)[0] ?? "";
   return (
     <>
-      <RoomHeader title="Dashboard" />
+      <RoomHeader title="Dashboard" bell />
       <div className="r-body">
         {error && !data ? <div className="r-error">{error}</div> : null}
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
