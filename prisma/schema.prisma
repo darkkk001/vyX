@@ -518,6 +518,13 @@ model Broker {
   // Branding — resolved at request time, never hardcoded or baked into a build.
   logoUrl      String?
   primaryColor String? // CSS custom property override, e.g. "#1e8a5f"
+  // CRM module (owner brief 2026-11-03): one switch per broker. On = the Trader's Room (/room) answers on the broker's
+  // host and the backoffice shows its CRM tab; off = the platform is unchanged (/room is a 404).
+  crmEnabled           Boolean @default(false)
+  // On = a client's leverage change from the Trader's Room waits for staff approval; off = applied at once.
+  leverageChangeReview Boolean @default(false)
+  // My Tier config: {"tiers":[{"name","minLots","benefits":[...]}]}; null = the defaults (Silver 0, Gold 150, Platinum 500)
+  tierConfig           Json?
   // Shown in WebTrader's Help menu ("Contact support") instead of the
   // platform's own address -- a white-label promise means a broker's
   // trader emailing support reaches the broker, not us. Null = hide that
@@ -1117,6 +1124,11 @@ model Group {
   // What the CLIENT sees as their account plan (owner 2026-10-23): "Standard", "Pro"... Several groups may share one.
   // Group.name ("Dealing", "Reverse", ...) is internal and never reaches a client; client routes send this as accountPlan.
   displayName        String               @default("Standard")
+  // Trader's Room plan cards (CRM 2026-11-03): client-facing figures, null = the line is not shown.
+  // maxLeverage also caps a client's own leverage change (null = the group's leverage is the ceiling).
+  planMinDeposit     Decimal?             @db.Decimal(18, 2)
+  planMaxLeverage    Int?
+  planSpreadFrom     String?
   leverage           Int                  @default(100)
   marginCallLevel    Decimal              @default(100) @db.Decimal(6, 2)
   stopOutLevel       Decimal              @default(50) @db.Decimal(6, 2)
@@ -1422,6 +1434,11 @@ model Client {
   dateOfBirth DateTime? @db.Date
 
   status ClientStatus @default(ACTIVE)
+
+  // Trader's Room (CRM 2026-11-03): the client's own number, shown as C-<n>; sign-in times for "Last login"
+  clientNumber Int       @unique @default(autoincrement())
+  lastLoginAt  DateTime? @db.Timestamptz(3)
+  prevLoginAt  DateTime? @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

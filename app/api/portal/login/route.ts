@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateClient, createClientSession, CLIENT_SESSION_COOKIE_NAME, clientSessionCookieOptions } from "@/lib/client-auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { prisma } from "@/lib/prisma";
 
 // Client Portal login -- email + password, distinct from the trader
 // account-number login (app/api/trade/login) this doesn't touch or
@@ -31,6 +32,10 @@ export async function POST(request: NextRequest) {
   }
 
   const token = await createClientSession({ clientId: client.id, brokerId }, remember);
+  // Trader's Room "Last login": the previous sign-in moves down one slot (best effort, never blocks a login)
+  await prisma.client
+    .update({ where: { id: client.id }, data: { prevLoginAt: client.lastLoginAt, lastLoginAt: new Date() } })
+    .catch((err) => console.error("[portal-login] login time update failed", err));
 
   const response = NextResponse.json({
     clientId: client.id,
