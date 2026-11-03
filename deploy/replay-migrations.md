@@ -24,20 +24,20 @@ fails.
 
 ## Known drift (deploy/known-drift.sql)
 
-What the replayed migrations build differs from `prisma/schema.prisma` in a few places. Live applied the same
-migrations, so it very likely has the same drift. These are owner decisions and are NOT fixed yet:
+None: the baseline is empty, so `deploy/check-migration-drift.sh` is exactly `migrate diff --exit-code` ("drift: none").
+Any difference between the replayed migrations and `prisma/schema.prisma` fails Migrations CI. If one ever has to be
+accepted for a while, put it in the baseline with `bash deploy/check-migration-drift.sh --update` and review it in the
+same commit.
 
-| Object | Migrations build | schema.prisma says |
+**Fixed 2026-11-03: the five items the baseline held** (owner approved all five; deploy/drift-reconcile-runbook.md):
+
+| Object | Migrations built | Fix |
 |---|---|---|
-| `Account_groupId_fkey` | ON DELETE SET NULL (20260817050000_groups) | RESTRICT (groupId is NOT NULL since stage3b) |
-| `GroupSymbol.createdAt`, `GroupSymbolConfig.createdAt / updatedAt` | TIMESTAMP(3) | TIMESTAMPTZ(3) |
-| `MirrorRule.killedAt` | TIMESTAMPTZ(3) | TIMESTAMP(3) |
-| `RiskEngineHeartbeat.beatAt` | default clock_timestamp() | now() |
-| `Transaction.updatedAt` | DEFAULT CURRENT_TIMESTAMP | @updatedAt (no default) |
-
-`deploy/check-migration-drift.sh` passes while the diff equals this baseline exactly and fails on anything else. After
-fixing an item (a migration and / or a schema change), rerun the replay and `bash deploy/check-migration-drift.sh
---update`, and review the smaller baseline in the same commit. An empty baseline = `migrate diff --exit-code`.
+| `Account_groupId_fkey` | ON DELETE SET NULL (20260817050000_groups); groupId NOT NULL since stage3b | migration 20261103120000_drift_reconcile: RESTRICT (the group-delete race is a 409, no longer a 500) |
+| `GroupSymbol.createdAt`, `GroupSymbolConfig.createdAt / updatedAt` | TIMESTAMP(3) | same migration: TIMESTAMPTZ(3), `USING ... AT TIME ZONE 'UTC'` (values unchanged) |
+| `MirrorRule.killedAt` | TIMESTAMPTZ(3) | schema.prisma `@db.Timestamptz(3)` |
+| `RiskEngineHeartbeat.beatAt` | default clock_timestamp() | schema.prisma `@default(dbgenerated("clock_timestamp()"))` |
+| `Transaction.updatedAt` | DEFAULT CURRENT_TIMESTAMP | schema.prisma `@default(now()) @updatedAt` (the default stays) |
 
 **Fixed 2026-11-02: the ticket sequences.** `Order.ticket` and `Deal.ticket` were modeled as
 `@default(dbgenerated("nextval(...)"))`. Prisma introspects those columns as `autoincrement()`, so `migrate diff` (and

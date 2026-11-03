@@ -13,9 +13,10 @@ set -euo pipefail
 BASELINE="deploy/known-drift.sql"
 : "${DIRECT_URL:?DIRECT_URL must point at the replayed database}"
 
-# the SQL Prisma would run to turn the replayed database into schema.prisma; CR and blank lines dropped
+# the SQL Prisma would run to turn the replayed database into schema.prisma; CR and blank lines dropped, and the
+# "-- This is an empty migration." line Prisma prints when there is nothing to do (so no drift = an empty string)
 current="$(npx prisma migrate diff --from-url "$DIRECT_URL" --to-schema-datamodel prisma/schema.prisma --script 2>/dev/null \
-  | tr -d '\r' | sed '/^[[:space:]]*$/d')"
+  | tr -d '\r' | sed '/^[[:space:]]*$/d; /^-- This is an empty migration\.$/d')"
 
 if [ "${1:-}" = "--update" ]; then
   printf '%s\n' "$current" | sed '/^$/d' > "$BASELINE"

@@ -1649,7 +1649,9 @@ model Transaction {
   // review (see app/api/manage/funds-requests/[id]/route.ts). Every
   // other Transaction type is still created once, already COMPLETED,
   // and never touched again.
-  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  // The database DEFAULT (20260817060000) stays: it filled the existing rows, and a raw INSERT without updatedAt
+  // needs it. Never drop it (the engine's raw INSERTs in engine/order-management set updatedAt explicitly).
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(3)
 
   @@index([brokerId])
   @@index([accountId])
@@ -2327,7 +2329,7 @@ model MirrorRule {
   // Broker.tradingHaltedAt/dealingModeAt. enabled is also flipped false at
   // the same time so every other read site only ever needs to check
   // `enabled`, not `enabled && !killedAt`.
-  killedAt DateTime?
+  killedAt DateTime? @db.Timestamptz(3)
 
   // Count-only, not a log -- the real detail lives in AuditLog rows
   // (action: "MIRROR_FAILED", entityType: "MirrorRule"). Surfaced in the
@@ -2655,7 +2657,9 @@ model NotificationRead {
 // and every RUST-owned account is WEB-owned (lib/risk-owner.ts, engine authority.rs). Written only by the engine; read inside acting transactions.
 model RiskEngineHeartbeat {
   name           String   @id
-  beatAt         DateTime @default(now()) @db.Timestamptz(3)
+  // clock_timestamp() (wall time, not the transaction start) as 20261007100000_risk_engine_heartbeat created it; the
+  // engine writes beatAt = clock_timestamp() on every beat anyway.
+  beatAt         DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(3)
   staleAfterSecs Int      @default(30)
   engineVersion  String?
   instance       String?

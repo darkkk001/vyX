@@ -256,9 +256,8 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
 // break that fallback for future account creation) can never be deleted
 // regardless of account count, and a group with ANY accounts still
 // assigned is blocked outright rather than cascading -- there is no
-// "reassign on delete" flow, and Account.groupId has no onDelete
-// behavior of its own to fall back on, so a bypassed check here would
-// leave Account rows with a group foreign key that no longer resolves.
+// "reassign on delete" flow; the database refuses it too (Account.groupId
+// FK is ON DELETE RESTRICT).
 async function deleteHandler(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
@@ -297,10 +296,10 @@ async function deleteHandler(_request: NextRequest, { params }: { params: Promis
 
   // The accountCount check above is the normal path, but it is a
   // check-then-act: an account can be assigned to this group between the
-  // count and the delete. Since Stage 3b made Account.groupId NOT NULL, the
-  // FK's ON DELETE SET NULL can no longer fire, so that race surfaces as a
-  // constraint violation rather than a silent ungrouping. Catch it and answer
-  // with the same 409 the counted path gives, instead of a 500.
+  // count and the delete. The FK is ON DELETE RESTRICT (20261103120000_drift_reconcile;
+  // before it, SET NULL on a NOT NULL column raised P2011, a 500), so that race
+  // is an FK violation (P2003). Catch it and answer with the same 409 the
+  // counted path gives, instead of a 500.
   try {
   await prisma.$transaction(async (tx) => {
     // GroupSymbol/GroupSymbolConfig both cascade on Group (see their own

@@ -114,4 +114,19 @@ describe("group delete", () => {
     const r = await del(fx, fx.groupId);
     expect(r.status).toBe(409); expect(r.json.code).toBe("GROUP_IN_USE"); expect(r.json.error).toBe("This group has 1 account. Move it first.");
   });
+
+  it("an account assigned between the count and the delete still answers 409, not a 500 (FK RESTRICT, 20261103120000)", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    await prisma.account.create({ data: { groupId: fx.groupId, brokerId: fx.brokerId, accountNumber: `7${fx.s.slice(0, 7)}`, email: `r-${fx.s}@test.local`, passwordHash: "x", fullName: "Race", accountMode: "LIVE" } });
+    // the route's count runs before the account lands: the delete itself must refuse it
+    const count = vi.spyOn(prisma.account, "count").mockResolvedValueOnce(0);
+    try {
+      const r = await del(fx, fx.groupId);
+      expect(r.status).toBe(409); expect(r.json.code).toBe("GROUP_IN_USE"); expect(r.json.error).toBe("This group has an account now. Move it first.");
+    } finally {
+      count.mockRestore();
+    }
+    expect(await prisma.group.findUnique({ where: { id: fx.groupId } })).not.toBeNull();
+  });
 });
