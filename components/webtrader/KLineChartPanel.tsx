@@ -7,6 +7,24 @@ import type { ChartSettings } from "@/lib/chart-settings";
 import { computeSessionBands, isIntradayTimeframe, SESSION_COLORS, type SessionName } from "@/lib/session-map";
 import { INDICATOR_DEFS, type ActiveIndicator, type IndicatorKey } from "@/lib/chart-indicators";
 import { WT_COLORS, wtColors } from "./wt-colors";
+import {
+  anchorsFromChartPoints,
+  drawingsStorageKey,
+  drawingToChartPoints,
+  KIND_TO_OVERLAY,
+  kindExtends,
+  legacyToDrawings,
+  LEGACY_STORAGE_PREFIX,
+  newDrawingId,
+  overlayStyles,
+  parseDrawingsDoc,
+  symbolDrawings,
+  withSymbolDrawings,
+  type ChartPoint,
+  type Drawing,
+  type DrawingKind,
+} from "@/lib/chart-drawings";
+import DrawingStyleBar, { type DrawingStylePatch } from "./DrawingStyleBar";
 
 export type ChartLine = {
   id: string;
@@ -64,24 +82,24 @@ export type EditablePriceLineData = {
   formatLabel: (price: number) => string;
 };
 
-// chart-polish round -- "trendLine" and "rectangle" were never real
-// klinecharts overlay names in the installed version (9.8.12) -- checked
-// against its actual registry (node_modules/klinecharts/dist/index.esm.js,
-// no type export lists these; the real names only exist in the bundled
-// JS). createOverlay silently returned null for both, every time, with no
-// error anywhere -- confirmed live via a temporary diagnostic log before
-// this fix, exactly the "don't merge on unit tests alone" class of bug:
-// nothing here is unit-testable (klinecharts itself isn't under test),
-// only a real browser click ever exercises this path. The real registered
-// names are "segment" (a plain two-point line, the closest built-in match
-// to a "trend line" -- klinecharts has no overlay named exactly that) and
-// "rect".
-export type DrawingOverlayName =
-  | "segment"
-  | "horizontalStraightLine"
-  | "fibonacciLine"
-  | "rect"
-  | "simpleAnnotation";
+// Drawing tools step 1 (owner 2026-11-03): the tools are the shared spec's Kinds (lib/chart-drawings.ts), each one a
+// klinecharts built-in overlay. klinecharts 9.8.12 registers no rectangle overlay ("rect" is only a figure type, so
+// the first toolbar's Rectangle button never drew anything): vyxRect is the two-click box, filled at low opacity.
+export type { DrawingKind } from "@/lib/chart-drawings";
+export type DrawingsSummary = { count: number; allLocked: boolean };
+
+registerOverlay({
+  name: "vyxRect",
+  totalStep: 3,
+  needDefaultPointFigure: true,
+  needDefaultXAxisFigure: true,
+  needDefaultYAxisFigure: true,
+  createPointFigures: ({ coordinates }) => {
+    if (coordinates.length < 2) return [];
+    const [a, b] = coordinates;
+    return [{ type: "polygon", attrs: { coordinates: [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }] }, styles: { style: "stroke_fill" } }];
+  },
+});
 
 // Line-hierarchy pass -- every SL/TP color in this file/lib/chart-lines.ts
 // is a plain 6-digit hex (wt-colors.ts), so this only needs to handle
@@ -98,8 +116,10 @@ function withOpacity(hex: string, alpha: number): string {
 }
 
 export type KLineChartHandle = {
-  addOverlay: (name: DrawingOverlayName) => void;
+  addDrawing: (kind: DrawingKind) => void;
   removeAllDrawings: () => void;
+  // lock every drawing of this symbol, or unlock them all (the toolbar's lock-all)
+  setDrawingsLocked: (locked: boolean) => void;
   // chart interaction pack -- right-click menu's "Reset view": re-fits the
   // visible bar range and resets zoom. scrollToRealTime alone leaves
   // whatever zoom level the trader was at; setBarSpace back to
@@ -433,7 +453,8 @@ function indicatorPaneId(key: IndicatorKey): string {
 // doc comment on why), but these two shapes are narrow and stable enough
 // to type properly instead of reaching for `any` at every overlay
 // callback site.
-type OverlaySnapshot = { name: string; points: unknown; styles: unknown; lock?: boolean };
+type OverlayPoint = ChartPoint & { dataIndex?: number };
+type OverlaySnapshot = { name: string; points: OverlayPoint[]; lock?: boolean; extendData?: unknown };
 type OverlayLifecycleEvent = { overlay: { id: string } };
 
 type Props = {
@@ -511,6 +532,16 @@ type Props = {
   // list to reflect, so the same props-down shape chartSettings already
   // uses fits better than an imperative one.
   activeIndicators?: ActiveIndicator[];
+  // Drawing tools step 1: the account whose drawings file this chart reads and writes (spec section 1; nothing
+  // loads or saves until it is known), the magnet toggle, the toolbar's hide-all, and a summary back for the
+  // toolbar's lock-all and remove-all. A 2x2 grid pane passes drawingsReadOnly: it shows its symbol's drawings,
+  // the single chart edits them.
+  drawingsAccount?: string;
+  magnet?: boolean;
+  drawingsHidden?: boolean;
+  drawingsReadOnly?: boolean;
+  onDrawingsChange?: (summary: DrawingsSummary) => void;
+  onMagnetHeldChange?: (held: boolean) => void;
 };
 
 // Thin React wrapper around klinecharts (free, open-source — no license
@@ -544,6 +575,12 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     settings,
     previousDayHighLow,
     activeIndicators,
+    drawingsAccount,
+    magnet,
+    drawingsHidden,
+    drawingsReadOnly,
+    onDrawingsChange,
+    onMagnetHeldChange,
   },
   ref
 ) {
@@ -606,39 +643,219 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   // which klinecharts itself already excludes from selection entirely.
   const selectedOverlayIdRef = useRef<string | null>(null);
 
-  // chart-polish round -- drawings persist per symbol+timeframe in
-  // localStorage. Phase 5 moves this server-side (a trader's drawings
-  // should follow them across devices/sessions); this is deliberately
-  // client-only for now, same scoping precedent as watchlist
-  // order/column prefs elsewhere in WebTrader.tsx.
+  // Drawing tools step 1 (owner 2026-11-03): one drawings file per account (lib/chart-drawings.ts, the shared spec's
+  // format), keyed by symbol and anchored by time + price, so one set shows on every timeframe (klinecharts places
+  // each point at the candle nearest its timestamp). Saved in this browser for now; step 2 syncs the same file with
+  // the server route (push on change, pull on open).
+  const drawingMetaRef = useRef(new Map<string, Drawing>());
+  const keptDrawingsRef = useRef<unknown[]>([]);
+  // set while this component clears the chart itself: klinecharts calls onRemoved for each overlay, and a save then
+  // would write the outgoing symbol's drawings under the incoming one
+  const suspendPersistRef = useRef(false);
+  const drawingsAccountRef = useRef(drawingsAccount);
+  drawingsAccountRef.current = drawingsAccount;
+  const readOnlyRef = useRef(drawingsReadOnly === true);
+  readOnlyRef.current = drawingsReadOnly === true;
+  const magnetRef = useRef(magnet === true);
+  const ctrlMagnetRef = useRef(false);
+  const hiddenRef = useRef(drawingsHidden === true);
+  hiddenRef.current = drawingsHidden === true;
+  const onDrawingsChangeRef = useRef(onDrawingsChange);
+  onDrawingsChangeRef.current = onDrawingsChange;
+  const onMagnetHeldChangeRef = useRef(onMagnetHeldChange);
+  onMagnetHeldChangeRef.current = onMagnetHeldChange;
+  const [selectedDrawing, setSelectedDrawing] = useState<Drawing | null>(null);
+
   function storageKey() {
-    return `vyx-chart-drawings:${symbolRef.current}:${timeframeRef.current}`;
+    return drawingsStorageKey(window.location.host, drawingsAccountRef.current ?? "");
   }
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- refs only, so a new identity per render is harmless (see the useImperativeHandle deps)
-  function persistDrawings() {
-    const chart = chartRef.current;
-    if (!chart) return;
-    try {
-      const saved = userOverlayIdsRef.current
-        .map((id) => chart.getOverlayById?.(id) as OverlaySnapshot | null | undefined)
-        .filter((o): o is OverlaySnapshot => Boolean(o))
-        .map((o) => ({ name: o.name, points: o.points, styles: o.styles, lock: o.lock }));
-      window.localStorage.setItem(storageKey(), JSON.stringify(saved));
-    } catch {
-      // private browsing / quota / no localStorage -- drawings just won't
-      // survive a reload this session, not worth surfacing as an error
+  // the magnet snaps an anchor to the nearest candle's open / high / low / close (toolbar toggle, or Ctrl held)
+  function overlayMode() {
+    return magnetRef.current || ctrlMagnetRef.current ? "strong_magnet" : "normal";
+  }
+  function applyOverlayMode() {
+    const mode = overlayMode();
+    for (const id of userOverlayIdsRef.current) {
+      try {
+        chartRef.current?.overrideOverlay?.({ id, mode });
+      } catch {
+        // ignore
+      }
     }
   }
 
-  // Shared by every path that creates a user-drawn overlay (the toolbar's
-  // addOverlay and this component's own persisted-drawing restore below)
-  // so both stay selectable, Escape/Delete-able, and kept in sync with
-  // localStorage the same way regardless of how they were created. Every
-  // callback returns false -- "observed, don't suppress klinecharts' own
-  // default handling" -- these only ever track state and persist, never
-  // change what a click/drag/keypress does.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- refs only, so a new identity per render is harmless (see the useImperativeHandle deps)
+  // klinecharts knows a time only where a candle is: an anchor right of the last candle (a ray or a fib projected
+  // into the empty area) or left of the first has a bar index and no timestamp. Both directions convert with the
+  // bar period.
+  function barGrid(): { firstTs: number; lastTs: number; lastIndex: number; period: number } | null {
+    const data = chartRef.current?.getDataList?.() as Array<{ timestamp: number }> | undefined;
+    if (!data || data.length < 2) return null;
+    const period = data[data.length - 1].timestamp - data[data.length - 2].timestamp;
+    return period > 0 ? { firstTs: data[0].timestamp, lastTs: data[data.length - 1].timestamp, lastIndex: data.length - 1, period } : null;
+  }
+  // a chart point -> its time: the candle's, or extrapolated by the bar period outside the loaded candles
+  function withTimes(points: OverlayPoint[]): ChartPoint[] {
+    const g = barGrid();
+    return points.map((p) => {
+      if (typeof p.timestamp === "number" || !g || typeof p.dataIndex !== "number") return p;
+      const t = p.dataIndex < 0 ? g.firstTs + p.dataIndex * g.period : g.lastTs + (p.dataIndex - g.lastIndex) * g.period;
+      return { ...p, timestamp: t };
+    });
+  }
+  // a stored time -> a chart point. Outside the loaded candles klinecharts would pull the time onto the first or
+  // last candle (a drawing from an older H1 range squashed against the left edge of an M5 chart), so those anchors
+  // go in as bar indexes, which klinecharts places past either end.
+  function toOverlayPoints(points: ChartPoint[]): OverlayPoint[] {
+    const g = barGrid();
+    return points.map((p) => {
+      if (!g || typeof p.timestamp !== "number") return p;
+      if (p.timestamp > g.lastTs) return { dataIndex: g.lastIndex + Math.round((p.timestamp - g.lastTs) / g.period), value: p.value };
+      if (p.timestamp < g.firstTs) return { dataIndex: Math.round((p.timestamp - g.firstTs) / g.period), value: p.value };
+      return p;
+    });
+  }
+  // after each data load (symbol, timeframe, history backfill) every drawing with an anchor outside the candles
+  // is placed again
+  function reanchorFutureDrawings() {
+    const g = barGrid();
+    if (!g) return;
+    for (const id of userOverlayIdsRef.current) {
+      const d = drawingMetaRef.current.get(id);
+      if (!d || id === drawingOverlayIdRef.current) continue;
+      const pts = drawingToChartPoints(d);
+      if (!pts.some((p) => typeof p.timestamp === "number" && (p.timestamp > g.lastTs || p.timestamp < g.firstTs))) continue;
+      try {
+        chartRef.current?.overrideOverlay?.({ id, points: toOverlayPoints(pts) });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  // the overlay as it stands now, plus the file fields this app keeps for it; null while it is still being drawn
+  function currentDrawing(id: string): Drawing | null {
+    const meta = drawingMetaRef.current.get(id);
+    const o = chartRef.current?.getOverlayById?.(id) as OverlaySnapshot | null | undefined;
+    if (!meta || !o) return null;
+    const anchors = anchorsFromChartPoints(meta.Kind, withTimes(o.points ?? []));
+    if (!anchors) return null;
+    return {
+      ...meta,
+      ...anchors,
+      ...kindExtends(meta.Kind),
+      Locked: o.lock === true,
+      ...(meta.Kind === "Text" ? { Text: typeof o.extendData === "string" ? o.extendData : (meta.Text ?? null) } : {}),
+    };
+  }
+
+  function emitDrawingsSummary() {
+    const list = userOverlayIdsRef.current.map((id) => drawingMetaRef.current.get(id)).filter((d): d is Drawing => Boolean(d));
+    onDrawingsChangeRef.current?.({ count: list.length, allLocked: list.length > 0 && list.every((d) => d.Locked === true) });
+  }
+
+  function persistDrawings() {
+    const chart = chartRef.current;
+    if (!chart || readOnlyRef.current || suspendPersistRef.current || !drawingsAccountRef.current) return;
+    const drawings: Drawing[] = [];
+    for (const id of userOverlayIdsRef.current) {
+      const d = currentDrawing(id);
+      if (!d) continue;
+      drawingMetaRef.current.set(id, d);
+      drawings.push(d);
+    }
+    try {
+      const key = storageKey();
+      const doc = parseDrawingsDoc(window.localStorage.getItem(key));
+      window.localStorage.setItem(key, JSON.stringify(withSymbolDrawings(doc, symbolRef.current, drawings, keptDrawingsRef.current)));
+    } catch {
+      // private browsing / quota / no localStorage: the drawings stay for this session only
+    }
+    emitDrawingsSummary();
+  }
+
+  // every user drawing is created here (a toolbar tool, a restore from the file, a clone)
+  function createDrawingOverlay(d: Drawing, points?: ChartPoint[]): string | null {
+    const chart = chartRef.current;
+    if (!chart) return null;
+    const id = chart.createOverlay?.({
+      name: KIND_TO_OVERLAY[d.Kind],
+      ...(points ? { points: toOverlayPoints(points) } : {}),
+      styles: overlayStyles(d),
+      lock: d.Locked === true || readOnlyRef.current,
+      visible: !(d.Hidden === true || hiddenRef.current),
+      mode: overlayMode(),
+      modeSensitivity: 8,
+      ...(d.Kind === "Text" ? { extendData: d.Text ?? "Note" } : {}),
+      ...overlayLifecycleCallbacks(),
+    });
+    if (typeof id !== "string") return null;
+    drawingMetaRef.current.set(id, d);
+    userOverlayIdsRef.current.push(id);
+    return id;
+  }
+
+  function removeDrawingOverlays() {
+    const chart = chartRef.current;
+    suspendPersistRef.current = true;
+    try {
+      userOverlayIdsRef.current.forEach((id) => chart?.removeOverlay?.(id));
+    } catch {
+      // ignore
+    } finally {
+      suspendPersistRef.current = false;
+    }
+    userOverlayIdsRef.current = [];
+    drawingMetaRef.current.clear();
+    selectedOverlayIdRef.current = null;
+    drawingOverlayIdRef.current = null;
+    setSelectedDrawing(null);
+  }
+
+  // the floating style bar: colour, width, line style, text, lock
+  function applyDrawingStyle(patch: DrawingStylePatch) {
+    const id = selectedOverlayIdRef.current;
+    const base = id ? (currentDrawing(id) ?? drawingMetaRef.current.get(id)) : null;
+    if (!id || !base) return;
+    const next: Drawing = { ...base, ...patch };
+    drawingMetaRef.current.set(id, next);
+    try {
+      chartRef.current?.overrideOverlay?.({
+        id,
+        styles: overlayStyles(next),
+        lock: next.Locked === true,
+        ...(next.Kind === "Text" ? { extendData: next.Text ?? "" } : {}),
+      });
+    } catch {
+      // ignore
+    }
+    setSelectedDrawing(next);
+    persistDrawings();
+  }
+
+  function cloneSelectedDrawing() {
+    const id = selectedOverlayIdRef.current;
+    const d = id ? currentDrawing(id) : null;
+    if (!d) return;
+    createDrawingOverlay({ ...d, Id: newDrawingId(), Locked: false }, drawingToChartPoints(d));
+    persistDrawings();
+  }
+
+  function deleteSelectedDrawing() {
+    const id = selectedOverlayIdRef.current;
+    if (!id) return;
+    try {
+      chartRef.current?.removeOverlay?.(id);
+    } catch {
+      // ignore
+    }
+    selectedOverlayIdRef.current = null;
+    setSelectedDrawing(null);
+  }
+
+  // Shared by every path that creates a user drawing (createDrawingOverlay) so each one stays selectable,
+  // Escape / Delete-able and saved the same way. Every callback returns false ("observed, don't suppress
+  // klinecharts' own default handling").
   function overlayLifecycleCallbacks() {
     return {
       onDrawStart: (event: OverlayLifecycleEvent) => {
@@ -652,16 +869,23 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       },
       onSelected: (event: OverlayLifecycleEvent) => {
         selectedOverlayIdRef.current = event.overlay.id;
+        if (!readOnlyRef.current) setSelectedDrawing(currentDrawing(event.overlay.id) ?? drawingMetaRef.current.get(event.overlay.id) ?? null);
         return false;
       },
       onDeselected: () => {
         selectedOverlayIdRef.current = null;
+        setSelectedDrawing(null);
         return false;
       },
       onRemoved: (event: OverlayLifecycleEvent) => {
         const id = event.overlay.id;
+        if (suspendPersistRef.current) return false;
         userOverlayIdsRef.current = userOverlayIdsRef.current.filter((existing) => existing !== id);
-        if (selectedOverlayIdRef.current === id) selectedOverlayIdRef.current = null;
+        drawingMetaRef.current.delete(id);
+        if (selectedOverlayIdRef.current === id) {
+          selectedOverlayIdRef.current = null;
+          setSelectedDrawing(null);
+        }
         if (drawingOverlayIdRef.current === id) drawingOverlayIdRef.current = null;
         persistDrawings();
         return false;
@@ -671,6 +895,17 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         return false;
       },
     };
+  }
+  const addDrawingRef = useRef<(kind: DrawingKind) => void>(() => {});
+  // the overlay that is still waiting for clicks, if any. klinecharts' onDrawEnd doesn't always fire (see the click
+  // listener in the mount effect), so the id alone can point at a finished drawing: its own draw step decides.
+  function unfinishedDrawingId(): string | null {
+    const id = drawingOverlayIdRef.current;
+    if (!id) return null;
+    const o = chartRef.current?.getOverlayById?.(id) as { currentStep?: number } | null | undefined;
+    if (o && o.currentStep !== -1) return id; // -1 = klinecharts' OVERLAY_DRAW_STEP_FINISHED
+    drawingOverlayIdRef.current = null;
+    return null;
   }
 
   useEffect(() => {
@@ -871,35 +1106,65 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     // one. Skipped entirely if focus is in a real text input elsewhere on
     // the page -- Backspace while typing must never be hijacked into
     // deleting a chart drawing just because one happens to be selected.
+    const isTyping = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return Boolean(el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable));
+    };
+    const setCtrlMagnet = (held: boolean) => {
+      if (ctrlMagnetRef.current === held || readOnlyRef.current) return;
+      ctrlMagnetRef.current = held;
+      applyOverlayMode();
+      onMagnetHeldChangeRef.current?.(held);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "Control") setCtrlMagnet(false);
+    };
+    const onBlur = () => setCtrlMagnet(false);
+    const SHORTCUTS: Record<string, DrawingKind> = { t: "TrendLine", h: "HorizontalLine", v: "VerticalLine", f: "Fibonacci" };
     const onKeyDown = (e: KeyboardEvent) => {
       const chart = chartRef.current;
       if (!chart) return;
-      if (e.key === "Escape" && drawingOverlayIdRef.current) {
+      if (e.key === "Control") setCtrlMagnet(true);
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !readOnlyRef.current && !isTyping(e.target)) {
+        const kind = SHORTCUTS[e.key.toLowerCase()];
+        if (kind) {
+          e.preventDefault();
+          addDrawingRef.current(kind);
+          return;
+        }
+      }
+      const unfinished = e.key === "Escape" ? unfinishedDrawingId() : null;
+      if (unfinished) {
         try {
-          chart.removeOverlay?.(drawingOverlayIdRef.current);
+          chart.removeOverlay?.(unfinished);
         } catch {
           // ignore
         }
         drawingOverlayIdRef.current = null;
         return;
       }
+      // Esc with nothing being drawn deselects: the style bar closes (spec section 4)
+      if (e.key === "Escape" && selectedOverlayIdRef.current && !isTyping(e.target)) {
+        selectedOverlayIdRef.current = null;
+        setSelectedDrawing(null);
+        return;
+      }
       if (e.key === "Delete" || e.key === "Backspace") {
         const target = e.target as HTMLElement | null;
         if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-        if (!selectedOverlayIdRef.current) return;
-        try {
-          chart.removeOverlay?.(selectedOverlayIdRef.current);
-        } catch {
-          // ignore
-        }
-        selectedOverlayIdRef.current = null;
+        if (!selectedOverlayIdRef.current || readOnlyRef.current) return;
+        deleteSelectedDrawing();
       }
     };
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
 
     return () => {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
       containerObserver.disconnect();
       el.removeEventListener("contextmenu", onContextMenu);
       el.removeEventListener("click", onClickPersist);
@@ -956,39 +1221,58 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     }
   }, [digits]);
 
-  // chart-polish round -- swaps in the drawings persisted for this
-  // symbol+timeframe (localStorage, see storageKey/persistDrawings
-  // above) and clears whatever the previous symbol+timeframe had drawn.
-  // Also the effect that runs once on mount to restore a page reload's
-  // own prior session, since userOverlayIdsRef starts empty either way.
+  // Drawing tools step 1: swaps in this symbol's drawings from the account's file (and clears the previous
+  // symbol's). The timeframe doesn't matter: drawings are anchored by time. The first toolbar's lists (one per
+  // symbol + timeframe, under vyx-chart-drawings:<symbol>:<tf>) move into the file once, then their keys go.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    try {
-      userOverlayIdsRef.current.forEach((id) => chart.removeOverlay?.(id));
-    } catch {
-      // ignore
-    }
-    userOverlayIdsRef.current = [];
-    selectedOverlayIdRef.current = null;
-    drawingOverlayIdRef.current = null;
-
-    try {
-      const raw = window.localStorage.getItem(storageKey());
-      if (!raw) return;
-      const saved = JSON.parse(raw) as Array<{ name: string; points: unknown; styles: unknown; lock?: boolean }>;
-      const ids: string[] = [];
-      for (const drawing of saved) {
-        const id = chart.createOverlay?.({ ...drawing, ...overlayLifecycleCallbacks() });
-        if (typeof id === "string") ids.push(id);
+    removeDrawingOverlays();
+    keptDrawingsRef.current = [];
+    if (drawingsAccount) {
+      try {
+        const key = storageKey();
+        const doc = parseDrawingsDoc(window.localStorage.getItem(key));
+        const { drawings, kept } = symbolDrawings(doc, symbol);
+        let list = drawings;
+        if (!readOnlyRef.current && drawings.length === 0 && kept.length === 0) {
+          const legacyKeys: string[] = [];
+          for (let i = 0; i < window.localStorage.length; i++) {
+            const k = window.localStorage.key(i);
+            if (k && k.startsWith(`${LEGACY_STORAGE_PREFIX}${symbol}:`)) legacyKeys.push(k);
+          }
+          if (legacyKeys.length > 0) {
+            list = legacyToDrawings(legacyKeys.map((k) => parseDrawingsDoc(`{"v":${window.localStorage.getItem(k) ?? "null"}}`).v));
+            window.localStorage.setItem(key, JSON.stringify(withSymbolDrawings(doc, symbol, list)));
+            legacyKeys.forEach((k) => window.localStorage.removeItem(k));
+          }
+        }
+        keptDrawingsRef.current = kept;
+        for (const d of list) createDrawingOverlay(d, drawingToChartPoints(d));
+      } catch {
+        // malformed / unavailable storage: start this symbol with no drawings rather than break the chart
       }
-      userOverlayIdsRef.current = ids;
-    } catch {
-      // malformed/unavailable storage -- start with no drawings for this
-      // symbol+timeframe rather than crash the chart over it
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, timeframe]);
+    emitDrawingsSummary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the helpers read refs only
+  }, [symbol, drawingsAccount]);
+
+  useEffect(() => {
+    magnetRef.current = magnet === true;
+    applyOverlayMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- applyOverlayMode reads refs only
+  }, [magnet]);
+
+  useEffect(() => {
+    for (const id of userOverlayIdsRef.current) {
+      try {
+        chartRef.current?.overrideOverlay?.({ id, visible: !(drawingsHidden === true || drawingMetaRef.current.get(id)?.Hidden === true) });
+      } catch {
+        // ignore
+      }
+    }
+    if (drawingsHidden) setSelectedDrawing(null);
+  }, [drawingsHidden]);
 
   // fix/chart-gaps: the last bar timestamp actually fed to the chart. The live path can push MORE
   // than one bar into the `candles` array in a single tick (market-simulator's gap-fill on a
@@ -1005,9 +1289,11 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         candles.map((c) => ({ timestamp: c.t, open: c.o, high: c.h, low: c.l, close: c.c, volume: 0 }))
       );
       lastFedTsRef.current = candles[candles.length - 1].t;
+      reanchorFutureDrawings();
     } catch {
       // ignore — next data update will retry
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reanchorFutureDrawings reads refs only
   }, [candles]);
 
   // fix/realtime-sync §3 -- incremental last-bar update on every real
@@ -1067,6 +1353,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       const lastFed = lastFedTsRef.current;
       if (lastFed != null && period > 0 && latestBar.t - lastFed > period) {
         chart.applyNewData(candles.map((c) => ({ timestamp: c.t, open: c.o, high: c.h, low: c.l, close: c.c, volume: 0 })));
+        reanchorFutureDrawings();
       } else {
         chart.updateData({ timestamp: latestBar.t, open: latestBar.o, high: latestBar.h, low: latestBar.l, close: latestBar.c, volume: 0 });
       }
@@ -1074,6 +1361,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     } catch {
       // ignore — next tick will retry
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reanchorFutureDrawings reads refs only
   }, [latestBar, candles]);
 
   useEffect(() => {
@@ -1440,34 +1728,26 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   useImperativeHandle(
     ref,
     () => ({
-      addOverlay(name) {
-        try {
-          // chart-polish round -- passing an OverlayCreate object (not
-          // just the bare name string the old call site used) is what
-          // wires the new overlay into selection/Escape/Delete/
-          // persistence the same way a restored-from-storage one already
-          // is. klinecharts' own default for every multi-point tool this
-          // toolbar exposes (segment, horizontalStraightLine, rect,
-          // fibonacciLine) is already click-then-click-again, not drag --
-          // confirmed against klinecharts' own totalStep/currentStep
-          // overlay model (no host-side "drag mode" to disable), and
-          // separately by drawing each one in a real browser (see the
-          // chart-polish PR screenshots).
-          const id = chartRef.current?.createOverlay?.({ name, ...overlayLifecycleCallbacks() });
-          if (typeof id === "string") userOverlayIdsRef.current.push(id);
-        } catch {
-          // ignore
-        }
+      addDrawing(kind) {
+        addDrawingRef.current(kind);
       },
       removeAllDrawings() {
-        try {
-          userOverlayIdsRef.current.forEach((id) => chartRef.current?.removeOverlay?.(id));
-        } catch {
-          // ignore
+        keptDrawingsRef.current = [];
+        removeDrawingOverlays();
+        persistDrawings();
+        emitDrawingsSummary();
+      },
+      setDrawingsLocked(locked) {
+        for (const id of userOverlayIdsRef.current) {
+          const d = drawingMetaRef.current.get(id);
+          if (d) drawingMetaRef.current.set(id, { ...d, Locked: locked });
+          try {
+            chartRef.current?.overrideOverlay?.({ id, lock: locked });
+          } catch {
+            // ignore
+          }
         }
-        userOverlayIdsRef.current = [];
-        selectedOverlayIdRef.current = null;
-        drawingOverlayIdRef.current = null;
+        setSelectedDrawing((prev) => (prev ? { ...prev, Locked: locked } : prev));
         persistDrawings();
       },
       resetView() {
@@ -1481,17 +1761,31 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         }
       },
     }),
-    // overlayLifecycleCallbacks/persistDrawings close over refs only
-    // (chartRef, userOverlayIdsRef, etc.), never state or props, so a
-    // fresh function identity every render doesn't make them stale --
-    // listed here only to satisfy exhaustive-deps, not because this
-    // handle actually needs to change identity when they do.
-    [overlayLifecycleCallbacks, persistDrawings]
+    // the helpers read refs only (chartRef, userOverlayIdsRef, ...), never state or props, so one handle is enough
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
   );
+
+  // a toolbar tool or an Alt shortcut: arms the tool; the next clicks on the chart place its anchors
+  addDrawingRef.current = (kind: DrawingKind) => {
+    if (readOnlyRef.current || !drawingsAccountRef.current) return;
+    try {
+      const unfinished = unfinishedDrawingId();
+      if (unfinished) chartRef.current?.removeOverlay?.(unfinished);
+      selectedOverlayIdRef.current = null;
+      setSelectedDrawing(null);
+      createDrawingOverlay({ Id: newDrawingId(), Kind: kind, T1: 0, Y1: 0, Color: 0, Width: 1, Style: "Solid", Locked: false, Hidden: false, ...(kind === "Text" ? { Text: "Note" } : {}) });
+    } catch {
+      // ignore
+    }
+  };
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {selectedDrawing && !drawingsReadOnly ? (
+        <DrawingStyleBar drawing={selectedDrawing} onChange={applyDrawingStyle} onClone={cloneSelectedDrawing} onDelete={deleteSelectedDrawing} />
+      ) : null}
       {sessionBandRects.length > 0 ? (
         <div style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}>
           {sessionBandRects.map((r) => (

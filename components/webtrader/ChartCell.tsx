@@ -33,6 +33,8 @@ export default function ChartCell({
   onFocus,
   onSymbolChange,
   onTfChange,
+  drawingsAccount,
+  drawingsHidden,
 }: {
   // The broker's real enabled-symbol universe (WebTrader's own allSymbols
   // state) -- this cell's own symbol-switcher dropdown used to read the
@@ -59,6 +61,9 @@ export default function ChartCell({
   onFocus: () => void;
   onSymbolChange: (symbol: string) => void;
   onTfChange: (tf: Timeframe) => void;
+  // drawing tools step 1: a grid pane shows its symbol's drawings (spec section 7 item 20); the single chart edits them
+  drawingsAccount?: string;
+  drawingsHidden?: boolean;
 }) {
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false);
 
@@ -144,6 +149,9 @@ export default function ChartCell({
           timeframe={tf}
           digits={m.def.digits}
           lines={lines}
+          drawingsAccount={drawingsAccount}
+          drawingsHidden={drawingsHidden}
+          drawingsReadOnly
         />
         {/* Feed-loss UX -- no corner note, no dark overlay -- see the
             price span above. */}

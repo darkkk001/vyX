@@ -29,6 +29,7 @@ import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-mar
 import AddSymbolDialog from "./AddSymbolDialog";
 import ChartSettingsDialog from "./ChartSettingsDialog";
 import KLineChartPanel, {
+  type DrawingsSummary,
   type KLineChartHandle,
   type ChartLine,
   type PositionLineData,
@@ -38,6 +39,7 @@ import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
 import ChartCell from "./ChartCell";
+import DrawingToolbar from "./DrawingToolbar";
 import SettingsDialog from "./SettingsDialog";
 import KeyboardShortcutsDialog from "./KeyboardShortcutsDialog";
 import AboutDialog from "./AboutDialog";
@@ -851,6 +853,27 @@ export default function WebTrader({
   const chartContextMenuRef = useRef<HTMLDivElement | null>(null);
   useDismiss(chartContextMenu !== null, () => setChartContextMenu(null), chartContextMenuRef);
   const chartRef = useRef<KLineChartHandle>(null);
+  // Drawing tools step 1: the magnet and hide-all are this viewer's own toggles (browser storage); the summary
+  // comes back from the chart for lock-all / remove-all.
+  const [drawingMagnet, setDrawingMagnet] = useState(false);
+  const [magnetHeld, setMagnetHeld] = useState(false);
+  const [drawingsHidden, setDrawingsHidden] = useState(false);
+  const [drawingsSummary, setDrawingsSummary] = useState<DrawingsSummary>({ count: 0, allLocked: false });
+  useEffect(() => {
+    try {
+      setDrawingMagnet(window.localStorage.getItem("vyx-drawing-magnet") === "1");
+      setDrawingsHidden(window.localStorage.getItem("vyx-drawings-hidden") === "1");
+    } catch {
+      // defaults: magnet off, drawings shown
+    }
+  }, []);
+  const saveDrawingToggle = (key: string, on: boolean) => {
+    try {
+      window.localStorage.setItem(key, on ? "1" : "0");
+    } catch {
+      // this page only
+    }
+  };
   // Chart interaction pack -- persisted server-side (lib/chart-settings.ts),
   // same shape as watchlist prefs. Starts at the client default so the
   // chart never renders unstyled before the GET resolves.
@@ -4421,27 +4444,18 @@ export default function WebTrader({
             <div className="chart-area" style={isMobileView && mobileTab !== "chart" ? { display: "none" } : undefined}>
               {chartLayout === "single" ? (
                 <>
-                  <div className="drawing-toolbar">
-                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("segment")} title="Trend line">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="20" x2="20" y2="4" /></svg>
-                    </button>
-                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("horizontalStraightLine")} title="Horizontal line">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12" /></svg>
-                    </button>
-                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("fibonacciLine")} title="Fibonacci retracement">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
-                    </button>
-                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("rect")} title="Rectangle">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="1" /></svg>
-                    </button>
-                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("simpleAnnotation")} title="Text">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4 7 4 4 20 4 20 7" /><line x1="12" y1="4" x2="12" y2="20" /></svg>
-                    </button>
-                    <div className="draw-tool-sep" />
-                    <button className="draw-tool-btn" onClick={() => { chartRef.current?.removeAllDrawings(); pushToast("Drawings cleared"); }} title="Clear all drawings">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
-                    </button>
-                  </div>
+                  <DrawingToolbar
+                    symbol={activeSymbol}
+                    onTool={(kind) => chartRef.current?.addDrawing(kind)}
+                    magnet={drawingMagnet}
+                    magnetHeld={magnetHeld}
+                    onMagnet={(on) => { setDrawingMagnet(on); saveDrawingToggle("vyx-drawing-magnet", on); }}
+                    hidden={drawingsHidden}
+                    onHidden={(on) => { setDrawingsHidden(on); saveDrawingToggle("vyx-drawings-hidden", on); }}
+                    summary={drawingsSummary}
+                    onLockAll={(locked) => chartRef.current?.setDrawingsLocked(locked)}
+                    onRemoveAll={() => { chartRef.current?.removeAllDrawings(); pushToast("Drawings removed"); }}
+                  />
                   {activeIndicators.length > 0 ? (
                     <div className="nt-ind-chips">
                       {activeIndicators.map((a) => (
@@ -4484,6 +4498,11 @@ export default function WebTrader({
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
                     activeIndicators={activeIndicators}
+                    drawingsAccount={account?.accountNumber}
+                    magnet={drawingMagnet}
+                    drawingsHidden={drawingsHidden}
+                    onDrawingsChange={setDrawingsSummary}
+                    onMagnetHeldChange={setMagnetHeld}
                   />
                   {/* Feed-loss UX -- no corner note, no dark overlay, no
                       caption at all regardless of activeFeedStatus. The
@@ -4563,6 +4582,8 @@ export default function WebTrader({
                       onFocus={() => { selectSymbol(cell.symbol); setCurrentTf(cell.tf); }}
                       onSymbolChange={(sym) => setGridCells((prev) => prev.map((c, idx) => (idx === i ? { ...c, symbol: sym } : c)))}
                       onTfChange={(tf) => setGridCells((prev) => prev.map((c, idx) => (idx === i ? { ...c, tf } : c)))}
+                      drawingsAccount={account?.accountNumber}
+                      drawingsHidden={drawingsHidden}
                     />
                   ))}
                 </div>

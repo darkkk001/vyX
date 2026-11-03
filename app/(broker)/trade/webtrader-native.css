@@ -327,3 +327,65 @@
   .wt-root .status-label { font-size: 10px; letter-spacing: .04em; }
   .wt-root .status-value { font-size: 11.5px; font-family: var(--wt-font-mono, 'JetBrains Mono'), ui-monospace, monospace; }
 }
+
+/* Drawing tools step 1 (owner 2026-11-03): the lines flyout, remove-all confirm and the selected drawing's style bar */
+.wt-root .drawing-toolbar { z-index: 6; }
+.wt-root .draw-tool-btn:disabled { opacity: .35; cursor: default; background: transparent; }
+.wt-root .draw-tool-btn.active { color: var(--accent); background: var(--bg-3); }
+.wt-root .dt-group { position: relative; }
+.wt-root .dt-more {
+  position: absolute; right: 0; bottom: 1px; width: 9px; height: 9px; padding: 0; border: none; background: transparent;
+  color: var(--text-3); cursor: pointer; display: flex; align-items: flex-end; justify-content: flex-end;
+}
+.wt-root .dt-more:hover, .wt-root .dt-more.open { color: var(--text-1); }
+.wt-root .dt-flyout, .wt-root .dt-confirm {
+  position: absolute; left: calc(100% + 6px); top: 0; z-index: 20; min-width: 180px;
+  background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--radius, 3px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35); padding: 4px;
+}
+.wt-root .dt-flyout-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px; border: none; border-radius: 2px;
+  background: transparent; color: var(--text-2); font-size: 12px; text-align: left; cursor: pointer; white-space: nowrap;
+}
+.wt-root .dt-flyout-item:hover { background: var(--bg-3); color: var(--text-1); }
+.wt-root .dt-flyout-item.active { color: var(--accent); }
+.wt-root .dt-confirm { top: -4px; min-width: 210px; padding: 8px 10px; font-size: 12px; color: var(--text-1); display: flex; flex-direction: column; gap: 8px; }
+.wt-root .dt-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+.wt-root .dsb {
+  position: absolute; top: 6px; left: 50%; z-index: 7; display: flex; align-items: center; gap: 2px; padding: 3px 4px;
+  background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--radius, 3px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .3); user-select: none;
+}
+.wt-root .dsb-grip { display: flex; align-items: center; padding: 0 4px; color: var(--text-3); cursor: grab; touch-action: none; }
+.wt-root .dsb-grip:active { cursor: grabbing; }
+.wt-root .dsb-group { position: relative; display: flex; }
+.wt-root .dsb-btn {
+  min-width: 26px; height: 24px; padding: 0 6px; border: none; border-radius: 2px; background: transparent;
+  color: var(--text-2); font-size: 11.5px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;
+}
+.wt-root .dsb-btn:hover:not(:disabled) { background: var(--bg-3); color: var(--text-1); }
+.wt-root .dsb-btn:disabled { opacity: .4; cursor: default; }
+.wt-root .dsb-btn.active { color: var(--accent); }
+.wt-root .dsb-del:hover:not(:disabled), .wt-root .dsb-danger { color: var(--sell); }
+.wt-root .dsb-danger { border: 1px solid var(--sell); }
+.wt-root .dsb-swatch { width: 14px; height: 14px; border-radius: 2px; border: 1px solid var(--border-strong); }
+.wt-root .dsb-sep { width: 1px; height: 16px; margin: 0 3px; background: var(--border-strong); }
+.wt-root .dsb-text {
+  width: 140px; height: 24px; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 2px;
+  background: var(--bg-1); color: var(--text-1); font-size: 12px;
+}
+.wt-root .dsb-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 8; padding: 4px;
+  background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--radius, 3px); box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+.wt-root .dsb-swatches { display: grid; grid-template-columns: repeat(5, 20px); gap: 5px; padding: 6px; }
+.wt-root .dsb-swatch-btn { width: 20px; height: 20px; border-radius: 2px; border: 1px solid var(--border-strong); cursor: pointer; padding: 0; }
+.wt-root .dsb-swatch-btn.active { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wt-root .dsb-list { display: flex; flex-direction: column; min-width: 110px; }
+.wt-root .dsb-item {
+  display: flex; align-items: center; gap: 10px; padding: 5px 8px; border: none; border-radius: 2px; background: transparent;
+  color: var(--text-2); font-size: 11.5px; cursor: pointer; text-align: left;
+}
+.wt-root .dsb-item:hover { background: var(--bg-3); color: var(--text-1); }
+.wt-root .dsb-item.active { color: var(--accent); }
