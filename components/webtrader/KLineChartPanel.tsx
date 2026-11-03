@@ -6,6 +6,7 @@ import type { Candle } from "@/lib/market-simulator";
 import type { ChartSettings } from "@/lib/chart-settings";
 import { computeSessionBands, isIntradayTimeframe, SESSION_COLORS, type SessionName } from "@/lib/session-map";
 import { INDICATOR_DEFS, type ActiveIndicator, type IndicatorKey } from "@/lib/chart-indicators";
+import { WT_COLORS, wtColors } from "./wt-colors";
 
 export type ChartLine = {
   id: string;
@@ -83,7 +84,7 @@ export type DrawingOverlayName =
   | "simpleAnnotation";
 
 // Line-hierarchy pass -- every SL/TP color in this file/lib/chart-lines.ts
-// is a plain 6-digit hex (#EA3943/#16C784), so this only needs to handle
+// is a plain 6-digit hex (wt-colors.ts), so this only needs to handle
 // that one shape, not a general CSS-color parser. Falls back to the input
 // unchanged for anything else (e.g. a future rgba() literal passed
 // straight through) rather than producing a broken color string.
@@ -205,7 +206,7 @@ registerOverlay({
       formatLabel: (price: number) => string;
     };
     const violates = typeof value === "number" && minDistance > 0 && Math.abs(value - referencePrice) < minDistance;
-    const lineColor = violates ? "#EA3943" : color;
+    const lineColor = violates ? WT_COLORS.dark.err : color;
     const text = typeof value === "number" ? formatLabel(value) : "";
     return [
       {
@@ -391,8 +392,9 @@ function indicatorStyles(key: IndicatorKey, calcParams: number[], theme: "dark" 
   const palette = INDICATOR_PALETTE[theme];
   const mutedBand = theme === "light" ? "#94A3B8" : "#5A6472";
   const neutralBar = theme === "light" ? "#94A3B8" : "#5A6472";
-  const upColor = "#16C784";
-  const downColor = "#EA3943";
+  // MACD bars: price direction (green / red, like the candles)
+  const upColor = wtColors(theme).tickUp;
+  const downColor = wtColors(theme).tickDown;
   switch (key) {
     case "BOLL":
       return { lines: [line(mutedBand), line(palette[0]), line(mutedBand)] };
@@ -700,14 +702,15 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         grid: { horizontal: { color: CHART_THEME_COLORS.dark.gridLine }, vertical: { show: false } },
         candle: {
           bar: {
-            upColor: "#16C784",
-            downColor: "#EA3943",
+            // candles are price direction: green / red (platform colour rule; wt-colors.ts)
+            upColor: WT_COLORS.dark.tickUp,
+            downColor: WT_COLORS.dark.tickDown,
             noChangeColor: "#5A6472",
-            upBorderColor: "#16C784",
-            downBorderColor: "#EA3943",
+            upBorderColor: WT_COLORS.dark.tickUp,
+            downBorderColor: WT_COLORS.dark.tickDown,
             noChangeBorderColor: "#5A6472",
-            upWickColor: "#16C784",
-            downWickColor: "#EA3943",
+            upWickColor: WT_COLORS.dark.tickUp,
+            downWickColor: WT_COLORS.dark.tickDown,
             noChangeWickColor: "#5A6472",
           },
           priceMark: {
@@ -722,8 +725,8 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
             // built-in feature, not as a separate overlay.
             last: {
               show: true,
-              upColor: "#16C784",
-              downColor: "#EA3943",
+              upColor: WT_COLORS.dark.tickUp,
+              downColor: WT_COLORS.dark.tickDown,
               noChangeColor: "#5A6472",
               // Line-hierarchy pass -- was dashed at the same weight as
               // SL/TP, reading as just another reference line instead of
@@ -1167,8 +1170,8 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       sessionHighLowIdsRef.current = [];
       if (!settings?.showSessionHighLow || !previousDayHighLow) return;
       const specs = [
-        { id: "session-pdh", price: previousDayHighLow.high, label: `PDH ${previousDayHighLow.high.toFixed(digits)}`, color: "#16C784" },
-        { id: "session-pdl", price: previousDayHighLow.low, label: `PDL ${previousDayHighLow.low.toFixed(digits)}`, color: "#EA3943" },
+        { id: "session-pdh", price: previousDayHighLow.high, label: `PDH ${previousDayHighLow.high.toFixed(digits)}`, color: WT_COLORS.dark.tickUp },
+        { id: "session-pdl", price: previousDayHighLow.low, label: `PDL ${previousDayHighLow.low.toFixed(digits)}`, color: WT_COLORS.dark.tickDown },
       ];
       const ids: string[] = [];
       specs.forEach((spec) => {
@@ -1494,7 +1497,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
               padding: "3px 8px",
               borderRadius: 4,
               border: revealedPosition.hasTp ? "none" : "1px solid var(--border-strong)",
-              background: revealedPosition.hasTp ? "#16C784" : "var(--bg-2)",
+              background: revealedPosition.hasTp ? "var(--profit)" : "var(--bg-2)",
               color: revealedPosition.hasTp ? "#04140C" : "var(--text-2)",
               fontSize: 10.5,
               fontWeight: 700,
@@ -1510,7 +1513,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
               padding: "3px 8px",
               borderRadius: 4,
               border: revealedPosition.hasSl ? "none" : "1px solid var(--border-strong)",
-              background: revealedPosition.hasSl ? "#EA3943" : "var(--bg-2)",
+              background: revealedPosition.hasSl ? "var(--loss)" : "var(--bg-2)",
               color: revealedPosition.hasSl ? "#fff" : "var(--text-2)",
               fontSize: 10.5,
               fontWeight: 700,

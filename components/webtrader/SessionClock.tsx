@@ -58,8 +58,8 @@ export default function SessionClock({ hideLabel = false }: { hideLabel?: boolea
                 fontSize: 10.5,
                 padding: "3px 8px",
                 borderRadius: 5,
-                background: active ? "var(--buy-bg)" : "var(--bg-3)",
-                color: active ? "var(--buy)" : "var(--text-3)",
+                background: active ? "var(--ok-bg)" : "var(--bg-3)",
+                color: active ? "var(--ok)" : "var(--text-3)",
                 display: "flex",
                 alignItems: "center",
                 gap: 4,
@@ -70,7 +70,7 @@ export default function SessionClock({ hideLabel = false }: { hideLabel?: boolea
                   width: 5,
                   height: 5,
                   borderRadius: "50%",
-                  background: active ? "var(--buy)" : "transparent",
+                  background: active ? "var(--ok)" : "transparent",
                   border: active ? "none" : "1px solid var(--text-3)",
                 }}
               />

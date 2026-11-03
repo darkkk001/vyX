@@ -5,7 +5,7 @@ import type { CalendarEvent } from "@/lib/economic-calendar";
 import { filterUpcomingEvents } from "@/lib/economic-calendar";
 
 const IMPACT_COLOR: Record<string, string> = {
-  high: "var(--sell)",
+  high: "var(--err)",
   medium: "#F0B90B",
   low: "var(--text-3)",
 };

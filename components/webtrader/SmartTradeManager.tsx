@@ -361,14 +361,14 @@ export default function SmartTradeManager({
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>
                 Stop Loss {slValidity ? (
-                  <span style={{ color: slValidity.validForBuy || slValidity.validForSell ? "var(--buy)" : "var(--sell)" }}>
+                  <span style={{ color: slValidity.validForBuy || slValidity.validForSell ? "var(--ok)" : "var(--err)" }}>
                     {slValidity.validForBuy && slValidity.validForSell ? "VALID" : slValidity.validForBuy ? "valid for BUY only" : slValidity.validForSell ? "valid for SELL only" : "INVALID"}
                   </span>
                 ) : null}
               </label>
               <input
                 className="mono"
-                style={{ width: "100%", boxShadow: config.sl !== "" && slValidity && !slValidity.validForBuy && !slValidity.validForSell ? "inset 0 0 0 1.5px var(--sell)" : undefined }}
+                style={{ width: "100%", boxShadow: config.sl !== "" && slValidity && !slValidity.validForBuy && !slValidity.validForSell ? "inset 0 0 0 1.5px var(--err)" : undefined }}
                 type="number" step="any" value={config.sl}
                 onChange={(e) => setConfig((c) => ({ ...c, sl: e.target.value }))}
               />
@@ -376,14 +376,14 @@ export default function SmartTradeManager({
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>
                 Take Profit {tpValidity ? (
-                  <span style={{ color: tpValidity.validForBuy || tpValidity.validForSell ? "var(--buy)" : "var(--sell)" }}>
+                  <span style={{ color: tpValidity.validForBuy || tpValidity.validForSell ? "var(--ok)" : "var(--err)" }}>
                     {tpValidity.validForBuy && tpValidity.validForSell ? "VALID" : tpValidity.validForBuy ? "valid for BUY only" : tpValidity.validForSell ? "valid for SELL only" : "INVALID"}
                   </span>
                 ) : null}
               </label>
               <input
                 className="mono"
-                style={{ width: "100%", boxShadow: config.tp !== "" && tpValidity && !tpValidity.validForBuy && !tpValidity.validForSell ? "inset 0 0 0 1.5px var(--sell)" : undefined }}
+                style={{ width: "100%", boxShadow: config.tp !== "" && tpValidity && !tpValidity.validForBuy && !tpValidity.validForSell ? "inset 0 0 0 1.5px var(--err)" : undefined }}
                 type="number" step="any" value={config.tp}
                 onChange={(e) => setConfig((c) => ({ ...c, tp: e.target.value }))}
               />

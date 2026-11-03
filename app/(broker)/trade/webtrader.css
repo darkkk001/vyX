@@ -4,7 +4,8 @@
    file now target `.wt-root` (the page's root container) instead, since
    this renders inside the app's normal <body>. */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* Fonts: Inter + JetBrains Mono are self-hosted by app/(broker)/trade/layout.tsx (next/font, weights 400-700) and reach
+   this file as --wt-font-sans / --wt-font-mono; the family names after them are the fallback for any other host. */
 
 /* html/body reset. On the website this is redundant with app/globals.css's
    Tailwind preflight -- harmless overlap. In desktop-tauri's webtrader-shell
@@ -59,19 +60,30 @@ html[data-mode="light"], html[data-mode="light"] body {
      the identical problem against its own --bg-3 and got the same
      treatment just below). */
   --text-3: #5F6976;
-  --buy: #16C784;
-  --buy-bg: #0F2A1E;
-  --buy-glow: rgba(22, 199, 132, .18);
-  --sell: #EA3943;
-  --sell-bg: #2A0F11;
-  --sell-glow: rgba(234, 57, 67, .16);
+  /* Platform colour rule (owner 2026-11-03, the same as the native terminal): BUY blue, SELL red, money never green.
+     --buy/--sell = the trade side only; --profit/--loss = money (P/L, win rate); --ok = status (LIVE, connected,
+     approved); --err = error text; --tick-up/--tick-down = price direction (ticks, candles), which stays green/red. */
+  --buy: #4A7DD6;
+  --buy-bg: #121D33;
+  --buy-glow: rgba(74, 125, 214, .22);
+  --sell: #C84A4A;
+  --sell-bg: #2A1414;
+  --sell-glow: rgba(200, 74, 74, .20);
+  --profit: var(--buy);
+  --loss: var(--sell);
+  --ok: #16C784;
+  --ok-bg: #0F2A1E;
+  --err: #E06464;
+  --tick-up: #16C784;
+  --tick-down: #EA3943;
+  --on-side: #FFFFFF;
   --warn: #F0B90B;
   --warn-bg: rgba(240, 185, 11, 0.12);
-  --accent: var(--brand-primary, #16C784);
-  --accent-bg: #0F2A1E;
-  --accent-glow: rgba(22, 199, 132, .18);
-  --brand: var(--brand-primary, #16C784);
-  --brand-dim: #0F2A1E;
+  --accent: var(--brand-primary, #6C7BF2);
+  --accent-bg: color-mix(in srgb, var(--accent) 14%, var(--bg-1));
+  --accent-glow: color-mix(in srgb, var(--accent) 22%, transparent);
+  --brand: var(--brand-primary, #6C7BF2);
+  --brand-dim: color-mix(in srgb, var(--brand) 16%, var(--bg-1));
   --radius: 10px;
 }
 
@@ -92,12 +104,19 @@ html[data-mode="light"], html[data-mode="light"] body {
      3.04:1 against --bg-1 -- both under the 3:1 UI-text floor; measured
      with the theme work's contrast script, not eyeballed). */
   --text-3: #636D7A;
-  --buy: #1FD68A;
-  --buy-bg: #0D2A20;
-  --buy-glow: rgba(31, 214, 138, .18);
-  --sell: #F0475A;
-  --sell-bg: #2E1218;
-  --sell-glow: rgba(240, 71, 90, .16);
+  --buy: #4A7DD6;
+  --buy-bg: #111C32;
+  --buy-glow: rgba(74, 125, 214, .22);
+  --sell: #C84A4A;
+  --sell-bg: #2A1414;
+  --sell-glow: rgba(200, 74, 74, .20);
+  --profit: var(--buy);
+  --loss: var(--sell);
+  --ok: #1FD68A;
+  --ok-bg: #0D2A20;
+  --err: #E06464;
+  --tick-up: #1FD68A;
+  --tick-down: #F0475A;
   --warn: #F0B90B;
   --warn-bg: rgba(240, 185, 11, 0.12);
   --accent: #7C6FFF;
@@ -120,18 +139,8 @@ html[data-mode="light"], html[data-mode="light"] body {
    black, exactly this bug, before this block was moved below). Soft-white
    surfaces, dark text, subtle borders per spec.
 
-   --buy and --warn are deliberately DARKER here than their dark-theme
-   values -- not a different color family, the same green/amber hue
-   adjusted for contrast: the literal dark-theme hex values measure
-   2.20:1 and 1.80:1 against a white background (checked with a real WCAG
-   relative-luminance script, not eyeballed), both well under even the
-   lenient 3:1 UI-component floor, because every one of the ~30 call
-   sites across webtrader.css/WebTrader.tsx that colors P&L/Chg%/status
-   text with var(--buy)/var(--warn) puts it directly on a page surface,
-   not inside a filled badge. --sell needed no change (EA3943 already
-   clears 4.07:1 on white). Every text-1/2/3, buy/sell/warn pairing in
-   this file passes WCAG AA (4.5:1 body text, 3:1 large text/UI) against
-   every bg-0..3 -- see the theme work's own contrast-check script. */
+   Light values are darker than the dark-theme ones so text on a white surface keeps WCAG AA: --buy #2F6BD8 (4.9:1),
+   --sell #C84A4A (4.6:1), --ok #0A7A4D, --err #B3261E, --warn #8A5A05 on #FFFFFF. */
 .wt-root[data-mode="light"] {
   --bg-0: #F8F9FB;
   --bg-1: #FFFFFF;
@@ -143,19 +152,26 @@ html[data-mode="light"], html[data-mode="light"] body {
   --text-1: #14181F;
   --text-2: #4B5563;
   --text-3: #6B7280;
-  --buy: #0A7A4D;
-  --buy-bg: #E3FBF0;
-  --buy-glow: rgba(10, 122, 77, .12);
-  --sell: #EA3943;
-  --sell-bg: #FDEAEB;
-  --sell-glow: rgba(234, 57, 67, .10);
+  --buy: #2F6BD8;
+  --buy-bg: #E9F0FC;
+  --buy-glow: rgba(47, 107, 216, .14);
+  --sell: #C84A4A;
+  --sell-bg: #FBECEC;
+  --sell-glow: rgba(200, 74, 74, .12);
+  --profit: var(--buy);
+  --loss: var(--sell);
+  --ok: #0A7A4D;
+  --ok-bg: #E3FBF0;
+  --err: #B3261E;
+  --tick-up: #0A7A4D;
+  --tick-down: #C8323C;
   --warn: #8A5A05;
   --warn-bg: rgba(138, 90, 5, 0.10);
-  --accent: var(--brand-primary, #0A7A4D);
-  --accent-bg: #E3FBF0;
-  --accent-glow: rgba(10, 122, 77, .12);
-  --brand: var(--brand-primary, #0A7A4D);
-  --brand-dim: #E3FBF0;
+  --accent: var(--brand-primary, #4F5BD5);
+  --accent-bg: color-mix(in srgb, var(--accent) 10%, var(--bg-1));
+  --accent-glow: color-mix(in srgb, var(--accent) 14%, transparent);
+  --brand: var(--brand-primary, #4F5BD5);
+  --brand-dim: color-mix(in srgb, var(--brand) 12%, var(--bg-1));
 }
 
 .wt-root * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -192,15 +208,16 @@ html[data-mode="light"], html[data-mode="light"] body {
 .pending-select:focus-visible,
 .generic-modal-input:focus-visible,
 .history-period-select:focus-visible,
-.history-custom-range input:focus-visible {
+.history-custom-range input:focus-visible,
+.field input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(30, 217, 144, 0.12);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .wt-root {
   background: var(--bg-0);
   color: var(--text-1);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--wt-font-sans, 'Inter'), system-ui, sans-serif;
   height: 100vh;
   /* Mobile browsers resize their own chrome (address bar) in and out of
      the classic 100vh, which used to leave the bottom nav bar
@@ -214,7 +231,10 @@ html[data-mode="light"], html[data-mode="light"] body {
   flex-direction: column;
 }
 
-.wt-root .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.wt-root .mono { font-family: var(--wt-font-mono, 'JetBrains Mono'), ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+/* every figure column lines up digit under digit (prices, lots, P/L), mono or not */
+.wt-root .pos-cell, .wt-root .status-value, .wt-root .balance-value, .wt-root .metric-value,
+.wt-root .history-summary, .wt-root .pos-total-footer, .wt-root .sp-value, .wt-root .chart-price { font-variant-numeric: tabular-nums; }
 
 /* ---------- APP SHELL ----------
    flex: 1 (not a fixed 100vh) so the desktop title bar — a sibling before
@@ -235,7 +255,7 @@ html[data-mode="light"], html[data-mode="light"] body {
    header instead of two visually distinct strips stacked on each other. */
 .topbar-desktop {
   border-bottom-color: rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, rgba(244, 85, 28, 0.04), var(--bg-1) 60%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--brand) 4%, transparent), var(--bg-1) 60%);
 }
 .topbar-center { justify-self: center; }
 .topbar-right { justify-self: end; }
@@ -248,7 +268,7 @@ html[data-mode="light"], html[data-mode="light"] body {
 }
 .broker-logo-mark {
   width: 22px; height: 22px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--brand), #0F2A1E);
+  background: linear-gradient(135deg, var(--brand), color-mix(in srgb, var(--brand) 45%, #000));
   color: #fff; font-weight: 700; font-size: 12px;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0; overflow: hidden;
@@ -271,7 +291,7 @@ html[data-mode="light"], html[data-mode="light"] body {
 .acc-option-top { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; margin-bottom: 3px; }
 .acc-badge { font-size: 9.5px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
 .acc-badge.demo { background: var(--bg-3); color: var(--text-3); }
-.acc-badge.live { background: var(--buy-bg); color: var(--buy); }
+.acc-badge.live { background: var(--ok-bg); color: var(--ok); }
 .acc-option-balance { font-size: 11px; color: var(--text-3); }
 .funds-btn {
   display: flex; align-items: center; gap: 6px; background: var(--bg-3);
@@ -286,7 +306,7 @@ html[data-mode="light"], html[data-mode="light"] body {
 }
 .bell-btn:hover { border-color: var(--text-3); }
 .bell-count {
-  position: absolute; top: -4px; right: -4px; background: var(--sell); color: #fff;
+  position: absolute; top: -4px; right: -4px; background: var(--err); color: #fff;
   font-size: 9px; font-weight: 700; border-radius: 50%; width: 14px; height: 14px;
   display: flex; align-items: center; justify-content: center;
 }
@@ -295,17 +315,17 @@ html[data-mode="light"], html[data-mode="light"] body {
   flex: 1; padding: 7px; font-size: 12px; border-radius: 7px; cursor: pointer;
   background: var(--bg-3); color: var(--text-3); border: 1px solid var(--border-strong);
 }
-.funds-tab.active { background: var(--bg-4); color: var(--text-1); border-color: var(--text-2); }
+.funds-tab.active { background: var(--bg-4); color: var(--text-1); border-color: var(--brand); }
 .method-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .method-btn {
   font-size: 11px; padding: 6px 10px; border-radius: 6px; cursor: pointer;
   background: var(--bg-3); color: var(--text-2); border: 1px solid var(--border-strong);
 }
-.method-btn.active { border-color: var(--text-2); color: var(--text-1); }
+.method-btn.active { border-color: var(--brand); color: var(--text-1); }
 .margin-call-banner {
-  display: none; background: var(--sell-bg); color: var(--sell);
+  display: none; background: color-mix(in srgb, var(--err) 12%, var(--bg-1)); color: var(--err);
   font-size: 12px; padding: 8px 16px; text-align: center; font-weight: 500;
-  border-bottom: 1px solid var(--sell);
+  border-bottom: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
 }
 .margin-call-banner.show { display: block; }
 .symbol-info-btn { background: none; border: none; color: var(--text-3); cursor: pointer; padding: 2px; display: flex; align-items: center; }
@@ -316,10 +336,10 @@ html[data-mode="light"], html[data-mode="light"] body {
 .analytics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 6px 4px; }
 .metric-card { background: var(--bg-3); border-radius: 8px; padding: 12px; }
 .metric-label { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
-.metric-value { font-size: 18px; font-weight: 600; }
+.metric-value { font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
 .nav { display: flex; gap: 22px; margin-left: 28px; font-size: 13px; color: var(--text-2); }
 .nav .item { cursor: pointer; padding: 4px 0; border-bottom: 2px solid transparent; transition: color .15s; }
-.nav .item.active { color: var(--text-1); border-color: var(--text-1); }
+.nav .item.active { color: var(--text-1); border-color: var(--brand); }
 .nav .item:hover { color: var(--text-1); }
 .topbar-left { display: flex; align-items: center; }
 .topbar-right { display: flex; align-items: center; gap: 18px; }
@@ -331,7 +351,7 @@ html[data-mode="light"], html[data-mode="light"] body {
 .eye-toggle-btn:hover { color: var(--text-1); }
 .balance-block { text-align: right; }
 .balance-label { font-size: 10px; color: var(--text-3); letter-spacing: .04em; text-transform: uppercase; }
-.balance-value { font-size: 14px; font-weight: 600; }
+.balance-value { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .avatar {
   width: 28px; height: 28px; border-radius: 50%;
   background: var(--bg-3); border: 1px solid var(--border-strong);
@@ -346,9 +366,9 @@ html[data-mode="light"], html[data-mode="light"] body {
 /* LIVE reads as "real money, pay attention" -- but red means error/danger
    everywhere else in this UI (sell side, rejections, validation), so a red
    LIVE badge read as something being WRONG, not just "this is the real
-   account." Green (var(--buy), same as .acc-badge.live already used two
+   account." Green (var(--ok), the status colour, same as .acc-badge.live two
    rules up) matches every other LIVE indicator in the terminal. */
-.mode-toggle.live { color: var(--buy); border-color: var(--buy); }
+.mode-toggle.live { color: var(--ok); border-color: var(--ok); }
 #modeToggleAccNum, .mode-toggle-acc-num { color: var(--text-3); font-size: 10px; }
 #modeToggleLabel, .mode-toggle-label { font-size: 9.5px; font-weight: 600; letter-spacing: .02em; }
 
@@ -365,7 +385,7 @@ html[data-mode="light"], html[data-mode="light"] body {
   transition: background .15s, color .15s;
 }
 .rail-item:hover { background: var(--bg-3); color: var(--text-2); }
-.rail-item.active { background: var(--bg-3); color: var(--text-1); }
+.rail-item.active { background: var(--bg-3); color: var(--text-1); box-shadow: inset 2px 0 0 var(--brand); }
 .rail-sep { width: 22px; height: 1px; background: var(--border); margin: 6px 0; }
 .rail-bottom { margin-top: auto; }
 
@@ -470,15 +490,15 @@ html[data-mode="light"], html[data-mode="light"] body {
 .wl-category-header:first-child { padding-top: 2px; }
 .wl-item { display: grid; align-items: center; gap: 6px; padding: 8px 8px; border-radius: 8px; cursor: pointer; font-size: 12px; margin-bottom: 1px; transition: background .12s; }
 .wl-item:hover { background: var(--bg-3); }
-.wl-item.active { background: var(--bg-3); }
+.wl-item.active { background: var(--bg-3); box-shadow: inset 2px 0 0 var(--brand); }
 .wl-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-symbol { font-weight: 500; color: var(--text-1); }
 .wl-price-cell { display: flex; align-items: center; }
 .wl-price { transition: color .3s; }
-.wl-price.up { color: var(--buy); }
-.wl-price.down { color: var(--sell); }
-.wl-pos { color: var(--buy); }
-.wl-neg { color: var(--sell); }
+.wl-price.up { color: var(--tick-up); }
+.wl-price.down { color: var(--tick-down); }
+.wl-pos { color: var(--profit); }
+.wl-neg { color: var(--loss); }
 /* Hover-only: hidden until the row is hovered (or the alert is already
    set, so an existing alert stays visible as a status indicator without
    needing to hover to find it) -- not a permanent column, per the
@@ -538,12 +558,13 @@ html[data-mode="light"], html[data-mode="light"] body {
 .center { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--border); overflow: hidden; }
 .chart-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); flex-shrink: 0; }
 .chart-title { display: flex; align-items: center; gap: 10px; }
-.chart-symbol { font-size: 14px; font-weight: 600; }
-.chart-price { font-size: 14px; font-weight: 600; }
+.chart-symbol { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.chart-price { font-size: 16px; font-weight: 600; }
 .chart-change { font-size: 11px; padding: 2px 6px; border-radius: 4px; }
 .chart-spread { font-size: 11px; color: var(--text-3); }
 .timeframes { display: flex; gap: 4px; }
 .tf-btn { font-size: 11px; color: var(--text-3); padding: 4px 9px; border-radius: 6px; cursor: pointer; background: transparent; border: none; }
+.tf-btn:hover { color: var(--text-2); }
 .tf-btn.active { background: var(--bg-3); color: var(--text-1); }
 
 .chart-area { flex: 1; background: var(--bg-0); position: relative; min-height: 180px; }
@@ -574,14 +595,15 @@ html[data-mode="light"], html[data-mode="light"] body {
    second flex child in document order, always immediately after the
    collapse chevron, on every tab. */
 .tabs-row { display: flex; align-items: center; padding: 10px 16px 0; border-bottom: 1px solid var(--border); }
-.tabs { display: flex; gap: 18px; font-size: 12px; color: var(--text-3); }
-.tab { padding-bottom: 9px; cursor: pointer; border-bottom: 2px solid transparent; }
-.tab.active { color: var(--text-1); border-color: var(--text-1); }
+.tabs { display: flex; gap: 15px; font-size: 12px; color: var(--text-3); }
+.tab { padding-bottom: 9px; cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+.tab:hover { color: var(--text-2); }
+.tab.active { color: var(--text-1); border-color: var(--brand); }
 .bulk-actions { display: flex; gap: 6px; padding-bottom: 8px; margin-left: auto; }
-.bulk-btn { font-size: 10.5px; padding: 4px 9px; border-radius: 6px; cursor: pointer; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--border-strong); transition: filter .12s, opacity .12s; }
+.bulk-btn { white-space: nowrap; font-size: 10.5px; padding: 4px 9px; border-radius: 6px; cursor: pointer; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--border-strong); transition: filter .12s, opacity .12s; }
 .bulk-btn:hover { filter: brightness(1.15); }
-.bulk-btn.profit { color: var(--buy); border-color: var(--buy-bg); }
-.bulk-btn.loss { color: var(--sell); border-color: var(--sell-bg); }
+.bulk-btn.profit { color: var(--profit); border-color: color-mix(in srgb, var(--profit) 30%, transparent); }
+.bulk-btn.loss { color: var(--loss); border-color: color-mix(in srgb, var(--loss) 30%, transparent); }
 .bulk-btn.all { color: var(--text-1); }
 .bulk-btn:disabled { opacity: .35; cursor: not-allowed; }
 .panel-body { flex: 1; overflow: auto; padding: 0 16px 6px; }
@@ -601,16 +623,24 @@ html[data-mode="light"], html[data-mode="light"] body {
   font-size: 12.5px; min-width: 960px;
 }
 .position-row:last-child { border-bottom: none; }
+/* the trade side as a 2 px bar at the row's left edge (WebTrader.tsx adds side-buy / side-sell) */
+.position-row.side-buy, .orders-row.side-buy, .history-row.side-buy { box-shadow: inset 2px 0 0 var(--buy); }
+.position-row.side-sell, .orders-row.side-sell, .history-row.side-sell { box-shadow: inset 2px 0 0 var(--sell); }
+.position-row:hover, .orders-row:hover, .net-row:hover, .history-row:not(.history-child):hover { background: var(--bg-2); }
 .pos-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pos-total-footer {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 14px; border-top: 1px solid var(--border-strong);
-  background: var(--bg-2); font-size: 12.5px; font-weight: 600; position: sticky; bottom: 0;
+  padding: 9px 14px; border-top: 1px solid var(--border-strong);
+  background: var(--bg-2); font-size: 12.5px; font-weight: 600; position: sticky; bottom: 0; gap: 18px;
+  /* the visible width of the panel (the table scrolls sideways under it), so the total is never off-screen */
+  width: 100%; max-width: 100%;
 }
-.pos-total-footer span:first-child { color: var(--text-2); text-transform: uppercase; font-size: 10px; letter-spacing: .03em; }
-.pos-total-footer span:last-child { font-size: 14px; }
+.pos-total-footer span:first-child { color: var(--text-3); text-transform: uppercase; font-size: 10px; letter-spacing: .05em; font-weight: 600; }
+.pos-total-footer span:last-child { font-size: 15px; }
+.pos-total-footer .pos { color: var(--profit); }
+.pos-total-footer .neg { color: var(--loss); }
 .pos-symbol { font-weight: 500; }
-.pos-side { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600; display: inline-block; }
+.pos-side { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600; display: inline-block; letter-spacing: .03em; }
 .pos-side.buy { background: var(--buy-bg); color: var(--buy); }
 .pos-side.sell { background: var(--sell-bg); color: var(--sell); }
 .pos-comment { color: var(--text-3); cursor: pointer; font-size: 11.5px; border-bottom: 1px dashed transparent; }
@@ -622,8 +652,8 @@ html[data-mode="light"], html[data-mode="light"] body {
    two never had a click handler at all -- cursor: default says so. */
 .pos-swap, .pos-commission { color: var(--text-3); font-size: 11.5px; cursor: default; }
 .pos-pnl { font-weight: 600; font-size: 12.5px; }
-.pos-pnl.pos { color: var(--buy); }
-.pos-pnl.neg { color: var(--sell); }
+.pos-pnl.pos { color: var(--profit); }
+.pos-pnl.neg { color: var(--loss); }
 
 /* History tab -- same column-table pattern as .pos-table-header/
    .position-row above (reuses .pos-cell/.pos-symbol/.pos-side/.pos-pnl
@@ -663,13 +693,13 @@ html[data-mode="light"], html[data-mode="light"] body {
 }
 .sltp-pill:hover { border-color: var(--border-strong); color: var(--text-2); }
 .near-hit { animation: pulseNear 1.1s ease-in-out infinite; font-weight: 600; }
-.near-hit.near-sl { color: var(--sell) !important; }
-.near-hit.near-tp { color: var(--buy) !important; }
-@keyframes pulseNear { 0%,100% { box-shadow: 0 0 0 0 rgba(234,57,67,0); } 50% { box-shadow: 0 0 0 3px rgba(234,57,67,.25); } }
+.near-hit.near-sl { color: var(--loss) !important; }
+.near-hit.near-tp { color: var(--profit) !important; }
+@keyframes pulseNear { 0%,100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--loss) 25%, transparent); } }
 .near-hit.near-tp { animation-name: pulseNearTp; }
-@keyframes pulseNearTp { 0%,100% { box-shadow: 0 0 0 0 rgba(22,199,132,0); } 50% { box-shadow: 0 0 0 3px rgba(22,199,132,.25); } }
+@keyframes pulseNearTp { 0%,100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--profit) 25%, transparent); } }
 .inline-edit-input { width: 66px; background: var(--bg-2); border: 1px solid var(--text-2); border-radius: 5px; color: var(--text-1); font-size: 11px; padding: 3px 6px; outline: none; }
-.inline-edit-input.invalid { border-color: var(--sell); background: rgba(234,57,67,0.12); color: var(--sell); }
+.inline-edit-input.invalid { border-color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
 .sltp-label { color: var(--text-3); }
 .sltp-sep { color: var(--border-strong); }
 .net-pos-detail { color: var(--text-3); font-size: 11px; }
@@ -746,7 +776,7 @@ html[data-mode="light"], html[data-mode="light"] body {
 .simple-right { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 .icon-btn { background: none; border: none; color: var(--text-3); cursor: pointer; padding: 4px; border-radius: 5px; display: flex; align-items: center; transition: color .15s, background .15s; }
 .icon-btn:hover { color: var(--text-1); background: var(--bg-3); }
-.empty-state { color: var(--text-3); font-size: 12px; text-align: center; padding: 30px 0; }
+.empty-state { color: var(--text-3); font-size: 12.5px; text-align: center; padding: 36px 0; letter-spacing: .01em; }
 
 /* ---------- ORDER PANEL ---------- */
 /* min-width: 0 overrides a CSS Grid item's default min-width: auto,
@@ -765,33 +795,31 @@ html[data-mode="light"], html[data-mode="light"] body {
 .oc-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
 .buysell-btn {
   padding: 11px;
-  border-radius: 10px;
+  border-radius: 8px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  transition: transform .12s ease, filter .12s ease, box-shadow .12s ease;
+  border: 1px solid transparent;
+  color: var(--on-side);
+  transition: filter .12s ease, box-shadow .12s ease;
 }
-.buysell-btn:not(:disabled):hover { transform: translateY(-1px); filter: brightness(1.08); }
-.buysell-btn:not(:disabled):active { transform: translateY(0); }
+.buysell-btn:not(:disabled):hover { filter: brightness(1.08); }
+.buysell-btn:not(:disabled):active { filter: brightness(.95); }
 .buysell-btn:disabled { opacity: .35; cursor: not-allowed; }
-.buysell-btn.selected { box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px currentColor; }
+.buysell-btn.selected { box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px var(--text-2); }
 
-.sentiment-box { background: var(--bg-3); border-radius: 10px; padding: 10px; margin-bottom: 12px; }
+.sentiment-box { margin-bottom: 12px; }
 .sentiment-prices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-.sentiment-price-btn { border: none; border-radius: 8px; padding: 9px; cursor: pointer; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; transition: filter .12s, opacity .12s; }
-.sentiment-price-btn:not(:disabled):hover { filter: brightness(1.1); }
+/* Sell left, Buy right, solid side colour, white text, the price large (the native terminal's ticket) */
+.sentiment-price-btn { border: none; border-radius: 8px; padding: 9px 12px 10px; cursor: pointer; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; color: var(--on-side); transition: filter .12s, opacity .12s; }
+.sentiment-price-btn:not(:disabled):hover { filter: brightness(1.08); }
+.sentiment-price-btn:not(:disabled):active { filter: brightness(.95); }
 .sentiment-price-btn:disabled { opacity: .35; cursor: not-allowed; }
-.sentiment-price-btn.sell { background: var(--sell-bg); }
-.sentiment-price-btn.buy { background: var(--buy-bg); }
-.sentiment-price-btn.selected { box-shadow: 0 0 0 2px var(--bg-3), 0 0 0 4px currentColor; }
-.sp-label { font-size: 11px; }
-.sentiment-price-btn.sell .sp-label { color: var(--sell); }
-.sentiment-price-btn.buy .sp-label { color: var(--buy); }
-.sp-value { font-size: 17px; font-weight: 600; }
-.sentiment-price-btn.sell .sp-value { color: var(--sell); }
-.sentiment-price-btn.buy .sp-value { color: var(--buy); }
+.sentiment-price-btn.sell { background: var(--sell); }
+.sentiment-price-btn.buy { background: var(--buy); align-items: flex-end; }
+.sentiment-price-btn.selected { box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px var(--text-2); }
+.sp-label { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; opacity: .85; }
+.sp-value { font-size: 18px; font-weight: 600; min-height: 22px; }
 .sentiment-bar-row { display: flex; align-items: center; gap: 8px; }
 .sentiment-pct { font-size: 10.5px; font-weight: 600; }
 .sentiment-pct.sell { color: var(--sell); }
@@ -799,53 +827,57 @@ html[data-mode="light"], html[data-mode="light"] body {
 .sentiment-bar { flex: 1; height: 4px; background: var(--sell); border-radius: 2px; overflow: hidden; }
 .sentiment-bar-fill { height: 100%; background: var(--buy); border-radius: 2px 0 0 2px; }
 
-.confirm-market-btn { width: 100%; margin-top: 10px; padding: 11px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; color: #04140C; transition: filter .12s; }
+.confirm-market-btn { width: 100%; margin-top: 10px; padding: 11px; border-radius: 8px; font-size: 13px; font-weight: 600; letter-spacing: .01em; cursor: pointer; border: none; color: var(--on-side); transition: filter .12s; }
 .confirm-market-btn:hover { filter: brightness(1.08); }
+.confirm-market-btn:active { filter: brightness(.95); }
 .confirm-market-btn.buy { background: var(--buy); }
-.confirm-market-btn.sell { background: var(--sell); color: #2A0808; }
-.buysell-btn.buy {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--buy) 65%, transparent), color-mix(in srgb, var(--buy) 42%, transparent));
-  border: 1px solid color-mix(in srgb, var(--buy) 55%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 6px 18px -8px var(--buy-glow);
-  color: #eafff5;
-}
-.buysell-btn.sell {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--sell) 65%, transparent), color-mix(in srgb, var(--sell) 42%, transparent));
-  border: 1px solid color-mix(in srgb, var(--sell) 55%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 6px 18px -8px var(--sell-glow);
-  color: #fff0f0;
-}
+.confirm-market-btn.sell { background: var(--sell); }
+.buysell-btn.buy { background: var(--buy); }
+.buysell-btn.sell { background: var(--sell); }
 .btn-sub { display: block; font-size: 10px; font-weight: 400; opacity: .75; margin-top: 1px; }
 
 .field-group { background: var(--bg-3); border-radius: 8px; padding: 4px 12px; margin-bottom: 10px; }
-.field { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--bg-2); }
+.field { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--bg-2); }
 .field:last-child { border-bottom: none; }
-.field-label { font-size: 12px; color: var(--text-2); }
-.field input { background: none; border: none; color: var(--text-1); text-align: right; font-size: 12.5px; width: 80px; font-family: 'JetBrains Mono', monospace; outline: none; }
-.field input.invalid { color: var(--sell); }
-.input-with-clear { display: flex; align-items: center; gap: 4px; }
-.input-with-clear input { width: 70px; }
+.field-label { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+/* the ticket's values read as inputs: a field, a border, the accent on focus */
+.field input { background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; color: var(--text-1); text-align: right; font-size: 12.5px; width: 96px; font-family: var(--wt-font-mono, 'JetBrains Mono'), monospace; font-variant-numeric: tabular-nums; outline: none; transition: border-color .12s, box-shadow .12s; }
+.field input::placeholder { color: var(--text-3); }
+.field input.invalid { color: var(--err); border-color: color-mix(in srgb, var(--err) 60%, transparent); }
+.input-with-clear { display: flex; align-items: center; gap: 6px; }
+.input-with-clear input { width: 84px; }
 .clear-input-btn { background: var(--bg-2); border: 1px solid var(--border-strong); color: var(--text-3); border-radius: 5px; width: 16px; height: 16px; font-size: 9px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: color .12s, border-color .12s; }
-.clear-input-btn:hover { color: var(--sell); border-color: var(--sell); }
-.lot-stepper { display: flex; align-items: center; gap: 8px; }
-.stepper-btn { width: 20px; height: 20px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--border-strong); color: var(--text-2); cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center; }
-.stepper-btn:hover { color: var(--text-1); }
+.clear-input-btn:hover { color: var(--err); border-color: var(--err); }
+.lot-stepper { display: flex; align-items: center; gap: 6px; }
+.stepper-btn { width: 26px; height: 26px; border-radius: 6px; background: var(--bg-2); border: 1px solid var(--border-strong); color: var(--text-2); cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center; transition: color .12s, border-color .12s; }
+.stepper-btn:hover { color: var(--text-1); border-color: var(--text-3); }
+.stepper-btn:active { background: var(--bg-4); }
+.stepper-btn:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.lot-stepper input { width: 58px !important; text-align: center; }
+/* quick lot sizes under the volume */
+.lot-presets { display: flex; justify-content: flex-end; gap: 4px; padding: 0 0 7px; border-bottom: 1px solid var(--bg-2); }
+.lot-preset { font-size: 10.5px; padding: 3px 8px; border-radius: 5px; cursor: pointer; background: var(--bg-2); color: var(--text-2); border: 1px solid var(--border-strong); font-family: var(--wt-font-mono, 'JetBrains Mono'), monospace; font-variant-numeric: tabular-nums; }
+.lot-preset:hover { color: var(--text-1); border-color: var(--text-3); }
+.lot-preset.active { color: var(--text-1); border-color: var(--brand); }
 
 .margin-note { font-size: 11px; color: var(--text-3); margin-top: 6px; }
 .margin-note span { color: var(--text-2); }
 
-.sltp-preview { font-size: 11px; color: var(--text-2); margin-top: 8px; line-height: 1.7; background: var(--bg-3); border-radius: 7px; padding: 8px 10px; }
-.sltp-preview .pos { color: var(--buy); }
-.sltp-preview .neg { color: var(--sell); }
+.sltp-preview { font-size: 11.5px; color: var(--text-2); margin-top: 8px; line-height: 1.75; background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-variant-numeric: tabular-nums; }
+.sltp-preview .pos { color: var(--profit); }
+.sltp-preview .neg { color: var(--loss); }
 .sltp-preview .hint-sub { font-size: 0.82em; opacity: .65; }
 
 .order-type-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
-.ot-tab { flex: 1; padding: 7px; font-size: 12px; border-radius: 7px; cursor: pointer; background: var(--bg-3); color: var(--text-3); border: 1px solid var(--border-strong); }
-.ot-tab.active { background: var(--bg-4); color: var(--text-1); border-color: var(--text-2); }
+.ot-tab { flex: 1; padding: 7px; font-size: 12px; font-weight: 500; border-radius: 7px; cursor: pointer; background: var(--bg-3); color: var(--text-3); border: 1px solid var(--border-strong); transition: color .12s, border-color .12s; }
+.ot-tab:hover { color: var(--text-2); }
+.ot-tab.active { background: var(--bg-4); color: var(--text-1); border-color: var(--brand); }
 
 .pending-select { width: 100%; background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px 10px; font-size: 12.5px; outline: none; }
 
-.place-pending-btn { width: 100%; padding: 11px; border-radius: 8px; font-size: 13px; font-weight: 600; background: var(--brand); color: #04140C; border: none; cursor: pointer; margin-bottom: 12px; }
+/* the pending order's own side colour (buy limit / stop = blue, sell = red), like the market confirm */
+.place-pending-btn { width: 100%; padding: 11px; border-radius: 8px; font-size: 13px; font-weight: 600; background: var(--buy); color: var(--on-side); border: none; cursor: pointer; margin-bottom: 12px; transition: filter .12s; }
+.place-pending-btn.sell { background: var(--sell); }
 .place-pending-btn:hover { filter: brightness(1.08); }
 
 .occ-toggle-row { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
@@ -857,22 +889,27 @@ html[data-mode="light"], html[data-mode="light"] body {
 .switch input:checked + .switch-slider:before { transform: translateX(16px); background: var(--brand); }
 
 /* ---------- MODALS ---------- */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 50; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(4, 6, 9, .62); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); display: none; align-items: center; justify-content: center; z-index: 50; }
+.wt-root[data-mode="light"] .modal-overlay { background: rgba(20, 24, 31, .32); }
 .modal-overlay.show { display: flex; }
-.share-card { width: 280px; border-radius: 18px; padding: 20px; border: 1px solid var(--buy); background: linear-gradient(165deg, var(--buy-bg) 0%, var(--bg-0) 65%); position: relative; }
-.share-card.sell-mode { border-color: var(--sell); background: linear-gradient(165deg, var(--sell-bg) 0%, var(--bg-0) 65%); }
+.modal-overlay.show > * { animation: wtDialogIn .14s ease-out; }
+@keyframes wtDialogIn { from { opacity: 0; transform: translateY(4px) scale(.985); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .modal-overlay.show > * { animation: none; } }
+.share-card { width: 280px; border-radius: 14px; padding: 20px; border: 1px solid var(--profit); background: linear-gradient(165deg, color-mix(in srgb, var(--profit) 14%, var(--bg-1)) 0%, var(--bg-0) 65%); position: relative; }
+/* the P/L card follows the money: profit blue, loss red (sell-mode = a loss) */
+.share-card.sell-mode { border-color: var(--loss); background: linear-gradient(165deg, color-mix(in srgb, var(--loss) 14%, var(--bg-1)) 0%, var(--bg-0) 65%); }
 .share-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .share-logo { font-size: 15px; font-weight: 600; color: var(--text-1); }
 .share-logo-img { height: 18px; max-width: 120px; object-fit: contain; display: block; }
 .share-symbol-tag { font-size: 10px; color: var(--text-3); }
 .share-pnl-block { text-align: center; margin: 14px 0 18px; }
 .share-pnl-label { font-size: 11px; color: var(--text-3); margin-bottom: 6px; }
-.share-pnl-value { font-size: 30px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-.share-pnl-pct { font-size: 13px; font-weight: 500; margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+.share-pnl-value { font-size: 30px; font-weight: 700; font-family: var(--wt-font-mono, 'JetBrains Mono'), monospace; }
+.share-pnl-pct { font-size: 13px; font-weight: 500; margin-top: 2px; font-family: var(--wt-font-mono, 'JetBrains Mono'), monospace; }
 .share-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
 .share-stat { background: var(--bg-2); border-radius: 7px; padding: 9px; }
 .share-stat-label { font-size: 10px; color: var(--text-3); }
-.share-stat-value { font-size: 12px; margin-top: 3px; font-weight: 500; font-family: 'JetBrains Mono', monospace; }
+.share-stat-value { font-size: 12px; margin-top: 3px; font-weight: 500; font-family: var(--wt-font-mono, 'JetBrains Mono'), monospace; }
 .share-footer { text-align: center; font-size: 10px; color: var(--text-3); }
 .modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: center; }
 /* Base rule intentionally themed the same as .secondary below -- a bare
@@ -881,9 +918,12 @@ html[data-mode="light"], html[data-mode="light"] body {
    falling back to the browser's default white button. Barely noticeable
    inside a dark modal overlay; glaring once embedded directly in the
    Watchlist sidebar with no backdrop behind it. */
-.modal-btn { padding: 9px 18px; border-radius: 8px; font-size: 12.5px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 7px; background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); }
+.modal-btn { padding: 9px 18px; border-radius: 8px; font-size: 12.5px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 7px; background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); transition: filter .12s, border-color .12s; }
+.modal-btn:hover { border-color: var(--text-3); }
 .modal-btn.secondary { background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); }
-.modal-btn.primary { background: var(--buy); color: #04140C; border: none; }
+/* the dialog's main action: neutral and strong (never a trade-side colour, which would read as BUY) */
+.modal-btn.primary { background: var(--text-1); color: var(--bg-1); border: 1px solid var(--text-1); font-weight: 600; }
+.modal-btn.primary:hover { filter: brightness(.92); }
 .modal-close { position: absolute; top: -14px; right: -14px; width: 28px; height: 28px; border-radius: 50%; background: var(--bg-2); border: 1px solid var(--border-strong); color: var(--text-1); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .modal-wrap { position: relative; }
 
@@ -891,12 +931,12 @@ html[data-mode="light"], html[data-mode="light"] body {
 .wt-root ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
 .wt-root ::-webkit-scrollbar-track { background: transparent; }
 
-.sltp-edit-card { width: 240px; background: var(--bg-1); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px; }
+.sltp-edit-card { width: 240px; background: var(--bg-1); border: 1px solid var(--border-strong); border-radius: 12px; padding: 18px; box-shadow: 0 24px 48px -16px rgba(0,0,0,.5); }
 .sltp-edit-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; font-size: 13px; font-weight: 600; }
 .sltp-edit-side { font-size: 11px; color: var(--text-3); font-weight: 500; }
 
-.generic-modal-card { width: 260px; background: var(--bg-1); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px; }
-.generic-modal-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.generic-modal-card { width: 260px; background: var(--bg-1); border: 1px solid var(--border-strong); border-radius: 12px; padding: 18px; box-shadow: 0 24px 48px -16px rgba(0,0,0,.5); }
+.generic-modal-title { font-size: 13.5px; font-weight: 600; margin-bottom: 8px; letter-spacing: -.005em; }
 .generic-modal-message { font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
 .generic-modal-input { width: 100%; margin-top: 12px; background: var(--bg-3); border: 1px solid var(--border-strong); color: var(--text-1); border-radius: 7px; padding: 9px 10px; font-size: 12.5px; outline: none; }
 .quick-order-header { display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 600; margin-bottom: 14px; }
@@ -904,7 +944,7 @@ html[data-mode="light"], html[data-mode="light"] body {
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
   background: var(--bg-3); border: 1px solid var(--border-strong);
-  padding: 10px 18px; border-radius: 8px; font-size: 12.5px;
+  padding: 10px 18px; border-radius: 8px; font-size: 12.5px; box-shadow: 0 12px 28px -10px rgba(0,0,0,.45);
   opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 60;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(-6px); }
@@ -927,8 +967,8 @@ html[data-mode="light"], html[data-mode="light"] body {
 .history-period-select { background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); border-radius: 7px; padding: 6px 10px; font-size: 11.5px; outline: none; }
 .history-summary { font-size: 12px; color: var(--text-2); margin-left: auto; }
 .history-summary span { font-weight: 600; }
-.history-summary .pos { color: var(--buy); }
-.history-summary .neg { color: var(--sell); }
+.history-summary .pos { color: var(--profit); }
+.history-summary .neg { color: var(--loss); }
 .history-custom-range { display: flex; align-items: center; gap: 8px; padding: 0 4px 10px; }
 .history-custom-range input { background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); border-radius: 7px; padding: 6px 10px; font-size: 11.5px; outline: none; }
 

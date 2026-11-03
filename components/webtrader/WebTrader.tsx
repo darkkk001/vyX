@@ -52,12 +52,16 @@ import { filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } 
 import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
 import { plainError, tradeActionError, TRADE_TEXT } from "@/lib/plain-error";
 import { closesTotal, historyLines, type HistoryLine } from "@/lib/history-view";
-import { formatCsvNumber, formatMarginLevel, formatMoney, formatPercent, formatSigned, formatVolume, tone, viewAmount, TONE_COLOR, type Tone } from "@/lib/format";
+import { formatCsvNumber, formatMarginLevel, formatMoney, formatPercent, formatSigned, formatVolume, tone, viewAmount, type Tone } from "@/lib/format";
 import { DEMO_BANNER_TEXT } from "@/lib/demo-policy";
+import { wtColors } from "./wt-colors";
 import { DEMO_SYMBOLS, demoBucketStart, demoCandleOf, gridTime } from "@/lib/demo-prices";
 import { demoTicksAt, noteDemoTick } from "@/lib/demo-client";
-// WebTrader colour classes per tone (lib/format.ts): profit green, loss red, zero neutral
+// WebTrader colour classes per tone (lib/format.ts): profit blue, loss red, zero neutral (platform colour rule)
 const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
+// inline colour per tone in the WebTrader's own money tokens (webtrader.css); lib/format.ts TONE_COLOR stays on the web
+// backoffice's --buy / --sell, which the admin theme defines
+const WT_TONE_COLOR: Record<Tone, string> = { profit: "var(--profit)", loss: "var(--loss)", neutral: "var(--text-1)" };
 
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
@@ -2385,7 +2389,8 @@ export default function WebTrader({
     const range = max - min || 1;
     const step = w / (hist.length - 1);
     const up = hist[hist.length - 1] >= hist[0];
-    ctx.strokeStyle = up ? "#16C784" : "#EA3943";
+    const pal = wtColors(document.querySelector(".wt-root")?.getAttribute("data-mode"));
+    ctx.strokeStyle = up ? pal.tickUp : pal.tickDown;
     ctx.lineWidth = 1.3;
     ctx.beginPath();
     hist.forEach((v, i) => {
@@ -3370,6 +3375,8 @@ export default function WebTrader({
 
   // ---------- chart ----------
   const candles: Candle[] = m.candles[currentTf];
+  // canvas / chart-library colours for the current light or dark mode (wt-colors.ts, same values as webtrader.css)
+  const palette = useMemo(() => wtColors(chartSettings.theme), [chartSettings.theme]);
 
   const chartLines: ChartLine[] = useMemo(
     () => [...computeOrderReferenceLines(activeSymbol, pendingOrders), ...computeAlertLines(activeSymbol, alerts)],
@@ -3385,11 +3392,11 @@ export default function WebTrader({
         .filter((p) => p.symbol.name === activeSymbol)
         .map((p) => {
           const pnl = positionPnl(p);
-          const color = p.side === "BUY" ? "#16C784" : "#EA3943";
+          const color = p.side === "BUY" ? palette.buy : palette.sell;
           const label = `${p.side === "BUY" ? "B" : "S"} ${formatVolume(p.volume)} @ ${fmt(parseFloat(p.openPrice), m.def.digits)}  P/L ${formatSigned(pnl)}`;
           return { id: `pos-${p.id}`, positionId: p.id, price: parseFloat(p.openPrice), color, label };
         }),
-    [positions, activeSymbol, m.def.digits, positionPnl]
+    [positions, activeSymbol, m.def.digits, positionPnl, palette]
   );
 
   // chart interaction pack -- draggable SL/TP (real or drag-to-create
@@ -3442,7 +3449,7 @@ export default function WebTrader({
             entityType: "position",
             kind: "sl",
             price: slPrice ?? slGhostPrice,
-            color: "#EA3943",
+            color: palette.loss,
             digits: mm.def.digits,
             minDistance,
             referencePrice: mm.bid,
@@ -3459,7 +3466,7 @@ export default function WebTrader({
             entityType: "position",
             kind: "tp",
             price: tpPrice ?? tpGhostPrice,
-            color: "#16C784",
+            color: palette.profit,
             digits: mm.def.digits,
             minDistance,
             referencePrice: mm.bid,
@@ -3480,7 +3487,7 @@ export default function WebTrader({
           entityType: "order",
           kind: "pending",
           price: entryPrice,
-          color: o.side === "BUY" ? "#16C784" : "#EA3943",
+          color: o.side === "BUY" ? palette.buy : palette.sell,
           digits: mm.def.digits,
           minDistance,
           referencePrice: mm.bid,
@@ -3502,7 +3509,7 @@ export default function WebTrader({
           entityType: "order",
           kind: "sl",
           price: slPrice ?? slGhostPrice,
-          color: "#EA3943",
+          color: palette.loss,
           digits: mm.def.digits,
           minDistance,
           referencePrice: entryPrice,
@@ -3517,7 +3524,7 @@ export default function WebTrader({
           entityType: "order",
           kind: "tp",
           price: tpPrice ?? tpGhostPrice,
-          color: "#16C784",
+          color: palette.profit,
           digits: mm.def.digits,
           minDistance,
           referencePrice: entryPrice,
@@ -3526,7 +3533,7 @@ export default function WebTrader({
         });
       });
     return out;
-  }, [positions, pendingOrders, activeSymbol, market, pnlAtPrice, revealedPositionId, activeGhostKind]);
+  }, [positions, pendingOrders, activeSymbol, market, pnlAtPrice, revealedPositionId, activeGhostKind, palette]);
 
   // Click-to-reveal TP/SL feature -- the revealed position's own TP/SL
   // button state, passed to KLineChartPanel for its floating button pair.
@@ -3803,10 +3810,10 @@ export default function WebTrader({
                     <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                     <div style={{ padding: "4px 10px 2px", fontSize: 10, color: "var(--text-3)", textTransform: "uppercase" }}>Theme</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px", display: "flex", justifyContent: "space-between" }} onClick={() => changeTheme("default")}>
-                      Default {theme === "default" ? <span style={{ color: "var(--buy)" }}>✓</span> : null}
+                      Default {theme === "default" ? <span style={{ color: "var(--ok)" }}>✓</span> : null}
                     </div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px", display: "flex", justifyContent: "space-between" }} onClick={() => changeTheme("classic")}>
-                      Classic {theme === "classic" ? <span style={{ color: "var(--buy)" }}>✓</span> : null}
+                      Classic {theme === "classic" ? <span style={{ color: "var(--ok)" }}>✓</span> : null}
                     </div>
                   </div>
                 ) : null}
@@ -3849,14 +3856,14 @@ export default function WebTrader({
                       <>
                         <div
                           className="acc-option"
-                          style={{ cursor: "pointer", padding: "8px 10px", color: acctPositions.some((p) => positionPnl(p) >= 0) ? "var(--buy)" : "var(--text-3)" }}
+                          style={{ cursor: "pointer", padding: "8px 10px", color: acctPositions.some((p) => positionPnl(p) >= 0) ? "var(--profit)" : "var(--text-3)" }}
                           onClick={() => { closeManyBy("PROFIT", "Closed profitable"); setTopMenuOpen(null); }}
                         >
                           Close profitable positions
                         </div>
                         <div
                           className="acc-option"
-                          style={{ cursor: "pointer", padding: "8px 10px", color: acctPositions.some((p) => positionPnl(p) < 0) ? "var(--sell)" : "var(--text-3)" }}
+                          style={{ cursor: "pointer", padding: "8px 10px", color: acctPositions.some((p) => positionPnl(p) < 0) ? "var(--loss)" : "var(--text-3)" }}
                           onClick={() => { closeManyBy("LOSS", "Closed losing"); setTopMenuOpen(null); }}
                         >
                           Close losing positions
@@ -3940,13 +3947,13 @@ export default function WebTrader({
                 style={{
                   display: "inline-flex", alignItems: "center", gap: 5, marginLeft: 10,
                   padding: "2px 8px", borderRadius: 4, fontSize: 10.5, fontWeight: 600,
-                  background: connected ? "var(--buy-bg)" : "var(--sell-bg)",
-                  color: connected ? "var(--buy)" : "var(--sell)",
+                  background: connected ? "var(--ok-bg)" : "color-mix(in srgb, var(--err) 12%, transparent)",
+                  color: connected ? "var(--ok)" : "var(--err)",
                 }}
               >
                 <svg width="13" height="10" viewBox="0 0 15 12" style={{ flexShrink: 0 }}>
                   {[{ h: 4, y: 8 }, { h: 6.5, y: 5.5 }, { h: 9, y: 3 }, { h: 12, y: 0 }].map((b, i) => (
-                    <rect key={i} x={i * 3.9} y={b.y} width="2.6" height={b.h} rx="0.6" fill={connected ? "var(--buy)" : i === 0 ? "var(--sell)" : "#3a4150"} />
+                    <rect key={i} x={i * 3.9} y={b.y} width="2.6" height={b.h} rx="0.6" fill={connected ? "var(--ok)" : i === 0 ? "var(--err)" : "#3a4150"} />
                   ))}
                 </svg>
               </span>
@@ -4012,7 +4019,7 @@ export default function WebTrader({
                     </button>
                     <button
                       className="wl-ctx-item"
-                      style={{ background: "transparent", border: "none", textAlign: "left", width: "100%", cursor: "pointer", color: "var(--sell)" }}
+                      style={{ background: "transparent", border: "none", textAlign: "left", width: "100%", cursor: "pointer", color: "var(--err)" }}
                       onClick={handleLogout}
                     >
                       Log out
@@ -4358,11 +4365,11 @@ export default function WebTrader({
                   // that's never ticked at all this session (the else
                   // branch) has nothing real to freeze on yet.
                   <>
-                    <div className="chart-price mono" style={{ color: m.bid >= m.prevBid ? "var(--buy)" : "var(--sell)" }}>
+                    <div className="chart-price mono" style={{ color: m.bid >= m.prevBid ? "var(--tick-up)" : "var(--tick-down)" }}>
                       {fmt(m.bid, m.def.digits)}
                     </div>
                     {m.dayOpenKnown ? (
-                      <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
+                      <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "color-mix(in srgb, var(--tick-up) 14%, transparent)" : "color-mix(in srgb, var(--tick-down) 14%, transparent)", color: m.bid >= m.dayOpen ? "var(--tick-up)" : "var(--tick-down)" }}>
                         {formatPercent(((m.bid - m.dayOpen) / m.dayOpen) * 100, 2)}
                       </div>
                     ) : (
@@ -4690,7 +4697,7 @@ export default function WebTrader({
                       const isTpEditing = inlineEditing?.id === p.id && inlineEditing.field === "tp";
                       return (
                         <div
-                          className="position-row"
+                          className={`position-row ${p.side === "BUY" ? "side-buy" : "side-sell"}`}
                           key={p.id}
                         >
                           <span className="pos-cell">
@@ -4759,6 +4766,12 @@ export default function WebTrader({
                       );
                     })
                   )}
+                  {acctPositions.length > 0 ? (
+                    <div className="pos-total-footer" style={{ position: "sticky", left: 0 }}>
+                      <span>{acctPositions.length} open {acctPositions.length === 1 ? "position" : "positions"}</span>
+                      <span className={`mono ${TONE_CSS[tone(floatingPnl)]}`}>{balanceHidden ? "••••" : formatSigned(floatingPnl)}</span>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -4822,7 +4835,7 @@ export default function WebTrader({
                         const isDealingPending = o.type === "MARKET" && o.status === "PENDING";
                         const typeLabel = `${o.side === "BUY" ? "Buy" : "Sell"} ${o.type === "LIMIT" ? "Limit" : o.type === "STOP" ? "Stop" : "Market"}`;
                         return (
-                          <div className={`orders-row${isDealingPending ? " order-row-pending-approval" : ""}`} key={o.id}>
+                          <div className={`orders-row ${o.side === "BUY" ? "side-buy" : "side-sell"}${isDealingPending ? " order-row-pending-approval" : ""}`} key={o.id}>
                             <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{o.id.slice(-8)}</span>
                             <span className="pos-cell pos-symbol">{o.symbol.name}</span>
                             <span className="pos-cell"><span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>{typeLabel}</span></span>
@@ -4880,9 +4893,9 @@ export default function WebTrader({
                       const isDealingPending = o.type === "MARKET" && o.status === "PENDING";
                       const statusColor =
                         o.status === "FILLED"
-                          ? "var(--buy)"
+                          ? "var(--ok)"
                           : o.status === "REJECTED" || o.status === "CANCELLED"
-                            ? "var(--sell)"
+                            ? "var(--err)"
                             : isDealingPending
                               ? "#F0B90B"
                               : "var(--text-3)";
@@ -5098,7 +5111,7 @@ export default function WebTrader({
                   </div>
                 </div>
                 {pendingPrice ? (
-                  <div className="margin-note" style={{ color: isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid) ? "var(--text-3)" : "var(--sell)" }}>
+                  <div className="margin-note" style={{ color: isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid) ? "var(--text-3)" : "var(--err)" }}>
                     {isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid)
                       ? `Current price ${fmt(m.bid, m.def.digits)}`
                       : `${pendingPriceRuleText(pendingType)} (current ${fmt(m.bid, m.def.digits)})`}
@@ -5113,7 +5126,7 @@ export default function WebTrader({
                 {soonHighImpactEvent ? (
                   <div
                     className="margin-note"
-                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", marginBottom: 6, borderRadius: 4, background: "rgba(234, 57, 67, 0.12)", color: "var(--sell)" }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", marginBottom: 6, borderRadius: 4, background: "color-mix(in srgb, var(--warn) 14%, transparent)", color: "var(--warn)" }}
                     title={`${soonHighImpactEvent.event} at ${new Date(soonHighImpactEvent.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${soonHighImpactEvent.estimate != null ? ` - forecast ${soonHighImpactEvent.estimate}` : ""}`}
                   >
                     ⚠ High-impact {soonHighImpactEvent.country} news in {Math.max(0, Math.round((new Date(soonHighImpactEvent.time).getTime() - calendarNowTick) / 60000))}m: {soonHighImpactEvent.event}
@@ -5133,7 +5146,7 @@ export default function WebTrader({
             )}
 
             {orderMode === "pending" ? (
-              <button className="place-pending-btn" onClick={placePendingOrder}>Place pending order</button>
+              <button className={`place-pending-btn ${pendingType.startsWith("buy") ? "buy" : "sell"}`} onClick={placePendingOrder}>Place pending order</button>
             ) : null}
 
             <div className="field-group">
@@ -5156,6 +5169,11 @@ export default function WebTrader({
                   />
                   <button className="stepper-btn" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
                 </div>
+              </div>
+              <div className="lot-presets" aria-label="Lot size">
+                {[0.01, 0.1, 0.5, 1].map((lot) => (
+                  <button key={lot} type="button" className={`lot-preset${Math.abs(volume - lot) < 1e-9 ? " active" : ""}`} onClick={() => setVolume(lot)}>{lot.toFixed(2)}</button>
+                ))}
               </div>
               <div className="field">
                 <span className="field-label">Risk %</span>
@@ -5256,7 +5274,7 @@ export default function WebTrader({
                   direction (green, not red, for "this is real"). Elapsed
                   time reuses dealingPendingNowMs's 1s tick rather than a
                   new interval. */}
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? "var(--buy)" : "var(--warn)" }} />
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? "var(--ok)" : "var(--warn)" }} />
               <span className="status-value" style={{ fontSize: 11 }}>
                 {connected
                   ? `Connected · ${serverName}`
@@ -5269,9 +5287,9 @@ export default function WebTrader({
               <canvas ref={sparklineRef} width={70} height={20} className="equity-spark" />
             </div>
           </div>
-          <div className="status-item statusbar-center"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: TONE_COLOR[tone(floatingPnl)] }}>{balanceHidden ? "••••" : formatSigned(floatingPnl)}</span></div>
+          <div className="status-item statusbar-center"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: WT_TONE_COLOR[tone(floatingPnl)] }}>{balanceHidden ? "••••" : formatSigned(floatingPnl)}</span></div>
           <div className="statusbar-right">
-            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < marginCallLevel ? "var(--sell)" : marginLevel < marginCallLevel * 2 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : formatMarginLevel(marginLevel)}</span></div>
+            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < marginCallLevel ? "var(--loss)" : marginLevel < marginCallLevel * 2 ? "var(--warn)" : "var(--text-1)" }}>{balanceHidden ? "••••" : formatMarginLevel(marginLevel)}</span></div>
             <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{balanceHidden ? "••••••" : formatMoney(freeMargin)}</span></div>
           </div>
         </div>
@@ -5342,8 +5360,8 @@ export default function WebTrader({
               </div>
               <div className="share-pnl-block">
                 <div className="share-pnl-label">Unrealized PnL</div>
-                <div className="share-pnl-value" style={{ color: TONE_COLOR[tone(shareData.pnl)] }}>{formatSigned(shareData.pnl)}</div>
-                <div className="share-pnl-pct" style={{ color: TONE_COLOR[tone(shareData.pnl)] }}>{formatPercent(shareData.pnlPct, 2)}</div>
+                <div className="share-pnl-value" style={{ color: WT_TONE_COLOR[tone(shareData.pnl)] }}>{formatSigned(shareData.pnl)}</div>
+                <div className="share-pnl-pct" style={{ color: WT_TONE_COLOR[tone(shareData.pnl)] }}>{formatPercent(shareData.pnlPct, 2)}</div>
               </div>
               <div className="share-grid">
                 <div className="share-stat"><div className="share-stat-label">Entry</div><div className="share-stat-value">{shareData.entryLabel}</div></div>
@@ -5460,7 +5478,7 @@ export default function WebTrader({
                 onChange={(e) => setCpConfirm(e.target.value)}
                 required
               />
-              {cpError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{cpError}</p> : null}
+              {cpError ? <p style={{ color: "var(--err)", fontSize: 12, margin: "8px 0 0" }}>{cpError}</p> : null}
               <div className="modal-actions" style={{ marginTop: 16 }}>
                 <button type="button" className="modal-btn secondary" onClick={() => setChangePasswordOpen(false)}>Cancel</button>
                 <button type="submit" className="modal-btn primary" disabled={cpSubmitting}>{cpSubmitting ? "Saving…" : "Save"}</button>
@@ -5535,7 +5553,7 @@ export default function WebTrader({
                   </button>
                 </div>
               )}
-              {tfaError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{tfaError}</p> : null}
+              {tfaError ? <p style={{ color: "var(--err)", fontSize: 12, margin: "8px 0 0" }}>{tfaError}</p> : null}
 
               <div style={{ marginTop: 20, marginBottom: 4, fontSize: 11, color: "var(--text-3)", textTransform: "uppercase" }}>
                 Active sessions
@@ -5554,7 +5572,7 @@ export default function WebTrader({
                       <div>
                         <div style={{ fontSize: 12, color: "var(--text-1)" }}>
                           {s.userAgent ? s.userAgent.slice(0, 48) : "Unknown device"}
-                          {s.current ? <span style={{ color: "var(--buy)", marginLeft: 6, fontSize: 11 }}>(this device)</span> : null}
+                          {s.current ? <span style={{ color: "var(--ok)", marginLeft: 6, fontSize: 11 }}>(this device)</span> : null}
                         </div>
                         <div className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>
                           {s.ip ?? "unknown IP"} · {new Date(s.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
@@ -5604,7 +5622,7 @@ export default function WebTrader({
                   onChange={(e) => setSwitchTwoFactorCode(e.target.value.replace(/\D/g, ""))}
                   required
                 />
-                {switchError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{switchError}</p> : null}
+                {switchError ? <p style={{ color: "var(--err)", fontSize: 12, margin: "8px 0 0" }}>{switchError}</p> : null}
                 <div className="modal-actions" style={{ marginTop: 16 }}>
                   <button type="button" className="modal-btn secondary" onClick={() => setSwitchTarget(null)}>Cancel</button>
                   <button type="submit" className="modal-btn primary" disabled={switching || switchTwoFactorCode.length !== 6}>
@@ -5626,7 +5644,7 @@ export default function WebTrader({
                   onChange={(e) => setSwitchPassword(e.target.value)}
                   required
                 />
-                {switchError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{switchError}</p> : null}
+                {switchError ? <p style={{ color: "var(--err)", fontSize: 12, margin: "8px 0 0" }}>{switchError}</p> : null}
                 <div className="modal-actions" style={{ marginTop: 16 }}>
                   <button type="button" className="modal-btn secondary" onClick={() => setSwitchTarget(null)}>Cancel</button>
                   <button type="submit" className="modal-btn primary" disabled={switching}>{switching ? "Switching…" : "Switch"}</button>
@@ -5648,7 +5666,7 @@ export default function WebTrader({
                 <>
                   <p style={{ fontSize: 13, margin: "8px 0" }}>
                     Status:{" "}
-                    <strong style={{ color: kycStatus.status === "APPROVED" ? "var(--buy)" : undefined }}>
+                    <strong style={{ color: kycStatus.status === "APPROVED" ? "var(--ok)" : undefined }}>
                       {kycWord(kycStatus.status)}
                     </strong>
                   </p>
@@ -5685,7 +5703,7 @@ export default function WebTrader({
                   }}
                 >
                   {kycStatus?.status === "REJECTED" ? (
-                    <p style={{ fontSize: 12, color: "var(--sell)", margin: "0 0 8px" }}>
+                    <p style={{ fontSize: 12, color: "var(--err)", margin: "0 0 8px" }}>
                       Previous submission rejected{kycStatus.rejectionReason ? `: ${kycStatus.rejectionReason}` : "."} Please
                       resubmit.
                     </p>
@@ -5718,7 +5736,7 @@ export default function WebTrader({
                       required
                     />
                   </div>
-                  {kycError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{kycError}</p> : null}
+                  {kycError ? <p style={{ color: "var(--err)", fontSize: 12, margin: "8px 0 0" }}>{kycError}</p> : null}
                   <div className="modal-actions" style={{ marginTop: 16 }}>
                     <button type="button" className="modal-btn secondary" onClick={() => setKycModalOpen(false)}>Cancel</button>
                     <button type="submit" className="modal-btn primary" disabled={kycSubmitting}>
@@ -5766,7 +5784,7 @@ export default function WebTrader({
                           { label: "Trades", value: String(closed.length) },
                           { label: "Win rate", value: `${winRate}%` },
                           { label: "Wins / Losses", value: `${wins} / ${losses}` },
-                          { label: "Net P&L", value: money(netPnl), color: netPnl >= 0 ? "var(--buy)" : "var(--sell)" },
+                          { label: "Net P&L", value: money(netPnl), color: netPnl >= 0 ? "var(--profit)" : "var(--loss)" },
                         ].map((s) => (
                           <div key={s.label} style={{ background: "var(--bg-2)", border: "1px solid var(--border)", borderRadius: 6, padding: "8px 10px" }}>
                             <div className="net-pos-detail" style={{ marginBottom: 3 }}>{s.label}</div>
@@ -5784,7 +5802,7 @@ export default function WebTrader({
                                 <span className="pos-symbol">{p.symbol.name}</span>
                                 <span className="net-pos-detail mono">{p.side} {formatVolume(p.closedVolume ?? p.volume)} @ {p.openPrice}{p.closePrice != null ? ` → ${p.closePrice}` : ""}</span>
                               </div>
-                              <div className="simple-right mono" style={{ color: parseFloat(p.realizedPnl ?? "0") >= 0 ? "var(--buy)" : "var(--sell)" }}>
+                              <div className="simple-right mono" style={{ color: parseFloat(p.realizedPnl ?? "0") >= 0 ? "var(--profit)" : "var(--loss)" }}>
                                 {money(parseFloat(p.realizedPnl ?? "0"))}
                               </div>
                             </div>
@@ -5923,7 +5941,7 @@ export default function WebTrader({
                     {pct}%
                   </button>
                 ))}
-                {partialCloseError ? <p className="margin-note" style={{ color: "var(--sell)" }}>{partialCloseError}</p> : null}
+                {partialCloseError ? <p className="margin-note" style={{ color: "var(--err)" }}>{partialCloseError}</p> : null}
                 <div className="modal-actions" style={{ marginTop: 12 }}>
                   <button className="modal-btn secondary" onClick={() => setPartialCloseTarget(null)}>Cancel</button>
                   <button className="modal-btn primary" disabled={partialCloseBusy} onClick={submitPartialClose}>
@@ -5967,7 +5985,7 @@ export default function WebTrader({
                     </div>
                   ))
                 )}
-                {closeByError ? <p className="margin-note" style={{ color: "var(--sell)" }}>{closeByError}</p> : null}
+                {closeByError ? <p className="margin-note" style={{ color: "var(--err)" }}>{closeByError}</p> : null}
               </div>
             </div>
           </div>
@@ -6108,7 +6126,7 @@ export default function WebTrader({
                         <span
                           title={r.pspReference ?? undefined}
                           style={{
-                            color: r.status === "COMPLETED" ? "var(--buy)" : r.status === "REJECTED" ? "var(--sell)" : undefined,
+                            color: r.status === "COMPLETED" ? "var(--ok)" : r.status === "REJECTED" ? "var(--err)" : undefined,
                           }}
                         >
                           {r.status === "PENDING" && r.pspStatus ? r.pspStatus : r.status}
@@ -6160,12 +6178,12 @@ function AnalyticsGrid({ trades }: { trades: ApiPosition[] }) {
 
   const metrics: [string, string, string][] = [
     ["Total trades", String(pnls.length), "var(--text-1)"],
-    ["Win rate", winRate.toFixed(1) + "%", winRate >= 50 ? "var(--buy)" : "var(--sell)"],
-    ["Total P/L", formatSigned(totalPnl), TONE_COLOR[tone(totalPnl)]],
+    ["Win rate", winRate.toFixed(1) + "%", winRate >= 50 ? "var(--profit)" : "var(--loss)"],
+    ["Total P/L", formatSigned(totalPnl), WT_TONE_COLOR[tone(totalPnl)]],
     ["Profit factor", profitFactor, "var(--text-1)"],
-    ["Best trade", formatSigned(best), TONE_COLOR[tone(best)]],
-    ["Worst trade", formatSigned(worst), TONE_COLOR[tone(worst)]],
-    ["Avg trade", formatSigned(avgTrade), TONE_COLOR[tone(avgTrade)]],
+    ["Best trade", formatSigned(best), WT_TONE_COLOR[tone(best)]],
+    ["Worst trade", formatSigned(worst), WT_TONE_COLOR[tone(worst)]],
+    ["Avg trade", formatSigned(avgTrade), WT_TONE_COLOR[tone(avgTrade)]],
     ["Wins / Losses", `${wins.length} / ${losses.length}`, "var(--text-1)"],
   ];
 
