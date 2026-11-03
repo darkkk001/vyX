@@ -519,11 +519,8 @@ pub async fn get_open_snapshot(
         from = crate::book::POSITION_FROM,
     );
 
+    // see open_position_one_call's note: .persistent(false) was tried here and broke every order
     let rows = sqlx::query(&sql)
-        // L2 optimization pass: unnamed statement -- see open_position_one_call for why pgbouncer
-        // makes a cached prepared statement cost an extra round trip here. This call measured ~16 ms
-        // against 0.5 ms of execution.
-        .persistent(false)
         .bind(broker_id)
         .bind(account_id)
         .bind(symbol)
@@ -981,14 +978,17 @@ pub async fn open_position_one_call(
              FROM vyx_open_position($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
                                     $15, $16, $17, $18, $19, $20, $21, $22)"#,
     )
-    // L2 optimization pass: UNNAMED statement, not a cached prepared one.
+    // L2 optimization pass, REVERTED AND KEPT AS A WARNING: `.persistent(false)` here produced
+    // `26000 unnamed prepared statement does not exist` on EVERY order within seconds of deploy.
     //
-    // The engine reaches Neon through its pgbouncer, which issues DEALLOCATE ALL between transactions
-    // (seen 19 times in one statement delta). That empties sqlx's prepared-statement cache, so a
-    // "persistent" query re-prepares on nearly every call: Parse + Describe, then Bind + Execute --
-    // TWO round trips for one query. Unnamed sends it all in one flush, which is one round trip.
-    // Measured per-stage: this call was ~8 ms against 4.3 ms of actual execution.
-    .persistent(false)
+    // The diagnosis of the cost was right -- pgbouncer issues DEALLOCATE ALL between transactions, so
+    // a cached prepared statement re-prepares and costs an extra round trip. The remedy was wrong. In
+    // TRANSACTION pooling mode an unnamed statement's Parse and its Bind/Execute can be routed to
+    // different server connections, so the statement is simply gone by the time Bind runs. Unnamed
+    // statements need session pooling or no pooler at all.
+    //
+    // The real fix is the one flagged as a topology decision: point the engine at Neon's DIRECT
+    // endpoint, where sqlx's own pool is the only pooling and its statement cache actually holds.
     .bind(&order_id)
     .bind(&position_id)
     .bind(&deal_id)
