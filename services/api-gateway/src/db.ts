@@ -16,7 +16,22 @@ import { Pool } from "pg";
 import { Decimal } from "decimal.js";
 import { randomUUID } from "node:crypto";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// L2 Step 5 (latency): every option but the URL used to be a node-postgres default, and two of those
+// defaults were costing an order more than everything else this file does.
+//
+// idleTimeoutMillis defaults to 10_000: a connection unused for ten seconds is closed. Orders are
+// sparse, so in production almost every order opened a NEW connection to Neon -- TCP, TLS, startup --
+// before it could read anything. That is the same mistake the engine's pool had (min_connections 0),
+// and it measured the same way: a p50 that sat far above the work being done.
+//
+// min keeps a floor open so the handshake is paid once, at boot, instead of per order; keepAlive stops
+// an idle-but-wanted connection being dropped by anything in between.
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  min: 2,
+  idleTimeoutMillis: 0, // never reap: these connections are wanted for the life of the process
+  keepAlive: true,
+});
 
 /** Read-only parameterized query on the main database (client-ask.ts loads ask rules with it). */
 export async function query(sql: string, params: unknown[]): Promise<{ rows: Record<string, unknown>[] }> {
