@@ -409,7 +409,7 @@ export function MHistory(p: {
       {p.period === "custom" ? (
         <div className="m-range">
           <input type="date" value={p.from} onChange={(e) => p.onFrom(e.target.value)} aria-label="From" />
-          <span>–</span>
+          <span>TO</span>
           <input type="date" value={p.to} onChange={(e) => p.onTo(e.target.value)} aria-label="To" />
         </div>
       ) : null}
@@ -435,7 +435,7 @@ export function MHistory(p: {
                 }
                 const o = new Date(r.openedAt);
                 const c = new Date(r.at);
-                const span = sameDay(o, c) ? `${hm(o)} – ${hm(c)}` : `${MON[o.getMonth()]} ${o.getDate()} · ${hm(o)} – ${hm(c)}`;
+                const span = sameDay(o, c) ? `${hm(o)} - ${hm(c)}` : `${MON[o.getMonth()]} ${o.getDate()} · ${hm(o)} - ${hm(c)}`;
                 return (
                   <div key={r.key} className={`m-deal${r.voided ? " voided" : ""}`}>
                     <span className="m-deal-body">
