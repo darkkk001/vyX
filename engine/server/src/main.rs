@@ -1748,7 +1748,25 @@ async fn main() {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
-        order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
+        // L2 Step 1b item 6: NOT in live mode, and the reason is the opposite of what it looks like.
+        //
+        // This roller reads and writes the engine's own lowercase `positions` (db.rs
+        // get_positions_due_for_swap, claim_position_for_swap, the `UPDATE positions SET swap` charge),
+        // so on the Prisma book it finds nothing and does nothing. That is HARMLESS, because swaps on
+        // the real book are already owned elsewhere: lib/swap-rollover.ts reads `"Position"` and writes
+        // `"Position"."lastSwapAt"`, on the Vercel cron at /api/internal/swap-rollover.
+        //
+        // So the risk is not "no swap gets applied" -- it is that someone ports this roller's READ to
+        // the Prisma book without its WRITES and it starts charging swaps into a table nothing reads,
+        // while the web's cron charges them again on the real one. Not starting it in live mode makes
+        // that impossible, and the warning says where swaps actually come from.
+        if !risk_mode_requested {
+            order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
+        } else {
+            tracing::warn!(
+                "live mode: the engine's swap roller is NOT running. Swaps on Prisma's book are owned by                  lib/swap-rollover.ts on the web's cron (/api/internal/swap-rollover); this roller only ever                  read the engine's own legacy tables. Porting it is its own stage -- read AND writes together."
+            );
+        }
     } }
     if risk_mode_requested { 'risk: {
         // Rust cutover Stage 6 (docs/STAGE6-PLAN.md): the engine is AUTHORITATIVE for the risk (SL / TP, margin call,

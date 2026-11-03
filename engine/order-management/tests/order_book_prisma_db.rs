@@ -68,6 +68,12 @@ async fn fixture(db: &mut sqlx::PgConnection, category: &str, commission_per_lot
 
 /// `fixture` with everything the contract vector pins, so the parity test builds the same world the
 /// web's generator did rather than a lookalike.
+///
+/// The symbol is CRYPTO on purpose (the same reason `lib/hedge.test.ts` uses it): L2 Step 1b wired the
+/// trading-session gate, and a METALS or FOREX symbol would make every test here fail at the weekend
+/// and during the nightly settlement break. CRYPTO is always open, so these tests judge the thing they
+/// are about rather than the clock. The session gate has its own 228-case oracle
+/// (tests/trading_session_parity.rs) and its own wired test below.
 async fn fixture_with(
     db: &mut sqlx::PgConnection,
     category: &str,
@@ -109,7 +115,7 @@ async fn fixture_with(
     .unwrap();
     sqlx::query(
         r#"INSERT INTO "Symbol" (id, name, "baseCurrency", "quoteCurrency", digits, "contractSize", category, "updatedAt")
-           VALUES ($1, $2, 'XAU', 'USD', $3, $4, 'METALS'::"SymbolCategory", now())"#,
+           VALUES ($1, $2, 'XAU', 'USD', $3, $4, 'CRYPTO'::"SymbolCategory", now())"#,
     )
     .bind(&symbol)
     .bind(&symbol_name)
@@ -1512,5 +1518,178 @@ async fn every_wired_gate_refuses_through_the_real_order_path() {
             assert!(reason.contains("hedging is not allowed"), "hedging gate refused for the wrong reason: {reason}")
         }
         order_management::PlaceMarketOrderOutcome::Filled { .. } => panic!("hedging gate: FILLED -- not wired"),
+    }
+}
+
+/// The trading-session gate, wired. `tests/trading_session_parity.rs` proves the RULE matches the web
+/// over 228 cases; this proves the order path reads the symbol's category and its configured
+/// `"TradingSession"` rows and refuses on them.
+///
+/// Deterministic whatever the clock says: the fixture symbol is CRYPTO (always open, so the baseline
+/// fills), and the closed case is made by moving it to FOREX and configuring a session for a day that
+/// is NOT today.
+#[tokio::test]
+async fn the_session_gate_refuses_a_closed_market_through_the_real_order_path() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("the_session_gate_refuses: ENGINE_TEST_NATS_URL not set, skipping");
+        return;
+    };
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    let (broker_symbol_id,): (String,) = sqlx::query_as(r#"SELECT id FROM "BrokerSymbol" WHERE "brokerId" = $1"#)
+        .bind(&fx.broker)
+        .fetch_one(&mut *setup)
+        .await
+        .unwrap();
+    setup.commit().await.unwrap();
+
+    let cache = market_data::cache::TickCache::new();
+    let tick = protocol::Tick {
+        symbol: fx.symbol_name.clone(),
+        bid: dec!(4298.96),
+        ask: dec!(4299.13),
+        t0: None,
+        clock_offset_ms: None,
+        rtt_ms: None,
+        tick_ms: None,
+        broker_offset_sec: None,
+        bars: Vec::new(),
+    };
+    cache.set(&tick, chrono::Utc::now());
+
+    let place = || async {
+        order_management::place_market_order(
+            &pool,
+            &nats,
+            &cache,
+            order_management::PlaceMarketOrderRequest {
+                broker_id: fx.broker.clone(),
+                account_id: fx.account.clone(),
+                symbol: fx.symbol_name.clone(),
+                side: OrderSide::Buy,
+                volume: dec!(0.01),
+                sl_price: None,
+                tp_price: None,
+                equity: dec!(100000),
+                used_margin: dec!(0),
+                contract_size: dec!(1),
+                leverage: 100,
+            },
+        )
+        .await
+        .expect("the order path ran")
+    };
+
+    // CRYPTO with no configured sessions: always open, so this must fill whatever day it is
+    assert!(matches!(place().await, order_management::PlaceMarketOrderOutcome::Filled { .. }), "a CRYPTO symbol must always be tradable");
+
+    // now FOREX, with a session configured for a day that is NOT today
+    use chrono::Datelike;
+    let today = chrono::Utc::now().weekday().num_days_from_sunday() as i32;
+    let other_day = (today + 2) % 7;
+    sqlx::query(r#"UPDATE "Symbol" SET category = 'FOREX' WHERE id = $1"#).bind(&fx.symbol_id).execute(&pool).await.unwrap();
+    sqlx::query(
+        r#"INSERT INTO "TradingSession" (id, "brokerSymbolId", "dayOfWeek", "openTime", "closeTime")
+           VALUES ($1, $2, $3, '08:00', '17:00')"#,
+    )
+    .bind(id())
+    .bind(&broker_symbol_id)
+    .bind(other_day)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let closed = place().await;
+
+    sqlx::query(r#"DELETE FROM "TradingSession" WHERE "brokerSymbolId" = $1"#).bind(&broker_symbol_id).execute(&pool).await.unwrap();
+    sqlx::query(r#"UPDATE "Symbol" SET category = 'CRYPTO' WHERE id = $1"#).bind(&fx.symbol_id).execute(&pool).await.unwrap();
+    cleanup(&pool, &fx).await;
+
+    match closed {
+        order_management::PlaceMarketOrderOutcome::Rejected { reason, .. } => {
+            assert_eq!(reason, "MARKET_CLOSED", "the web returns the bare code, so the engine must too")
+        }
+        order_management::PlaceMarketOrderOutcome::Filled { .. } => {
+            panic!("FILLED outside the symbol's only configured session -- the session gate is not wired")
+        }
+    }
+}
+
+/// Price freshness at the WEB's 3 s, not the engine's own 15 s (L2 Step 1b item E, owner decision).
+///
+/// The tick used here is TEN SECONDS old: fresh enough to pass the engine's own
+/// `get_if_fresh(.., tick_freshness())` window of 15 s -- so it reaches the fill -- but stale by the
+/// web's `FILL_PRICE_MAX_AGE_MS` of 3 s. That ten-second band is precisely where the engine used to
+/// fill a quote the web would have refused, and it is what this gate closes.
+#[tokio::test]
+async fn a_tick_the_web_would_call_stale_is_refused_even_though_the_engine_still_holds_it() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("a_tick_the_web_would_call_stale: ENGINE_TEST_NATS_URL not set, skipping");
+        return;
+    };
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    setup.commit().await.unwrap();
+
+    let cache = market_data::cache::TickCache::new();
+    let tick = protocol::Tick {
+        symbol: fx.symbol_name.clone(),
+        bid: dec!(4298.96),
+        ask: dec!(4299.13),
+        t0: None,
+        clock_offset_ms: None,
+        rtt_ms: None,
+        tick_ms: None,
+        broker_offset_sec: None,
+        bars: Vec::new(),
+    };
+
+    let place = || async {
+        order_management::place_market_order(
+            &pool,
+            &nats,
+            &cache,
+            order_management::PlaceMarketOrderRequest {
+                broker_id: fx.broker.clone(),
+                account_id: fx.account.clone(),
+                symbol: fx.symbol_name.clone(),
+                side: OrderSide::Buy,
+                volume: dec!(0.01),
+                sl_price: None,
+                tp_price: None,
+                equity: dec!(100000),
+                used_margin: dec!(0),
+                contract_size: dec!(1),
+                leverage: 100,
+            },
+        )
+        .await
+        .expect("the order path ran")
+    };
+
+    // a tick from now fills
+    cache.set(&tick, chrono::Utc::now());
+    assert!(matches!(place().await, order_management::PlaceMarketOrderOutcome::Filled { .. }), "a fresh tick must fill");
+
+    // the same tick, ten seconds old: inside the engine's 15 s window, outside the web's 3 s
+    cache.set(&tick, chrono::Utc::now() - chrono::Duration::seconds(10));
+    let stale = place().await;
+    cleanup(&pool, &fx).await;
+
+    match stale {
+        order_management::PlaceMarketOrderOutcome::Rejected { reason, .. } => {
+            assert_eq!(reason, "PRICE_STALE", "the web returns the bare code, so the engine must too")
+        }
+        order_management::PlaceMarketOrderOutcome::Filled { .. } => {
+            panic!("FILLED against a 10 s old tick -- the engine is still on its own 15 s window, not the web's 3 s")
+        }
     }
 }

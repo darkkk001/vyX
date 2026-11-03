@@ -160,6 +160,13 @@ pub struct GateInputs {
     pub realized_today: Decimal,
     /// Is there an OPEN position on the other side of this symbol for this account?
     pub has_opposite_open_position: bool,
+    // the trading-session gate (L2 Step 1b item A)
+    /// `Symbol.category` -- CRYPTO is always open, METALS / COMMODITIES take a daily break.
+    pub symbol_category: String,
+    /// The broker's configured `"TradingSession"` rows for this symbol. EMPTY means "no configuration",
+    /// which falls through to the default weekly close -- NOT "always tradable" (that default was wrong
+    /// for the whole platform once, and filled XAUUSD on a Saturday).
+    pub sessions: Vec<crate::session::SessionWindow>,
 }
 
 pub async fn get_gate_inputs(
@@ -202,9 +209,13 @@ pub async fn get_gate_inputs(
                           AND t."createdAt" >= date_trunc('day', now() AT TIME ZONE 'UTC')), 0) AS realized_today,
              EXISTS (SELECT 1 FROM "Position" p2
                       WHERE p2."accountId" = $2 AND p2."symbolId" = $3
-                        AND p2.status = 'OPEN' AND p2.side::text = $4) AS has_opposite
+                        AND p2.status = 'OPEN' AND p2.side::text = $4) AS has_opposite,
+             sym.category::text AS symbol_category,
+             COALESCE((SELECT jsonb_agg(jsonb_build_object('d', ts."dayOfWeek", 'o', ts."openTime", 'c', ts."closeTime"))
+                         FROM "TradingSession" ts WHERE ts."brokerSymbolId" = bs.id), '[]'::jsonb) AS sessions
            FROM "Account" a
            JOIN "Broker" b ON b.id = $1
+           JOIN "Symbol" sym ON sym.id = $3
            LEFT JOIN "Group" g ON g.id = a."groupId"
            LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = $3 AND bs."brokerId" = $1
           WHERE a.id = $2"#,
@@ -238,6 +249,23 @@ pub async fn get_gate_inputs(
         broker_open_volume: r.try_get("broker_open_volume")?,
         realized_today: r.try_get("realized_today")?,
         has_opposite_open_position: r.try_get("has_opposite")?,
+        symbol_category: r.try_get("symbol_category")?,
+        sessions: {
+            let raw: serde_json::Value = r.try_get("sessions")?;
+            raw.as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| {
+                            Some(crate::session::SessionWindow {
+                                day_of_week: row.get("d")?.as_i64()? as i32,
+                                open_time: row.get("o")?.as_str()?.to_string(),
+                                close_time: row.get("c")?.as_str()?.to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        },
     }))
 }
 

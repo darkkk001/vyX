@@ -603,7 +603,7 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
             };
             let closed = sessions
                 .get(&(broker_id.clone(), r.symbol.clone()))
-                .is_some_and(|windows| crate::session::is_market_closed(windows, now, &r.category));
+                .is_some_and(|windows| crate::session::is_market_closed(windows, now, &r.category, Some(&r.symbol)));
             let rate = crate::fx::conversion_rate(&r.quote_ccy, &r.account_ccy, |s| fx_quotes.get(s).copied());
             if rate.is_none() {
                 tracing::error!(position_id = %r.id, symbol = %r.symbol, quote_ccy = %r.quote_ccy, account_ccy = %r.account_ccy, "no conversion rate: position treated as unpriced");

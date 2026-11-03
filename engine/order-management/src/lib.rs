@@ -273,13 +273,16 @@ pub async fn place_market_order(
             let reason = reject_order(tx, nats, &order_id, &req.account_id, "account not found".to_string()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         };
-        // No tick age: Tick.t0 is documented as never for business logic, and the engine's own
-        // get_if_fresh already gated this path. See gates::evaluate_open's closing note.
-        let tick_age_ms = None;
+        // The tick's OWN time (ingest::resolve_tick_time, the same value "LivePrice".tickAt carries),
+        // never Tick.t0 -- see gates::OpenOrder::tick_age_ms.
+        let gate_now = chrono::Utc::now();
+        let tick_age_ms = cache.latest(&req.symbol).map(|(_, at)| (gate_now - at).num_milliseconds().max(0));
         let order_for_gates = gates::OpenOrder {
             side: req.side,
             volume: req.volume,
             symbol_id: &symbol_id,
+            symbol_name: &req.symbol,
+            now: gate_now,
             symbol_min_lot: symbol_config.as_ref().map_or(Decimal::ZERO, |c| c.min_lot),
             symbol_lot_step: symbol_config.as_ref().map_or(Decimal::ZERO, |c| c.lot_step),
             symbol_max_exposure: max_exposure,

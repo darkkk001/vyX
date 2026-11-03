@@ -240,6 +240,25 @@ pub fn hedging_allowed(hedging_allowed: bool, has_opposite_open_position: bool) 
     has_opposite_open_position.then(|| HEDGING_REFUSED_TEXT.to_string())
 }
 
+// ---- the market's own hours --------------------------------------------------------------------
+
+/// `lib/risk.ts checkTradingSession`, via the engine's own port (`crate::session`), which is pinned to
+/// the web's behaviour by `docs/contracts/trading-session-vectors.json` (228 cases). That oracle found
+/// two real drifts in the port: the daily break was METALS-only and one hour (so SpotBrent's three
+/// hours could not be expressed, and SpotCrude had none), and cross-midnight session windows were
+/// treated as closed for their whole length on both days.
+///
+/// Returns the bare machine code the web returns, not a sentence: the terminal renders its own copy for
+/// `MARKET_CLOSED` (WebTrader.tsx's handleOrderError), and every other caller is staff-facing.
+pub fn trading_session(
+    sessions: &[crate::session::SessionWindow],
+    now: chrono::DateTime<chrono::Utc>,
+    category: &str,
+    symbol_name: &str,
+) -> Option<String> {
+    crate::session::is_market_closed(sessions, now, category, Some(symbol_name)).then(|| "MARKET_CLOSED".to_string())
+}
+
 // ---- the price ---------------------------------------------------------------------------------
 
 /// `lib/risk.ts FILL_PRICE_MAX_AGE_MS`.
@@ -263,6 +282,10 @@ pub struct OpenOrder<'a> {
     pub side: OrderSide,
     pub volume: Decimal,
     pub symbol_id: &'a str,
+    /// The symbol's NAME -- the commodity daily break depends on it (SpotBrent breaks 3 h, not 1).
+    pub symbol_name: &'a str,
+    /// The instant to judge the market's hours and the tick's age against.
+    pub now: chrono::DateTime<chrono::Utc>,
     pub symbol_min_lot: Decimal,
     pub symbol_lot_step: Decimal,
     pub symbol_max_exposure: Option<Decimal>,
@@ -271,9 +294,7 @@ pub struct OpenOrder<'a> {
     /// The account's OPEN position count, and the broker's cap.
     pub open_position_count: i64,
     pub max_open_positions: Option<i32>,
-    /// Age of the tick this order will fill against. `None` = no tick. NOT consumed by
-    /// `evaluate_open` yet -- see the note at the end of that function.
-    #[allow(dead_code)]
+    /// Age of the tick this order will fill against, from the tick's own time. `None` = no tick.
     pub tick_age_ms: Option<i64>,
 }
 
@@ -293,7 +314,7 @@ pub fn evaluate_open(inputs: &crate::db::GateInputs, order: &OpenOrder<'_>) -> O
     trading_halted(inputs.broker_trading_halted)
         .or_else(|| close_only(inputs.broker_close_only))
         .or_else(|| symbol_trading_mode(&inputs.symbol_trading_mode, order.side))
-        // checkTradingSession sits here on the web -- NOT PORTED, see the module note
+        .or_else(|| trading_session(&inputs.sessions, order.now, &inputs.symbol_category, order.symbol_name))
         .or_else(|| lot_step(order.volume, order.symbol_min_lot, order.symbol_lot_step))
         .or_else(|| group_max_lot(order.volume, inputs.group_max_lot))
         .or_else(|| group_min_lot(order.volume, inputs.group_min_lot, order.symbol_min_lot))
@@ -319,18 +340,13 @@ pub fn evaluate_open(inputs: &crate::db::GateInputs, order: &OpenOrder<'_>) -> O
         .or_else(|| symbol_exposure(order.account_symbol_volume, order.volume, order.symbol_max_exposure))
         .or_else(|| broker_exposure(inputs.broker_open_volume, order.volume, inputs.total_exposure_limit))
         .or_else(|| max_daily_loss(inputs.realized_today, inputs.max_daily_loss))
-    // checkPriceFreshness is NOT in this chain, deliberately. `price_freshness` is ported and pinned
-    // by the oracle, but wiring it here would need a tick age the engine cannot honestly supply yet,
-    // and the two sides disagree about the threshold:
-    //   - `Tick.t0` is the producer's capture time and its own doc says it is "used purely for the
-    //     market_data::stats latency audit, NEVER for ordering or business logic" -- so a gate must not
-    //     read it. The honest source is the TickCache's own received-at, which is not exposed today.
-    //   - the engine's freshness window is 15 s (`tick_freshness()`, matching get_live_price's SQL);
-    //     the web's FILL_PRICE_MAX_AGE_MS is 3 s. FIVE TIMES tighter. So the engine would accept a
-    //     14-second-old tick for a fill that the web refuses.
-    // The engine's own `cache.get_if_fresh(.., tick_freshness())` already gates this path at 15 s, so
-    // there is a gate -- just a looser one. Reconciling the threshold is an owner decision, flagged in
-    // C:yx\handoff\l2-gate-parity.md, not something to pick here.
+        // L2 Step 1b item (E), owner decision: the web's 3 s, not the engine's own 15 s, and measured
+        // from the tick's OWN time (TickCache::latest's second element = ingest::resolve_tick_time,
+        // the same value "LivePrice".tickAt carries). NOT Tick.t0, whose own doc says it is never for
+        // business logic. The engine's get_if_fresh(.., tick_freshness()) still gates this path at 15 s
+        // first; this is the tighter gate the web applies, so the engine no longer fills against a
+        // 14-second-old quote the web would refuse.
+        .or_else(|| price_freshness(order.tick_age_ms))
 }
 
 // ---- number formatting, which the messages depend on -------------------------------------------
@@ -354,14 +370,11 @@ fn normalized(d: Decimal) -> String {
 //   demoQuoteTimeRefusal     the client's own `priceAt` timestamp. Not in the request.
 //   evaluateLiveMarketPrice  the deviation half needs the CLIENT's submitted price; the request has no
 //                            `price` field at all (the engine prices from its own tick). The freshness
-//                            half IS ported, as `price_freshness`.
+//                            half is ported AND WIRED as `price_freshness` (L2 Step 1b item E).
 //   the slippage cap         the client's `maxSlippagePips` / the broker's cap. Not in the request.
 //   orderRoute / SYSTEM      the dealer-desk routing model (`orderRoute`, `deskIsOn`, the dealing
 //                            queue). A web concern; the engine should refuse to decide it.
-//   checkTradingSession      the engine HAS `order_management::session`, but its equivalence with the
-//                            web's (weekly close, the metals settlement break, CRYPTO always-on) has
-//                            not been established. Porting it blind is exactly the kind of guess that
-//                            would let the engine fill outside trading hours.
+//   (checkTradingSession is now PORTED AND WIRED -- L2 Step 1b item A -- against 228 oracle cases.)
 //   evaluatePreTradeMargin   the engine's `risk::check_free_margin` is the same idea but a narrower
 //                            model: the web's also resolves conversion rates (NO_CONVERSION_RATE) and
 //                            keys off the group's marginCallLevel.
