@@ -304,6 +304,7 @@ fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
                 sl_price: p.sl_price,
                 tp_price: p.tp_price,
                 fx_rate: Decimal::ONE, // Stage 0 pure-calc mode predates conversion (the gate is run-db.sh)
+                rate_missing: false,
                 hedged_margin_pct: sym.hedged_margin_pct.unwrap_or_else(order_management::calc::default_hedged_margin_pct),
                 // the scenario's broker markup, no group / pricing-engine levels (market_data::ask_markup resolve with the
                 // engine off and no group config = BrokerSymbol.spreadMarkup)

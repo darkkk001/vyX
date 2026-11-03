@@ -40,7 +40,15 @@ import {
 } from "../../lib/risk";
 import { checkHedgingAllowed } from "../../lib/hedging";
 import { orderRoute, deskIsOn, SYSTEM_ACCOUNT_ORDER } from "../../lib/dealing-routing";
-import { checkPreTradeMargin } from "../../lib/margin";
+import {
+  checkPreTradeMargin,
+  evaluatePreTradeMargin,
+  hedgedUsedMargin,
+  liveUsedMarginFor,
+  type AccountMarginState,
+  type MarginLeg,
+} from "../../lib/margin";
+import { closePriceFor, computeRealizedPnl } from "../../lib/trading";
 
 const D = (v: string) => new Prisma.Decimal(v);
 const dec = (v: string | null) => v;
@@ -290,6 +298,119 @@ for (const [equity, usedMargin, requiredMargin, callLevel] of [
     { equity, usedMargin, requiredMargin, marginCallLevel: callLevel },
     checkPreTradeMargin({ equity: D(equity), usedMargin: D(usedMargin), requiredMargin: D(requiredMargin), marginCallLevel: D(callLevel) })
   );
+}
+
+// ---- pre-trade margin, the WHOLE decision (L2 Step 1d) ----
+// The section above pins `checkPreTradeMargin`, the level core. This one pins what the order path
+// actually calls: `evaluatePreTradeMargin` over a loaded margin state -- the conversion rate applied
+// to the new leg, the MT5 hedge netting that decides how much margin the leg really adds, the "an
+// order that does not increase used margin is always allowed" rule, the group's own call level, and
+// the INSUFFICIENT_BALANCE / INSUFFICIENT_MARGIN split.
+//
+// The state is built here with `loadAccountMarginState`'s own formulas rather than read from a
+// database: each open position is given bid == ask == its current price, so `liveUsedMarginFor`
+// reduces to `requiredMarginFor(volume, contractSize, price, leverage) * rate` -- which is exactly
+// what engine/order-management/src/calc.rs `used_margin` computes for a position carrying that same
+// bid/ask pair. That is what lets ONE vector drive both sides.
+//
+// NO_CONVERSION_RATE is the route's answer, not the gate's: `loadAccountMarginState` returns null when
+// any open position's quote currency (or the new order's) has no rate, and
+// app/api/trade/orders/route.ts turns a null state into this code. The engine's
+// `calc::pre_trade_margin_decision` folds both halves into one function, so the vector asks for the
+// decision the trader actually gets.
+type MarginPosition = { symbol: string; side: "BUY" | "SELL"; volume: string; contractSize: string; openPrice: string; price: string; rate: string | null; hedgedMarginPct: string };
+type MarginNewOrder = { symbol: string; side: "BUY" | "SELL"; volume: string; contractSize: string; fillPrice: string; rate: string | null; hedgedMarginPct: string };
+type MarginCase = { note: string; leverage: number; marginCallLevel: string; balance: string; credit: string; positions: MarginPosition[]; newOrder: MarginNewOrder };
+
+function marginDecision(c: MarginCase): string | null {
+  if (c.positions.some((p) => p.rate == null) || c.newOrder.rate == null) return "NO_CONVERSION_RATE";
+  let equity = D(c.balance).add(D(c.credit));
+  const legs: MarginLeg[] = [];
+  for (const p of c.positions) {
+    const rate = D(p.rate!);
+    const price = D(p.price);
+    const margin = liveUsedMarginFor({ side: p.side, volume: D(p.volume), contractSize: D(p.contractSize), accountBid: price, accountAsk: price, leverage: c.leverage }).mul(rate);
+    equity = equity.add(
+      computeRealizedPnl({ side: p.side, openPrice: D(p.openPrice), closePrice: closePriceFor(p.side, price, price), volume: D(p.volume), contractSize: D(p.contractSize) }).mul(rate)
+    );
+    legs.push({ symbolKey: p.symbol, side: p.side, volume: D(p.volume), margin, hedgedMarginPct: D(p.hedgedMarginPct) });
+  }
+  const state: AccountMarginState = {
+    account: { balance: D(c.balance), credit: D(c.credit), currency: "USD", brokerId: "broker" },
+    equity,
+    usedMargin: hedgedUsedMargin(legs),
+    legs,
+    // only the NEW leg's % is read through pctFor; the open ones carry their own
+    pctFor: () => D(c.newOrder.hedgedMarginPct),
+    rateFor: () => D(c.newOrder.rate!),
+    openPositions: c.positions.length,
+  };
+  const rejection = evaluatePreTradeMargin(state, {
+    leverage: c.leverage,
+    marginCallLevel: D(c.marginCallLevel),
+    newOrderContractSize: D(c.newOrder.contractSize),
+    newOrderQuoteCurrency: "QUOTE",
+    newOrderVolume: D(c.newOrder.volume),
+    newOrderFillPrice: D(c.newOrder.fillPrice),
+    newOrderSide: c.newOrder.side,
+    newOrderSymbolId: c.newOrder.symbol,
+  });
+  return rejection?.error ?? null;
+}
+
+const FX = { symbol: "EURUSD", contractSize: "100000", hedgedMarginPct: "200" };
+const flat = (over: Partial<MarginPosition> = {}): MarginPosition => ({ ...FX, side: "BUY", volume: "1", openPrice: "1.1000", price: "1.1000", rate: "1", ...over });
+const order = (over: Partial<MarginNewOrder> = {}): MarginNewOrder => ({ ...FX, side: "BUY", volume: "1", fillPrice: "1.1000", rate: "1", ...over });
+
+const marginCases: MarginCase[] = [
+  // --- nothing open: the balance alone has to carry the leg ---
+  { note: "flat account, plenty of room", leverage: 100, marginCallLevel: "100", balance: "10000", credit: "0", positions: [], newOrder: order() },
+  { note: "flat account, the leg costs more than the balance", leverage: 100, marginCallLevel: "100", balance: "500", credit: "0", positions: [], newOrder: order() },
+  { note: "credit counts toward the funds, so the same leg fits", leverage: 100, marginCallLevel: "100", balance: "500", credit: "10000", positions: [], newOrder: order() },
+  { note: "credit alone, no balance", leverage: 100, marginCallLevel: "100", balance: "0", credit: "10000", positions: [], newOrder: order() },
+
+  // --- the group's own call level, not a hardcoded 100 ---
+  { note: "level 100: 1100 of margin on 1200 equity passes", leverage: 100, marginCallLevel: "100", balance: "1200", credit: "0", positions: [], newOrder: order() },
+  { note: "level 100 exactly: lte refuses", leverage: 100, marginCallLevel: "100", balance: "1100", credit: "0", positions: [], newOrder: order() },
+  { note: "the SAME order the default would pass, refused at level 200", leverage: 100, marginCallLevel: "200", balance: "1200", credit: "0", positions: [], newOrder: order() },
+  { note: "level 200 with room to spare", leverage: 100, marginCallLevel: "200", balance: "10000", credit: "0", positions: [], newOrder: order() },
+  { note: "a lenient group (level 50) passes what 100 would refuse", leverage: 100, marginCallLevel: "50", balance: "1100", credit: "0", positions: [], newOrder: order() },
+
+  // --- conversion: the leg's margin is in the QUOTE currency until the rate is applied ---
+  { note: "rate 0.0067 (a JPY-quoted leg on a USD account): 150000 JPY of margin is 1005 USD, which fits", leverage: 100, marginCallLevel: "100", balance: "3000", credit: "0", positions: [], newOrder: order({ symbol: "USDJPY", fillPrice: "150.00", rate: "0.0067" }) },
+  { note: "the SAME leg at rate 1 is sized as if JPY were USD, and refused -- the rate is not decoration", leverage: 100, marginCallLevel: "100", balance: "3000", credit: "0", positions: [], newOrder: order({ symbol: "USDJPY", fillPrice: "150.00", rate: "1" }) },
+  { note: "a GBP-quoted leg at rate 1 would fit", leverage: 100, marginCallLevel: "100", balance: "1000", credit: "0", positions: [], newOrder: order({ symbol: "EURGBP", fillPrice: "0.8500", rate: "1" }) },
+  { note: "the SAME leg at rate 1.35 does not: a rate above 1 makes it dearer", leverage: 100, marginCallLevel: "100", balance: "1000", credit: "0", positions: [], newOrder: order({ symbol: "EURGBP", fillPrice: "0.8500", rate: "1.35" }) },
+  { note: "no rate for the new leg", leverage: 100, marginCallLevel: "100", balance: "1000000", credit: "0", positions: [], newOrder: order({ rate: null }) },
+  { note: "no rate for an OPEN position: the whole order is refused, however small", leverage: 100, marginCallLevel: "100", balance: "1000000", credit: "0", positions: [flat({ symbol: "USDJPY", price: "150.00", openPrice: "150.00", rate: null })], newOrder: order({ volume: "0.01" }) },
+  { note: "an open position converted at its own rate", leverage: 100, marginCallLevel: "100", balance: "3000", credit: "0", positions: [flat({ symbol: "USDJPY", price: "150.00", openPrice: "150.00", rate: "0.0067" })], newOrder: order() },
+
+  // --- hedge netting: how much margin the leg really ADDS ---
+  { note: "an opposite leg at pct 200 pays in full, like any other: 2200 of margin fits in 2300", leverage: 100, marginCallLevel: "100", balance: "2300", credit: "0", positions: [flat()], newOrder: order({ side: "SELL" }) },
+  { note: "and does not fit in 2200 -- exactly on the call level", leverage: 100, marginCallLevel: "100", balance: "2200", credit: "0", positions: [flat()], newOrder: order({ side: "SELL" }) },
+  { note: "the same hedge at pct 0 adds nothing, so it is allowed with no room at all", leverage: 100, marginCallLevel: "100", balance: "1150", credit: "0", positions: [flat({ hedgedMarginPct: "0" })], newOrder: order({ side: "SELL", hedgedMarginPct: "0" }) },
+  { note: "a hedge at pct 50 adds some, but less than full", leverage: 100, marginCallLevel: "100", balance: "1500", credit: "0", positions: [flat({ hedgedMarginPct: "50" })], newOrder: order({ side: "SELL", hedgedMarginPct: "50" }) },
+  { note: "same side, same symbol: nothing is hedged", leverage: 100, marginCallLevel: "100", balance: "1500", credit: "0", positions: [flat()], newOrder: order() },
+  { note: "a hedge on a DIFFERENT symbol does not net", leverage: 100, marginCallLevel: "100", balance: "1500", credit: "0", positions: [flat({ symbol: "GBPUSD", price: "1.2700", openPrice: "1.2700" })], newOrder: order({ side: "SELL" }) },
+  { note: "the open position's pct wins over the new leg's (first leg booked for the symbol)", leverage: 100, marginCallLevel: "100", balance: "1150", credit: "0", positions: [flat({ hedgedMarginPct: "0" })], newOrder: order({ side: "SELL", hedgedMarginPct: "200" }) },
+  { note: "a partial hedge: 0.4 lots against 1", leverage: 100, marginCallLevel: "100", balance: "1500", credit: "0", positions: [flat({ hedgedMarginPct: "0" })], newOrder: order({ side: "SELL", volume: "0.4", hedgedMarginPct: "0" }) },
+
+  // --- floating P&L moves the equity the level is judged against ---
+  { note: "a floating LOSS on the open leg leaves less room", leverage: 100, marginCallLevel: "100", balance: "3000", credit: "0", positions: [flat({ openPrice: "1.2000" })], newOrder: order() },
+  { note: "a floating PROFIT on the open leg makes room", leverage: 100, marginCallLevel: "100", balance: "1200", credit: "0", positions: [flat({ openPrice: "1.0000" })], newOrder: order() },
+
+  // --- the two refusals the trader reads apart ---
+  { note: "funds cannot carry the leg even with nothing open: BALANCE", leverage: 100, marginCallLevel: "100", balance: "100", credit: "0", positions: [], newOrder: order() },
+  { note: "funds could, but what is open leaves too little: MARGIN", leverage: 100, marginCallLevel: "100", balance: "2000", credit: "0", positions: [flat({ openPrice: "1.2000" })], newOrder: order() },
+  { note: "zero funds", leverage: 100, marginCallLevel: "100", balance: "0", credit: "0", positions: [], newOrder: order({ volume: "0.01" }) },
+
+  // --- leverage, because the requirement scales with it ---
+  { note: "1:500 makes the same leg a fifth of the margin", leverage: 500, marginCallLevel: "100", balance: "300", credit: "0", positions: [], newOrder: order() },
+  { note: "1:1 makes it unaffordable", leverage: 1, marginCallLevel: "100", balance: "10000", credit: "0", positions: [], newOrder: order() },
+];
+
+for (const c of marginCases) {
+  add("pre_trade_margin", c as unknown as Record<string, unknown>, marginDecision(c));
 }
 
 // ---- price freshness ----

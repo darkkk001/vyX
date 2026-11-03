@@ -263,6 +263,13 @@ pub fn pre_trade_margin_level(
     (level <= margin_call_level).then(|| "INSUFFICIENT_MARGIN".to_string())
 }
 
+/// `lib/margin.ts PreTradeMarginRejection.error`: the new order's symbol, or one already open, is
+/// quoted in a currency other than the account's and no price exists to convert it with. The margin
+/// cannot be known, so the order is refused rather than sized as if JPY were USD. On the web this is
+/// `loadAccountMarginState` returning null and the route answering with this code
+/// (app/api/trade/orders/route.ts, the `marginState ? ... :` branch).
+pub const NO_CONVERSION_RATE: &str = "NO_CONVERSION_RATE";
+
 /// `lib/margin.ts evaluatePreTradeMargin`, the decision half.
 ///
 /// `used_margin_after` is the account's hedged used margin WITH the new leg included -- the engine

@@ -1162,6 +1162,7 @@ mod tests {
             sl_price,
             tp_price,
             fx_rate: Decimal::ONE,
+            rate_missing: false,
             hedged_margin_pct: dec!(200),
             ask_rule: None,
             quote: None,
@@ -1258,7 +1259,7 @@ mod shadow_last_position_tests {
     fn pos(id: &str) -> OpenPositionWithMarket {
         OpenPositionWithMarket {
             id: id.into(), symbol: "XAUUSD".into(), side: protocol::OrderSide::Buy, volume: dec!(1), open_price: dec!(4000), contract_size: dec!(100),
-            bid: None, ask: None, sl_price: None, tp_price: None, fx_rate: Decimal::ONE, hedged_margin_pct: dec!(200), ask_rule: None, quote: None,
+            bid: None, ask: None, sl_price: None, tp_price: None, fx_rate: Decimal::ONE, rate_missing: false, hedged_margin_pct: dec!(200), ask_rule: None, quote: None,
         }
     }
 

@@ -152,6 +152,19 @@ pub struct GateInputs {
     pub max_daily_loss: Option<Decimal>,
     // the broker's view of the symbol
     pub symbol_trading_mode: String,
+    /// `Group.marginCallLevel`, 100 when the account has no group -- the web's
+    /// `account.group?.marginCallLevel ?? 100`. The pre-trade margin gate judges the PROJECTED level
+    /// against this, never against a hardcoded 100 (L2 Step 1d).
+    pub margin_call_level: Decimal,
+    /// `BrokerSymbol.hedgedMarginPct` for THIS symbol, 200 when the broker has no row -- the web's
+    /// `pctFor(newOrderSymbolId)`. It is the new leg's own %, which decides how much of an opposing
+    /// open position it offsets (calc::used_margin).
+    pub symbol_hedged_margin_pct: Decimal,
+    /// `Symbol.quoteCurrency` -- the currency the new leg's margin comes out in, to be converted to
+    /// `account_currency` before it is compared with anything.
+    pub symbol_quote_currency: String,
+    /// `Account.currency` -- what every money figure in the margin gate is denominated in.
+    pub account_currency: String,
     // aggregates
     /// The broker's OPEN client volume: the coverage account, COVERAGE groups and internal accounts are
     /// excluded, because those are the broker's own hedge legs and not client exposure (the web's audit
@@ -217,6 +230,10 @@ pub async fn get_gate_inputs(
              a."tradingRights"::text AS account_rights,
              a."maxDailyLoss" AS max_daily_loss,
              COALESCE(bs."tradingMode"::text, 'BOTH') AS symbol_trading_mode,
+             COALESCE(g."marginCallLevel", 100) AS margin_call_level,
+             COALESCE(bs."hedgedMarginPct", 200) AS symbol_hedged_margin_pct,
+             sym."quoteCurrency" AS symbol_quote_currency,
+             a.currency AS account_currency,
              COALESCE((SELECT SUM(p.volume) FROM "Position" p
                          JOIN "Account" pa ON pa.id = p."accountId"
                          LEFT JOIN "Group" pg ON pg.id = pa."groupId"
@@ -274,6 +291,10 @@ pub async fn get_gate_inputs(
         account_trading_rights: r.try_get("account_rights")?,
         max_daily_loss: r.try_get("max_daily_loss")?,
         symbol_trading_mode: r.try_get("symbol_trading_mode")?,
+        margin_call_level: r.try_get("margin_call_level")?,
+        symbol_hedged_margin_pct: r.try_get("symbol_hedged_margin_pct")?,
+        symbol_quote_currency: r.try_get("symbol_quote_currency")?,
+        account_currency: r.try_get("account_currency")?,
         broker_open_volume: r.try_get("broker_open_volume")?,
         realized_today: r.try_get("realized_today")?,
         broker_day_start: r.try_get("broker_day_start")?,
@@ -1779,6 +1800,13 @@ pub struct OpenPositionWithMarket {
     /// quote currency -> account currency (fx.rs, Stage 2 F2). 1 for the same currency. A position whose
     /// rate cannot be resolved is given bid/ask None instead (unpriced), never a guessed rate.
     pub fx_rate: Decimal,
+    /// TRUE when `fx::conversion_rate` found no price to value this position's quote currency in the
+    /// account's (L2 Step 1d). `fx_rate` then carries ONE and `bid`/`ask` are None, so the position
+    /// drops out of both the used margin and the equity -- which makes the account look SAFER than it
+    /// is. The web refuses the whole order instead (`lib/margin.ts loadAccountMarginState` returns
+    /// null, and the route answers NO_CONVERSION_RATE), so the pre-trade margin gate reads this flag
+    /// rather than silently pricing an account whose exposure it cannot see.
+    pub rate_missing: bool,
     /// BrokerSymbol.hedgedMarginPct of this position's symbol (calc::used_margin); 200 = no reduction.
     pub hedged_margin_pct: Decimal,
     /// The account's ask rule for this symbol (market_data::ask_markup, 2026-09-26): a SELL closes, triggers and is
@@ -1886,6 +1914,7 @@ pub async fn get_open_positions_with_market(
                     sl_price,
                     tp_price,
                     fx_rate: Decimal::ONE, // legacy order-path table: no conversion
+                    rate_missing: false,
                     hedged_margin_pct: Decimal::from(200), // legacy order-path table: no hedged margin
                     ask_rule: None, // legacy order-path table (ENGINE_ORDER_MANAGEMENT off in production): raw ask
                     quote: None,

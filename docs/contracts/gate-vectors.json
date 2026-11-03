@@ -778,6 +778,771 @@
         "reject": "INSUFFICIENT_MARGIN"
       }
     ],
+    "pre_trade_margin": [
+      {
+        "input": {
+          "note": "flat account, plenty of room",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "10000",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "flat account, the leg costs more than the balance",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "500",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_BALANCE"
+      },
+      {
+        "input": {
+          "note": "credit counts toward the funds, so the same leg fits",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "500",
+          "credit": "10000",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "credit alone, no balance",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "0",
+          "credit": "10000",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "level 100: 1100 of margin on 1200 equity passes",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1200",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "level 100 exactly: lte refuses",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1100",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "note": "the SAME order the default would pass, refused at level 200",
+          "leverage": 100,
+          "marginCallLevel": "200",
+          "balance": "1200",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "note": "level 200 with room to spare",
+          "leverage": 100,
+          "marginCallLevel": "200",
+          "balance": "10000",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "a lenient group (level 50) passes what 100 would refuse",
+          "leverage": 100,
+          "marginCallLevel": "50",
+          "balance": "1100",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "rate 0.0067 (a JPY-quoted leg on a USD account): 150000 JPY of margin is 1005 USD, which fits",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "3000",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "USDJPY",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "150.00",
+            "rate": "0.0067"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "the SAME leg at rate 1 is sized as if JPY were USD, and refused -- the rate is not decoration",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "3000",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "USDJPY",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "150.00",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_BALANCE"
+      },
+      {
+        "input": {
+          "note": "a GBP-quoted leg at rate 1 would fit",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1000",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURGBP",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "0.8500",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "the SAME leg at rate 1.35 does not: a rate above 1 makes it dearer",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1000",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURGBP",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "0.8500",
+            "rate": "1.35"
+          }
+        },
+        "reject": "INSUFFICIENT_BALANCE"
+      },
+      {
+        "input": {
+          "note": "no rate for the new leg",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1000000",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": null
+          }
+        },
+        "reject": "NO_CONVERSION_RATE"
+      },
+      {
+        "input": {
+          "note": "no rate for an OPEN position: the whole order is refused, however small",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1000000",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "USDJPY",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "150.00",
+              "price": "150.00",
+              "rate": null
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "0.01",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "NO_CONVERSION_RATE"
+      },
+      {
+        "input": {
+          "note": "an open position converted at its own rate",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "3000",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "USDJPY",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "150.00",
+              "price": "150.00",
+              "rate": "0.0067"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "an opposite leg at pct 200 pays in full, like any other: 2200 of margin fits in 2300",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "2300",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.1000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "SELL",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "and does not fit in 2200 -- exactly on the call level",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "2200",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.1000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "SELL",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "note": "the same hedge at pct 0 adds nothing, so it is allowed with no room at all",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1150",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "0",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.1000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "0",
+            "side": "SELL",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "a hedge at pct 50 adds some, but less than full",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1500",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "50",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.1000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "50",
+            "side": "SELL",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "same side, same symbol: nothing is hedged",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1500",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.1000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "note": "a hedge on a DIFFERENT symbol does not net",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1500",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "GBPUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.2700",
+              "price": "1.2700",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "SELL",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "note": "the open position's pct wins over the new leg's (first leg booked for the symbol)",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1150",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "0",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.1000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "SELL",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "a partial hedge: 0.4 lots against 1",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1500",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "0",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.1000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "0",
+            "side": "SELL",
+            "volume": "0.4",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "a floating LOSS on the open leg leaves less room",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "3000",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.2000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "note": "a floating PROFIT on the open leg makes room",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "1200",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.0000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "funds cannot carry the leg even with nothing open: BALANCE",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "100",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_BALANCE"
+      },
+      {
+        "input": {
+          "note": "funds could, but what is open leaves too little: MARGIN",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "2000",
+          "credit": "0",
+          "positions": [
+            {
+              "symbol": "EURUSD",
+              "contractSize": "100000",
+              "hedgedMarginPct": "200",
+              "side": "BUY",
+              "volume": "1",
+              "openPrice": "1.2000",
+              "price": "1.1000",
+              "rate": "1"
+            }
+          ],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_MARGIN"
+      },
+      {
+        "input": {
+          "note": "zero funds",
+          "leverage": 100,
+          "marginCallLevel": "100",
+          "balance": "0",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "0.01",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_BALANCE"
+      },
+      {
+        "input": {
+          "note": "1:500 makes the same leg a fifth of the margin",
+          "leverage": 500,
+          "marginCallLevel": "100",
+          "balance": "300",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "note": "1:1 makes it unaffordable",
+          "leverage": 1,
+          "marginCallLevel": "100",
+          "balance": "10000",
+          "credit": "0",
+          "positions": [],
+          "newOrder": {
+            "symbol": "EURUSD",
+            "contractSize": "100000",
+            "hedgedMarginPct": "200",
+            "side": "BUY",
+            "volume": "1",
+            "fillPrice": "1.1000",
+            "rate": "1"
+          }
+        },
+        "reject": "INSUFFICIENT_BALANCE"
+      }
+    ],
     "price_freshness": [
       {
         "input": {

@@ -155,7 +155,12 @@ pub enum PlaceOrderError {
 pub async fn place_market_order(
     pool: &PgPool,
     nats: &async_nats::Client,
-    cache: &TickCache,
+    // &Arc, not &TickCache (L2 Step 1d): the pre-trade margin gate reads the account's open positions
+    // through `book::load_book_state`, which prices them from whatever `book::PriceSource` is in
+    // scope -- and in live mode `require_tick_source` makes the absence of one an error rather than a
+    // silent read of the database's stale "LivePrice". So this path has to be able to PUT the engine's
+    // ticks in scope, and that takes the shared handle. `&state.tick_cache` passes unchanged.
+    cache: &std::sync::Arc<TickCache>,
     // The broker server's UTC offset (`market_data::broker_offset::BrokerOffsetTracker::current`),
     // which the daily-loss gate's broker-day boundary is computed from -- see
     // `db::GateInputs::broker_day_start`. 0 reduces it to UTC midnight.
@@ -245,10 +250,16 @@ pub async fn place_market_order(
         }
     }
 
-    let required = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage);
-    if let Err(reject_reason) = risk::check_free_margin(req.equity, req.used_margin, required) {
-        let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
-        return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+    // THE LEGACY BOOK'S margin check, and only its (L2 Step 1d). `check_free_margin` compares free
+    // margin with the requirement, on `equity`/`used_margin` THE CALLER HANDED IN, at the raw bid. The
+    // Prisma book runs the web's own decision instead -- on the real book, at the real fill price,
+    // against the group's own call level -- further down, once pricing has produced that price.
+    if book == db::Book::Legacy {
+        let required = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage);
+        if let Err(reject_reason) = risk::check_free_margin(req.equity, req.used_margin, required) {
+            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
+            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+        }
     }
 
     // §2.1 step 5 — per-broker exposure limits. Last of the admission
@@ -270,9 +281,10 @@ pub async fn place_market_order(
     // ported gate is pinned against the web's own function by docs/contracts/gate-vectors.json
     // (tests/gate_parity.rs), so "the engine refuses what the web refuses" is measured, not asserted.
     //
-    // NOT complete: `checkTradingSession` and the dealer-desk `orderRoute`/SYSTEM refusal are not
-    // ported -- see gates.rs's NOT_PORTED note. An engine entry point must not go live until they are.
-    if book == db::Book::Prisma {
+    // COMPLETE as of L2 Step 1d: all 23 of the web's open gates are ported and wired, the last of
+    // them the pre-trade margin decision further down (it needs the fill price, so it cannot run in
+    // this block). What remains deliberately unported is listed in gates.rs's NOT_PORTED note.
+    let gate_inputs = if book == db::Book::Prisma {
         let Some(gate_inputs) =
             db::get_gate_inputs(pool, &req.broker_id, &req.account_id, &symbol_id, req.side, broker_offset_sec).await?
         else {
@@ -301,7 +313,12 @@ pub async fn place_market_order(
             let reason = reject_order(tx, nats, &order_id, &req.account_id, reject_reason).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
-    }
+        // kept: the pre-trade margin gate needs four more of these, and it cannot run until the fill
+        // price exists
+        Some(gate_inputs)
+    } else {
+        None
+    };
 
     if let Err(reject_reason) = risk::check_symbol_exposure(exposure.open_volume, req.volume, max_exposure) {
         let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
@@ -334,6 +351,63 @@ pub async fn place_market_order(
         &quoted_tick,
         execution::ExecutionStrategy::Internal,
     );
+
+    // THE LAST GATE (L2 Step 1d): the web's pre-trade margin decision, which replaces
+    // `risk::check_free_margin` on this book. Four things that check could not do, every one of them
+    // load-bearing:
+    //
+    // - it judged FREE MARGIN against the requirement, where the web judges the PROJECTED MARGIN LEVEL
+    //   against the group's own `marginCallLevel` (`lte`, so an order that would land exactly on the
+    //   call level is refused rather than opening straight into one).
+    // - it was handed `equity` and `used_margin` BY THE CALLER. Those are the gateway's numbers; these
+    //   come from the book itself (`calc::load_account_state`, one REPEATABLE READ snapshot), with MT5
+    //   hedge netting and currency conversion, which the caller's two scalars cannot express.
+    // - it knew nothing about conversion, so a JPY-quoted leg on a USD account was sized as if JPY
+    //   were USD. Now an unconvertible leg -- the new one or any already open -- is refused outright,
+    //   the web's NO_CONVERSION_RATE.
+    // - it refused with one reason. The trader reads `"Order"."rejectionReason"`, and
+    //   INSUFFICIENT_BALANCE ("you have not deposited enough") is a different message from
+    //   INSUFFICIENT_MARGIN ("what you already have open leaves too little").
+    //
+    // HERE, not up with the other gates, because it needs the FILL price -- this account's own
+    // marked-up/marked-down price, which only exists once pricing has run. The web places it at
+    // exactly this point as well: `marginGate(fillPrice)` in app/api/trade/orders/route.ts, after
+    // applySpreadMarkup and before the transaction that writes the position.
+    if let Some(inputs) = &gate_inputs {
+        // The engine's ticks, not the database's "LivePrice": in live mode that table is stale by
+        // months, and `require_tick_source` turns reading it into an error instead of a wrong answer.
+        let Some(state) = crate::book::with_price_source(
+            crate::book::PriceSource::Ticks(cache.clone()),
+            calc::load_account_state(pool, book, &req.account_id),
+        )
+        .await?
+        else {
+            let reason = reject_order(tx, nats, &order_id, &req.account_id, "account not found".to_string()).await?;
+            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+        };
+        let leg = calc::NewLeg {
+            symbol: &req.symbol,
+            side: req.side,
+            // what would actually open, not what was asked for
+            volume: fill.volume,
+            contract_size: req.contract_size,
+            fill_price: fill.price,
+            // ZERO DB: the leg's quote currency is converted from the engine's OWN in-memory ticks --
+            // the same feed the web reads as "LivePrice" -- under the same 72 h age rule the book uses
+            // for every other position. None here is NO_CONVERSION_RATE, never a guessed 1.
+            fx_rate: crate::book::fx_rate_from_ticks(
+                cache,
+                &inputs.symbol_quote_currency,
+                &inputs.account_currency,
+                chrono::Utc::now(),
+            ),
+            hedged_margin_pct: inputs.symbol_hedged_margin_pct,
+        };
+        if let Some(reject_reason) = calc::pre_trade_margin_decision(&state, &leg, inputs.margin_call_level) {
+            let reason = reject_order(tx, nats, &order_id, &req.account_id, reject_reason).await?;
+            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+        }
+    }
 
     // NewPosition takes req.broker_id by value below; the commission's ledger row needs it too.
     let order_broker_id = req.broker_id.clone();

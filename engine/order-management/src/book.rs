@@ -338,6 +338,24 @@ fn fx_quote_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now:
     cache.latest(symbol).filter(|(t, received)| now - tick_time(t, *received) < fx_rate_max_age()).map(|(t, _)| (t.bid, t.ask))
 }
 
+/// A conversion rate `from` -> `to` from the engine's IN-MEMORY ticks alone -- no database (L2 Step
+/// 1d, the pre-trade margin gate on the order path). Same feed the web reads as `"LivePrice"`, same
+/// symbol set and same age rule `price_rows` uses above, so an account's open legs and the leg about
+/// to open are converted by one rule. None = the pair is not quoted in this process, which the order
+/// path refuses with NO_CONVERSION_RATE rather than sizing JPY as if it were USD.
+pub fn fx_rate_from_ticks(
+    cache: &market_data::cache::TickCache,
+    from: &str,
+    to: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Decimal> {
+    let quotes: std::collections::HashMap<String, crate::fx::Quote> = crate::fx::conversion_symbols_for(from, to)
+        .into_iter()
+        .filter_map(|s| fx_quote_from_ticks(cache, &s, now).map(|q| (s, q)))
+        .collect();
+    crate::fx::conversion_rate(from, to, |s| quotes.get(s).copied())
+}
+
 /// The tick time the web uses for freshness (engine price_row: tick_ms, else the receive time).
 pub fn tick_time(tick: &protocol::Tick, received_at: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
     tick.tick_ms.and_then(chrono::DateTime::from_timestamp_millis).unwrap_or(received_at)
@@ -621,6 +639,7 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
                 sl_price: r.sl_price,
                 tp_price: r.tp_price,
                 fx_rate: rate.unwrap_or(Decimal::ONE),
+                rate_missing: rate.is_none(),
                 hedged_margin_pct: r.hedged_margin_pct,
                 ask_rule: r.ask_rule,
                 quote: if usable { quote } else { None },

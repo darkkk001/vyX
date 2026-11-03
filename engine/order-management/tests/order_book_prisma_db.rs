@@ -579,7 +579,7 @@ async fn place_market_order_runs_the_whole_chain_on_prismas_book() {
     let fx = fixture(&mut setup, "A_BOOK", dec!(3)).await;
     setup.commit().await.unwrap();
 
-    let cache = market_data::cache::TickCache::new();
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
     cache.set(
         &protocol::Tick {
             symbol: fx.symbol_name.clone(),
@@ -1304,7 +1304,7 @@ async fn every_wired_gate_refuses_through_the_real_order_path() {
         .unwrap();
     setup.commit().await.unwrap();
 
-    let cache = market_data::cache::TickCache::new();
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
     cache.set(
         &protocol::Tick {
             symbol: fx.symbol_name.clone(),
@@ -1537,6 +1537,177 @@ async fn every_wired_gate_refuses_through_the_real_order_path() {
     }
 }
 
+
+/// THE LAST GATE, wired (L2 Step 1d): `place_market_order` refuses on the web's own pre-trade margin
+/// decision, read from the real book, and no longer on `check_free_margin` over numbers the caller
+/// handed in.
+///
+/// `tests/gate_parity.rs` proves the DECISION matches the web over 31 cases. This proves the four
+/// things only the wiring can be wrong about:
+///
+/// 1. the group's `marginCallLevel` is read, not assumed to be 100 -- the same order that fills at 100
+///    is refused at 5000;
+/// 2. the funds are the ACCOUNT's, and credit counts toward them -- the same order that is refused on
+///    a balance of 1000 fills when 5000 of credit is added, with nothing else changed;
+/// 3. INSUFFICIENT_BALANCE and INSUFFICIENT_MARGIN come out of the two situations that are supposed to
+///    produce them, and the trader reads the web's own words from `"Order"."rejectionReason"`;
+/// 4. the conversion rate comes from the engine's IN-MEMORY ticks, with no database read at all: a
+///    JPY-quoted symbol is refused NO_CONVERSION_RATE while the cache has no USDJPY, and the SAME
+///    order fills once a USDJPY tick lands in it;
+/// 5. the leg is valued at the price the order would FILL at -- this account's own price -- and not at
+///    the raw tick, separated here by a call level that sits between the two.
+#[tokio::test]
+async fn the_pre_trade_margin_gate_refuses_through_the_real_order_path() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("the_pre_trade_margin_gate_refuses: ENGINE_TEST_NATS_URL not set, skipping");
+        return;
+    };
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    setup.commit().await.unwrap();
+
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
+    cache.set(
+        &protocol::Tick {
+            symbol: fx.symbol_name.clone(),
+            bid: dec!(4298.96),
+            ask: dec!(4299.13),
+            t0: None,
+            clock_offset_ms: None,
+            rtt_ms: None,
+            tick_ms: None,
+            broker_offset_sec: None,
+            bars: Vec::new(),
+        },
+        chrono::Utc::now(),
+    );
+
+    let place = |volume: Decimal| {
+        let (pool, nats, cache, fx) = (pool.clone(), nats.clone(), &cache, &fx);
+        async move {
+            order_management::place_market_order(
+                &pool,
+                &nats,
+                cache,
+                0,
+                order_management::PlaceMarketOrderRequest {
+                    broker_id: fx.broker.clone(),
+                    account_id: fx.account.clone(),
+                    symbol: fx.symbol_name.clone(),
+                    side: OrderSide::Buy,
+                    volume,
+                    sl_price: None,
+                    tp_price: None,
+                    // DELIBERATELY ABSURD: the caller's own equity / used margin, which the gate this
+                    // replaces believed. If either of these still reached a decision, an account with
+                    // 1000 of balance could open 50 lots, and scenario 3 below would fill.
+                    equity: dec!(999999999),
+                    used_margin: dec!(0),
+                    contract_size: dec!(1),
+                    leverage: 100,
+                },
+            )
+            .await
+            .expect("the order path ran")
+        }
+    };
+    // Each filled scenario leaves an open position, and an open position changes the next scenario's
+    // used margin. Flatten between them so every assertion is about one thing.
+    let flatten = || async {
+        sqlx::query(r#"UPDATE "Position" SET status = 'CLOSED', "closedAt" = now() WHERE "accountId" = $1 AND status = 'OPEN'"#)
+            .bind(&fx.account)
+            .execute(&pool)
+            .await
+            .unwrap();
+    };
+    let reason_of = |outcome: order_management::PlaceMarketOrderOutcome, what: &str| match outcome {
+        order_management::PlaceMarketOrderOutcome::Rejected { reason, .. } => reason,
+        order_management::PlaceMarketOrderOutcome::Filled { .. } => panic!("{what}: FILLED -- the margin gate is not wired"),
+    };
+
+    // ── baseline: 50 lots of a 1-unit contract is 2149.57 of margin on 100000, level 4652 ──
+    // (volume 50 and not 0.01 so the projected level lands inside Group.marginCallLevel's own
+    // Decimal(6, 2) range, which is what scenario 1 has to move)
+    assert!(matches!(place(dec!(50)).await, order_management::PlaceMarketOrderOutcome::Filled { .. }), "baseline: 50 lots must fill on 100000");
+    flatten().await;
+
+    // ── 1. the GROUP's call level, not a hardcoded 100 ──
+    sqlx::query(r#"UPDATE "Group" SET "marginCallLevel" = 5000 WHERE "brokerId" = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    let at_5000 = reason_of(place(dec!(50)).await, "marginCallLevel 5000");
+    sqlx::query(r#"UPDATE "Group" SET "marginCallLevel" = 100 WHERE "brokerId" = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    assert_eq!(at_5000, "INSUFFICIENT_MARGIN", "a level of 5000 must refuse the order a level of 100 fills");
+
+    // ── 2. valued at the price it would FILL at, not at the raw tick ──
+    // 50 lots on 100000 of equity, nothing open. At the BUY's fill price (the ask, 4299.13) the leg
+    // needs 2149.565 and projects a level of 4652.1040; at the raw bid (4298.96) it would need
+    // 2149.48 and project 4652.2880. A call level BETWEEN those two numbers separates the two prices
+    // and nothing else -- so this pair says which one the gate used, and the answer has to be the
+    // price the trader is actually charged.
+    sqlx::query(r#"UPDATE "Group" SET "marginCallLevel" = 4652.20 WHERE "brokerId" = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    let at_fill_price = reason_of(place(dec!(50)).await, "a call level between the raw bid and the fill price");
+    sqlx::query(r#"UPDATE "Group" SET "marginCallLevel" = 4652.00 WHERE "brokerId" = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    let just_under = place(dec!(50)).await;
+    sqlx::query(r#"UPDATE "Group" SET "marginCallLevel" = 100 WHERE "brokerId" = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    assert_eq!(at_fill_price, "INSUFFICIENT_MARGIN", "4652.20 is above the fill price's level: refuse");
+    assert!(matches!(just_under, order_management::PlaceMarketOrderOutcome::Filled { .. }), "4652.00 is below it: fill");
+    flatten().await;
+
+    // ── 3. the funds are the book's: 1000 cannot carry 2149.57 of margin ──
+    sqlx::query(r#"UPDATE "Account" SET balance = 1000, credit = 0 WHERE id = $1"#).bind(&fx.account).execute(&pool).await.unwrap();
+    let broke = reason_of(place(dec!(50)).await, "balance 1000");
+    assert_eq!(broke, "INSUFFICIENT_BALANCE", "funds below the requirement are a BALANCE problem, not a MARGIN one");
+
+    // ── 4. credit counts, in the equity AND in the funds: 1000 + 5000 carries it ──
+    sqlx::query(r#"UPDATE "Account" SET credit = 5000 WHERE id = $1"#).bind(&fx.account).execute(&pool).await.unwrap();
+    assert!(
+        matches!(place(dec!(50)).await, order_management::PlaceMarketOrderOutcome::Filled { .. }),
+        "credit must count toward the funds the margin is checked against"
+    );
+    flatten().await;
+
+    // ── 5. and with what is open, the SAME account refuses with the other reason ──
+    // 6000 of funds, 2149.48 already used by the 50 lots left open above, so the next 50 project a
+    // level of 139 -- fine at 100, refused at 200, and the funds alone could have carried it.
+    sqlx::query(r#"UPDATE "Position" SET status = 'OPEN', "closedAt" = NULL WHERE "accountId" = $1"#).bind(&fx.account).execute(&pool).await.unwrap();
+    sqlx::query(r#"UPDATE "Group" SET "marginCallLevel" = 200 WHERE "brokerId" = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    let crowded = reason_of(place(dec!(50)).await, "an open position leaving too little");
+    sqlx::query(r#"UPDATE "Group" SET "marginCallLevel" = 100 WHERE "brokerId" = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    assert_eq!(crowded, "INSUFFICIENT_MARGIN", "funds that could carry it, open positions that cannot");
+    flatten().await;
+
+    // ── 6. the conversion rate, from the engine's own ticks and nothing else ──
+    sqlx::query(r#"UPDATE "Account" SET balance = 100000, credit = 0 WHERE id = $1"#).bind(&fx.account).execute(&pool).await.unwrap();
+    sqlx::query(r#"UPDATE "Symbol" SET "quoteCurrency" = 'JPY' WHERE id = $1"#).bind(&fx.symbol_id).execute(&pool).await.unwrap();
+    let unconvertible = reason_of(place(dec!(0.01)).await, "a JPY-quoted symbol with no USDJPY in the cache");
+    assert_eq!(unconvertible, "NO_CONVERSION_RATE", "no price to convert JPY to USD: refuse, never guess 1");
+
+    // the ONLY thing that changes is a tick in memory -- no row is written anywhere
+    cache.set(
+        &protocol::Tick {
+            symbol: "USDJPY".to_string(),
+            bid: dec!(150.00),
+            ask: dec!(150.02),
+            t0: None,
+            clock_offset_ms: None,
+            rtt_ms: None,
+            tick_ms: None,
+            broker_offset_sec: None,
+            bars: Vec::new(),
+        },
+        chrono::Utc::now(),
+    );
+    assert!(
+        matches!(place(dec!(0.01)).await, order_management::PlaceMarketOrderOutcome::Filled { .. }),
+        "one USDJPY tick in the in-memory cache is the whole conversion: the order must now fill"
+    );
+
+    cleanup(&pool, &fx).await;
+}
+
 /// The trading-session gate, wired. `tests/trading_session_parity.rs` proves the RULE matches the web
 /// over 228 cases; this proves the order path reads the symbol's category and its configured
 /// `"TradingSession"` rows and refuses on them.
@@ -1563,7 +1734,7 @@ async fn the_session_gate_refuses_a_closed_market_through_the_real_order_path() 
         .unwrap();
     setup.commit().await.unwrap();
 
-    let cache = market_data::cache::TickCache::new();
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
     let tick = protocol::Tick {
         symbol: fx.symbol_name.clone(),
         bid: dec!(4298.96),
@@ -1658,7 +1829,7 @@ async fn a_tick_the_web_would_call_stale_is_refused_even_though_the_engine_still
     let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
     setup.commit().await.unwrap();
 
-    let cache = market_data::cache::TickCache::new();
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
     let tick = protocol::Tick {
         symbol: fx.symbol_name.clone(),
         bid: dec!(4298.96),
