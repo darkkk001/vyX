@@ -4,6 +4,9 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { hashPassword } from "@/lib/client-auth";
 import { sendClientVerificationEmail } from "@/lib/email/verification-email";
 import { requestOrigin } from "@/lib/request-origin";
+import { RESEND_PER_EMAIL_PER_HOUR } from "@/lib/email/verification-email";
+import { clientIpOf } from "@/lib/demo";
+import { checkRegisterForm, REGISTER_PER_IP_PER_HOUR } from "@/lib/portal-register-guard";
 
 // Client Portal self-registration (Stage 1) -- email + password, not an
 // account number (that's Account's own, separate credential -- see
@@ -22,7 +25,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
 
+  // per-IP limit (owner 2026-11-03, lib/portal-register-guard.ts): Vercel's own address headers, never x-forwarded-for
+  const byIp = await checkRateLimit(`portal-register-ip:${clientIpOf(request.headers)}`, REGISTER_PER_IP_PER_HOUR, 60 * 60);
+  if (!byIp.allowed) {
+    return NextResponse.json({ error: "too many sign-ups from this network, try again later" }, { status: 429 });
+  }
+
   const body = await request.json().catch(() => null);
+  const form = await checkRegisterForm(body);
+  if (!form.ok && form.kind === "honeypot") {
+    // a bot filled the hidden field: answer like a success, create and send nothing
+    console.warn("[portal-register] honeypot hit, dropped", { brokerId });
+    return NextResponse.json({ email: typeof body?.email === "string" ? body.email.trim().toLowerCase() : "" });
+  }
+  if (!form.ok) {
+    return NextResponse.json(
+      form.kind === "too_fast"
+        ? { error: "that was very fast, check your details and press Create account again", code: "TOO_FAST" }
+        : { error: "this page has expired, reload it and try again", code: "FORM_EXPIRED" },
+      { status: 400 }
+    );
+  }
   const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
   const password = typeof body?.password === "string" ? body.password : "";
   const fullName = typeof body?.fullName === "string" ? body.fullName.trim() : "";
@@ -38,16 +61,26 @@ export async function POST(request: NextRequest) {
   }
 
   const existing = await prisma.client.findUnique({ where: { brokerId_email: { brokerId, email } } });
+  if (existing?.emailVerifiedAt) {
+    return NextResponse.json({ error: "an account with this email already exists, try logging in" }, { status: 409 });
+  }
   if (existing) {
-    // Same email enumerated back either way -- constant response shape --
-    // but the real reason is worth telling a genuine owner of that inbox:
-    // "log in" or "verify" are both actionable, "try a different email"
-    // isn't, and neither leaks anything an attacker couldn't already
-    // learn by attempting to log in with a guessed email regardless.
-    return NextResponse.json(
-      { error: existing.emailVerifiedAt ? "an account with this email already exists, try logging in" : "an account with this email already exists, check your inbox for the verification link" },
-      { status: 409 }
-    );
+    // Signing up again with an address that never verified (owner 2026-11-03): send a fresh link instead of a 409,
+    // and answer exactly like a new sign-up ("check your email"). The stored name and password are NOT changed:
+    // whoever controls the inbox finishes with the original details, or resets the password after verifying.
+    // Same per-address budget as the portal's own resend, so this cannot be used to flood an inbox.
+    const byEmail = await checkRateLimit(`portal-resend-verification:${brokerId}:${email}`, RESEND_PER_EMAIL_PER_HOUR, 60 * 60);
+    if (byEmail.allowed && existing.status === "ACTIVE") {
+      try {
+        await sendClientVerificationEmail({ brokerId, clientId: existing.id, email: existing.email, fallbackOrigin: () => requestOrigin(request) });
+        await prisma.auditLog.create({
+          data: { brokerId, actorAdminId: null, action: "CLIENT_VERIFICATION_RESENT", entityType: "Client", entityId: existing.id, newValue: { email: existing.email, via: "register" } },
+        });
+      } catch (err) {
+        console.error("[portal-register] verification resend failed", err);
+      }
+    }
+    return NextResponse.json({ email: existing.email });
   }
 
   const passwordHash = await hashPassword(password);

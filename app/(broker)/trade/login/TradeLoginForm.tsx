@@ -208,6 +208,11 @@ export default function TradeLoginForm({
     }
   }
 
+  // the phone layout's broker card names the site the trader is on (set after mount: no host during the server render)
+  const [host, setHost] = useState("");
+  useEffect(() => setHost(window.location.host.toUpperCase()), []);
+  const kinds = (["LIVE", "DEMO"] as const).filter((k) => servers.some((s) => s.type === k));
+
   const filteredServers = servers.filter((s) => s.name.toLowerCase().includes(serverSearch.toLowerCase()));
 
   // data-mode="light" -- no account session exists yet at the login
@@ -340,6 +345,33 @@ export default function TradeLoginForm({
         <div className={styles.loginMesh} />
 
         <form onSubmit={handleSubmit} className={styles.loginCard}>
+          {/* phone (max-width 860 px): the native mobile app's sign-in, a broker card and a LIVE / DEMO switch */}
+          <div className={styles.mHead}>SIGN IN</div>
+          <div className={styles.mBroker}>
+            <span className={styles.mMark}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {brokerLogoUrl ? <img src={brokerLogoUrl} alt="" /> : brokerName.charAt(0).toUpperCase()}
+            </span>
+            <span className={styles.mBrokerId}>
+              <b>{brokerName}</b>
+              <span>{host}</span>
+            </span>
+          </div>
+          {kinds.length > 1 ? (
+            <div className={styles.mKinds} role="group" aria-label="Account type">
+              {kinds.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={selectedServer.type === k}
+                  className={selectedServer.type === k ? styles.mKindActive : undefined}
+                  onClick={() => { const s = servers.find((x) => x.type === k); if (s) pickServer(s); }}
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <h1 className={styles.title}>Sign in to {brokerName}</h1>
           <p className={styles.subtitle}>Enter your trading account number and password.</p>
 
@@ -432,12 +464,14 @@ export default function TradeLoginForm({
               ) : null}
             </button>
             <button type="button" className={styles.rememberLabel} onClick={() => setRemember((v) => !v)}>
-              Save account and connect automatically
+              <span className={styles.desktopOnly}>Save account and connect automatically</span>
+              <span className={styles.mobileOnly}>Remember me</span>
             </button>
           </div>
 
           <button type="submit" disabled={submitting} className={styles.btnLogin}>
-            {submitting ? "Connecting…" : "Login"}
+            <span className={styles.desktopOnly}>{submitting ? "Connecting…" : "Login"}</span>
+            <span className={styles.mobileOnly}>{submitting ? "SIGNING IN…" : "SIGN IN"}</span>
           </button>
 
           <div className={styles.loginFooter}>

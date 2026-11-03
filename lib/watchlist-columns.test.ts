@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WATCHLIST_COLUMN_PREFS, spreadPoints, type WatchlistColumnPrefs } from "./watchlist-columns";
+import { DEFAULT_WATCHLIST_COLUMN_PREFS, spreadPoints, withColumnDefaults, type WatchlistColumnPrefs } from "./watchlist-columns";
 
 describe("DEFAULT_WATCHLIST_COLUMN_PREFS", () => {
-  it("is exactly Symbol/Price (always on) + Spread/Day H/Day L, no Chg%", () => {
-    expect(DEFAULT_WATCHLIST_COLUMN_PREFS).toEqual({ change: false, spread: true, high: true, low: true });
+  it("is the native terminal's Symbol / Bid / Ask / Spread / Chg%, day high and low off", () => {
+    expect(DEFAULT_WATCHLIST_COLUMN_PREFS).toEqual({ ask: true, change: true, spread: true, high: false, low: false });
+  });
+
+  it("keeps a saved choice and turns Ask on for a layout saved before it existed", () => {
+    expect(withColumnDefaults({ change: false, spread: true, high: true, low: true })).toEqual({ ask: true, change: false, spread: true, high: true, low: true });
+    expect(withColumnDefaults({ ask: false, change: true, spread: false, high: false, low: false }).ask).toBe(false);
+    expect(withColumnDefaults(null)).toEqual(DEFAULT_WATCHLIST_COLUMN_PREFS);
   });
 
   // The SIGNAL column (▲/▼ badge) was deliberately removed in b21954c --

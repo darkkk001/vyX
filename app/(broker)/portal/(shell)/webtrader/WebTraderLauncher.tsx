@@ -46,7 +46,15 @@ export default function WebTraderLauncher() {
   }, []);
 
   if (accounts === null) {
-    return <p style={{ color: "var(--text-3)", fontSize: 13 }}>Loading...</p>;
+    // the shape of the panel while the accounts load, not a bare "Loading..." line
+    return (
+      <div className={styles.panel} style={{ maxWidth: 480 }} aria-busy="true" aria-label="Loading your accounts">
+        <div className={styles.skeletonLine} style={{ width: 120, height: 16, marginBottom: 18 }} />
+        <div className={styles.skeletonLine} style={{ height: 52, marginBottom: 8 }} />
+        <div className={styles.skeletonLine} style={{ height: 52, marginBottom: 18 }} />
+        <div className={styles.skeletonLine} style={{ width: 150, height: 38 }} />
+      </div>
+    );
   }
 
   if (accounts.length === 0) {
@@ -70,14 +78,26 @@ export default function WebTraderLauncher() {
       {errorCode ? <div className={styles.formError}>{ERROR_MESSAGES[errorCode] ?? "Couldn't open WebTrader for that account."}</div> : null}
 
       <div className={styles.field}>
-        <label className={styles.fieldLabel}>Account</label>
-        <select className={styles.select} value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
+        <span className={styles.fieldLabel} id="wt-launch-account">Account</span>
+        <div className={styles.launchList} role="radiogroup" aria-labelledby="wt-launch-account">
           {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.accountNumber} ({a.accountMode}{a.accountTypeName ? ` ${a.accountTypeName}` : ""}) {a.currency} {formatMoney(a.balance)}
-            </option>
+            <button
+              key={a.id}
+              type="button"
+              role="radio"
+              aria-checked={a.id === selectedId}
+              className={`${styles.launchItem}${a.id === selectedId ? ` ${styles.launchItemActive}` : ""}`}
+              onClick={() => setSelectedId(a.id)}
+            >
+              <span className={styles.launchMain}>
+                <span className={styles.launchNumber}>{a.accountNumber}</span>
+                <span className={`${styles.modeBadge}${a.accountMode === "LIVE" ? ` ${styles.modeBadgeLive}` : ""}`}>{a.accountMode}</span>
+                {a.accountTypeName ? <span className={styles.launchType}>{a.accountTypeName}</span> : null}
+              </span>
+              <span className={styles.launchBalance}>{formatMoney(a.balance)} {a.currency}</span>
+            </button>
           ))}
-        </select>
+        </div>
       </div>
 
       <a

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { WT_COLORS } from "./wt-colors";
 
 // Renders only inside the Tauri desktop shell (frameless window, no
 // native title bar of its own — see desktop-tauri/src-tauri/src/main.rs's
@@ -106,7 +107,7 @@ export default function DesktopTitleBar({
               gap: 6,
               fontSize: 11,
               fontWeight: 600,
-              color: mode === "LIVE" ? "#16C784" : "#8B93A1",
+              color: mode === "LIVE" ? WT_COLORS.dark.ok : "#8B93A1",
               background: mode === "LIVE" ? "rgba(22, 199, 132, 0.1)" : "rgba(139, 147, 161, 0.1)",
               border: `1px solid ${mode === "LIVE" ? "rgba(22, 199, 132, 0.25)" : "rgba(139, 147, 161, 0.22)"}`,
               padding: "5px 11px",
@@ -119,7 +120,7 @@ export default function DesktopTitleBar({
                 width: 6,
                 height: 6,
                 borderRadius: "50%",
-                background: connected ? (mode === "LIVE" ? "#16C784" : "#8B93A1") : "#EA3943",
+                background: connected ? (mode === "LIVE" ? WT_COLORS.dark.ok : "#8B93A1") : WT_COLORS.dark.err,
                 boxShadow: connected ? `0 0 8px ${mode === "LIVE" ? "rgba(22,199,132,.4)" : "rgba(139,147,161,.3)"}` : "none",
               }}
             />
@@ -161,8 +162,9 @@ export default function DesktopTitleBar({
 }
 
 function SignalBars({ connected }: { connected: boolean }) {
-  const active = "#16C784";
-  const dim = "#EA3943";
+  // connection status: the status green / error red (wt-colors.ts), not the trade-side colours
+  const active = WT_COLORS.dark.ok;
+  const dim = WT_COLORS.dark.err;
   const off = "#2a303c";
   const bars = [
     { h: 4, y: 8 },

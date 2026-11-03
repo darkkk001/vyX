@@ -569,3 +569,25 @@
   border-top: 1px solid var(--border);
   margin: 18px 0;
 }
+
+/* WebTrader launcher (owner 2026-11-03 design pass): accounts as selectable rows with a LIVE / DEMO badge, and a
+   skeleton of the panel while they load */
+.launchList { display: flex; flex-direction: column; gap: 6px; }
+.launchItem {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+  padding: 12px 14px; border-radius: 9px; cursor: pointer; text-align: left; font: inherit;
+  background: var(--bg-2); color: var(--text-1); border: 1px solid var(--border);
+  transition: border-color .12s, background .12s;
+}
+.launchItem:hover { border-color: var(--border-strong); }
+.launchItem:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.launchItemActive { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--bg-2)); }
+.launchMain { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.launchNumber { font-weight: 600; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.launchType { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.launchBalance { font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.modeBadge { font-size: 9.5px; font-weight: 600; letter-spacing: .05em; padding: 2px 6px; border-radius: 4px; background: var(--bg-3, var(--bg-2)); color: var(--text-3); }
+.modeBadgeLive { color: var(--ok, #0E9F6E); background: color-mix(in srgb, var(--ok, #0E9F6E) 12%, transparent); }
+.skeletonLine { border-radius: 8px; background: linear-gradient(90deg, var(--bg-2) 0%, var(--border) 50%, var(--bg-2) 100%); background-size: 200% 100%; animation: launchShimmer 1.4s ease-in-out infinite; }
+@keyframes launchShimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeletonLine { animation: none; } }

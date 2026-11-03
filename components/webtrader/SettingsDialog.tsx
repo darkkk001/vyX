@@ -147,11 +147,11 @@ export default function SettingsDialog({
               <div style={{ padding: "10px 0 2px", fontSize: 10, color: "var(--text-3)", textTransform: "uppercase" }}>Palette</div>
               <div className="occ-toggle-row" style={{ cursor: "pointer" }} onClick={() => onChangeTheme("default")}>
                 <span className="field-label">Default</span>
-                {theme === "default" ? <span style={{ color: "var(--buy)" }}>✓</span> : null}
+                {theme === "default" ? <span style={{ color: "var(--ok)" }}>✓</span> : null}
               </div>
               <div className="occ-toggle-row" style={{ cursor: "pointer" }} onClick={() => onChangeTheme("classic")}>
                 <span className="field-label">Classic</span>
-                {theme === "classic" ? <span style={{ color: "var(--buy)" }}>✓</span> : null}
+                {theme === "classic" ? <span style={{ color: "var(--ok)" }}>✓</span> : null}
               </div>
               <button
                 className="confirm-market-btn"

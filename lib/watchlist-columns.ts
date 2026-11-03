@@ -11,14 +11,18 @@
 // This type has no `signal` key, so it's a compile error for one to come
 // back silently via a spread of some old saved layout object -- the test
 // file alongside this one is the runtime trip-wire for the same fact.
-export type WatchlistColumnPrefs = { change: boolean; spread: boolean; high: boolean; low: boolean };
+export type WatchlistColumnPrefs = { ask: boolean; change: boolean; spread: boolean; high: boolean; low: boolean };
 
-// Spread + the daily H/L range are the columns an MT4/5 trader actually
-// scans a watchlist for; %Chg is available but not on by default. Applies
-// to every fresh session with no saved layout yet (see WebTrader.tsx's
-// `storedLayout.columnPrefs ??` fallback) -- an existing saved layout is a
-// real per-trader choice and is never overwritten by this.
-export const DEFAULT_WATCHLIST_COLUMN_PREFS: WatchlistColumnPrefs = { change: false, spread: true, high: true, low: true };
+// Native-terminal alignment (owner 2026-11-03): the market watch shows SYMBOL / BID / ASK / SPREAD / CHG% like the
+// desktop terminal; the daily high and low stay available from the column menu. Applies to every fresh session with
+// no saved layout yet; a saved layout keeps its own choice, and a layout saved before ASK existed gets ASK on
+// (withColumnDefaults).
+export const DEFAULT_WATCHLIST_COLUMN_PREFS: WatchlistColumnPrefs = { ask: true, change: true, spread: true, high: false, low: false };
+
+/** A saved layout's column choice with any column it predates filled from the defaults. */
+export function withColumnDefaults(saved: Partial<WatchlistColumnPrefs> | null | undefined): WatchlistColumnPrefs {
+  return { ...DEFAULT_WATCHLIST_COLUMN_PREFS, ...(saved ?? {}) };
+}
 
 // Watchlist SPREAD column -- MT4/5's own "points" convention: a symbol's
 // point size is 10^-digits (its own smallest tradable price increment, the

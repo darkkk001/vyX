@@ -6,11 +6,13 @@ import styles from "../PortalAuth.module.css";
 import ResendVerification from "../ResendVerification";
 import { plainError } from "@/lib/plain-error";
 
-export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string | null }) {
+export default function RegisterForm({ brokerName, brokerLogoUrl, formToken }: { brokerName: string; brokerLogoUrl: string | null; formToken: string }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [fullName, setFullName] = useState("");
+  // anti-bot honeypot (lib/portal-register-guard.ts): off-screen and skipped by keyboard and screen readers; only a bot fills it
+  const [website, setWebsite] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // The address exists but was never verified (409): offer a new link.
@@ -31,7 +33,7 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
     const response = await fetch("/api/portal/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, fullName }),
+      body: JSON.stringify({ email, password, fullName, website, formToken }),
     });
     const body = await response.json().catch(() => ({}));
     setSubmitting(false);
@@ -145,6 +147,11 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
                 )}
               </button>
             </div>
+          </div>
+
+          <div aria-hidden="true" style={{ position: "absolute", left: "-10000px", top: "auto", width: 1, height: 1, overflow: "hidden" }}>
+            <label htmlFor="website">Website</label>
+            <input id="website" name="website" type="text" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
           </div>
 
           {error ? <div className={styles.formError}>{error}</div> : null}
