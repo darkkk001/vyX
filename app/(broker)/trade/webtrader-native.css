@@ -1,0 +1,458 @@
+/* Native-terminal alignment (owner 2026-11-03): the WebTrader takes the desktop terminal's layout and visual language so
+   the two read as one product. Loaded after webtrader.css. Square 3 px corners, 1 px panel rules instead of floating
+   cards, uppercase panel headers with the native panel codes (1) MW, 3) OT, 5) ECO, 6) ACC), dense label / value rows,
+   mono figures. The colour rule is unchanged: BUY blue, SELL red, green only for status and price direction.
+   The new .nt-* classes apply everywhere; overrides of the older selectors are desktop-only (the mobile layout is held). */
+
+/* ---------- tokens: the native terminal's dark and light surfaces ---------- */
+.wt-root:not([data-mode="light"]) {
+  --bg-0: #0A0C10;
+  --bg-1: #0D1015;
+  --bg-2: #11151B;
+  --bg-3: #171B22;
+  --bg-4: #1E232C;
+  --border: #1E232C;
+  --border-strong: #2A303A;
+  --text-1: #E6E9EE;
+  --text-2: #9AA3B0;
+  --text-3: #6B7482;
+  --radius: 3px;
+}
+.wt-root[data-mode="light"] {
+  --bg-0: #F7F9FC;
+  --bg-1: #FFFFFF;
+  --bg-2: #F3F5F9;
+  --bg-3: #E9EDF3;
+  --bg-4: #E1E6EE;
+  --border: #D6DCE5;
+  --border-strong: #C5CDD8;
+  --radius: 3px;
+}
+
+/* ---------- panel headers ---------- */
+.nt-ph {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  height: 26px; padding: 0 8px; flex-shrink: 0;
+  background: var(--bg-1); border-bottom: 1px solid var(--border);
+}
+.nt-ph-section { border-top: 1px solid var(--border); }
+.nt-ph-btn {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+  background: none; border: none; padding: 0; cursor: pointer; font: inherit; color: inherit;
+}
+.nt-ph-static { cursor: default; }
+.nt-ph-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.nt-ph-code { font-size: 12px; font-weight: 700; color: var(--text-1); letter-spacing: .02em; white-space: nowrap; }
+.nt-ph-num { color: var(--accent); }
+.nt-ph-name { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nt-ph-btn:hover .nt-ph-name { color: var(--text-2); }
+.nt-ph-aside { font-size: 11px; color: var(--text-3); white-space: nowrap; text-transform: uppercase; }
+
+/* section heads inside a column (Smart trade manager, Sessions): the native's accent caps */
+.nt-sec-head {
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  background: none; border: none; border-bottom: 1px solid var(--border); border-top: 1px solid var(--border);
+  padding: 6px 8px 5px; margin-top: 6px; cursor: pointer; font: inherit;
+  color: var(--accent); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+}
+.nt-sec-head .wl-category-chevron { color: var(--text-3); }
+.nt-sec-head:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+
+/* ---------- label / value rows (ticket, account, sessions, STM) ---------- */
+.nt-rows { display: flex; flex-direction: column; }
+.nt-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 22px; padding: 1px 8px; border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.nt-row-label {
+  display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  font-size: 11px; color: var(--text-2); text-transform: uppercase; letter-spacing: .02em;
+}
+.nt-row-value { display: flex; align-items: baseline; gap: 4px; color: var(--text-1); white-space: nowrap; }
+.nt-strong { font-weight: 600; color: var(--text-1); }
+.nt-ccy { font-size: 10px; color: var(--text-3); text-transform: uppercase; margin-left: 4px; }
+.nt-dim { color: var(--text-3); }
+.nt-open { color: var(--ok); font-weight: 700; font-size: 11px; letter-spacing: .03em; }
+.nt-row-presets { justify-content: flex-end; gap: 4px; padding-top: 3px; padding-bottom: 3px; }
+.nt-row-switch { border-bottom: none; padding-top: 4px; padding-bottom: 4px; }
+
+.wt-root .nt-input {
+  width: 96px; background: transparent; color: var(--text-1);
+  border: 1px solid transparent; border-radius: 2px; padding: 2px 5px;
+  font-size: 12px; text-align: right; outline: none;
+}
+.wt-root .nt-input:hover { border-color: var(--border-strong); }
+.wt-root .nt-input:focus { border-color: var(--accent); background: var(--bg-2); }
+.wt-root .nt-input::placeholder { color: var(--text-3); opacity: .8; }
+.wt-root .nt-input.invalid { border-color: var(--err); color: var(--err); }
+.wt-root .nt-input-volume { width: 56px; text-align: center; font-weight: 600; }
+.nt-input-wrap { display: flex; align-items: center; gap: 2px; }
+.nt-clear { background: none; border: none; color: var(--text-3); cursor: pointer; font-size: 10px; padding: 0 2px; line-height: 1; }
+.nt-clear:hover { color: var(--err); }
+.nt-stepper { display: flex; align-items: center; gap: 2px; }
+.nt-step {
+  width: 22px; height: 19px; border-radius: 2px; cursor: pointer;
+  background: var(--bg-3); border: 1px solid var(--border); color: var(--text-2); font-size: 13px; line-height: 1;
+}
+.nt-step:hover { color: var(--text-1); border-color: var(--border-strong); }
+.nt-step:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.wt-root .nt-select {
+  background: transparent; color: var(--text-1); border: 1px solid transparent; border-radius: 2px;
+  padding: 1px 2px; font-size: 11.5px; font-weight: 600; text-align: right; max-width: 150px; cursor: pointer;
+}
+.wt-root .nt-select:hover { border-color: var(--border-strong); }
+.wt-root .nt-select:focus-visible { border-color: var(--accent); box-shadow: none; }
+.wt-root .nt-select option { background: var(--bg-1); color: var(--text-1); }
+
+.wt-root .lot-preset { border-radius: 2px; padding: 1px 7px; font-size: 10.5px; background: transparent; }
+.wt-root .lot-preset:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ---------- order ticket ---------- */
+.nt-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--border); }
+.nt-tab {
+  height: 28px; background: transparent; border: none; border-right: 1px solid var(--border); cursor: pointer;
+  font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3);
+}
+.nt-tab:last-child { border-right: none; }
+.nt-tab:hover { color: var(--text-2); }
+.nt-tab.active { background: var(--bg-3); color: var(--text-1); box-shadow: inset 0 -2px 0 var(--accent); }
+.nt-tab:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+
+.nt-rr { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.nt-rr > div { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 0; border-right: 1px solid var(--border); }
+.nt-rr > div:last-child { border-right: none; }
+.nt-rr span:first-child { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
+.nt-rr span:last-child { font-size: 12px; color: var(--text-2); }
+
+/* ---------- market watch ---------- */
+.nt-search-row { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-bottom: 1px solid var(--border); }
+.nt-search-row:focus-within { box-shadow: inset 0 -1px 0 var(--accent); }
+.wt-root .nt-search-row .wl-search {
+  flex: 1; min-width: 0; margin: 0; padding: 3px 0; border: none; border-radius: 0; background: transparent; font-size: 12px; box-shadow: none;
+}
+.nt-chip-btn {
+  flex-shrink: 0; background: transparent; border: 1px solid var(--border-strong); border-radius: 2px; cursor: pointer;
+  color: var(--accent); font: inherit; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding: 2px 7px;
+}
+.nt-chip-btn:hover { border-color: var(--accent); }
+.wl-num { text-align: right; justify-content: flex-end; }
+.wl-up { color: var(--tick-up); }
+.wl-down { color: var(--tick-down); }
+.nt-eco { padding: 6px 8px; }
+
+/* ---------- chart toolbar ---------- */
+.nt-tool-btn {
+  display: inline-flex; align-items: center; gap: 5px; height: 100%; padding: 0 10px; cursor: pointer;
+  background: none; border: none; border-left: 1px solid var(--border);
+  font: inherit; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); white-space: nowrap;
+}
+.nt-tool-btn:hover { color: var(--text-2); }
+.nt-tool-btn.active { color: var(--text-1); background: var(--bg-3); }
+.nt-tool-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+.nt-count { background: var(--accent); color: #FFFFFF; border-radius: 2px; font-size: 9.5px; padding: 0 4px; line-height: 14px; }
+.nt-seg { display: flex; height: 100%; border-left: 1px solid var(--border); }
+.nt-seg button {
+  width: 30px; height: 100%; background: none; border: none; cursor: pointer; color: var(--text-3);
+  display: flex; align-items: center; justify-content: center;
+}
+.nt-seg button:hover { color: var(--text-2); }
+.nt-seg button.active { color: var(--text-1); background: var(--bg-3); }
+.nt-ind-chips { position: absolute; left: 42px; bottom: 30px; z-index: 5; display: flex; flex-wrap: wrap; gap: 4px; max-width: calc(100% - 120px); }
+.nt-ind-chip {
+  display: flex; align-items: center; gap: 5px; background: var(--bg-1); border: 1px solid var(--border);
+  border-radius: 2px; padding: 2px 3px 2px 7px; font-size: 10.5px; color: var(--text-2);
+}
+
+/* ---------- Smart Trade Manager ---------- */
+.stm { display: flex; flex-direction: column; }
+.stm-modal { width: 420px; padding: 14px; }
+.stm-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.stm-head-sep { margin-top: 6px; border-top: 1px solid var(--border); }
+.stm-sub { font-size: 10px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+.stm-enable {
+  background: var(--bg-4); color: var(--text-1); border: 1px solid var(--border-strong); border-radius: 2px; cursor: pointer;
+  font: inherit; font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 1px 8px;
+}
+.stm-enable:hover { border-color: var(--text-3); }
+.stm-enable.on { background: var(--ok-bg); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.stm-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 2px; overflow: hidden; }
+.stm-seg button {
+  background: transparent; border: none; border-right: 1px solid var(--border-strong); cursor: pointer;
+  font: inherit; font-size: 10px; font-weight: 600; letter-spacing: .03em; color: var(--text-3); padding: 2px 7px;
+}
+.stm-seg button:last-child { border-right: none; }
+.stm-seg button:hover { color: var(--text-2); }
+.stm-seg button.active { background: var(--bg-4); color: var(--text-1); }
+.stm-seg button.buy.active { background: var(--buy-bg); color: var(--buy); }
+.stm-seg button.sell.active { background: var(--sell-bg); color: var(--sell); }
+.stm-seg button:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+.stm-tag { font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 0 4px; border-radius: 2px; }
+.stm-tag.ok { color: var(--ok); background: var(--ok-bg); }
+.stm-tag.buy { color: var(--buy); background: var(--buy-bg); }
+.stm-tag.sell { color: var(--sell); background: var(--sell-bg); }
+.stm-tag.err { color: var(--err); background: color-mix(in srgb, var(--err) 14%, transparent); }
+.stm-key {
+  min-width: 84px; background: var(--bg-2); color: var(--text-1); border: 1px solid var(--border-strong); border-radius: 2px;
+  cursor: pointer; font-family: var(--wt-font-mono, 'JetBrains Mono'), ui-monospace, monospace; font-size: 11px; padding: 1px 8px;
+}
+.stm-key.buy { box-shadow: inset 2px 0 0 var(--buy); }
+.stm-key.sell { box-shadow: inset 2px 0 0 var(--sell); }
+.stm-key.capturing { border-color: var(--accent); color: var(--accent); }
+.stm-inline { display: flex; align-items: center; gap: 4px; }
+.wt-root .stm-narrow { width: 62px; }
+.stm-btn {
+  background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); border-radius: 2px; cursor: pointer;
+  font: inherit; font-size: 10.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; padding: 3px 8px; white-space: nowrap;
+}
+.stm-btn:hover { border-color: var(--text-3); }
+.stm-btn:disabled { opacity: .4; cursor: not-allowed; }
+.stm-btn-strong { border-color: var(--text-3); }
+.stm-close-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.stm-close-row .stm-btn { padding: 4px 2px; }
+
+/* ---------- desktop overrides of the older layout ---------- */
+@media (min-width: 861px) {
+  .wt-root .watchlist { padding: 0; }
+  .wt-root .order-panel { padding: 0; }
+  .wt-root .rail { background: var(--bg-1); }
+  .wt-root .rail-item { border-radius: 2px; }
+
+  /* market watch rows */
+  .wt-root .wl-header {
+    padding: 4px 8px; margin: 0; gap: 6px; border-bottom: 1px solid var(--border);
+    font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em;
+  }
+  .wt-root .wl-category-header {
+    padding: 5px 8px; border-bottom: 1px solid var(--border);
+    color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  }
+  .wt-root .wl-category-header .wl-category-chevron { color: var(--text-3); }
+  .wt-root .wl-item {
+    padding: 0 8px; min-height: 22px; gap: 6px; border-radius: 0; font-size: 12px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  }
+  .wt-root .wl-item:hover { background: var(--bg-2); }
+  .wt-root .wl-item.active { background: var(--bg-3); }
+  .wt-root .wl-symbol { font-family: var(--wt-font-mono, 'JetBrains Mono'), ui-monospace, monospace; font-weight: 600; }
+  .wt-root .wl-item { column-gap: 4px; }
+  .wt-root .wl-header { column-gap: 4px; }
+  .wt-root .wl-drag-handle { width: 0; overflow: visible; margin-left: -6px; opacity: 0; font-size: 8px; transition: opacity .12s; }
+  .wt-root .wl-item:hover .wl-drag-handle { opacity: 1; }
+  .wt-root .wl-item .wl-cell.mono, .wt-root .wl-item .wl-price { font-size: 11.5px; }
+  .wt-root .wl-alert-btn { padding: 0; }
+
+  /* chart: the native's two strips. Row 1 (26 px) is the panel header, 2) GP + symbol + price, with the layout switch
+     on the right; row 2 (28 px) is the toolbar, timeframes left and INDICATORS / EMA 20/50 right. The ::before is a
+     full-width flex break between the two rows. */
+  .wt-root .chart-header {
+    flex-wrap: wrap; align-items: stretch; height: auto; padding: 0; gap: 0; justify-content: flex-start;
+    background: linear-gradient(var(--bg-1) 0 26px, var(--border) 26px 27px, var(--bg-1) 27px);
+  }
+  .wt-root .chart-header::before { content: ""; order: 2; flex-basis: 100%; height: 0; }
+  .wt-root .chart-header > .chart-title { order: 0; flex: 1 1 auto; height: 27px; padding: 0 8px 1px; gap: 8px; min-width: 0; }
+  .wt-root .chart-header > .nt-seg { order: 1; height: 26px; }
+  .wt-root .chart-header > .timeframes { order: 3; height: 28px; }
+  .wt-root .chart-header > div:has(> .nt-tool-btn) { order: 4; height: 28px; }
+  .wt-root .chart-header > .nt-tool-btn { order: 5; height: 28px; }
+  .wt-root .chart-header > div:has(> .nt-tool-btn) > .nt-tool-btn { height: 28px; }
+  .wt-root .chart-symbol { font-family: var(--wt-font-mono, 'JetBrains Mono'), ui-monospace, monospace; font-size: 13px; font-weight: 700; }
+  .wt-root .chart-price { font-size: 13px; }
+  .wt-root .chart-change { font-size: 10.5px; border-radius: 2px; padding: 1px 5px; }
+  .wt-root .chart-spread { font-size: 10.5px; }
+  .wt-root .timeframes { gap: 0; margin-right: auto; }
+  .wt-root .tf-btn {
+    height: 100%; padding: 0 9px; border-radius: 0; display: flex; align-items: center;
+    font-size: 11px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase;
+  }
+  .wt-root .tf-btn.active { background: var(--bg-3); color: var(--accent); }
+
+  /* drawing tools: the native's full-height strip on the chart's left edge */
+  .wt-root .chart-area:has(> .drawing-toolbar) { padding-left: 34px; }
+  .wt-root .drawing-toolbar {
+    left: 0; top: 0; bottom: 0; width: 34px; gap: 2px; padding: 4px 3px;
+    border: none; border-right: 1px solid var(--border); border-radius: 0; background: var(--bg-1);
+  }
+  .wt-root .draw-tool-btn { width: 28px; height: 26px; border-radius: 2px; }
+
+  /* trade panel: square tab strip, dense rows */
+  .wt-root .bottom-panel { background: var(--bg-1); }
+  .wt-root .tabs-row { padding: 0 6px 0 0; height: 28px; align-items: stretch; background: var(--bg-1); }
+  .wt-root .tabs { gap: 0; }
+  .wt-root .tab {
+    display: flex; align-items: center; padding: 0 10px; border-bottom: none; border-right: 1px solid var(--border);
+    font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+  }
+  .wt-root .tab.active { background: var(--bg-3); box-shadow: inset 0 -2px 0 var(--accent); }
+  .wt-root .bulk-actions { padding: 0; align-items: center; }
+  .wt-root .bulk-label { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; margin-right: 2px; }
+  .wt-root .bulk-btn { border-radius: 2px; font-size: 10px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; padding: 3px 8px; }
+  .wt-root .panel-body { padding: 0 0 4px; }
+  .wt-root .pos-table-header, .wt-root .orders-table-header, .wt-root .history-table-header, .wt-root .net-table-header {
+    padding-left: 8px; padding-right: 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border);
+  }
+  .wt-root .position-row, .wt-root .orders-row, .wt-root .history-row, .wt-root .net-row { padding-top: 3px; padding-bottom: 3px; padding-left: 8px; padding-right: 8px; }
+  .wt-root .pos-side { border-radius: 2px; }
+  /* Trade table: denser columns so it fits the chart column at 1366, and P/L + the row actions pinned to the right
+     edge, so the figure a trader reads first never scrolls out of view when the table is wider than the panel */
+  .wt-root .pos-table-header, .wt-root .position-row {
+    grid-template-columns: 22px 0.55fr 0.7fr 0.45fr 0.42fr 0.7fr 0.62fr 0.7fr 0.7fr 0.6fr 0.45fr 0.6fr 0.75fr 90px;
+    column-gap: 6px; min-width: 820px;
+  }
+  .wt-root .position-row { font-size: 12px; }
+  .wt-root .pos-table-header > :nth-last-child(-n+2), .wt-root .position-row > :nth-last-child(-n+2) {
+    position: sticky; z-index: 1; background: var(--bg-1);
+  }
+  .wt-root .pos-table-header > :nth-last-child(2), .wt-root .position-row > :nth-last-child(2) { right: 96px; box-shadow: -6px 0 0 var(--bg-1); text-align: right; }
+  .wt-root .pos-table-header > :last-child, .wt-root .position-row > :last-child { right: 0; box-shadow: -6px 0 0 var(--bg-1); }
+  .wt-root .position-row:hover > :nth-last-child(-n+2) { background: var(--bg-2); box-shadow: -6px 0 0 var(--bg-2); }
+  .wt-root .pos-total-footer { border-radius: 0; }
+
+  /* ticket buttons: the native's solid side colour with a faint top light */
+  .wt-root .sentiment-box { margin: 0; padding: 8px; }
+  .wt-root .sentiment-prices { gap: 6px; margin: 0; }
+  .wt-root .sentiment-price-btn { border-radius: 3px; align-items: center; padding: 6px 8px 7px; }
+  .wt-root .sentiment-price-btn.sell { background: linear-gradient(180deg, color-mix(in srgb, var(--sell) 86%, #FFFFFF), var(--sell)); }
+  .wt-root .sentiment-price-btn.buy { background: linear-gradient(180deg, color-mix(in srgb, var(--buy) 86%, #FFFFFF), var(--buy)); }
+  .wt-root .sp-value { font-size: 17px; }
+  .wt-root .confirm-market-btn { width: calc(100% - 16px); margin: 0 8px 8px; border-radius: 3px; }
+  .wt-root .margin-note { margin: 0; padding: 4px 8px; }
+
+  /* status bar: one flat strip, items separated by rules, figures in mono */
+  .wt-root .statusbar { display: flex; align-items: stretch; height: 24px; padding: 0; gap: 0; background: var(--bg-1); }
+  .wt-root .statusbar-left, .wt-root .statusbar-right { display: flex; align-items: stretch; gap: 0; }
+  .wt-root .statusbar-right { margin-left: auto; }
+  .wt-root .statusbar .status-item { padding: 0 12px; gap: 6px; border-right: 1px solid var(--border); }
+  .wt-root .statusbar-right .status-item { border-right: none; border-left: 1px solid var(--border); }
+  .wt-root .statusbar-center { justify-self: auto; }
+  .wt-root .status-label { font-size: 10px; letter-spacing: .04em; }
+  .wt-root .status-value { font-size: 11.5px; font-family: var(--wt-font-mono, 'JetBrains Mono'), ui-monospace, monospace; }
+}
+
+/* ---------- phone (owner item 7, 2026-11-03): bottom tab bar, sticky Buy / Sell bar, the native look ---------- */
+@media (max-width: 860px) {
+  /* header: brand and controls, then the five menus on their own strip (they fit 360 px, so no scroller clips
+     their dropdowns) */
+  .wt-root .topbar {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "brand right" "nav nav";
+    height: auto; padding: 0; column-gap: 8px; background: var(--bg-1); border-bottom: 1px solid var(--border);
+  }
+  .wt-root .topbar-center { grid-area: brand; justify-self: start; padding: 6px 10px; min-width: 0; }
+  .wt-root .topbar-right { grid-area: right; justify-self: end; padding: 6px 10px 6px 0; gap: 6px; }
+  .wt-root .topbar-left { grid-area: nav; border-top: 1px solid var(--border); padding: 0 6px; min-width: 0; }
+  .wt-root .nav { overflow: visible; margin-left: 0; gap: 0; height: 30px; width: 100%; justify-content: space-between; }
+  .wt-root .nav .item { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 6px 6px; color: var(--text-2); }
+  .wt-root .broker-logo-text { display: none; }
+  .wt-root .topbar-right .avatar { display: none; }
+  .wt-root .statusbar { display: none; }
+
+  /* every section flush to the edges; the drawing strip is a desktop tool (touch drawing comes with step 2) */
+  .wt-root .main.mobile > .order-panel, .wt-root .main.mobile > .watchlist { padding: 0; background: var(--bg-1); }
+  .wt-root .chart-area:has(> .drawing-toolbar) { padding-left: 0; }
+  .wt-root .drawing-toolbar { display: none; }
+  .wt-root .main.mobile.m-tab-account { display: none; }
+
+  /* the Account tab */
+  .m-account { flex: 1; min-height: 0; overflow-y: auto; background: var(--bg-1); padding-bottom: 12px; }
+  .m-account-id { display: flex; flex-direction: column; gap: 4px; padding: 10px 10px 8px; border-bottom: 1px solid var(--border); }
+  .m-account-name { font-size: 14px; font-weight: 600; color: var(--text-1); }
+  .m-account-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--text-2); }
+  .m-account-mode {
+    font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent);
+    border: 1px solid var(--border-strong); border-radius: var(--radius, 3px); padding: 1px 6px;
+  }
+  .m-account-conn { display: inline-flex; align-items: center; gap: 6px; }
+  .m-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .m-account-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 12px 10px 0; }
+  .m-action {
+    height: 38px; border: 1px solid var(--border-strong); border-radius: var(--radius, 3px); background: var(--bg-2);
+    color: var(--text-1); font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .m-action-quiet { color: var(--text-2); }
+
+  /* the sticky Buy / Sell bar, above the tabs */
+  .mtb {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; flex-shrink: 0;
+    padding: 6px 8px; background: var(--bg-1); border-top: 1px solid var(--border);
+  }
+  .mtb-side {
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 1px; min-width: 0;
+    height: 46px; padding: 0 10px; border: none; border-radius: var(--radius, 3px); color: #FFFFFF; cursor: pointer;
+  }
+  .mtb-side.sell { background: linear-gradient(180deg, color-mix(in srgb, var(--sell) 86%, #FFFFFF), var(--sell)); }
+  .mtb-side.buy { align-items: flex-end; background: linear-gradient(180deg, color-mix(in srgb, var(--buy) 86%, #FFFFFF), var(--buy)); }
+  .mtb-side:disabled { opacity: .45; cursor: default; }
+  .mtb-label { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; opacity: .92; }
+  .mtb-price { font-size: 16px; font-weight: 600; white-space: nowrap; }
+  .mtb-lots { display: flex; align-items: center; gap: 3px; }
+  .mtb-step {
+    width: 28px; height: 46px; border: 1px solid var(--border-strong); border-radius: var(--radius, 3px);
+    background: var(--bg-2); color: var(--text-1); font-size: 16px; cursor: pointer; padding: 0;
+  }
+  .mtb-lots-value { display: flex; flex-direction: column; align-items: center; min-width: 54px; font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .mtb-lots-sym { font-size: 9.5px; font-weight: 500; color: var(--text-3); letter-spacing: .03em; }
+  .mtb-confirm { grid-column: 1 / -1; display: flex; gap: 6px; }
+  .mtb-confirm-btn { flex: 1; height: 46px; border: none; border-radius: var(--radius, 3px); color: #FFFFFF; font-size: 13px; font-weight: 700; cursor: pointer; }
+  .mtb-confirm-btn.buy { background: var(--buy); }
+  .mtb-confirm-btn.sell { background: var(--sell); }
+  .mtb-cancel {
+    height: 46px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius, 3px);
+    background: var(--bg-2); color: var(--text-2); font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+
+  /* watchlist: no drag handle on touch; chart header: no panel code or desktop layout switch */
+  /* the handle keeps its 0 px grid cell (display: none would shift every cell one column left) */
+  .wt-root .wl-drag-handle { visibility: hidden; pointer-events: none; }
+  .wt-root .chart-title > .nt-ph-code { display: none; }
+  .wt-root .chart-header .nt-seg { display: none; }
+
+  /* Positions tab: the trade panel's tab strip swipes inside itself, the Close group sits under it */
+  .wt-root .bottom-panel.mobile { background: var(--bg-1); }
+  .wt-root .bottom-panel.mobile .tabs-row { flex-wrap: wrap; padding: 0; align-items: stretch; background: var(--bg-1); }
+  .wt-root .bottom-panel.mobile .tabs { flex: 1 1 100%; min-width: 0; overflow-x: auto; gap: 0; scrollbar-width: none; }
+  .wt-root .bottom-panel.mobile .tabs::-webkit-scrollbar { display: none; }
+  .wt-root .bottom-panel.mobile .tab {
+    padding: 9px 10px 7px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3);
+  }
+  .wt-root .bottom-panel.mobile .tab.active { color: var(--text-1); border-bottom-color: var(--accent); }
+  .wt-root .bottom-panel.mobile .bulk-actions {
+    flex: 1 1 100%; margin: 0; padding: 6px 10px; justify-content: flex-end; align-items: center; border-top: 1px solid var(--border);
+  }
+  .wt-root .bottom-panel.mobile .panel-body { padding: 0; overflow-x: auto; }
+  .wt-root .bottom-panel.mobile .bulk-label { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); }
+
+  /* open positions as cards: symbol, side, lots and P/L / price, stop, target / the row's actions */
+  .wt-root .bottom-panel.mobile .pos-table-header { display: none; }
+  .wt-root .bottom-panel.mobile .position-row {
+    display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "side sym lots pnl" "price price sl tp" "act act act act";
+    column-gap: 10px; row-gap: 4px; padding: 9px 10px 6px 12px; border-bottom: 1px solid var(--border); align-items: center;
+  }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(1),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(2),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(7),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(10),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(11),
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(12) { display: none; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(3) { grid-area: sym; font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(4) { grid-area: side; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(5) { grid-area: lots; font-size: 12px; color: var(--text-2); }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(6) { grid-area: price; font-size: 12px; color: var(--text-2); }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(8) { grid-area: sl; font-size: 11.5px; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(9) { grid-area: tp; font-size: 11.5px; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(8)::before { content: "SL "; color: var(--text-3); font-size: 10px; letter-spacing: .04em; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(9)::before { content: "TP "; color: var(--text-3); font-size: 10px; letter-spacing: .04em; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(13) { grid-area: pnl; font-size: 14px; font-weight: 600; text-align: right; }
+  .wt-root .bottom-panel.mobile .position-row > :nth-child(14) { grid-area: act; justify-content: flex-end; gap: 2px; }
+  .wt-root .bottom-panel.mobile .position-row .icon-btn { width: 34px; height: 30px; }
+  .wt-root .bottom-panel.mobile .pos-total-footer { padding: 8px 10px; }
+
+  /* the tab bar: the native's caps, accent marks the open section */
+  .wt-root .mobile-nav { background: var(--bg-1); border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
+  .wt-root .mobile-nav-item {
+    position: relative; min-width: 0; gap: 3px; padding: 7px 0 6px; color: var(--text-3);
+    font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .wt-root .mobile-nav-item span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-root .mobile-nav-item.active { color: var(--accent); }
+  .wt-root .mobile-nav-item.active::before { content: ""; position: absolute; top: -1px; left: 22%; right: 22%; height: 2px; background: var(--accent); }
+}
