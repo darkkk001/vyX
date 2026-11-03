@@ -1,0 +1,761 @@
+{
+  "generatedBy": "scripts/contracts/gen-gate-vectors.ts",
+  "note": "the WEB's own admission gates (lib/risk.ts, lib/hedging.ts), input -> verdict; engine/order-management/tests/gate_parity.rs asserts the ported gates against this",
+  "fillPriceMaxAgeMs": 3000,
+  "gates": {
+    "trading_halted": [
+      {
+        "input": {
+          "tradingHaltedAt": false
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "tradingHaltedAt": true
+        },
+        "reject": "trading is halted for this broker"
+      }
+    ],
+    "close_only": [
+      {
+        "input": {
+          "closeOnlyAt": false
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "closeOnlyAt": true
+        },
+        "reject": "close-only mode is active for this broker: only closing existing positions is allowed"
+      }
+    ],
+    "group_trading_halted": [
+      {
+        "input": {
+          "tradingHaltedAt": false
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "tradingHaltedAt": true
+        },
+        "reject": "trading is halted for this account's group"
+      }
+    ],
+    "group_close_only": [
+      {
+        "input": {
+          "closeOnlyAt": false
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "closeOnlyAt": true
+        },
+        "reject": "close-only mode is active for this account's group: only closing existing positions is allowed"
+      }
+    ],
+    "account_status_for_open": [
+      {
+        "input": {
+          "status": "ACTIVE"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "status": "SUSPENDED"
+        },
+        "reject": "this account is suspended"
+      },
+      {
+        "input": {
+          "status": "CLOSED"
+        },
+        "reject": "this account is closed"
+      }
+    ],
+    "account_trading_rights_for_open": [
+      {
+        "input": {
+          "status": "ACTIVE",
+          "tradingRights": "FULL"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "status": "ACTIVE",
+          "tradingRights": "CLOSE_ONLY"
+        },
+        "reject": "Your account is close-only: you can close positions but not open new ones"
+      },
+      {
+        "input": {
+          "status": "ACTIVE",
+          "tradingRights": "READ_ONLY"
+        },
+        "reject": "Your account is read-only: trading is disabled"
+      },
+      {
+        "input": {
+          "status": "SUSPENDED",
+          "tradingRights": "FULL"
+        },
+        "reject": "this account is suspended"
+      },
+      {
+        "input": {
+          "status": "SUSPENDED",
+          "tradingRights": "CLOSE_ONLY"
+        },
+        "reject": "this account is suspended"
+      },
+      {
+        "input": {
+          "status": "SUSPENDED",
+          "tradingRights": "READ_ONLY"
+        },
+        "reject": "this account is suspended"
+      },
+      {
+        "input": {
+          "status": "CLOSED",
+          "tradingRights": "FULL"
+        },
+        "reject": "this account is closed"
+      },
+      {
+        "input": {
+          "status": "CLOSED",
+          "tradingRights": "CLOSE_ONLY"
+        },
+        "reject": "this account is closed"
+      },
+      {
+        "input": {
+          "status": "CLOSED",
+          "tradingRights": "READ_ONLY"
+        },
+        "reject": "this account is closed"
+      }
+    ],
+    "symbol_trading_mode": [
+      {
+        "input": {
+          "tradingMode": "BOTH",
+          "side": "BUY"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "tradingMode": "BOTH",
+          "side": "SELL"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "tradingMode": "BUY_ONLY",
+          "side": "BUY"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "tradingMode": "BUY_ONLY",
+          "side": "SELL"
+        },
+        "reject": "this symbol is buy-only right now"
+      },
+      {
+        "input": {
+          "tradingMode": "SELL_ONLY",
+          "side": "BUY"
+        },
+        "reject": "this symbol is sell-only right now"
+      },
+      {
+        "input": {
+          "tradingMode": "SELL_ONLY",
+          "side": "SELL"
+        },
+        "reject": null
+      }
+    ],
+    "group_trading_restriction": [
+      {
+        "input": {
+          "restriction": "BOTH",
+          "side": "BUY"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "restriction": "BOTH",
+          "side": "SELL"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "restriction": "BUY_ONLY",
+          "side": "BUY"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "restriction": "BUY_ONLY",
+          "side": "SELL"
+        },
+        "reject": "this account's group is buy-only right now"
+      },
+      {
+        "input": {
+          "restriction": "SELL_ONLY",
+          "side": "BUY"
+        },
+        "reject": "this account's group is sell-only right now"
+      },
+      {
+        "input": {
+          "restriction": "SELL_ONLY",
+          "side": "SELL"
+        },
+        "reject": null
+      }
+    ],
+    "group_max_lot": [
+      {
+        "input": {
+          "volume": "1.00",
+          "groupMaxLot": null
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "1.00",
+          "groupMaxLot": "1.00"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "1.01",
+          "groupMaxLot": "1.00"
+        },
+        "reject": "volume exceeds this account's group max lot size of 1"
+      },
+      {
+        "input": {
+          "volume": "50.00",
+          "groupMaxLot": "10.00"
+        },
+        "reject": "volume exceeds this account's group max lot size of 10"
+      },
+      {
+        "input": {
+          "volume": "0.01",
+          "groupMaxLot": "100"
+        },
+        "reject": null
+      }
+    ],
+    "group_min_lot": [
+      {
+        "input": {
+          "volume": "0.01",
+          "groupMinLot": null,
+          "symbolMinLot": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.01",
+          "groupMinLot": "0.10",
+          "symbolMinLot": "0.01"
+        },
+        "reject": "The smallest trade allowed for this account is 0.10 lots."
+      },
+      {
+        "input": {
+          "volume": "0.10",
+          "groupMinLot": "0.10",
+          "symbolMinLot": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.05",
+          "groupMinLot": "0.10",
+          "symbolMinLot": "0.01"
+        },
+        "reject": "The smallest trade allowed for this account is 0.10 lots."
+      },
+      {
+        "input": {
+          "volume": "0.01",
+          "groupMinLot": "0.005",
+          "symbolMinLot": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.009",
+          "groupMinLot": null,
+          "symbolMinLot": "0.01"
+        },
+        "reject": "The smallest trade allowed for this account is 0.01 lots."
+      }
+    ],
+    "group_lot_step": [
+      {
+        "input": {
+          "volume": "0.05",
+          "groupLotStep": null,
+          "groupMinLot": null,
+          "symbolMinLot": "0.01",
+          "symbolLotStep": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.10",
+          "groupLotStep": "0.05",
+          "groupMinLot": null,
+          "symbolMinLot": "0.01",
+          "symbolLotStep": "0.01"
+        },
+        "reject": "volume must be 0.01 plus a multiple of 0.05 lots for this account"
+      },
+      {
+        "input": {
+          "volume": "0.06",
+          "groupLotStep": "0.05",
+          "groupMinLot": null,
+          "symbolMinLot": "0.01",
+          "symbolLotStep": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.11",
+          "groupLotStep": "0.05",
+          "groupMinLot": "0.01",
+          "symbolMinLot": "0.01",
+          "symbolLotStep": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.20",
+          "groupLotStep": "0.10",
+          "groupMinLot": "0.10",
+          "symbolMinLot": "0.01",
+          "symbolLotStep": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.25",
+          "groupLotStep": "0.10",
+          "groupMinLot": "0.10",
+          "symbolMinLot": "0.01",
+          "symbolLotStep": "0.01"
+        },
+        "reject": "volume must be a multiple of 0.10 lots for this account"
+      },
+      {
+        "input": {
+          "volume": "1.00",
+          "groupLotStep": "0",
+          "groupMinLot": null,
+          "symbolMinLot": "0.01",
+          "symbolLotStep": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.03",
+          "groupLotStep": "0.01",
+          "groupMinLot": null,
+          "symbolMinLot": "0.01",
+          "symbolLotStep": "0.02"
+        },
+        "reject": null
+      }
+    ],
+    "lot_step": [
+      {
+        "input": {
+          "volume": "0.01",
+          "minLot": "0.01",
+          "lotStep": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.10",
+          "minLot": "0.01",
+          "lotStep": "0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.015",
+          "minLot": "0.01",
+          "lotStep": "0.01"
+        },
+        "reject": "volume must be 0.01 plus a multiple of 0.01"
+      },
+      {
+        "input": {
+          "volume": "1.00",
+          "minLot": "0.01",
+          "lotStep": "0"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "1.00",
+          "minLot": "0.01",
+          "lotStep": "-0.01"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.50",
+          "minLot": "0.10",
+          "lotStep": "0.20"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "volume": "0.55",
+          "minLot": "0.10",
+          "lotStep": "0.20"
+        },
+        "reject": "volume must be 0.1 plus a multiple of 0.2"
+      }
+    ],
+    "group_allowed_symbol": [
+      {
+        "input": {
+          "restrictSymbols": false,
+          "allowedSymbolIds": [],
+          "symbolId": "s1"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "restrictSymbols": false,
+          "allowedSymbolIds": [
+            "s2"
+          ],
+          "symbolId": "s1"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "restrictSymbols": true,
+          "allowedSymbolIds": [
+            "s1",
+            "s2"
+          ],
+          "symbolId": "s1"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "restrictSymbols": true,
+          "allowedSymbolIds": [
+            "s2"
+          ],
+          "symbolId": "s1"
+        },
+        "reject": "this symbol is not enabled for this account's group"
+      },
+      {
+        "input": {
+          "restrictSymbols": true,
+          "allowedSymbolIds": [],
+          "symbolId": "s1"
+        },
+        "reject": "this symbol is not enabled for this account's group"
+      }
+    ],
+    "price_freshness": [
+      {
+        "input": {
+          "tickAgeMs": 0
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "tickAgeMs": 500
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "tickAgeMs": 2500
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "tickAgeMs": 3500
+        },
+        "reject": "PRICE_STALE"
+      },
+      {
+        "input": {
+          "tickAgeMs": 60000
+        },
+        "reject": "PRICE_STALE"
+      },
+      {
+        "input": {
+          "tickAgeMs": null,
+          "note": "no tick at all"
+        },
+        "reject": "PRICE_STALE"
+      }
+    ],
+    "max_open_positions": [
+      {
+        "input": {
+          "openCount": 0,
+          "maxOpenPositions": null
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "openCount": 0,
+          "maxOpenPositions": 5
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "openCount": 4,
+          "maxOpenPositions": 5
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "openCount": 5,
+          "maxOpenPositions": 5
+        },
+        "reject": "account already has the maximum 5 open position(s)"
+      },
+      {
+        "input": {
+          "openCount": 9,
+          "maxOpenPositions": 5
+        },
+        "reject": "account already has the maximum 5 open position(s)"
+      }
+    ],
+    "symbol_exposure": [
+      {
+        "input": {
+          "current": "0",
+          "orderVolume": "1.00",
+          "maxExposure": null
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "current": "0",
+          "orderVolume": "1.00",
+          "maxExposure": "5.00"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "current": "4.00",
+          "orderVolume": "1.00",
+          "maxExposure": "5.00"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "current": "4.01",
+          "orderVolume": "1.00",
+          "maxExposure": "5.00"
+        },
+        "reject": "order would exceed this symbol's max exposure of 5 lots for this account"
+      },
+      {
+        "input": {
+          "current": "10.00",
+          "orderVolume": "0.01",
+          "maxExposure": "5.00"
+        },
+        "reject": "order would exceed this symbol's max exposure of 5 lots for this account"
+      },
+      {
+        "input": {
+          "current": null,
+          "orderVolume": "1.00",
+          "maxExposure": "5.00"
+        },
+        "reject": null
+      }
+    ],
+    "broker_exposure": [
+      {
+        "input": {
+          "current": "0",
+          "orderVolume": "1.00",
+          "totalExposureLimit": null
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "current": "99.00",
+          "orderVolume": "1.00",
+          "totalExposureLimit": "100"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "current": "99.50",
+          "orderVolume": "1.00",
+          "totalExposureLimit": "100"
+        },
+        "reject": "order would exceed this broker's total exposure limit of 100 lots"
+      },
+      {
+        "input": {
+          "current": null,
+          "orderVolume": "1.00",
+          "totalExposureLimit": "100"
+        },
+        "reject": null
+      }
+    ],
+    "max_daily_loss": [
+      {
+        "input": {
+          "realizedToday": "0",
+          "maxDailyLoss": null
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "realizedToday": "0",
+          "maxDailyLoss": "100"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "realizedToday": "-99.99",
+          "maxDailyLoss": "100"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "realizedToday": "-100",
+          "maxDailyLoss": "100"
+        },
+        "reject": "daily loss limit of 100 reached for this account, try again tomorrow"
+      },
+      {
+        "input": {
+          "realizedToday": "-100.01",
+          "maxDailyLoss": "100"
+        },
+        "reject": "daily loss limit of 100 reached for this account, try again tomorrow"
+      },
+      {
+        "input": {
+          "realizedToday": "250",
+          "maxDailyLoss": "100"
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "realizedToday": null,
+          "maxDailyLoss": "100"
+        },
+        "reject": null
+      }
+    ],
+    "hedging_allowed": [
+      {
+        "input": {
+          "hedgingAllowed": true,
+          "hasOppositeOpenPosition": true
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "hedgingAllowed": true,
+          "hasOppositeOpenPosition": false
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "hedgingAllowed": false,
+          "hasOppositeOpenPosition": false
+        },
+        "reject": null
+      },
+      {
+        "input": {
+          "hedgingAllowed": false,
+          "hasOppositeOpenPosition": true
+        },
+        "reject": "hedging is not allowed: close the opposite position on this symbol first"
+      },
+      {
+        "input": {
+          "hedgingAllowed": true,
+          "hasOppositeOpenPosition": true,
+          "note": "a NULL hedgingAllowed column resolves to true"
+        },
+        "reject": null
+      }
+    ]
+  }
+}

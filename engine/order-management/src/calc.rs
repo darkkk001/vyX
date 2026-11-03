@@ -121,7 +121,27 @@ pub fn equity(state: &AccountState) -> Decimal {
 /// `None` if the account doesn't exist (Prisma-owned `Account` row
 /// missing) — callers treat that as "nothing to do," not an error, same
 /// as before this was factored out of monitor.rs.
-pub async fn load_account_state(pool: &PgPool, account_id: &str) -> Result<Option<AccountState>, sqlx::Error> {
+/// The order path's account state: effective balance, credit, leverage and the open positions its
+/// margin and exposure gates judge.
+///
+/// L2 Step 1: on the Prisma book this **delegates to [`load_book_state`]**, which already reads the
+/// real book -- rather than porting `get_ledger_sum` and `get_open_positions_with_market` to it. Three
+/// reasons that is the right move and not a shortcut:
+///
+/// - `load_book_state` reads funds and positions inside ONE `REPEATABLE READ, READ ONLY` snapshot. The
+///   legacy three-read version is exactly what caused the 2026-10-01 torn read (see that function's
+///   comment); porting the reads one at a time would have rebuilt the same bug on the real book.
+/// - the ledger sum must NOT be added on the Prisma book. `book::close_position_in_tx` writes realized
+///   P&L straight into `"Account".balance` (the web's model), so adding `SUM(ledger_entries)` on top
+///   would count every close twice.
+/// - it is the same state the margin monitor already judges, so the order path and the risk path stop
+///   being able to disagree about one account.
+///
+/// The legacy branch is untouched, so `ENGINE_ORDER_MANAGEMENT=1|on|true|yes` behaves exactly as before.
+pub async fn load_account_state(pool: &PgPool, book: db::Book, account_id: &str) -> Result<Option<AccountState>, sqlx::Error> {
+    if book == db::Book::Prisma {
+        return load_book_state(pool, account_id).await;
+    }
     let Some(funds) = db::get_account_funds(pool, account_id).await? else {
         return Ok(None);
     };

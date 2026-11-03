@@ -89,7 +89,7 @@ async fn trigger_order(
         return Ok(());
     }
 
-    let Some(state) = load_account_state(pool, &order.account_id).await? else {
+    let Some(state) = load_account_state(pool, book, &order.account_id).await? else {
         reject_order(tx, nats, &order.id, &order.account_id,"account not found".to_string()).await?;
         return Ok(());
     };

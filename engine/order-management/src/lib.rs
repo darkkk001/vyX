@@ -12,6 +12,7 @@ pub mod calc;
 pub mod db;
 pub mod events;
 pub mod fx;
+pub mod gates;
 pub mod monitor;
 pub mod outbox;
 pub mod pending_orders;
@@ -252,8 +253,47 @@ pub async fn place_market_order(
     // fetched in one round trip -- see get_exposure_and_max_positions's
     // doc comment.
     let (exposure, max_open_positions) =
-        db::get_exposure_and_max_positions(pool, &req.broker_id, &req.account_id, &req.symbol).await?;
+        db::get_exposure_and_max_positions(pool, book, &req.broker_id, &req.account_id, &req.symbol, &symbol_id).await?;
     let max_exposure = symbol_config.as_ref().and_then(|cfg| cfg.max_exposure);
+    // L2 Step 1 Part B: the web's own admission gates, ported (gates.rs) and run in the web's order.
+    //
+    // ONLY on the Prisma book. On the legacy book this path writes tables nothing reads, and adding
+    // gates there would change a mode whose behaviour is deliberately frozen.
+    //
+    // Why this exists: before it, this path applied FIVE gates where the web applies around twenty, so
+    // the engine would have filled a suspended account's order, a halted broker's, one off its group's
+    // lot grid, one past the broker's total exposure limit or the account's daily loss limit. Every
+    // ported gate is pinned against the web's own function by docs/contracts/gate-vectors.json
+    // (tests/gate_parity.rs), so "the engine refuses what the web refuses" is measured, not asserted.
+    //
+    // NOT complete: `checkTradingSession` and the dealer-desk `orderRoute`/SYSTEM refusal are not
+    // ported -- see gates.rs's NOT_PORTED note. An engine entry point must not go live until they are.
+    if book == db::Book::Prisma {
+        let Some(gate_inputs) = db::get_gate_inputs(pool, &req.broker_id, &req.account_id, &symbol_id, req.side).await? else {
+            let reason = reject_order(tx, nats, &order_id, &req.account_id, "account not found".to_string()).await?;
+            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+        };
+        // No tick age: Tick.t0 is documented as never for business logic, and the engine's own
+        // get_if_fresh already gated this path. See gates::evaluate_open's closing note.
+        let tick_age_ms = None;
+        let order_for_gates = gates::OpenOrder {
+            side: req.side,
+            volume: req.volume,
+            symbol_id: &symbol_id,
+            symbol_min_lot: symbol_config.as_ref().map_or(Decimal::ZERO, |c| c.min_lot),
+            symbol_lot_step: symbol_config.as_ref().map_or(Decimal::ZERO, |c| c.lot_step),
+            symbol_max_exposure: max_exposure,
+            account_symbol_volume: exposure.open_volume,
+            open_position_count: exposure.open_position_count,
+            max_open_positions,
+            tick_age_ms,
+        };
+        if let Some(reject_reason) = gates::evaluate_open(&gate_inputs, &order_for_gates) {
+            let reason = reject_order(tx, nats, &order_id, &req.account_id, reject_reason).await?;
+            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+        }
+    }
+
     if let Err(reject_reason) = risk::check_symbol_exposure(exposure.open_volume, req.volume, max_exposure) {
         let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
@@ -262,6 +302,7 @@ pub async fn place_market_order(
         let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
+
 
     // The ACCOUNT's own price on top of Market Data Core's raw tick — see pricing.rs.
     //

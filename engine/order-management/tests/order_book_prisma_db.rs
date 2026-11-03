@@ -1263,3 +1263,254 @@ async fn a_resting_order_the_price_has_not_reached_is_left_alone() {
     assert_eq!(positions, 0);
     cleanup(&pool, &fx).await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// L2 STEP 1 PART B — the ported gates, wired
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Every ported gate, refused through `place_market_order` itself.
+///
+/// `tests/gate_parity.rs` proves the ported FUNCTIONS agree with the web's. This proves they are
+/// actually REACHED, and that `db::get_gate_inputs` reads the column each one judges — a gate wired to
+/// the wrong column would pass that oracle and still let everything through here.
+///
+/// One fixture, one scenario at a time: set the thing up, place an order, assert the refusal, put it
+/// back. The order that follows a reverted scenario must still fill, which is what keeps a
+/// false-refusal from hiding behind a true one.
+#[tokio::test]
+async fn every_wired_gate_refuses_through_the_real_order_path() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("every_wired_gate_refuses: ENGINE_TEST_NATS_URL not set, skipping");
+        return;
+    };
+    assert!(nats_url.contains("127.0.0.1") || nats_url.contains("localhost"), "refusing a non-local NATS: {nats_url}");
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    let (group_id,): (String,) = sqlx::query_as(r#"SELECT "groupId" FROM "Account" WHERE id = $1"#)
+        .bind(&fx.account)
+        .fetch_one(&mut *setup)
+        .await
+        .unwrap();
+    setup.commit().await.unwrap();
+
+    let cache = market_data::cache::TickCache::new();
+    cache.set(
+        &protocol::Tick {
+            symbol: fx.symbol_name.clone(),
+            bid: dec!(4298.96),
+            ask: dec!(4299.13),
+            t0: None,
+            clock_offset_ms: None,
+            rtt_ms: None,
+            tick_ms: None,
+            broker_offset_sec: None,
+            bars: Vec::new(),
+        },
+        chrono::Utc::now(),
+    );
+
+    let place = |volume: Decimal| {
+        let (pool, nats, cache, fx) = (pool.clone(), nats.clone(), &cache, &fx);
+        async move {
+            order_management::place_market_order(
+                &pool,
+                &nats,
+                cache,
+                order_management::PlaceMarketOrderRequest {
+                    broker_id: fx.broker.clone(),
+                    account_id: fx.account.clone(),
+                    symbol: fx.symbol_name.clone(),
+                    side: OrderSide::Buy,
+                    volume,
+                    sl_price: None,
+                    tp_price: None,
+                    equity: dec!(100000),
+                    used_margin: dec!(0),
+                    contract_size: dec!(1),
+                    leverage: 100,
+                },
+            )
+            .await
+            .expect("the order path ran")
+        }
+    };
+
+    // (gate, the SQL that arms it, the SQL that disarms it, the volume to try, the expected reason)
+    let scenarios: Vec<(&str, String, String, Decimal, &str)> = vec![
+        (
+            "broker trading halted",
+            format!(r#"UPDATE "Broker" SET "tradingHaltedAt" = now() WHERE id = '{}'"#, fx.broker),
+            format!(r#"UPDATE "Broker" SET "tradingHaltedAt" = NULL WHERE id = '{}'"#, fx.broker),
+            dec!(0.01),
+            "trading is halted for this broker",
+        ),
+        (
+            "broker close-only",
+            format!(r#"UPDATE "Broker" SET "closeOnlyAt" = now() WHERE id = '{}'"#, fx.broker),
+            format!(r#"UPDATE "Broker" SET "closeOnlyAt" = NULL WHERE id = '{}'"#, fx.broker),
+            dec!(0.01),
+            "close-only mode is active for this broker",
+        ),
+        (
+            "symbol is sell-only",
+            format!(r#"UPDATE "BrokerSymbol" SET "tradingMode" = 'SELL_ONLY' WHERE "brokerId" = '{}'"#, fx.broker),
+            format!(r#"UPDATE "BrokerSymbol" SET "tradingMode" = 'BOTH' WHERE "brokerId" = '{}'"#, fx.broker),
+            dec!(0.01),
+            "this symbol is sell-only right now",
+        ),
+        (
+            "group max lot",
+            format!(r#"UPDATE "Group" SET "maxLotSize" = 0.05 WHERE id = '{group_id}'"#),
+            format!(r#"UPDATE "Group" SET "maxLotSize" = NULL WHERE id = '{group_id}'"#),
+            dec!(0.10),
+            "group max lot size of 0.05",
+        ),
+        (
+            "group min lot",
+            format!(r#"UPDATE "Group" SET "minLotSize" = 0.50 WHERE id = '{group_id}'"#),
+            format!(r#"UPDATE "Group" SET "minLotSize" = NULL WHERE id = '{group_id}'"#),
+            dec!(0.10),
+            "The smallest trade allowed for this account is 0.50 lots.",
+        ),
+        (
+            "group lot step",
+            format!(r#"UPDATE "Group" SET "lotStep" = 0.05 WHERE id = '{group_id}'"#),
+            format!(r#"UPDATE "Group" SET "lotStep" = NULL WHERE id = '{group_id}'"#),
+            dec!(0.08),
+            "multiple of 0.05 lots for this account",
+        ),
+        (
+            "group is sell-only",
+            format!(r#"UPDATE "Group" SET "tradingRestriction" = 'SELL_ONLY' WHERE id = '{group_id}'"#),
+            format!(r#"UPDATE "Group" SET "tradingRestriction" = 'BOTH' WHERE id = '{group_id}'"#),
+            dec!(0.01),
+            "this account's group is sell-only right now",
+        ),
+        (
+            "group trading halted",
+            format!(r#"UPDATE "Group" SET "tradingHaltedAt" = now() WHERE id = '{group_id}'"#),
+            format!(r#"UPDATE "Group" SET "tradingHaltedAt" = NULL WHERE id = '{group_id}'"#),
+            dec!(0.01),
+            "trading is halted for this account's group",
+        ),
+        (
+            "group close-only",
+            format!(r#"UPDATE "Group" SET "closeOnlyAt" = now() WHERE id = '{group_id}'"#),
+            format!(r#"UPDATE "Group" SET "closeOnlyAt" = NULL WHERE id = '{group_id}'"#),
+            dec!(0.01),
+            "close-only mode is active for this account's group",
+        ),
+        (
+            "account suspended",
+            format!(r#"UPDATE "Account" SET status = 'SUSPENDED' WHERE id = '{}'"#, fx.account),
+            format!(r#"UPDATE "Account" SET status = 'ACTIVE' WHERE id = '{}'"#, fx.account),
+            dec!(0.01),
+            "this account is suspended",
+        ),
+        (
+            "account read-only",
+            format!(r#"UPDATE "Account" SET "tradingRights" = 'READ_ONLY' WHERE id = '{}'"#, fx.account),
+            format!(r#"UPDATE "Account" SET "tradingRights" = 'FULL' WHERE id = '{}'"#, fx.account),
+            dec!(0.01),
+            "read-only",
+        ),
+        (
+            "group symbol allowlist",
+            format!(r#"UPDATE "Group" SET "restrictSymbols" = true WHERE id = '{group_id}'"#),
+            format!(r#"UPDATE "Group" SET "restrictSymbols" = false WHERE id = '{group_id}'"#),
+            dec!(0.01),
+            "this symbol is not enabled for this account's group",
+        ),
+        (
+            "broker total exposure limit",
+            format!(r#"UPDATE "Broker" SET "totalExposureLimit" = 0.01 WHERE id = '{}'"#, fx.broker),
+            format!(r#"UPDATE "Broker" SET "totalExposureLimit" = NULL WHERE id = '{}'"#, fx.broker),
+            dec!(0.01),
+            "total exposure limit of 0.01 lots",
+        ),
+        (
+            "account daily loss limit",
+            // a realized loss today, and a limit it has already breached
+            format!(
+                r#"INSERT INTO "Transaction" (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "updatedAt")
+                   VALUES ('dl-{}', '{}', '{}', 'TRADE_PNL', 'COMPLETED', -500, 100000, 99500, now());
+                   UPDATE "Account" SET "maxDailyLoss" = 100 WHERE id = '{}'"#,
+                &fx.broker[..8], fx.broker, fx.account, fx.account
+            ),
+            format!(
+                r#"DELETE FROM "Transaction" WHERE id = 'dl-{}'; UPDATE "Account" SET "maxDailyLoss" = NULL WHERE id = '{}'"#,
+                &fx.broker[..8], fx.account
+            ),
+            dec!(0.01),
+            "daily loss limit of 100 reached",
+        ),
+        (
+            "max open positions",
+            format!(r#"UPDATE "Broker" SET "maxOpenPositionsPerAccount" = 1 WHERE id = '{}'"#, fx.broker),
+            format!(r#"UPDATE "Broker" SET "maxOpenPositionsPerAccount" = NULL WHERE id = '{}'"#, fx.broker),
+            dec!(0.01),
+            "maximum 1 open position(s)",
+        ),
+        (
+            "symbol max exposure",
+            format!(r#"UPDATE "BrokerSymbol" SET "maxExposure" = 0.01 WHERE "brokerId" = '{}'"#, fx.broker),
+            format!(r#"UPDATE "BrokerSymbol" SET "maxExposure" = NULL WHERE "brokerId" = '{}'"#, fx.broker),
+            dec!(0.01),
+            "max exposure of 0.01 lots",
+        ),
+    ];
+
+    // One committed position first, so the count/exposure gates have something to count and the
+    // hedging gate has an opposite side to find.
+    let opener = place(dec!(0.01)).await;
+    let opened = match opener {
+        order_management::PlaceMarketOrderOutcome::Filled { position_id, .. } => position_id,
+        order_management::PlaceMarketOrderOutcome::Rejected { reason, .. } => panic!("the baseline order must fill: {reason}"),
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    for (name, arm, disarm, volume, expected) in &scenarios {
+        for stmt in arm.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            sqlx::query(stmt).execute(&pool).await.unwrap_or_else(|e| panic!("arming {name}: {e}"));
+        }
+        let outcome = place(*volume).await;
+        for stmt in disarm.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            sqlx::query(stmt).execute(&pool).await.unwrap_or_else(|e| panic!("disarming {name}: {e}"));
+        }
+        match outcome {
+            order_management::PlaceMarketOrderOutcome::Rejected { reason, .. } if reason.contains(expected) => {}
+            order_management::PlaceMarketOrderOutcome::Rejected { reason, .. } => {
+                failures.push(format!("{name}: refused, but for the wrong reason
+     want ~ {expected:?}
+     got    {reason:?}"))
+            }
+            order_management::PlaceMarketOrderOutcome::Filled { .. } => failures.push(format!("{name}: FILLED -- the gate is not wired")),
+        }
+    }
+
+    // and with every scenario reverted, an order still fills: no gate is left armed, and none of the
+    // refusals above came from something unrelated
+    let after = place(dec!(0.01)).await;
+    let still_fills = matches!(after, order_management::PlaceMarketOrderOutcome::Filled { .. });
+
+    // the hedging gate needs its own shape: an OPEN opposite-side position plus hedgingAllowed = false
+    sqlx::query(r#"UPDATE "Broker" SET "hedgingAllowed" = false WHERE id = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    sqlx::query(r#"UPDATE "Position" SET side = 'SELL' WHERE id = $1"#).bind(&opened).execute(&pool).await.unwrap();
+    let hedged = place(dec!(0.01)).await;
+    sqlx::query(r#"UPDATE "Broker" SET "hedgingAllowed" = true WHERE id = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+
+    cleanup(&pool, &fx).await;
+
+    assert!(failures.is_empty(), "{} gate(s) not wired correctly:\n{}", failures.len(), failures.join("\n"));
+    assert!(still_fills, "after reverting every scenario an order must fill again");
+    match hedged {
+        order_management::PlaceMarketOrderOutcome::Rejected { reason, .. } => {
+            assert!(reason.contains("hedging is not allowed"), "hedging gate refused for the wrong reason: {reason}")
+        }
+        order_management::PlaceMarketOrderOutcome::Filled { .. } => panic!("hedging gate: FILLED -- not wired"),
+    }
+}

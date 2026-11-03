@@ -112,6 +112,135 @@ fn position_status_from_str(s: &str) -> PositionStatus {
     }
 }
 
+// ---- what the ported admission gates need (L2 Step 1 Part B) --------------------------------------
+
+/// Everything `crate::gates` judges, for one (broker, account, symbol). ONE round trip.
+///
+/// The gates themselves are pure (see that module's doc); this is the only read they need, and it is
+/// deliberately one statement rather than the five or six the fields are spread across — the order
+/// path's latency is round trips, not rows (see C:\vyx\handoff\l2-latency-and-minimal-path.md).
+///
+/// `None` = no such account, which the caller treats as it already treats an unknown account.
+#[derive(Debug, Clone)]
+pub struct GateInputs {
+    // broker
+    pub broker_trading_halted: bool,
+    pub broker_close_only: bool,
+    /// `Broker.hedgingAllowed`, with a NULL column resolved to TRUE -- the web tests `!== false`.
+    pub hedging_allowed: bool,
+    pub total_exposure_limit: Option<Decimal>,
+    // the account's group (all None/false when the account has no group)
+    pub group_trading_halted: bool,
+    pub group_close_only: bool,
+    pub group_trading_restriction: String,
+    pub group_max_lot: Option<Decimal>,
+    pub group_min_lot: Option<Decimal>,
+    pub group_lot_step: Option<Decimal>,
+    pub group_restrict_symbols: bool,
+    pub group_allowed_symbol_ids: Vec<String>,
+    // the account
+    pub account_status: String,
+    pub account_trading_rights: String,
+    pub max_daily_loss: Option<Decimal>,
+    // the broker's view of the symbol
+    pub symbol_trading_mode: String,
+    // aggregates
+    /// The broker's OPEN client volume: the coverage account, COVERAGE groups and internal accounts are
+    /// excluded, because those are the broker's own hedge legs and not client exposure (the web's audit
+    /// note of 2026-09-24 -- counting them let every hedge eat into the clients' limit).
+    pub broker_open_volume: Decimal,
+    /// Signed TRADE_PNL since the start of today. A loss is NEGATIVE.
+    ///
+    /// THE DAY BOUNDARY: `date_trunc('day', now() AT TIME ZONE 'UTC')`, i.e. UTC midnight. The web uses
+    /// `new Date(); setHours(0,0,0,0)` -- midnight in the SERVER PROCESS's timezone, which is UTC on
+    /// Vercel and therefore what production does today. It is deliberately NOT this platform's own
+    /// broker-day boundary (21:00 UTC, see the D1 candle convention): matching the web matters more
+    /// than being principled here, because a different boundary would make the engine refuse orders
+    /// the web allows for an hour or two every day. Flagged in the handoff doc.
+    pub realized_today: Decimal,
+    /// Is there an OPEN position on the other side of this symbol for this account?
+    pub has_opposite_open_position: bool,
+}
+
+pub async fn get_gate_inputs(
+    pool: &PgPool,
+    broker_id: &str,
+    account_id: &str,
+    symbol_id: &str,
+    side: OrderSide,
+) -> Result<Option<GateInputs>, sqlx::Error> {
+    let opposite = if side == OrderSide::Buy { "SELL" } else { "BUY" };
+    // Read by alias (sqlx::Row), not as a tuple: 19 columns is past the 16 that sqlx's tuple `FromRow`
+    // goes up to -- the same reason book.rs and get_pending_orders_for_symbol read by name.
+    let row = sqlx::query(
+        r#"SELECT
+             b."tradingHaltedAt" IS NOT NULL AS broker_halted,
+             b."closeOnlyAt" IS NOT NULL AS broker_close_only,
+             COALESCE(b."hedgingAllowed", true) AS hedging_allowed,
+             b."totalExposureLimit" AS total_exposure_limit,
+             g."tradingHaltedAt" IS NOT NULL AS group_halted,
+             g."closeOnlyAt" IS NOT NULL AS group_close_only,
+             COALESCE(g."tradingRestriction"::text, 'BOTH') AS group_restriction,
+             g."maxLotSize" AS group_max_lot,
+             g."minLotSize" AS group_min_lot,
+             g."lotStep" AS group_lot_step,
+             COALESCE(g."restrictSymbols", false) AS group_restrict_symbols,
+             COALESCE((SELECT array_agg(gs."symbolId") FROM "GroupSymbol" gs WHERE gs."groupId" = a."groupId"), ARRAY[]::text[]) AS group_allowed,
+             a.status::text AS account_status,
+             a."tradingRights"::text AS account_rights,
+             a."maxDailyLoss" AS max_daily_loss,
+             COALESCE(bs."tradingMode"::text, 'BOTH') AS symbol_trading_mode,
+             COALESCE((SELECT SUM(p.volume) FROM "Position" p
+                         JOIN "Account" pa ON pa.id = p."accountId"
+                         LEFT JOIN "Group" pg ON pg.id = pa."groupId"
+                        WHERE p."brokerId" = $1 AND p.status = 'OPEN'
+                          AND NOT pa."isInternal"
+                          AND COALESCE(pg.category::text, '') <> 'COVERAGE'
+                          AND (b."coverageAccountId" IS NULL OR p."accountId" <> b."coverageAccountId")), 0) AS broker_open_volume,
+             COALESCE((SELECT SUM(t.amount) FROM "Transaction" t
+                        WHERE t."accountId" = $2 AND t.type = 'TRADE_PNL'
+                          AND t."createdAt" >= date_trunc('day', now() AT TIME ZONE 'UTC')), 0) AS realized_today,
+             EXISTS (SELECT 1 FROM "Position" p2
+                      WHERE p2."accountId" = $2 AND p2."symbolId" = $3
+                        AND p2.status = 'OPEN' AND p2.side::text = $4) AS has_opposite
+           FROM "Account" a
+           JOIN "Broker" b ON b.id = $1
+           LEFT JOIN "Group" g ON g.id = a."groupId"
+           LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = $3 AND bs."brokerId" = $1
+          WHERE a.id = $2"#,
+    )
+    .bind(broker_id)
+    .bind(account_id)
+    .bind(symbol_id)
+    .bind(opposite)
+    .fetch_optional(pool)
+    .await?;
+
+    use sqlx::Row;
+    let Some(r) = row else { return Ok(None) };
+    Ok(Some(GateInputs {
+        broker_trading_halted: r.try_get("broker_halted")?,
+        broker_close_only: r.try_get("broker_close_only")?,
+        hedging_allowed: r.try_get("hedging_allowed")?,
+        total_exposure_limit: r.try_get("total_exposure_limit")?,
+        group_trading_halted: r.try_get("group_halted")?,
+        group_close_only: r.try_get("group_close_only")?,
+        group_trading_restriction: r.try_get("group_restriction")?,
+        group_max_lot: r.try_get("group_max_lot")?,
+        group_min_lot: r.try_get("group_min_lot")?,
+        group_lot_step: r.try_get("group_lot_step")?,
+        group_restrict_symbols: r.try_get("group_restrict_symbols")?,
+        group_allowed_symbol_ids: r.try_get("group_allowed")?,
+        account_status: r.try_get("account_status")?,
+        account_trading_rights: r.try_get("account_rights")?,
+        max_daily_loss: r.try_get("max_daily_loss")?,
+        symbol_trading_mode: r.try_get("symbol_trading_mode")?,
+        broker_open_volume: r.try_get("broker_open_volume")?,
+        realized_today: r.try_get("realized_today")?,
+        has_opposite_open_position: r.try_get("has_opposite")?,
+    }))
+}
+
 // ---- which book the order path writes (L2 Stage 3) ---------------------------------------------------
 //
 // The engine has always written its OWN lowercase `orders` / `positions` / `ledger_entries`, which
@@ -1128,12 +1257,40 @@ pub async fn get_symbol_exposure(
 /// them, so there's no reason to pay two separate network round trips
 /// for them. The two single-purpose functions above stay as they are
 /// for any other caller that only needs one value.
+/// The two exposure numbers `risk::check_symbol_exposure` and `risk::check_max_open_positions` judge,
+/// plus the broker's cap, in one round trip.
+///
+/// L2 Step 1: a Prisma branch, because the legacy one read `positions` -- a table production never
+/// fills -- so in `live` mode both gates were handed zeros and **passed everything silently**. That is
+/// the Stage 0 finding, and it is the reason this function is the priority of Part A: it is the only
+/// one of the three that `place_market_order` reaches in a mode that is actually enabled.
+///
+/// The Prisma branch also fixes a second thing the legacy query got wrong and could not show: its
+/// exposure subquery had **no `status = 'OPEN'` filter**, so it summed closed positions' volume as
+/// live exposure. (The count beside it did filter, which is what makes it clearly an oversight rather
+/// than a convention.) The web's own `checkSymbolExposure` filters on OPEN, so the Prisma branch does.
 pub async fn get_exposure_and_max_positions(
     pool: &PgPool,
+    book: Book,
     broker_id: &str,
     account_id: &str,
     symbol: &str,
+    symbol_id: &str,
 ) -> Result<(SymbolExposure, Option<i32>), sqlx::Error> {
+    if book == Book::Prisma {
+        let (open_volume, open_position_count, max_open_positions): (Decimal, i64, Option<i32>) = sqlx::query_as(
+            r#"SELECT
+                 (SELECT COALESCE(SUM(volume) FILTER (WHERE "symbolId" = $3), 0) FROM "Position" WHERE "accountId" = $2 AND status = 'OPEN'),
+                 (SELECT COUNT(*) FROM "Position" WHERE "accountId" = $2 AND status = 'OPEN'),
+                 (SELECT "maxOpenPositionsPerAccount" FROM "Broker" WHERE id = $1)"#,
+        )
+        .bind(broker_id)
+        .bind(account_id)
+        .bind(symbol_id)
+        .fetch_one(pool)
+        .await?;
+        return Ok((SymbolExposure { open_volume, open_position_count }, max_open_positions));
+    }
     let (open_volume, open_position_count, max_open_positions): (Decimal, i64, Option<i32>) = sqlx::query_as(
         r#"SELECT
              (SELECT COALESCE(SUM(volume) FILTER (WHERE symbol = $3), 0) FROM positions WHERE account_id = $2),
