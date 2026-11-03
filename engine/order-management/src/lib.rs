@@ -112,6 +112,17 @@ pub struct PlaceMarketOrderRequest {
     pub used_margin: Decimal,
     pub contract_size: Decimal,
     pub leverage: u32,
+    /// PRIORITY 1 (FAILOVER): the CLIENT's idempotency key, forwarded by the web guard through the
+    /// gateway, and written into `"Order".idempotencyKey` by both the fill and the rejection.
+    ///
+    /// It is what turns the one genuinely dangerous failure into a lookup: if this fill commits and
+    /// the ANSWER is lost, the web's existing by-key read finds the row and returns it instead of
+    /// filling a second position. `"Order"` is UNIQUE on `(accountId, idempotencyKey)`, so a true race
+    /// is refused by Postgres rather than resolved by the two services agreeing about who went first.
+    ///
+    /// `None` for a caller with no client key -- the load test, the parallel-run harness, a direct
+    /// engine call -- and those rows keep the old `engine:<order id>` key.
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug)]
@@ -354,7 +365,7 @@ pub async fn place_market_order(
     let current_tick = match current_tick {
         Some(tick) => tick,
         None => {
-            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, format!("no live price for {}", req.symbol)).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, format!("no live price for {}", req.symbol), req.idempotency_key.as_deref()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     };
@@ -363,11 +374,11 @@ pub async fn place_market_order(
     // `None` means on each book.
     if let Some(cfg) = &symbol_config {
         if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
-            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string(), req.idempotency_key.as_deref()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
         if let Err(reject_reason) = risk::check_lot_size(req.volume, cfg.min_lot, cfg.max_lot, cfg.lot_step) {
-            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string(), req.idempotency_key.as_deref()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     }
@@ -379,7 +390,7 @@ pub async fn place_market_order(
     if book == db::Book::Legacy {
         let required = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage);
         if let Err(reject_reason) = risk::check_free_margin(req.equity, req.used_margin, required) {
-            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string(), req.idempotency_key.as_deref()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     }
@@ -429,7 +440,7 @@ pub async fn place_market_order(
             tick_age_ms,
         };
         if let Some(reject_reason) = gates::evaluate_open(gate_inputs, &order_for_gates) {
-            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason, req.idempotency_key.as_deref()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
         // kept: the pre-trade margin gate needs four more of these, and it cannot run until the fill
@@ -440,11 +451,11 @@ pub async fn place_market_order(
     };
 
     if let Err(reject_reason) = risk::check_symbol_exposure(exposure.open_volume, req.volume, max_exposure) {
-        let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
+        let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string(), req.idempotency_key.as_deref()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
     if let Err(reject_reason) = risk::check_max_open_positions(exposure.open_position_count, max_open_positions) {
-        let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string()).await?;
+        let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason.to_string(), req.idempotency_key.as_deref()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
 
@@ -523,7 +534,7 @@ pub async fn place_market_order(
             hedged_margin_pct: inputs.symbol_hedged_margin_pct,
         };
         if let Some(reject_reason) = calc::pre_trade_margin_decision(state, &leg, inputs.margin_call_level) {
-            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason).await?;
+            let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason, req.idempotency_key.as_deref()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     }
@@ -566,6 +577,7 @@ pub async fn place_market_order(
                 order_id: &order_id,
                 // this call owns the row: see the note where `legacy_tx` is opened
                 create_order: true,
+                idempotency_key: req.idempotency_key.as_deref(),
             };
             // The double-fill guard. NOT REACHABLE FROM HERE TODAY -- this path's order row is created
             // inside the same statement, so no other writer can see it and the compare-and-set cannot
@@ -855,12 +867,13 @@ pub(crate) async fn refuse(
     order_id: &str,
     account_id: &str,
     reason: String,
+    idempotency_key: Option<&str>,
 ) -> Result<String, PlaceOrderError> {
     match legacy_tx.take() {
         Some(tx) => return reject_order(tx, nats, order_id, account_id, reason).await,
         None => {
             debug_assert_eq!(book, db::Book::Prisma, "only the Prisma book runs without a transaction");
-            db::insert_rejected_order(pool, order, order_id, &reason).await?;
+            db::insert_rejected_order(pool, order, order_id, &reason, idempotency_key).await?;
         }
     }
     publish_best_effort(

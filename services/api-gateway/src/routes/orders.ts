@@ -73,6 +73,51 @@ export function engineIngressVerdict(
 }
 
 
+// PRIORITY 1 (FAILOVER): "is the engine able to fill an order right now?", answerable from Vercel.
+//
+// The web guard has to decide whether to forward an order BEFORE it forwards it, and until now it had
+// no way to ask. The obvious candidate was the heartbeat row the engine writes ("RiskEngineHeartbeat",
+// which lib/risk-owner.ts already reads), and it is the WRONG SIGNAL for this -- measured, not
+// supposed. The engine's idle gate deliberately skips that timer when the book cannot move:
+//
+//   idle gate: skipping until the book can move timer="risk heartbeat" reason="book closed (no fresh
+//   tick on any symbol the book holds)"
+//
+// So on a closed market, or during any feed-quiet stretch longer than staleAfterSecs, the heartbeat
+// goes stale while the engine is perfectly healthy and answering. Gating the order path on it would
+// turn the ingress off every weekend and flap it on every quiet patch mid-session. The heartbeat
+// answers "can the book move", which is a different question from "is the order path up".
+//
+// This endpoint answers the actual question, from the one place that can: the gateway shares a
+// loopback with the engine, so its probe is sub-millisecond and needs no database at all.
+//
+// WHAT IT DOES NOT TELL YOU, on purpose. It says the engine process is up and answering, nothing more.
+// It does NOT promise the engine will accept the next order -- an unloaded thresholds guard still
+// answers 503 per order, and the account scoping still applies -- because a health endpoint that tried
+// to pre-judge a specific order would have to take that order's inputs, and would then be an order
+// route with extra steps. The guard treats this as "worth trying", and the real verdict stays with the
+// order itself.
+//
+// Unauthenticated, like the gateway's own /health, and deliberately uninformative: one boolean. The
+// engine's commit header is not forwarded.
+router.get("/engine-health", async (_req, res) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1_000);
+  try {
+    const upstream = await fetch(`${TRADING_CORE_URL}/health`, { signal: controller.signal });
+    if (!upstream.ok) {
+      res.status(503).json({ ok: false });
+      return;
+    }
+    res.json({ ok: true });
+  } catch {
+    // unreachable or slower than a loopback call has any business being
+    res.status(503).json({ ok: false });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 type PlaceMarketOrderBody = z.infer<typeof placeMarketOrderSchema>;
 
 router.post(
@@ -151,6 +196,10 @@ router.post(
       used_margin: "0",
       contract_size: contractSize.toString(),
       leverage: account.leverage,
+      // PRIORITY 1 (FAILOVER): carried, not interpreted. The engine writes it into
+      // `"Order".idempotencyKey`, where `"Order"`'s UNIQUE (accountId, idempotencyKey) makes a second
+      // fill of the same key impossible and the web's existing by-key read can find this one.
+      idempotency_key: body.idempotencyKey,
     };
 
     // Phase 0 money-risk patch item 3 (docs/ROADMAP.md) -- this Gateway's

@@ -51,6 +51,14 @@ export const placeMarketOrderSchema = z.object({
   volume,
   sl_price: optionalPrice,
   tp_price: optionalPrice,
+  // PRIORITY 1 (FAILOVER): the client's own idempotency key, passed straight through to the engine so
+  // the fill (or the rejection) is written under it. That is what lets the web resolve a LOST ANSWER by
+  // key instead of having to choose between a double fill and an error -- see lib/engine-ingress.ts.
+  //
+  // Optional, and deliberately NOT validated beyond a length bound: the gateway does not own this
+  // value's meaning, it only carries it. An absent key keeps the old behaviour exactly (the engine
+  // falls back to `engine:<order id>`), so a client that does not send one is not refused.
+  idempotencyKey: z.string().trim().min(1).max(128).optional(),
 });
 
 export const placePendingOrderSchema = z.object({

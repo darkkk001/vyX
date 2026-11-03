@@ -147,6 +147,11 @@ fn tick(symbol: &str) -> protocol::Tick {
 }
 
 fn request(fx: &Fx, volume: Decimal) -> order_management::PlaceMarketOrderRequest {
+    request_keyed(fx, volume, None)
+}
+
+/// The same request, under a client's own idempotency key -- what the web guard forwards.
+fn request_keyed(fx: &Fx, volume: Decimal, idempotency_key: Option<&str>) -> order_management::PlaceMarketOrderRequest {
     order_management::PlaceMarketOrderRequest {
         broker_id: fx.broker.clone(),
         account_id: fx.account.clone(),
@@ -160,6 +165,7 @@ fn request(fx: &Fx, volume: Decimal) -> order_management::PlaceMarketOrderReques
         used_margin: dec!(0),
         contract_size: dec!(1),
         leverage: 100,
+        idempotency_key: idempotency_key.map(str::to_string),
     }
 }
 
@@ -219,6 +225,7 @@ async fn open_on(pool: &PgPool, fx: &Fx, symbol_id: &str, volume: Decimal, price
             deal_reason: "CLIENT",
             order_id: &order_id,
             create_order: true,
+            idempotency_key: None,
         },
     )
     .await
@@ -260,6 +267,7 @@ async fn a_zero_commission_charges_nothing_through_the_one_call_write() {
             deal_reason: "CLIENT",
             order_id: &order_id,
             create_order: true,
+            idempotency_key: None,
         },
     )
     .await
@@ -515,6 +523,7 @@ async fn bench_the_depth_cut() {
         deal_reason: "CLIENT",
         order_id,
         create_order: true,
+            idempotency_key: None,
     };
 
     // three open positions, so the read shapes have a book to carry
@@ -755,6 +764,7 @@ async fn the_one_call_write_is_row_identical_to_the_multi_statement_path() {
             deal_reason: "CLIENT",
             order_id: &new_id,
             create_order: true,
+            idempotency_key: None,
         },
     )
     .await
@@ -922,6 +932,230 @@ async fn measure_the_fill_paths_round_trips() {
     let outcome = order_management::place_market_order(&pool, &nats, &cache, Some(&pricing), 0, request(&fx, dec!(0.01))).await.expect("the order path ran");
     mark(&pool, "fill-end").await;
     assert!(matches!(outcome, order_management::PlaceMarketOrderOutcome::Filled { .. }), "the measured fill must fill: {outcome:?}");
+
+    cleanup(&pool, &fx).await;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// PRIORITY 1 (FAILOVER): the client's key, and the one property the whole thing rests on.
+//
+// The web guard forwards an order and the answer is lost. It has to decide, with nothing but the key,
+// whether the engine committed -- and be WRONG IN NEITHER DIRECTION. These tests pin the two halves of
+// that from the engine's side: the key really is what the row is written under (so the lookup finds
+// it), and a second write under the same key really is refused with nothing left behind (so a race
+// cannot produce two positions). The second one is the proof; the rest make it usable.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A FILL is written under the client's own key, not the engine's synthetic one.
+///
+/// This is the single line of SQL the failover depends on. Before it, `vyx_open_position` wrote
+/// `'engine:' || p_order_id`, which is unique and therefore safe -- and invisible to anyone holding
+/// the client's key, which made every lost answer unresolvable.
+#[tokio::test]
+async fn the_clients_idempotency_key_is_what_a_fill_is_written_under() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else { return };
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    setup.commit().await.unwrap();
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
+    cache.set(&tick(&fx.symbol_name), chrono::Utc::now());
+
+    let key = format!("client-{}", id());
+    let outcome = order_management::place_market_order(&pool, &nats, &cache, None, 0, request_keyed(&fx, dec!(0.01), Some(&key)))
+        .await
+        .expect("the order path ran");
+    let order_management::PlaceMarketOrderOutcome::Filled { order_id, position_id, .. } = outcome else {
+        panic!("expected a fill");
+    };
+
+    // THE READ THE WEB GUARD DOES, against the index the web guard uses
+    let (found_id, status): (String, String) = sqlx::query_as(
+        r#"SELECT id, status::text FROM "Order" WHERE "accountId" = $1 AND "idempotencyKey" = $2"#,
+    )
+    .bind(&fx.account)
+    .bind(&key)
+    .fetch_one(&pool)
+    .await
+    .expect("the fill is findable by the client's key -- without this a lost answer is unresolvable");
+    assert_eq!(found_id, order_id);
+    assert_eq!(status, "FILLED");
+
+    // and the position behind it is the one the guard would return
+    let (behind,): (String,) = sqlx::query_as(r#"SELECT id FROM "Position" WHERE "originOrderId" = $1"#)
+        .bind(&order_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(behind, position_id);
+
+    cleanup(&pool, &fx).await;
+}
+
+/// A REJECTION carries the key as well, and this matters as much as a fill does.
+///
+/// If the engine refuses an order and the answer is lost, the guard must find the REFUSAL. A guard
+/// that found nothing would fall through and fill on the web -- overturning a risk decision because a
+/// socket died. The key on the REJECTED row is what makes "the engine already answered, and it said
+/// no" a readable fact.
+#[tokio::test]
+async fn a_rejection_carries_the_clients_key_too() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else { return };
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    setup.commit().await.unwrap();
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
+    cache.set(&tick(&fx.symbol_name), chrono::Utc::now());
+
+    sqlx::query(r#"UPDATE "Broker" SET "tradingHaltedAt" = now() WHERE id = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+
+    let key = format!("client-{}", id());
+    let outcome = order_management::place_market_order(&pool, &nats, &cache, None, 0, request_keyed(&fx, dec!(0.01), Some(&key)))
+        .await
+        .expect("the order path ran");
+    let order_management::PlaceMarketOrderOutcome::Rejected { order_id, .. } = outcome else {
+        panic!("a halted broker must not fill");
+    };
+
+    let (found_id, status): (String, String) = sqlx::query_as(
+        r#"SELECT id, status::text FROM "Order" WHERE "accountId" = $1 AND "idempotencyKey" = $2"#,
+    )
+    .bind(&fx.account)
+    .bind(&key)
+    .fetch_one(&pool)
+    .await
+    .expect("the refusal is findable by the client's key");
+    assert_eq!(found_id, order_id);
+    assert_eq!(status, "REJECTED", "the guard must read back a refusal, not a gap it would fill into");
+
+    cleanup(&pool, &fx).await;
+}
+
+/// NO DOUBLE FILL, AND NOT BY AGREEMENT -- by the unique index.
+///
+/// This is the proof. The dangerous sequence is: the engine is mid-transaction, the guard gives up and
+/// the web fills the key first, then the engine's transaction tries to commit. What must happen is
+/// that the engine's ENTIRE fill is refused -- not just its order row, but the position, the deal, the
+/// commission and the ledger effect with it, because they are one transaction. A partial survivor
+/// would be worse than a double fill: a position with no order behind it is invisible to every report
+/// that starts from `"Order"`.
+///
+/// So this writes the key first (standing in for the web winning the race), then runs a full engine
+/// fill under the same key, and asserts both halves: the fill is refused, and the database is exactly
+/// as it was.
+#[tokio::test]
+async fn a_second_fill_under_the_same_key_is_refused_and_leaves_nothing_behind() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else { return };
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    setup.commit().await.unwrap();
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
+    cache.set(&tick(&fx.symbol_name), chrono::Utc::now());
+
+    // the web gets there first, under the client's key
+    let key = format!("client-{}", id());
+    let web_order = id();
+    sqlx::query(
+        r#"INSERT INTO "Order" (id, "brokerId", "accountId", "symbolId", side, type, volume, status, "idempotencyKey", source, "updatedAt")
+           VALUES ($1, $2, $3, $4, 'BUY', 'MARKET', 0.01, 'FILLED', $5, 'WEB', now())"#,
+    )
+    .bind(&web_order)
+    .bind(&fx.broker)
+    .bind(&fx.account)
+    .bind(&fx.symbol_id)
+    .bind(&key)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let before: (i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT (SELECT count(*) FROM "Order" WHERE "accountId" = $1),
+                  (SELECT count(*) FROM "Position" WHERE "accountId" = $1),
+                  (SELECT count(*) FROM "Deal" WHERE "accountId" = $1),
+                  (SELECT count(*) FROM "Transaction" WHERE "accountId" = $1)"#,
+    )
+    .bind(&fx.account)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // now the engine's fill, under the same key
+    let err = order_management::place_market_order(&pool, &nats, &cache, None, 0, request_keyed(&fx, dec!(0.01), Some(&key)))
+        .await
+        .expect_err("a fill under an already-answered key must not succeed");
+    let order_management::PlaceOrderError::Db(sqlx::Error::Database(dbe)) = &err else {
+        panic!("expected the unique index to refuse it, got {err:?}");
+    };
+    assert_eq!(dbe.code().as_deref(), Some("23505"), "refused by UNIQUE (accountId, idempotencyKey), not by a check we wrote");
+
+    // AND NOTHING SURVIVED. One transaction, so all of it rolled back.
+    let after: (i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT (SELECT count(*) FROM "Order" WHERE "accountId" = $1),
+                  (SELECT count(*) FROM "Position" WHERE "accountId" = $1),
+                  (SELECT count(*) FROM "Deal" WHERE "accountId" = $1),
+                  (SELECT count(*) FROM "Transaction" WHERE "accountId" = $1)"#,
+    )
+    .bind(&fx.account)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after, before, "the refused fill left no order, no position, no deal and no transaction");
+
+    // and the web's order is still the one and only answer to that key
+    let (keys,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Order" WHERE "accountId" = $1 AND "idempotencyKey" = $2"#)
+        .bind(&fx.account)
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(keys, 1);
+
+    cleanup(&pool, &fx).await;
+}
+
+/// A caller with no client key keeps the old behaviour exactly.
+///
+/// The load test, the parallel-run harness and any direct engine call send no key. They were never
+/// retryable by key and must not start failing because the column now carries one: `COALESCE` in the
+/// function keeps `engine:<order id>`, which is unique and cannot collide with a client's.
+#[tokio::test]
+async fn a_fill_with_no_client_key_falls_back_to_the_engines_own() {
+    let Some(pool) = pool().await else { return };
+    let Some(nats_url) = std::env::var("ENGINE_TEST_NATS_URL").ok().filter(|u| !u.is_empty()) else { return };
+    let nats = async_nats::connect(&nats_url).await.expect("connect to the throwaway NATS");
+    db::use_prisma_book();
+
+    let mut setup = pool.begin().await.unwrap();
+    let fx = fixture(&mut setup, "B_BOOK", dec!(0)).await;
+    setup.commit().await.unwrap();
+    let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
+    cache.set(&tick(&fx.symbol_name), chrono::Utc::now());
+
+    let outcome = order_management::place_market_order(&pool, &nats, &cache, None, 0, request(&fx, dec!(0.01)))
+        .await
+        .expect("the order path ran");
+    let order_management::PlaceMarketOrderOutcome::Filled { order_id, .. } = outcome else {
+        panic!("expected a fill");
+    };
+
+    let (stored,): (String,) = sqlx::query_as(r#"SELECT "idempotencyKey" FROM "Order" WHERE id = $1"#)
+        .bind(&order_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, format!("engine:{order_id}"));
 
     cleanup(&pool, &fx).await;
 }

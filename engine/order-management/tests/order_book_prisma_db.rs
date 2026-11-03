@@ -613,6 +613,7 @@ async fn place_market_order_runs_the_whole_chain_on_prismas_book() {
             used_margin: dec!(0),
             contract_size: dec!(1),
             leverage: 100,
+            idempotency_key: None,
         },
     )
     .await
@@ -1342,6 +1343,7 @@ async fn every_wired_gate_refuses_through_the_real_order_path() {
                     used_margin: dec!(0),
                     contract_size: dec!(1),
                     leverage: 100,
+            idempotency_key: None,
                 },
             )
             .await
@@ -1612,6 +1614,7 @@ async fn the_pre_trade_margin_gate_refuses_through_the_real_order_path() {
                     used_margin: dec!(0),
                     contract_size: dec!(1),
                     leverage: 100,
+            idempotency_key: None,
                 },
             )
             .await
@@ -1772,6 +1775,7 @@ async fn the_session_gate_refuses_a_closed_market_through_the_real_order_path() 
                 used_margin: dec!(0),
                 contract_size: dec!(1),
                 leverage: 100,
+            idempotency_key: None,
             },
         )
         .await
@@ -1867,6 +1871,7 @@ async fn a_tick_the_web_would_call_stale_is_refused_even_though_the_engine_still
                 used_margin: dec!(0),
                 contract_size: dec!(1),
                 leverage: 100,
+            idempotency_key: None,
             },
         )
         .await

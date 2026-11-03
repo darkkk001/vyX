@@ -281,6 +281,13 @@ struct PlaceMarketOrderBody {
     used_margin: Decimal,
     contract_size: Decimal,
     leverage: u32,
+
+    /// PRIORITY 1 (FAILOVER): the client's own idempotency key, forwarded by the web guard
+    /// through the gateway. Optional, because the engine's own callers (the load test, the
+    /// parallel-run harness) have none -- see PlaceMarketOrderRequest::idempotency_key for why
+    /// it is what makes a lost answer recoverable instead of ambiguous.
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -365,6 +372,7 @@ async fn place_market_order(
         used_margin: body.used_margin,
         contract_size: body.contract_size,
         leverage: body.leverage,
+        idempotency_key: body.idempotency_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
     };
 
     let outcome = order_management::place_market_order(

@@ -927,6 +927,18 @@ pub struct OpenPositionCall<'a> {
     /// an order that never opened. false: the row already exists and is PENDING, which is a resting
     /// LIMIT/STOP being triggered or (design section 5b.2) one the WEB created for the engine to fill.
     pub create_order: bool,
+    /// PRIORITY 1 (FAILOVER): the CLIENT's own idempotency key, forwarded from the web guard through
+    /// the gateway, written into `"Order".idempotencyKey`.
+    ///
+    /// This is what makes a lost answer recoverable. `"Order"` is UNIQUE on
+    /// `(accountId, idempotencyKey)`, and the insert below is in the same transaction as the position
+    /// and the deal -- so if the web ever fills the same key first, this whole fill raises 23505 and
+    /// rolls back in one piece. The web's existing by-key read then finds whichever one committed.
+    /// Double-filling is refused by the index, not by the two services agreeing on who went first.
+    ///
+    /// `None` for a caller with no client key (the load test, the parallel-run harness, a direct
+    /// engine call): the function falls back to `'engine:' || order_id`, exactly as before.
+    pub idempotency_key: Option<&'a str>,
 }
 
 /// What one call left behind.
@@ -976,7 +988,7 @@ pub async fn open_position_one_call(
     let row = sqlx::query_as::<_, (String, String, DateTime<Utc>, String, Option<String>, Decimal, bool)>(
         r#"SELECT order_id, position_id, opened_at, deal_id, group_category_at_open, commission_charged, effect_enqueued
              FROM vyx_open_position($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                                    $15, $16, $17, $18, $19, $20, $21, $22)"#,
+                                    $15, $16, $17, $18, $19, $20, $21, $22, $23)"#,
     )
     // L2 optimization pass, REVERTED AND KEPT AS A WARNING: `.persistent(false)` here produced
     // `26000 unnamed prepared statement does not exist` on EVERY order within seconds of deploy.
@@ -1011,6 +1023,7 @@ pub async fn open_position_one_call(
     .bind(&note)
     .bind(call.deal_reason)
     .bind(call.create_order)
+    .bind(call.idempotency_key)
     .fetch_one(pool)
     .await;
 
@@ -1046,7 +1059,20 @@ pub const ALREADY_ANSWERED: &str = "VYX01";
 /// came out 'AUTO' either way (the COALESCE had nothing to fall back on). What changes is that the
 /// order path no longer has to open a transaction and hold a connection across every gate just so a
 /// refusal has a row to land on.
-pub async fn insert_rejected_order(pool: &PgPool, order: &NewOrder, order_id: &str, reason: &str) -> Result<(), sqlx::Error> {
+/// PRIORITY 1 (FAILOVER): a REJECTION carries the client's key as well, and it matters as much as a
+/// fill does.
+///
+/// If the engine refuses an order and the ANSWER is lost, the web guard must not then fill it -- the
+/// engine's verdict was "no", and a fallback that filled would be overriding a risk decision because a
+/// TCP connection died. With the key on the REJECTED row, the guard's by-key lookup finds the
+/// rejection and returns it, so the order is answered exactly once with the answer the engine gave.
+pub async fn insert_rejected_order(
+    pool: &PgPool,
+    order: &NewOrder,
+    order_id: &str,
+    reason: &str,
+    idempotency_key: Option<&str>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"INSERT INTO "Order"
              (id, "brokerId", "accountId", "symbolId", side, type, volume,
@@ -1065,7 +1091,7 @@ pub async fn insert_rejected_order(pool: &PgPool, order: &NewOrder, order_id: &s
     .bind(order.requested_price)
     .bind(order.sl_price)
     .bind(order.tp_price)
-    .bind(format!("engine:{order_id}"))
+    .bind(idempotency_key.map(|k| k.to_string()).unwrap_or_else(|| format!("engine:{order_id}")))
     .bind(reason)
     .execute(pool)
     .await?;
