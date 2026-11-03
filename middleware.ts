@@ -110,9 +110,18 @@ const brokerResolver = createBrokerResolver<BrokerInfo>();
 // (Broker.customDomainVerifiedAt, set by the Super Admin domain check, lib/custom-domain.ts), for every broker.
 // This replaced the 2026-09-08 Futurix-only skip list, which existed because futurixglobal.com never pointed here.
 
-const BROKER_SHORT_PATHS: Record<string, string> = {
+// Clean client paths on a broker's host (2026-11-04, white label): /login and /register serve the portal sign-in and
+// sign-up pages with the address unchanged, /trade is WebTrader and /download the downloads page. On the broker's own
+// domain the /portal/login and /portal/register spellings redirect to the clean ones, so its address bar never shows
+// /portal. /webtrader stays a redirect to /trade.
+const CLIENT_CLEAN_PATHS: Record<string, string> = {
   "/login": "/portal/login",
   "/register": "/portal/register",
+};
+const PORTAL_TO_CLEAN: Record<string, string> = Object.fromEntries(
+  Object.entries(CLIENT_CLEAN_PATHS).map(([clean, real]) => [real, clean]),
+);
+const BROKER_SHORT_PATHS: Record<string, string> = {
   "/webtrader": "/trade",
 };
 
@@ -171,9 +180,6 @@ async function route(request: NextRequest) {
       ? NextResponse.json(UPDATING_BODY, { status: 503, headers })
       : new NextResponse(UPDATING_BODY.error, { status: 503, headers });
   }
-  const effectivePathname = PATH_ALIASES[pathname] ?? pathname;
-  const isManagePage = effectivePathname === "/manage" || effectivePathname.startsWith("/manage/");
-  const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(effectivePathname);
 
   // 2026-09-08 TEMPORARY REVERSAL, requested directly -- the native-app
   // track this gate was built for (see the architecture comment below)
@@ -206,6 +212,11 @@ async function route(request: NextRequest) {
     hostname === rootDomain ||
     hostname === `www.${rootDomain}` ||
     hostname === `${SUPER_ADMIN_SUBDOMAIN}.${rootDomain}`;
+
+  // a broker host's /login is the client sign-in, never the Super Admin /login page
+  const effectivePathname = (!isRootOrSuperAdmin ? CLIENT_CLEAN_PATHS[pathname] : undefined) ?? PATH_ALIASES[pathname] ?? pathname;
+  const isManagePage = effectivePathname === "/manage" || effectivePathname.startsWith("/manage/");
+  const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(effectivePathname);
 
   if (isSuperAdminPage) {
     // No broker involved for Super Admin -- bind the check to the actual
@@ -337,7 +348,7 @@ async function route(request: NextRequest) {
     !request.nextUrl.pathname.startsWith("/api/")
   ) {
     const redirectUrl = new URL(
-      `${request.nextUrl.pathname}${request.nextUrl.search}`,
+      `${PORTAL_TO_CLEAN[pathname] ?? pathname}${request.nextUrl.search}`,
       `https://${broker.customDomain}`,
     );
     return NextResponse.redirect(redirectUrl, 308);
@@ -357,9 +368,9 @@ async function route(request: NextRequest) {
     }
   }
 
-  // Short client paths on a broker's host (2026-11-04, white label): a broker's own site and e-mails can link to
-  // <domain>/login, /register and /webtrader. Page navigations only; the full paths stay the canonical ones.
-  const shortPath = BROKER_SHORT_PATHS[pathname];
+  // On the broker's own domain (not its platform subdomain) the portal spellings move to the clean paths.
+  const cleanPath = subdomain ? undefined : PORTAL_TO_CLEAN[pathname];
+  const shortPath = cleanPath ?? BROKER_SHORT_PATHS[pathname];
   if (shortPath) {
     const to = request.nextUrl.clone(); // same host and query, only the path changes
     to.pathname = shortPath;
