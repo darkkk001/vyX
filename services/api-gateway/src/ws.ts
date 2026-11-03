@@ -471,13 +471,19 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
   // reaches the trader's terminal at once, instead of waiting for the next order / position event to refresh it.
   // "config.>" (Batch 5, 2026-09-26): broker-wide ConfigChanged -- no account_id; forwarded to every trader socket of
   // its broker_id (clientsByBroker below), so a backoffice change reaches every open terminal within ~1 s.
-  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>"), nc.subscribe("alert.>"), nc.subscribe("account.>"), nc.subscribe("config.>")];
+  // "room.>" (Trader's Room, 2026-11-03): changes only the client's web room shows (a funds request filed / rejected,
+  // a KYC decision, a support reply). Forwarded ONLY to room (observer) sockets of that account_id, never to a
+  // terminal: a terminal prints unknown event types in its LOG.
+  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>"), nc.subscribe("alert.>"), nc.subscribe("account.>"), nc.subscribe("config.>"), nc.subscribe("room.>")];
 
   const wss = new WebSocketServer({ noServer: true });
   const clientsByAccount = new Map<string, Set<WebSocket>>();
   const clientsByBroker = new Map<string, Set<WebSocket>>();
+  // Trader's Room sockets (ticket minted with observer: true): they receive the account's events like a terminal,
+  // plus room.>, but never count the account as online (GET /internal/online is "a trading app is connected").
+  const observers = new WeakSet<WebSocket>();
 
-  function registerClient(ws: WebSocket, accountId: string, brokerId: string, keepalive: boolean) {
+  function registerClient(ws: WebSocket, accountId: string, brokerId: string, keepalive: boolean, observer = false) {
     // ping -> pong always; {"type":"keepalive"} only on ?keepalive=1 (ws-liveness.ts: today's clients refetch on
     // any type they don't know)
     answerPings(ws);
@@ -495,8 +501,9 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
     }
     bset.add(ws);
     gatewayStats.tradingWsConnectionsTotal += 1;
-    markOnline(brokerId, accountId, 1);
-    let online = true; // "close" follows "error": count the socket out once
+    if (observer) observers.add(ws);
+    else markOnline(brokerId, accountId, 1);
+    let online = !observer; // "close" follows "error": count the socket out once
 
     function unregister() {
       if (online) {
@@ -525,7 +532,7 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
           return;
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          registerClient(ws, session.accountId, session.brokerId, wantsKeepalive(url));
+          registerClient(ws, session.accountId, session.brokerId, wantsKeepalive(url), session.observer === true);
         });
       })
       .catch((err) => {
@@ -573,7 +580,9 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
         if (parsed?.type === "AccountUpdated") askRegistry.onAccountUpdated(accountId);
         const clients = clientsByAccount.get(accountId);
         if (!clients) continue;
+        const roomOnly = msg.subject.startsWith("room.");
         for (const client of clients) {
+          if (roomOnly && !observers.has(client)) continue;
           if (client.readyState === WebSocket.OPEN) {
             sendFrame(client, text);
             gatewayStats.tradingEventsForwardedTotal += 1;

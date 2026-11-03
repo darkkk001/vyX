@@ -1,6 +1,7 @@
 import { publishTradingEvent } from "@/lib/nats";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
+import { publishRoomChanged } from "@/lib/room/events";
 
 export type FundsRequestChange = "created" | "marked" | "unmarked" | "rejected" | "approved";
 
@@ -54,4 +55,6 @@ export async function publishFundsRequestChanged(args: {
     transaction_id: args.transactionId,
     change: args.change,
   }).catch((err) => console.error("[funds-events] FundsRequestChanged publish failed", err));
+  // the client's Trader's Room (room sockets only): its pending lists and history refresh at once
+  await publishRoomChanged(args.brokerId, [args.accountId], "funds");
 }

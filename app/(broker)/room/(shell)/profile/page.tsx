@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
+import { useRoomEvent } from "@/components/room/RoomData";
 import { day, dayTime } from "@/components/room/format";
 
 // Artboard "Profile & security": personal information (locked after KYC), documents, 2FA, password, active sessions.
@@ -32,6 +33,7 @@ export default function RoomProfile() {
     if (res.ok) setP(await res.json());
   }, []);
   useEffect(() => { void load(); }, [load]);
+  useRoomEvent(() => { void load(); });
 
   // password
   const [cur, setCur] = useState("");

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import StatusChip from "@/components/room/StatusChip";
-import { useRoom, type RoomTx } from "@/components/room/RoomData";
+import { useRoom, useRoomEvent, type RoomTx } from "@/components/room/RoomData";
 import { money, pnlClass, dayTimeCompact } from "@/components/room/format";
 
 // Artboard "History": Transactions / Trades, account / type / period filters, pages of 20, CSV export.
@@ -25,6 +25,8 @@ export default function RoomHistory() {
   const [page, setPage] = useState(1);
   const [tx, setTx] = useState<Page<RoomTx> | null>(null);
   const [trades, setTrades] = useState<Page<Trade> | null>(null);
+  const [tick, setTick] = useState(0);
+  useRoomEvent(() => setTick((t) => t + 1));
   const query = `tab=${tab}&account=${account}&type=${tab === "transactions" ? type : "all"}&period=${period}`;
 
   useEffect(() => {
@@ -36,7 +38,7 @@ export default function RoomHistory() {
       if (tab === "transactions") setTx(body); else setTrades(body);
     })();
     return () => { live = false; };
-  }, [query, page, tab]);
+  }, [query, page, tab, tick]);
 
   const current = tab === "transactions" ? tx : trades;
   const shown = current ? current.rows.length : 0;

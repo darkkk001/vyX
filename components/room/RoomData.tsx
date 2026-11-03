@@ -4,6 +4,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 // Trader's Room client state: GET /api/room/overview (the server's figures), the account picked in the header (kept per
 // browser), and refresh(). Pages read it through useRoom(); nothing here computes money.
+//
+// Real time (~1 s): one observer socket per own account on the gateway's trading stream (POST /api/room/ws-ticket).
+// Any event (balance, positions, terms, room.> funds / KYC / support) refetches the figures and fires "room:changed"
+// for the screen's own lists (useRoomEvent). Floating P/L moves with prices, which are not events: while an account
+// holds positions the figures are re-read every second. Otherwise a 30 s safety read.
 
 export type RoomFigures = {
   balance: string; credit: string; equity: string; freeMargin: string; floating: string; usedMargin: string;
@@ -61,11 +66,67 @@ export function RoomDataProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try { setPicked(localStorage.getItem(PICK_KEY)); } catch { /* storage blocked */ }
     void refresh();
-    const t = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 5000);
     const onVis = () => { if (document.visibilityState === "visible") void refresh(); };
     document.addEventListener("visibilitychange", onVis);
-    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
+    return () => document.removeEventListener("visibilitychange", onVis);
   }, [refresh]);
+
+  const holding = (data?.accounts ?? []).some((a) => a.figures.openPositions > 0);
+  useEffect(() => {
+    const t = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, holding ? 1000 : 30000);
+    return () => clearInterval(t);
+  }, [refresh, holding]);
+
+  // one observer socket per account; reopened when the account list changes or a socket drops
+  const accountKey = (data?.accounts ?? []).map((a) => a.id).sort().join(",");
+  useEffect(() => {
+    if (!accountKey) return;
+    const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL;
+    if (!base) return;
+    let stopped = false;
+    let sockets: WebSocket[] = [];
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let backoff = 1000;
+    const changed = (type: string) => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        void refresh();
+        window.dispatchEvent(new CustomEvent("room:changed", { detail: { type } }));
+      }, 250);
+    };
+    const closeAll = () => { for (const s of sockets) { s.onclose = null; try { s.close(); } catch { /* closed */ } } sockets = []; };
+    const reopen = () => {
+      closeAll();
+      if (stopped || retry) return;
+      retry = setTimeout(() => { retry = null; void open(); }, backoff);
+      backoff = Math.min(backoff * 2, 30000);
+    };
+    async function open() {
+      try {
+        const res = await fetch("/api/room/ws-ticket", { method: "POST", cache: "no-store" });
+        if (!res.ok || stopped) { if (!stopped) reopen(); return; }
+        const { tickets } = (await res.json()) as { tickets: { accountId: string; ticket: string }[] };
+        for (const t of tickets) {
+          const ws = new WebSocket(`${base}/v1/trading/stream?ticket=${encodeURIComponent(t.ticket)}`);
+          ws.onopen = () => { backoff = 1000; };
+          ws.onmessage = (ev) => {
+            try {
+              const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+              if (!msg?.type || msg.type === "pong" || msg.type === "keepalive") return;
+              changed(String(msg.type));
+            } catch { /* not JSON */ }
+          };
+          ws.onclose = () => reopen();
+          sockets.push(ws);
+        }
+      } catch {
+        reopen();
+      }
+    }
+    void open();
+    return () => { stopped = true; if (retry) clearTimeout(retry); if (debounce) clearTimeout(debounce); closeAll(); };
+  }, [accountKey, refresh]);
 
   const select = useCallback((id: string) => {
     setPicked(id);
@@ -85,4 +146,15 @@ export function useRoom(): Ctx {
   const c = useContext(RoomCtx);
   if (!c) throw new Error("useRoom outside RoomDataProvider");
   return c;
+}
+
+/** Runs `fn` when the room hears a change (see the socket above): screens reload their own lists with it. */
+export function useRoomEvent(fn: () => void) {
+  const ref = useRef(fn);
+  ref.current = fn;
+  useEffect(() => {
+    const h = () => ref.current();
+    window.addEventListener("room:changed", h);
+    return () => window.removeEventListener("room:changed", h);
+  }, []);
 }

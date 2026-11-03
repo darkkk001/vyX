@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
-import { useRoom } from "@/components/room/RoomData";
+import { useRoom, useRoomEvent } from "@/components/room/RoomData";
 import { money, day } from "@/components/room/format";
 
 // Artboard "Accounts · leverage · open account".
@@ -24,6 +24,7 @@ export default function RoomAccounts() {
     if (res.ok) setMeta(await res.json());
   }, []);
   useEffect(() => { void load(mode); }, [load, mode]);
+  useRoomEvent(() => { void load(mode); });
 
   // change leverage
   const accounts = useMemo(() => data?.accounts ?? [], [data]);

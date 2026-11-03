@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
-import { useRoom } from "@/components/room/RoomData";
+import { useRoom, useRoomEvent } from "@/components/room/RoomData";
 import { day, dayTime, initials } from "@/components/room/format";
 
 // Artboard "Support": my tickets, the selected thread, reply; "New ticket" in the header.
@@ -36,6 +36,7 @@ export default function RoomSupport() {
     if (res.ok) setThread(await res.json());
   }, []);
   useEffect(() => { void loadList(); }, [loadList]);
+  useRoomEvent(() => { void loadList(); if (openId) void loadThread(openId); });
   useEffect(() => { if (openId) void loadThread(openId); }, [openId, loadThread]);
   // a staff reply shows up without a reload
   useEffect(() => {

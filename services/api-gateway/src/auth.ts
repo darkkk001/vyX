@@ -15,6 +15,9 @@ const SESSION_COOKIE_NAME = "vyx_trade_session";
 export type AccountSessionPayload = {
   accountId: string;
   brokerId: string;
+  // set only on a Trader's Room ws ticket (lib/account-auth.ts issueWsTicket): the socket follows the account without
+  // counting it as online
+  observer?: boolean;
 };
 
 let redis: Redis | null = null;

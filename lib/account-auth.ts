@@ -89,9 +89,11 @@ function wsTicketKey(ticket: string) {
 // instead of reading a cookie it was never going to receive. 30s TTL --
 // only needs to survive the moment between minting it and the handshake
 // that consumes it, never sits around as a replayable credential.
-export async function issueWsTicket(accountId: string, brokerId: string): Promise<string> {
+// `observer` (Trader's Room, 2026-11-03): the gateway forwards this socket the account's events (and room.>) but does
+// not count the account as online.
+export async function issueWsTicket(accountId: string, brokerId: string, opts?: { observer?: boolean }): Promise<string> {
   const ticket = crypto.randomBytes(24).toString("hex");
-  await getRedis().set(wsTicketKey(ticket), JSON.stringify({ accountId, brokerId }), "EX", 30);
+  await getRedis().set(wsTicketKey(ticket), JSON.stringify({ accountId, brokerId, ...(opts?.observer ? { observer: true } : {}) }), "EX", 30);
   return ticket;
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { RoomTx } from "./RoomData";
+import { useRoomEvent, type RoomTx } from "./RoomData";
 
 // GET /api/room/funds?account= for the Deposit / Withdraw / Transfer screens.
 export type FundsMethod = {
@@ -29,6 +29,7 @@ export function useFunds(accountId: string | null | undefined) {
     if (res.ok) { setFunds(await res.json()); setError(""); } else setError("Could not load. Try again.");
   }, [accountId]);
   useEffect(() => { setFunds(null); void load(); }, [load]);
+  useRoomEvent(() => { void load(); });
   return { funds, error, reload: load, setFunds };
 }
 
