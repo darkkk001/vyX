@@ -35,8 +35,10 @@
   font-family: var(--r-sans);
   min-height: 100vh;
   font-size: 13px;
+  color-scheme: dark; /* native date pickers, selects and scrollbars follow the theme */
 }
 .room[data-theme="light"] {
+  color-scheme: light;
   --r-bg: #F6F5F2;
   --r-side: #FFFFFF;
   --r-card: #FFFFFF;

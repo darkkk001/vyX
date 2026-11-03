@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 // Same credential check as the portal (POST /api/portal/login: email + password, verified e-mail, rate limit).
-export default function LoginForm() {
+export default function LoginForm({ notice }: { notice: { ok: boolean; text: string } | null }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
@@ -44,6 +44,7 @@ export default function LoginForm() {
         <h1>Sign in</h1>
         <div style={{ fontSize: 13, color: "var(--r-muted)", marginTop: 6 }}>Use the email registered with your broker.</div>
       </div>
+      {notice ? <div className={notice.ok ? "r-okmsg" : "r-error"} role="status">{notice.text}</div> : null}
       <div className="r-field">
         <label htmlFor="email">Email</label>
         <input id="email" className="r-input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />

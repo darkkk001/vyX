@@ -19,7 +19,7 @@ export async function GET() {
   });
   if (!c) return NextResponse.json({ error: "Signed out. Sign in again." }, { status: 401 });
   const kyc = c.kycRecord;
-  const docState = (present: boolean) => (!kyc || !present ? "Not uploaded" : kyc.status === "APPROVED" ? "Approved" : kyc.status === "REJECTED" ? "Rejected" : "In review");
+  const docState = (present: boolean) => (!kyc || !present ? "Not uploaded" : kyc.status === "APPROVED" ? "Approved" : kyc.status === "REJECTED" ? "Rejected" : "Pending");
   const sessions = await listClientSessions(session.clientId, session.sessionId);
   return NextResponse.json({
     personal: {

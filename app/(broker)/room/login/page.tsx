@@ -7,7 +7,8 @@ import LoginForm from "./LoginForm";
 import ServerClock from "./ServerClock";
 
 // Trader's Room sign-in (artboard "Login"): split brand panel + form, "Powered by QoreTrader" footer.
-export default async function RoomLoginPage() {
+export default async function RoomLoginPage({ searchParams }: { searchParams: Promise<{ verify?: string }> }) {
+  const verify = (await searchParams).verify;
   const broker = await roomBroker();
   if (!broker) notFound();
   if (await getClientSession()) redirect("/room");
@@ -43,7 +44,7 @@ export default async function RoomLoginPage() {
         <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>Powered by QoreTrader</div>
       </section>
       <section className="r-auth-form">
-        <LoginForm />
+        <LoginForm notice={verify === "success" ? { ok: true, text: "Email confirmed. Sign in to continue." } : verify === "invalid" ? { ok: false, text: "That link has expired. Open an account again with the same email for a new one." } : null} />
       </section>
     </div>
   );

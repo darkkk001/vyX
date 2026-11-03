@@ -7,7 +7,7 @@ import { money, pnlClass, dayShort, dayTime, greeting } from "@/components/room/
 
 // Artboard "Dashboard": greeting, equity strip of the picked account, account cards, recent transactions,
 // verification card, trade-on card.
-const KYC_STATUS: Record<string, string> = { APPROVED: "Approved", PENDING: "In review", REJECTED: "Rejected", NONE: "Not started" };
+const KYC_STATUS: Record<string, string> = { APPROVED: "Approved", PENDING: "Pending", REJECTED: "Rejected", NONE: "Not verified" };
 const Check = ({ ok }: { ok: boolean }) => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={ok ? "var(--r-ok)" : "var(--r-muted)"} strokeWidth="1.8" aria-hidden="true">
     {ok ? <path d="m2.5 7.5 3 3 6-6" /> : <circle cx="7" cy="7" r="4.5" />}
@@ -108,7 +108,7 @@ export default function RoomDashboard() {
             <div className="r-card r-pad">
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                 <div className="r-label">Verification</div>
-                {data ? <StatusChip status={KYC_STATUS[data.kyc.status] ?? "Not started"} /> : null}
+                {data ? <StatusChip status={KYC_STATUS[data.kyc.status] ?? "Not verified"} /> : null}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 9 }}><Check ok={data?.kyc.status === "APPROVED" || false} />Identity document</div>

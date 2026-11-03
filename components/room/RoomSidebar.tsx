@@ -38,9 +38,9 @@ const GROUPS: { title: string; items: Item[]; partner?: boolean }[] = [
 
 const KYC_LINE: Record<string, { text: string; cls: string }> = {
   APPROVED: { text: "KYC VERIFIED", cls: "r-chip-ok" },
-  PENDING: { text: "KYC IN REVIEW", cls: "r-chip-pending" },
+  PENDING: { text: "KYC PENDING", cls: "r-chip-pending" },
   REJECTED: { text: "KYC REJECTED", cls: "r-chip-bad" },
-  NONE: { text: "KYC NOT STARTED", cls: "r-chip-off" },
+  NONE: { text: "KYC NOT VERIFIED", cls: "r-chip-off" },
 };
 
 export default function RoomSidebar({ brokerName, logoUrl, isPartner }: { brokerName: string; logoUrl: string | null; isPartner: boolean }) {
