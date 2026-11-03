@@ -5,6 +5,7 @@ import { getClientSession } from "@/lib/client-auth";
 import { prisma } from "@/lib/prisma";
 import { RoomDataProvider } from "@/components/room/RoomData";
 import RoomSidebar from "@/components/room/RoomSidebar";
+import { partnerAccountOf } from "@/lib/room/partner";
 
 // Signed-in Trader's Room screens. /room/login and /room/register sit outside this group, never wrapped by it.
 export default async function RoomShellLayout({ children }: { children: ReactNode }) {
@@ -14,7 +15,7 @@ export default async function RoomShellLayout({ children }: { children: ReactNod
   if (!session) redirect("/room/login");
   const client = await prisma.client.findUnique({ where: { id: session.clientId }, select: { id: true, status: true } });
   if (!client || client.status !== "ACTIVE") redirect("/room/login");
-  const isPartner = false; // Phase C: the client's IB flag
+  const isPartner = (await partnerAccountOf(prisma, client.id)) !== null;
   return (
     <RoomDataProvider>
       <div className="r-shell">

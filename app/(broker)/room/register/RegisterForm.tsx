@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 // POST /api/portal/register with the anti-bot fields: the hidden "website" honeypot and the signed form token.
-export default function RegisterForm({ formToken }: { formToken: string }) {
+export default function RegisterForm({ formToken, referral }: { formToken: string; referral: string }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -20,7 +20,7 @@ export default function RegisterForm({ formToken }: { formToken: string }) {
     setBusy(true);
     setError("");
     try {
-      const res = await fetch("/api/portal/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password, fullName, website, formToken }) });
+      const res = await fetch("/api/portal/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password, fullName, website, formToken, ...(referral ? { ref: referral } : {}) }) });
       const body = await res.json().catch(() => null);
       if (res.ok) { setSentTo(body?.email ?? email); setDevLink(body?.devVerifyUrl ?? ""); return; }
       setError(res.status === 409 ? "This email is already registered. Sign in instead." : res.status === 429 ? "Too many sign-ups. Try again later." : body?.code === "TOO_FAST" ? "Check your details and press Create account again." : body?.code === "FORM_EXPIRED" ? "This page has expired. Reload it and try again." : body?.error ?? "Could not create the account.");

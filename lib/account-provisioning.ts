@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { assertAccountStructure, AccountStructureError } from "@/lib/account-structure";
 import { INITIAL_BALANCE_NOTE } from "@/lib/initial-balance";
+import { attachReferredAccount } from "@/lib/room/partner";
 
 // Extracted out of app/api/manage/accounts/route.ts's own createAccount
 // (Manager's Add Account form) -- same numeric-safe sequential account
@@ -131,10 +132,15 @@ export async function provisionAccount(params: ProvisionAccountParams) {
           });
         }
 
+        // Partner portal (CRM 2026-11-03): a client who signed up through a partner's link brings each LIVE account to
+        // that partner (lib/room/partner.ts); nothing happens for anyone else
+        await attachReferredAccount(tx, { brokerId: params.brokerId, clientId: params.clientId, accountId: account.id, accountMode: params.accountMode, groupId: params.groupId });
+
         await tx.auditLog.create({
           data: {
             brokerId: params.brokerId,
             actorAdminId: params.createdByAdminId,
+            ...(params.clientId ? { clientId: params.clientId } : {}),
             action: "ACCOUNT_CREATED",
             entityType: "Account",
             entityId: account.id,

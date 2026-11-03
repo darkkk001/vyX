@@ -83,9 +83,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ email: existing.email });
   }
 
+  // Partner portal (CRM 2026-11-03): a sign-up through a partner's link (?ref=CODE on /room/register) remembers the
+  // partner; their live accounts are attached to it later (lib/room/partner.ts). An unknown code is simply ignored.
+  const ref = typeof body?.ref === "string" ? body.ref.trim().toUpperCase().slice(0, 16) : "";
+  const referrer = ref ? await prisma.client.findFirst({ where: { brokerId, referralCode: ref }, select: { id: true } }) : null;
+
   const passwordHash = await hashPassword(password);
   const client = await prisma.client.create({
-    data: { brokerId, email, passwordHash, fullName },
+    data: { brokerId, email, passwordHash, fullName, ...(referrer ? { referredByClientId: referrer.id } : {}) },
   });
 
   // The verification e-mail lives in lib/email/verification-email.ts, shared with
