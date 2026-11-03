@@ -79,6 +79,8 @@ type BrokerInfo = {
   logoUrl: string | null;
   primaryColor: string | null;
   customDomain: string | null;
+  // the custom domain answers here (DNS + HTTPS); only then do subdomain pages redirect to it
+  customDomainLive?: boolean;
 };
 
 // Module-scope cache, not Next.js's fetch Data Cache (a prior attempt using
@@ -104,17 +106,24 @@ type BrokerInfo = {
 // lib/broker-resolve-cache.ts holds the rules and their tests.
 const brokerResolver = createBrokerResolver<BrokerInfo>();
 
-// 2026-09-08 TEMPORARY, requested directly -- Futurix's customDomain
-// (futurixglobal.com) is correctly configured in the database and
-// already added to this Vercel project, but its DNS still points at its
-// registrar's own nameservers rather than Vercel (confirmed live: the
-// apex resolves to a non-Vercel IP), so redirecting there sends every
-// page to a domain that can't be reached at all right now. Skips the
-// customDomain redirect below for just this one broker until DNS is
-// fixed, keeping the subdomain (futurixglobal.vyxtrader.com) directly
-// usable in the meantime -- remove this once futurixglobal.com actually
-// resolves through Vercel.
-const CUSTOM_DOMAIN_REDIRECT_SKIP_SUBDOMAINS = new Set(["futurixglobal"]);
+// 2026-11-04: the redirect to a broker's custom domain waits until that domain was seen live
+// (Broker.customDomainVerifiedAt, set by the Super Admin domain check, lib/custom-domain.ts), for every broker.
+// This replaced the 2026-09-08 Futurix-only skip list, which existed because futurixglobal.com never pointed here.
+
+// Clean client paths on a broker's host (2026-11-04, white label): /login and /register serve the portal sign-in and
+// sign-up pages with the address unchanged, /trade is WebTrader and /download the downloads page. On the broker's own
+// domain the /portal/login and /portal/register spellings redirect to the clean ones, so its address bar never shows
+// /portal. /webtrader stays a redirect to /trade.
+const CLIENT_CLEAN_PATHS: Record<string, string> = {
+  "/login": "/portal/login",
+  "/register": "/portal/register",
+};
+const PORTAL_TO_CLEAN: Record<string, string> = Object.fromEntries(
+  Object.entries(CLIENT_CLEAN_PATHS).map(([clean, real]) => [real, clean]),
+);
+const BROKER_SHORT_PATHS: Record<string, string> = {
+  "/webtrader": "/trade",
+};
 
 // 2026-09-08 -- friendly entry-point aliases, requested directly: a
 // broker's own staff/traders land on a clean, on-brand URL
@@ -171,9 +180,6 @@ async function route(request: NextRequest) {
       ? NextResponse.json(UPDATING_BODY, { status: 503, headers })
       : new NextResponse(UPDATING_BODY.error, { status: 503, headers });
   }
-  const effectivePathname = PATH_ALIASES[pathname] ?? pathname;
-  const isManagePage = effectivePathname === "/manage" || effectivePathname.startsWith("/manage/");
-  const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(effectivePathname);
 
   // 2026-09-08 TEMPORARY REVERSAL, requested directly -- the native-app
   // track this gate was built for (see the architecture comment below)
@@ -206,6 +212,11 @@ async function route(request: NextRequest) {
     hostname === rootDomain ||
     hostname === `www.${rootDomain}` ||
     hostname === `${SUPER_ADMIN_SUBDOMAIN}.${rootDomain}`;
+
+  // a broker host's /login is the client sign-in, never the Super Admin /login page
+  const effectivePathname = (!isRootOrSuperAdmin ? CLIENT_CLEAN_PATHS[pathname] : undefined) ?? PATH_ALIASES[pathname] ?? pathname;
+  const isManagePage = effectivePathname === "/manage" || effectivePathname.startsWith("/manage/");
+  const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(effectivePathname);
 
   if (isSuperAdminPage) {
     // No broker involved for Super Admin -- bind the check to the actual
@@ -333,11 +344,11 @@ async function route(request: NextRequest) {
     subdomain &&
     broker.customDomain &&
     broker.customDomain !== hostname &&
-    !request.nextUrl.pathname.startsWith("/api/") &&
-    !CUSTOM_DOMAIN_REDIRECT_SKIP_SUBDOMAINS.has(subdomain)
+    broker.customDomainLive === true &&
+    !request.nextUrl.pathname.startsWith("/api/")
   ) {
     const redirectUrl = new URL(
-      `${request.nextUrl.pathname}${request.nextUrl.search}`,
+      `${PORTAL_TO_CLEAN[pathname] ?? pathname}${request.nextUrl.search}`,
       `https://${broker.customDomain}`,
     );
     return NextResponse.redirect(redirectUrl, 308);
@@ -355,6 +366,15 @@ async function route(request: NextRequest) {
       refused.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
       return refused;
     }
+  }
+
+  // On the broker's own domain (not its platform subdomain) the portal spellings move to the clean paths.
+  const cleanPath = subdomain ? undefined : PORTAL_TO_CLEAN[pathname];
+  const shortPath = cleanPath ?? BROKER_SHORT_PATHS[pathname];
+  if (shortPath) {
+    const to = request.nextUrl.clone(); // same host and query, only the path changes
+    to.pathname = shortPath;
+    return NextResponse.redirect(to, 308);
   }
 
   const requestHeaders = trustedHeaders(request);
