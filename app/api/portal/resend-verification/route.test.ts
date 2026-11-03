@@ -5,6 +5,7 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getMockLastSentTo } from "@/lib/email/adapter";
 import { renderVerificationEmail, RESEND_PER_EMAIL_PER_HOUR, RESEND_PER_IP_PER_HOUR } from "@/lib/email/verification-email";
+import { issueRegisterFormToken } from "@/lib/portal-register-guard";
 
 // POST /api/portal/resend-verification (owner 2026-10-05): constant answer,
 // sends only to an ACTIVE unverified client of this broker, identical e-mail
@@ -127,8 +128,9 @@ describe("POST /api/portal/resend-verification", () => {
     const email = addr("same");
     const { POST: register } = await import("@/app/api/portal/register/route");
     const reg = await register(new NextRequest("https://test.local/api/portal/register", {
-      method: "POST", headers: { "content-type": "application/json", "x-broker-id": broker.id },
-      body: JSON.stringify({ email, password: "password123", fullName: "Same Template" }),
+      method: "POST", headers: { "content-type": "application/json", "x-broker-id": broker.id, "x-real-ip": ipOf() },
+      // the sign-up page's anti-bot form token (lib/portal-register-guard.ts), as if the page was served 10 s ago
+      body: JSON.stringify({ email, password: "password123", fullName: "Same Template", formToken: await issueRegisterFormToken(Date.now() - 10_000) }),
     }));
     expect(reg.status).toBe(200);
     const first = getMockLastSentTo(email)!;
