@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
     destinationAddress: payoutDestination(payout), payoutMethodId: payout.id,
   });
   if (!r.ok) {
-    const msg = r.code ? "Verify your identity before your first withdrawal." : r.error.startsWith("amount is below") ? `Below the minimum (${r.error.split("of ")[1]}).` : r.error.startsWith("amount is above") ? `Above the maximum (${r.error.split("of ")[1]}).` : r.error;
+    const msg = r.code ? "Complete KYC before your first withdrawal." : r.error.startsWith("amount is below") ? `Below the minimum (${r.error.split("of ")[1]}).` : r.error.startsWith("amount is above") ? `Above the maximum (${r.error.split("of ")[1]}).` : r.error;
     return NextResponse.json({ error: msg, ...(r.code ? { code: r.code } : {}) }, { status: r.status });
   }
   await prisma.auditLog.create({ data: { brokerId: session.brokerId, clientId: session.clientId, action: "WITHDRAWAL_REQUESTED", entityType: "Transaction", entityId: r.created.id, newValue: { accountNumber: account.accountNumber, amount: amount.toFixed(2), payoutMethodId: payout.id, status: r.created.status, source: "CLIENT" } } });

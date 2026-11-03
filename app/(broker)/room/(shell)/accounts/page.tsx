@@ -67,7 +67,7 @@ export default function RoomAccounts() {
     setOpenMsg({ ok: true, text: body.status === "created" ? `Demo account ${body.accountNumber} is ready. Sign in with your portal password.` : "Request sent. Your broker opens the account after review." });
     await Promise.all([refresh(), load(mode)]);
   }
-  const liveBlocked = mode === "LIVE" && meta ? (!meta.kycApproved ? "Verify your identity before opening a live account." : meta.liveRequest ? "Your live account request is with your broker." : "") : "";
+  const liveBlocked = mode === "LIVE" && meta ? (!meta.kycApproved ? "Complete KYC before opening a live account." : meta.liveRequest ? "Your live account request is with your broker." : "") : "";
 
   return (
     <>

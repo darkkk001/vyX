@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (client.kycRecord?.status !== "APPROVED") {
-    return NextResponse.json({ error: "Verify your identity before opening a live account.", code: "KYC_REQUIRED" }, { status: 403 });
+    return NextResponse.json({ error: "Complete KYC before opening a live account.", code: "KYC_REQUIRED" }, { status: 403 });
   }
   const existing = await prisma.liveAccountRequest.findFirst({ where: { clientId: client.id, status: "PENDING" }, select: { id: true } });
   if (existing) return NextResponse.json({ error: "Your live account request is already with your broker." }, { status: 409 });

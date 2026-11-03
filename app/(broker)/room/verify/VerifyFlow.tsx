@@ -146,7 +146,7 @@ export default function VerifyFlow({ initial, kyc, rejectionReason, countries }:
     <>
       <OnboardingSteps step={2} />
       <div>
-        <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Verify your identity</h1>
+        <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Upload your KYC documents</h1>
         <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>Upload a government-issued ID and a recent proof of address. Your broker reviews documents within 24 hours.</div>
       </div>
       <div className="r-card" style={card}>
