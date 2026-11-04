@@ -203,6 +203,8 @@ export const MANIFEST: Row[] = [
   { mod: "settings/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
   { mod: "shell-info/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
   { mod: "symbols/[id]/sessions/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
+  { mod: "symbols/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
+  { mod: "symbols/presets/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "symbols/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "theme/route", method: "PATCH", perm: "ANY_ADMIN", body: { theme: "dark" } },
   { mod: "transfers/route", method: "GET", perm: "INTERNAL_TRANSFERS" },
