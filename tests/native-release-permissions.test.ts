@@ -27,7 +27,7 @@ async function fixture() {
   const s = randomUUID().replace(/-/g, "").slice(0, 10);
   const broker = await prisma.broker.create({ data: { name: `Perm ${s}`, subdomain: `perm-${s}` } });
   brokers.push(broker.id);
-  const mk = (role: "BROKER_ADMIN" | "MANAGER", extra: string[] = [], tag = role) =>
+  const mk = (role: "BROKER_ADMIN" | "MANAGER", extra: string[] = [], tag: string = role) =>
     prisma.adminUser.create({ data: { brokerId: broker.id, email: `${tag.toLowerCase()}-${s}-${randomUUID().slice(0, 4)}@test.local`, passwordHash: "x", role, extraPermissions: extra } });
   const admin = await mk("BROKER_ADMIN");
   const group = await prisma.group.create({ data: { brokerId: broker.id, name: `G-${s}`, leverage: 100, category: "B_BOOK", modeRestriction: "ANY" } });

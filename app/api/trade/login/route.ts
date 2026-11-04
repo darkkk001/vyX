@@ -9,7 +9,7 @@ import {
 } from "@/lib/account-auth";
 import { wantsSessionToken } from "@/lib/app-web";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
+import { checkClientBuild, clientBuildErrorMessage, updateRequiredBody } from "@/lib/client-builds";
 import { issuePending2faChallenge } from "@/lib/totp";
 
 // Login is by accountNumber (MT-style numeric login), not email, since one
@@ -41,6 +41,7 @@ export async function POST(request: NextRequest) {
   // even cost a bcrypt compare.
   // native-client build binding: refused before any credential is looked at
   const buildVerdict = await checkClientBuild(brokerId, request.headers.get("x-broker-slug"));
+  if (!buildVerdict.ok && buildVerdict.reason === "update-required") return NextResponse.json(updateRequiredBody(buildVerdict), { status: 426 });   // mandatory-update policy
   if (!buildVerdict.ok) return NextResponse.json({ error: clientBuildErrorMessage(buildVerdict) }, { status: 426 });
   const { allowed } = await checkRateLimit(`login:${brokerId}:${accountNumber}`, 5, 60);
   if (!allowed) {

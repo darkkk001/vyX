@@ -2977,6 +2977,22 @@ model HedgeResult {
 // request); this table is the source a cold Redis is rebuilt from (instrumentation.ts -> restoreClientBuildRegistry).
 // brokerId is not a foreign key on purpose: a build record must survive whatever happens to its broker row, it is the
 // audit of what was issued.
+// Mandatory-update policy (owner 2026-10-29, web-min-version-brief.md): per broker and app, the lowest version allowed to sign in and trade.
+// Builds below it are refused with 426 UPDATE_REQUIRED (lib/client-builds.ts); the apps show "Update required" and update in one step.
+model BrokerAppMinVersion {
+  id           String   @id @default(cuid())
+  brokerId     String
+  app          String // "terminal" | "backoffice" | "bridge"
+  minVersion   String
+  // the latest version of the broker's feed when the minimum was set (the one a blocked client updates to)
+  latestVersion String  @default("")
+  reason       String   @default("") // staff only, never shown to a client
+  setByAdminId String?
+  setAt        DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([brokerId, app])
+}
+
 model ClientBuild {
   buildId         String    @id
   brokerId        String

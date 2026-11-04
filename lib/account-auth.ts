@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { checkClientBuild, prefetchClientBuild } from "@/lib/client-builds";
+import { checkClientBuild, prefetchClientBuild, UPDATE_REQUIRED_PATH } from "@/lib/client-builds";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
@@ -285,6 +285,8 @@ export async function getAccountSession(): Promise<AccountSessionPayload | null>
 
   // native-client build binding (lib/client-builds.ts): a revoked / foreign / unregistered build gets no session
   const verdict = await checkClientBuild(session.brokerId, headerList.get("x-broker-slug"), buildLookup);
+  // mandatory-update policy: a build below the broker's minimum gets 426 UPDATE_REQUIRED (the app shows "Update required"), not a sign-out
+  if (!verdict.ok && verdict.reason === "update-required") redirect(`${UPDATE_REQUIRED_PATH}?min=${encodeURIComponent(verdict.minVersion)}&latest=${encodeURIComponent(verdict.latestVersion)}`);
   if (!verdict.ok) return null;
 
   // QoreTrader demo (lib/demo-hook.ts): lazy SL/TP, pending orders and stop-out for a guest; a deleted guest has no session.

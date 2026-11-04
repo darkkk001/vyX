@@ -13,6 +13,7 @@ import { PLAN_PRICING, formatUsd } from "@/lib/billing";
 import EngineSwitch from "./EngineSwitch";
 import CrmSwitch from "./CrmSwitch";
 import CustomDomainPanel from "./CustomDomainPanel";
+import MinVersionPanel from "./MinVersionPanel";
 import PricingEngineSwitch from "./PricingEngineSwitch";
 import BridgeLicenses from "./BridgeLicenses";
 import OrderRateLimit from "./OrderRateLimit";
@@ -869,6 +870,13 @@ export default function BrokersManager() {
                 The broker&apos;s own address for login, sign-up, WebTrader and downloads, so clients never see the platform domain.
               </p>
               <CustomDomainPanel key={detailTarget.id} brokerId={detailTarget.id} />
+            </ModalSection>
+
+            <ModalSection label="Minimum version">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                Clients below it see &quot;Update required&quot; and update before they can trade. Their open positions stay on the server.
+              </p>
+              <MinVersionPanel key={detailTarget.id} brokerId={detailTarget.id} />
             </ModalSection>
 
             <ModalSection label="Order rate limit">
