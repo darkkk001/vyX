@@ -1059,6 +1059,17 @@ pub enum ClosePositionOutcome {
     InvalidStatus {
         status: db::PositionStatus,
     },
+    /// L2 Step 3 ingress scoping: a scope is installed and this account is not on it. This route had NO
+    /// guard at all before -- `place_market_order` checked both halves and this checked neither, so
+    /// anything holding the internal secret could close any account's position, LIVE included.
+    NotScoped,
+    /// On the list, but the DATABASE says it is not a DEMO account -- the same second condition
+    /// `place_market_order` applies, for the same reason: the list is a human artefact, this is not.
+    NotDemo,
+    /// The position's quote currency cannot be valued in the account's (fx::conversion_rate found no
+    /// price). The web refuses outright here (NO_CONVERSION_RATE) rather than close at a P&L it cannot
+    /// convert, and so does this: a guessed rate moves real money.
+    NoConversionRate,
     /// Lost a race with an automatic close (stop-out or SL/TP, see
     /// monitor.rs) that landed between this call reading the position
     /// and its own `close_position_with_ledger_entry` UPDATE — the
@@ -1084,6 +1095,181 @@ pub enum ClosePositionError {
 /// its own Market Data Core dependency for a read the caller already has
 /// to make anyway to show the trader a current price.
 pub async fn close_position(
+    pool: &PgPool,
+    nats: &async_nats::Client,
+    account_id: &str,
+    position_id: &str,
+    bid: Decimal,
+    ask: Decimal,
+    idempotency_key: Option<&str>,
+    // The same two sources place_market_order takes, and for the same reason: the Prisma close reads the
+    // account's book to get this position's ask rule, contract size and FX rate, and in live mode
+    // `require_tick_source` / `require_pricing_cache` make a book read WITHOUT them an error rather than
+    // a silent read of the database's stale "LivePrice". Caught here by that guard on the first run --
+    // which is the guard doing exactly its job. `&state.tick_cache` / `Some(&state.pricing)` pass
+    // unchanged from the server, as the open path already does.
+    cache: &std::sync::Arc<TickCache>,
+    pricing: Option<&std::sync::Arc<market_data::pricing::PricingCache>>,
+) -> Result<ClosePositionOutcome, ClosePositionError> {
+    // Read ONCE and branch, exactly as place_market_order does (`let book = db::configured()`). The
+    // legacy lowercase tables still back the load test and the parallel-run harness; production is
+    // always Prisma. Before this split THIS ROUTE ONLY EVER READ THE LEGACY TABLE -- 0 rows in
+    // production -- so every real close answered NotFound.
+    match db::configured() {
+        db::Book::Prisma => {
+            close_position_on_book(pool, nats, account_id, position_id, bid, ask, idempotency_key, cache, pricing).await
+        }
+        db::Book::Legacy => close_position_legacy(pool, nats, account_id, position_id, bid, ask).await,
+    }
+}
+
+/// THE REAL CLOSE: the trader-initiated counterpart to monitor.rs's automatic force-closes, on Prisma's
+/// book and through the same money path they use -- `book::close_position_as` -> `close_position_full`,
+/// which writes the guarded "Position" UPDATE, the realized P&L and closed-volume running totals, the
+/// swap remainder, the TRADE_PNL ledger row, the OUT "Deal" linked to it, the account balance/credit via
+/// `close_money` (credit use, negative-balance floor, last-position write-off) and the PostCloseEffect
+/// follow-up -- all in ONE transaction. Nothing about the money is computed differently here:
+///
+///   close price  `calc::position_close_price` -- the ACCOUNT's marked price (a BUY at its bid, a SELL
+///                at its ask). NOT `close_price_for`, whose own doc says it is the legacy path's raw one.
+///   P&L          `calc::floating_pnl` in the quote currency, then `fx::convert_pnl` at the position's
+///                own rate, which is how `force_close_worst` values a close.
+///
+/// A DOUBLE CLOSE is impossible without a key: `close_position_full`'s UPDATE requires
+/// `status = OPEN AND volume = expected`, so a second attempt (or one racing an automatic close) matches
+/// no row and comes back `Lost` -> AlreadyClosed. `idempotency_key` addresses the OTHER half -- a LOST
+/// ANSWER -- and is stamped on this close's own ledger row inside the same transaction, where
+/// UNIQUE (accountId, idempotencyKey) makes a replay fail the whole close instead of writing a second.
+#[allow(clippy::too_many_arguments)]
+async fn close_position_on_book(
+    pool: &PgPool,
+    nats: &async_nats::Client,
+    account_id: &str,
+    position_id: &str,
+    bid: Decimal,
+    ask: Decimal,
+    idempotency_key: Option<&str>,
+    cache: &std::sync::Arc<TickCache>,
+    pricing: Option<&std::sync::Arc<market_data::pricing::PricingCache>>,
+) -> Result<ClosePositionOutcome, ClosePositionError> {
+    // (1) THE TWO GUARDS, before anything reads a position -- the pair place_market_order applies.
+    if !ingress::allows(account_id) {
+        return Ok(ClosePositionOutcome::NotScoped);
+    }
+    let Some(mode) = db::account_mode(pool, account_id).await? else {
+        return Ok(ClosePositionOutcome::NotFound);
+    };
+    if !ingress::mode_allowed(&mode) {
+        return Ok(ClosePositionOutcome::NotDemo);
+    }
+
+    // (2) The position, with its price rule, contract size and FX rate already resolved. This reuses the
+    // account's own OPEN read rather than adding a by-id query, so the close inherits exactly the
+    // resolution the risk path uses -- ask rule, hedged margin, sessions, FX -- with no new SQL to drift.
+    let open = crate::book::with_book_sources(
+        crate::book::PriceSource::Ticks(cache.clone()),
+        pricing.cloned(),
+        book::open_positions_with_market(pool, account_id),
+    )
+    .await?;
+    let Some(position) = open.iter().find(|p| p.id == position_id) else {
+        return Ok(match db::prisma_position_status(pool, position_id, account_id).await? {
+            // exists and is closed: this close already happened, or the desk closed it
+            Some(db::PositionStatus::Closed) => {
+                ClosePositionOutcome::InvalidStatus { status: db::PositionStatus::Closed }
+            }
+            // open yet absent from the OPEN read (a demo-sandbox broker, or unpriced), or not this
+            // account's at all: one answer for both, so an id cannot be used to probe someone else
+            _ => ClosePositionOutcome::NotFound,
+        });
+    };
+    if position.rate_missing {
+        return Ok(ClosePositionOutcome::NoConversionRate);
+    }
+
+    // (3) The price and the money, by the risk path's own rules.
+    let close_price = crate::calc::position_close_price(position, bid, ask);
+    let realized_pnl = crate::fx::convert_pnl(
+        floating_pnl(position.side, position.open_price, close_price, position.contract_size, position.volume),
+        position.fx_rate,
+    );
+
+    // (4) One transaction: the close, its follow-up, and the key.
+    let mut tx = pool.begin().await?;
+    // `actor` is None: ownership is re-checked only for RISK closes (close_position_as's own doc). A
+    // trader closing their own position is not the engine acting on that account's risk.
+    // The note is "" and the TRADE_PNL insert's NULLIF turns that into NULL -- exactly what the web's
+    // own client close writes, so the ledger row is identical rather than merely equivalent.
+    let closed = book::close_position_as(
+        &mut tx,
+        None,
+        position_id,
+        position.volume,
+        close_price,
+        realized_pnl,
+        "",
+        book::DealReason::Client,
+    )
+    .await?;
+    let outcome = match closed {
+        book::CloseResult::Closed(outcome) => {
+            book::enqueue_post_close(
+                &mut tx,
+                position_id,
+                &outcome,
+                book::CloseReason::Client,
+                position.volume,
+                close_price,
+                book::TriggerTick::of(position),
+            )
+            .await?;
+            if let Some(key) = idempotency_key {
+                // Inside the close's transaction, so the constraint and the close commit or roll back
+                // together. A replayed key raises 23505 on Transaction_accountId_idempotencyKey_key and
+                // the whole close is undone; the server maps that to 409, as the open path does.
+                sqlx::query(r#"UPDATE "Transaction" SET "idempotencyKey" = $1 WHERE id = $2"#)
+                    .bind(key)
+                    .bind(&outcome.trade_txn_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            outcome
+        }
+        // the guarded UPDATE matched nothing: already closed, or a concurrent close won the race
+        book::CloseResult::Lost => {
+            tx.commit().await?;
+            return Ok(ClosePositionOutcome::AlreadyClosed);
+        }
+        // unreachable with actor None; a rollback is the only safe answer if it ever is reached
+        book::CloseResult::NotOwner(owner) => {
+            tx.rollback().await?;
+            tracing::warn!(
+                account_id,
+                position_id,
+                owner = owner.as_str(),
+                "client close refused: the account is not owned by the engine"
+            );
+            return Ok(ClosePositionOutcome::AlreadyClosed);
+        }
+    };
+    tx.commit().await?;
+    crate::outbox::wake();
+
+    publish_best_effort(
+        nats,
+        &TradingEvent::PositionClosed {
+            account_id: account_id.to_string(),
+            position_id: position_id.to_string(),
+        },
+    )
+    .await;
+
+    Ok(ClosePositionOutcome::Closed { close_price, realized_pnl: outcome.realized_pnl })
+}
+
+/// The pre-L2 close, on the engine's own lowercase tables. Kept verbatim for the load test and the
+/// parallel-run harness, which still fill that book; production never reaches it.
+async fn close_position_legacy(
     pool: &PgPool,
     nats: &async_nats::Client,
     account_id: &str,

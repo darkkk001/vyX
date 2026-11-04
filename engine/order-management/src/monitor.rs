@@ -188,6 +188,15 @@ async fn apply_close(
                 book::CloseReason::StopLoss => (crate::shadow::Kind::StopLoss, None),
                 book::CloseReason::TakeProfit => (crate::shadow::Kind::TakeProfit, None),
                 book::CloseReason::StopOut { margin_level, .. } => (crate::shadow::Kind::StopOut, Some(margin_level)),
+                // UNREACHABLE BY CONSTRUCTION, and deliberately not a panic. A client close is not a risk
+                // decision: it arrives on the engine's HTTP route, which always runs Live, and this monitor
+                // only ever constructs the three reasons above. There is no shadow decision to record for
+                // something the engine did not decide -- so nothing is written and the pass moves on. If
+                // this ever logs, a caller has routed a manual close through the risk monitor by mistake.
+                book::CloseReason::Client => {
+                    tracing::warn!(account_id, position_id = %position.id, "shadow: a client close reached the risk monitor; not recorded");
+                    return Ok(Applied::Lost);
+                }
             };
             recorder
                 .record(crate::shadow::Decision {

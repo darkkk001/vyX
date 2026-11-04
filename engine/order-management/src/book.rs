@@ -1171,7 +1171,7 @@ pub async fn close_position_full(
         r#"INSERT INTO "Transaction"
              (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt",
               "closeVolume", "closePrice", "closeSwap", "closeByPositionId")
-           VALUES ($1, $2, $3, 'TRADE_PNL', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now(), $9, $10, $11, $12)"#,
+           VALUES ($1, $2, $3, 'TRADE_PNL', 'COMPLETED', $4, $5, $6, 'Position', $7, NULLIF($8, ''), now(), $9, $10, $11, $12)"#,
     )
     .bind(&trade_txn_id)
     .bind(&broker_id)
@@ -1384,6 +1384,13 @@ pub enum CloseReason {
     TakeProfit,
     /// the margin level that triggered it and the account's stop-out level (the dealer's notice quotes both)
     StopOut { margin_level: Decimal, stop_out_level: Decimal },
+    /// A TRADER-INITIATED close through the engine's own HTTP route (the Gateway's
+    /// /v1/positions/:id/close). Unlike the three above, nothing in the engine decides it -- the client
+    /// asked. It exists so the POSITION_CLOSED follow-up the web consumes carries the truthful reason:
+    /// `lib/post-close.ts` reads this string, and anything it does not recognise falls through to
+    /// TAKE_PROFIT, which would tell the trader their own close was a take-profit. THE WEB MUST LEARN
+    /// "client" BEFORE AN ENGINE THAT WRITES IT IS DEPLOYED.
+    Client,
 }
 
 impl CloseReason {
@@ -1393,6 +1400,7 @@ impl CloseReason {
             CloseReason::StopLoss => DealReason::Sl,
             CloseReason::TakeProfit => DealReason::Tp,
             CloseReason::StopOut { .. } => DealReason::StopOut,
+            CloseReason::Client => DealReason::Client,
         }
     }
 
@@ -1401,6 +1409,7 @@ impl CloseReason {
             CloseReason::StopLoss => "stop_loss",
             CloseReason::TakeProfit => "take_profit",
             CloseReason::StopOut { .. } => "stop_out",
+            CloseReason::Client => "client",
         }
     }
 }

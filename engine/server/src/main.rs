@@ -349,6 +349,11 @@ async fn server_time() -> Json<ServerTimeResponse> {
 /// violation -- a ticket collision, say, which is a real incident -- keeps reporting as a 500.
 const ORDER_IDEMPOTENCY_CONSTRAINT: &str = "Order_accountId_idempotencyKey_key";
 
+/// The same guarantee for a CLOSE: `"Transaction"` UNIQUE (accountId, idempotencyKey), stamped on the
+/// close's own TRADE_PNL row inside the close transaction (migration 20261104190000). Matched by name for
+/// the same reason as above -- any OTHER unique violation is a real incident and must stay a 500.
+const CLOSE_IDEMPOTENCY_CONSTRAINT: &str = "Transaction_accountId_idempotencyKey_key";
+
 async fn place_market_order(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlaceMarketOrderBody>,
@@ -603,6 +608,10 @@ struct ClosePositionBody {
     account_id: String,
     bid: Decimal,
     ask: Decimal,
+    /// The client's own idempotency key, carried not interpreted -- the engine stamps it on this close's
+    /// TRADE_PNL row so a LOST ANSWER can be resolved by key. Absent keeps the old behaviour exactly.
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -629,11 +638,26 @@ async fn close_position(
         &position_id,
         body.bid,
         body.ask,
+        body.idempotency_key.as_deref(),
+        &state.tick_cache,
+        Some(&state.pricing),
     )
     .await
-    .map_err(|err| {
-        tracing::error!(?err, "close_position failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    .map_err(|err| match err {
+        // A REPLAYED CLOSE KEY IS NOT AN ENGINE FAULT -- the same reasoning as the open path's 409 just
+        // above. The unique index refused the whole close, which is the designed behaviour, so the caller
+        // is told to go and read the close that already happened. A 500 here would trip the web guard's
+        // breaker and bench a healthy engine over a duplicate it exists to absorb.
+        order_management::ClosePositionError::Db(sqlx::Error::Database(ref dbe))
+            if dbe.code().as_deref() == Some("23505") && dbe.constraint() == Some(CLOSE_IDEMPOTENCY_CONSTRAINT) =>
+        {
+            tracing::info!(constraint = CLOSE_IDEMPOTENCY_CONSTRAINT, "close refused: this idempotency key was already answered");
+            (StatusCode::CONFLICT, "this close was already answered".to_string())
+        }
+        err => {
+            tracing::error!(?err, "close_position failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        }
     })?;
 
     match outcome {
@@ -648,6 +672,22 @@ async fn close_position(
         ClosePositionOutcome::AlreadyClosed => Err((
             StatusCode::CONFLICT,
             "position was already closed".to_string(),
+        )),
+        // 403, not 400: nothing about the request is malformed -- the engine simply does not serve this
+        // account, and the caller's correct answer is the web's own close path (the same shape the
+        // gateway's market route uses for the identical refusal).
+        ClosePositionOutcome::NotScoped => Err((
+            StatusCode::FORBIDDEN,
+            "this account is not served by the engine order path".to_string(),
+        )),
+        ClosePositionOutcome::NotDemo => Err((
+            StatusCode::FORBIDDEN,
+            "the engine order path serves DEMO accounts only".to_string(),
+        )),
+        // the web answers NO_CONVERSION_RATE for this and refuses the request; so does this
+        ClosePositionOutcome::NoConversionRate => Err((
+            StatusCode::BAD_REQUEST,
+            "NO_CONVERSION_RATE".to_string(),
         )),
     }
 }

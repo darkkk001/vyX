@@ -1306,6 +1306,35 @@ pub struct PositionRow {
     pub contract_size: Decimal,
 }
 
+/// The account's mode as the DATABASE says it, for the ingress DEMO-only rule. Read here rather than
+/// taken from a caller: `ingress`'s own doc says the list is a human artefact and this check is not.
+pub async fn account_mode(pool: &PgPool, account_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(r#"SELECT "accountMode"::text FROM "Account" WHERE id = $1"#)
+        .bind(account_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(m,)| m))
+}
+
+/// One Prisma-book position's status, scoped to its account. Used only on the miss path of the manual
+/// close: when a position is not in the account's OPEN set this says whether it exists and is closed
+/// (409) or is not this account's / not there at all (404). Scoped by account so a position id cannot be
+/// used to learn about someone else's book.
+pub async fn prisma_position_status(
+    pool: &PgPool,
+    position_id: &str,
+    account_id: &str,
+) -> Result<Option<PositionStatus>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        r#"SELECT status::text FROM "Position" WHERE id = $1 AND "accountId" = $2 AND "deletedAt" IS NULL"#,
+    )
+    .bind(position_id)
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(s,)| position_status_from_str(&s)))
+}
+
 /// Single-position lookup by id, for the modify-SL/TP and manual-close
 /// paths' ownership/status checks — narrower than
 /// `get_open_positions_with_market` (account-scoped, no live-price join),
