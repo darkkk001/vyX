@@ -6,3 +6,6 @@
 
 # Binary documents: never convert line endings (a PDF without NUL bytes gets detected as text).
 *.pdf binary
+
+# Prisma stores a checksum of each migration file: a CRLF checkout must never change those bytes.
+prisma/migrations/** text eol=lf
