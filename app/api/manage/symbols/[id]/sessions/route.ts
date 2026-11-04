@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { validateSessions } from "@/lib/symbol-sessions";
+import { readSessions, sessionWindow } from "@/lib/symbol-write";
 import { writeRefusal } from "@/lib/group-permissions";
 
 async function requireManager() {
@@ -12,15 +14,13 @@ async function requireManager() {
   return session!;
 }
 
-const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
-// web3 (issues.md 335/343): a window may end at "24:00" (the end of its day) or cross midnight (close before open, e.g.
-// 22:00-02:00 = to 02:00 the next day). All times UTC. lib/risk.ts sessionCovers is the one reader of these rules.
-const CLOSE_RE = /^(([01]\d|2[0-3]):([0-5]\d)|24:00)$/;
-
 // `id` here is BrokerSymbol.id (not Symbol.id) -- this is per-broker
 // config, same scoping as every other field on that model. Enforcement
 // reads TradingSession via BrokerSymbol.tradingSessions -- see
-// lib/risk.ts's checkTradingSession.
+// lib/risk.ts's checkTradingSession (TRADE rows only; QUOTE rows are the quote-streaming windows).
+//
+// Rules for the rows (lib/symbol-sessions.ts validateSessions): kind TRADE (default) or QUOTE, openTime HH:MM, closeTime
+// HH:MM or 24:00, no overlap per day and kind, a window crossing midnight stored as two rows. All times UTC.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
@@ -38,19 +38,19 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }],
   });
 
-  return NextResponse.json(sessions.map((s) => ({ id: s.id, dayOfWeek: s.dayOfWeek, openTime: s.openTime, closeTime: s.closeTime })));
+  return NextResponse.json(sessions.map((s) => ({ id: s.id, kind: s.kind, dayOfWeek: s.dayOfWeek, openTime: s.openTime, closeTime: s.closeTime })));
 }
 
 // Replaces the full session list for this symbol -- simplest correct
 // semantics for a small, admin-edited list (no per-row add/delete
-// endpoints needed). Empty array = always tradable (see checkTradingSession).
+// endpoints needed). Empty array = no configured rows (the default week applies, see checkTradingSession).
 async function putHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const { id } = await params;
-  { const refused = await writeRefusal(session, ["config"], "manage/symbols/[id]/sessions PUT"); if (refused) return refused; }   // S3: GROUPS_SYMBOLS
+  { const refused = await writeRefusal(session, ["config"], "manage/symbols/[id]/sessions PUT"); if (refused) return refused; } // GROUPS_SYMBOLS
 
   const brokerSymbol = await prisma.brokerSymbol.findUnique({ where: { id }, include: { symbol: { select: { name: true } } } });
   if (!brokerSymbol || brokerSymbol.brokerId !== session.brokerId) {
@@ -58,34 +58,19 @@ async function putHandler(request: NextRequest, { params }: { params: Promise<{ 
   }
 
   const body = await request.json().catch(() => null);
-  const raw = Array.isArray(body?.sessions) ? body.sessions : null;
-  if (!raw) {
-    return NextResponse.json({ error: "sessions must be an array" }, { status: 400 });
+  if (!Array.isArray(body?.sessions)) {
+    return NextResponse.json({ error: "sessions must be an array", rowErrors: [] }, { status: 400 });
   }
-
-  const sessions: { dayOfWeek: number; openTime: string; closeTime: string }[] = [];
-  for (const s of raw) {
-    const dayOfWeek = Number(s?.dayOfWeek);
-    const openTime = typeof s?.openTime === "string" ? s.openTime : "";
-    const closeTime = typeof s?.closeTime === "string" ? s.closeTime : "";
-    if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
-      return NextResponse.json({ error: "dayOfWeek must be 0-6" }, { status: 400 });
-    }
-    if (!TIME_RE.test(openTime) || !CLOSE_RE.test(closeTime)) {
-      return NextResponse.json({ error: "openTime must be HH:MM (00:00-23:59) and closeTime HH:MM or 24:00" }, { status: 400 });
-    }
-    if (openTime === closeTime) {
-      return NextResponse.json({ error: "closeTime must differ from openTime (use 00:00-24:00 for the whole day)" }, { status: 400 });
-    }
-    sessions.push({ dayOfWeek, openTime, closeTime });
+  const { rows, rowErrors } = validateSessions(body.sessions);
+  if (rowErrors.length > 0) {
+    return NextResponse.json({ error: "some sessions are invalid", rowErrors }, { status: 400 });
   }
 
   // Phase 2 batch 6 (issue 172): the replace and its audit row (old and new windows) commit together
-  const window = (s: { dayOfWeek: number; openTime: string; closeTime: string }) => `${s.dayOfWeek} ${s.openTime}-${s.closeTime}`;
   await prisma.$transaction(async (tx) => {
-    const before = await tx.tradingSession.findMany({ where: { brokerSymbolId: id }, orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] });
+    const before = await readSessions(tx, id);
     await tx.tradingSession.deleteMany({ where: { brokerSymbolId: id } });
-    if (sessions.length > 0) await tx.tradingSession.createMany({ data: sessions.map((s) => ({ ...s, brokerSymbolId: id })) });
+    if (rows.length > 0) await tx.tradingSession.createMany({ data: rows.map((s) => ({ ...s, brokerSymbolId: id })) });
     await tx.auditLog.create({
       data: {
         brokerId: session.brokerId!,
@@ -93,14 +78,14 @@ async function putHandler(request: NextRequest, { params }: { params: Promise<{ 
         action: "SYMBOL_SESSIONS_UPDATED",
         entityType: "BrokerSymbol",
         entityId: id,
-        oldValue: { symbol: brokerSymbol.symbol.name, sessions: before.map(window) },
-        newValue: { symbol: brokerSymbol.symbol.name, sessions: sessions.map(window) },
+        oldValue: { symbol: brokerSymbol.symbol.name, sessions: before.map(sessionWindow) },
+        newValue: { symbol: brokerSymbol.symbol.name, sessions: rows.map(sessionWindow) },
       },
     });
   });
 
   const updated = await prisma.tradingSession.findMany({ where: { brokerSymbolId: id }, orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] });
-  return NextResponse.json(updated.map((s) => ({ id: s.id, dayOfWeek: s.dayOfWeek, openTime: s.openTime, closeTime: s.closeTime })));
+  return NextResponse.json(updated.map((s) => ({ id: s.id, kind: s.kind, dayOfWeek: s.dayOfWeek, openTime: s.openTime, closeTime: s.closeTime })));
 }
 
 // Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
