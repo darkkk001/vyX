@@ -18,8 +18,6 @@ export type AccountSessionPayload = {
   // set only on a Trader's Room ws ticket (lib/account-auth.ts issueWsTicket): the socket follows the account without
   // counting it as online
   observer?: boolean;
-  // web security batch 1 S1: a staff password reset is pending; the session may only change the password (on the web app)
-  mustChangePassword?: boolean;
 };
 
 let redis: Redis | null = null;
@@ -115,12 +113,6 @@ export async function requireTraderSession(req: AuthedRequest, res: Response, ne
   const requestBrokerId = req.headers["x-broker-id"];
   if (!requestBrokerId || requestBrokerId !== payload.brokerId) {
     res.status(403).json({ error: "broker mismatch" });
-    return;
-  }
-
-  // web security batch 1 S1: a session confined to changing its password trades nothing here
-  if (payload.mustChangePassword) {
-    res.status(403).json({ error: "Choose a new password to continue.", code: "PASSWORD_CHANGE_REQUIRED" });
     return;
   }
 

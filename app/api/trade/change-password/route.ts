@@ -3,7 +3,7 @@ import { isDemoBrokerId } from "@/lib/demo";
 import { DEMO_REFUSAL } from "@/lib/demo-policy";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { clearMustChangeOnCurrentSession, getAccountSession, revokeAllAccountSessions } from "@/lib/account-auth";
+import { getAccountSession, revokeAllAccountSessions } from "@/lib/account-auth";
 
 export async function POST(request: NextRequest) {
   const session = await getAccountSession();
@@ -34,13 +34,12 @@ export async function POST(request: NextRequest) {
   const newPasswordHash = await bcrypt.hash(newPassword, 10);
   await prisma.account.update({
     where: { id: account.id },
-    data: { passwordHash: newPasswordHash, mustChangePassword: false },   // S1: the trader's own change ends a staff reset's confinement
+    data: { passwordHash: newPasswordHash },
   });
   // A changed password must evict every OTHER session (pentest 2026-09-18
   // #2: before this, a stolen cookie survived the victim's password change
   // for its full TTL). The session that made the change stays signed in.
   await revokeAllAccountSessions(account.id, session.sessionId);
-  await clearMustChangeOnCurrentSession();
 
   return NextResponse.json({ ok: true });
 }

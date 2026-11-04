@@ -750,7 +750,7 @@ model Account {
   accountNumber String           @unique // sequential login id shown to the trader
   email         String
   passwordHash  String
-  // web security batch 1 S1 (owner 2026-10-29): set by a staff reset / set-password; the trader's session is confined to changing it
+  // Unused: the forced change was dropped before release (owner 2026-11-04). A staff reset only resets. Kept because migration 20261104140000 is applied on live.
   mustChangePassword Boolean   @default(false)
   fullName      String
   accountMode   AccountMode

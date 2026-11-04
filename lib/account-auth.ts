@@ -22,9 +22,6 @@ const REMEMBER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 export type AccountSessionPayload = {
   accountId: string;
   brokerId: string;
-  // web security batch 1 S1: the account had a staff reset; every trade route but change-password, sign-out and the session info answers
-  // 403 PASSWORD_CHANGE_REQUIRED (lib/account-auth getAccountSession, the gateway's requireTraderSession)
-  mustChangePassword?: boolean;
   // Present on every session created after device/session management
   // shipped -- absent on any session still alive from before that (a
   // 7-day TTL means old ones age out on their own; they simply won't
@@ -114,13 +111,10 @@ export async function createAccountSession(
   // cookie could outlive its own Redis-backed session data and start
   // failing auth well before the cookie itself expires.
   const ttlSeconds = remember ? REMEMBER_TTL_SECONDS : SESSION_TTL_SECONDS;
-  // web security batch 1 S1: a session of an account with a pending forced change carries the flag (a staff reset revokes every older session)
-  const flags = await prisma.account.findUnique({ where: { id: payload.accountId }, select: { mustChangePassword: true } });
-  const mustChangePassword = flags?.mustChangePassword === true ? true : undefined;
 
   await redis.set(
     sessionKey(token),
-    JSON.stringify({ ...payload, ...(mustChangePassword ? { mustChangePassword } : {}), sessionId } satisfies AccountSessionPayload),
+    JSON.stringify({ ...payload, sessionId } satisfies AccountSessionPayload),
     "EX",
     ttlSeconds
   );
@@ -293,39 +287,7 @@ export async function getAccountSession(): Promise<AccountSessionPayload | null>
   // Returns at once for every other tenant.
   if (!(await demoSessionHook(session))) return null;
 
-  // web security batch 1 S1: a forced change after a staff reset confines the session (the staff confinement's shape: a thrown redirect to a
-  // route that answers 403 { error, code } for every method). No x-pathname (a request that skipped middleware) fails closed.
-  if (session.mustChangePassword) {
-    const path = headerList.get("x-pathname") ?? "";
-    if (path.length === 0) return null;
-    if (path.startsWith("/api/") && !TRADER_PASSWORD_CHANGE_ALLOWLIST.has(path)) redirect(TRADER_PASSWORD_CHANGE_REQUIRED_PATH);
-  }
-
   return session;
-}
-
-export const TRADER_PASSWORD_CHANGE_REQUIRED_PATH = "/api/trade/password-change-required";
-/** The routes a confined trader session may still call: change the password, sign out, the session info. */
-export const TRADER_PASSWORD_CHANGE_ALLOWLIST: ReadonlySet<string> = new Set([
-  "/api/trade/change-password",
-  "/api/trade/logout",
-  "/api/trade/me",
-  TRADER_PASSWORD_CHANGE_REQUIRED_PATH,
-]);
-
-/** The trader's own change-password cleared the flag: the CURRENT session continues unconfined (the others were revoked by the change). */
-export async function clearMustChangeOnCurrentSession(): Promise<void> {
-  const token = (await cookies()).get(ACCOUNT_SESSION_COOKIE_NAME)?.value ?? bearerToken((await headers()).get("authorization"));
-  if (!token) return;
-  const redis = getRedis();
-  const raw = await redis.get(sessionKey(token));
-  if (!raw) return;
-  try {
-    const p = JSON.parse(raw) as AccountSessionPayload;
-    if (!p.mustChangePassword) return;
-    delete p.mustChangePassword;
-    await redis.set(sessionKey(token), JSON.stringify(p), "KEEPTTL");
-  } catch { /* a damaged payload is left for verify to refuse */ }
 }
 
 // Shared by the JSON login route (WebTrader's own fetch-based login) and

@@ -24,7 +24,6 @@ export async function GET() {
       tradingRights: true,
       fullName: true,
       twoFactorEnabled: true,
-      mustChangePassword: true,
       // 2026-09-05 P0 fix -- WebTrader's own margin-call banner/toast used
       // to hardcode 100% rather than reading this account's real
       // configured level (Group.marginCallLevel). Null group = ungrouped

@@ -211,9 +211,7 @@ async function resolveTraderSession(req: IncomingMessage): Promise<import("./aut
     const byTicket = await getTraderSessionByTicket(ticket);
     if (byTicket) return byTicket;
   }
-  const byCookie = await getTraderSession(req.headers.cookie);
-  // web security batch 1 S1: no account stream for a session confined to changing its password
-  return byCookie?.mustChangePassword ? null : byCookie;
+  return getTraderSession(req.headers.cookie);
 }
 
 const traderConfigCoalesce = createConfigCoalescer();

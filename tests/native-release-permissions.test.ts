@@ -1,4 +1,5 @@
 import "dotenv/config";
+import bcrypt from "bcryptjs";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -136,7 +137,7 @@ describe("client password reset (S1)", () => {
   async function account(brokerId: string, groupId: string) {
     return prisma.account.create({ data: { brokerId, groupId, accountNumber: `9${Date.now() % 1e9}${Math.floor(Math.random() * 100)}`, email: "c@test.local", passwordHash: "x", fullName: "C", accountMode: "DEMO", isInternal: true } });
   }
-  it("needs Reset client passwords, and the reset sets the forced change", async () => {
+  it("needs Reset client passwords, and a reset only resets: no forced change", async () => {
     if (!dbReachable) return;
     const fx = await fixture();
     const acc = await account(fx.brokerId, fx.group.id);
@@ -150,32 +151,19 @@ describe("client password reset (S1)", () => {
     await as(resetter.id, fx.brokerId, "MANAGER");
     const ok = await POST(json(`https://test.local/x`, "POST"), { params: Promise.resolve({ id: acc.id }) });
     expect(ok.status).toBe(200);
-    expect((await prisma.account.findUniqueOrThrow({ where: { id: acc.id } })).mustChangePassword).toBe(true);
+    const row = await prisma.account.findUniqueOrThrow({ where: { id: acc.id } });
+    expect(row.mustChangePassword).toBe(false);
+    // the trader signs in with the new password and goes straight back to trading
+    expect(await bcrypt.compare((await ok.json()).password, row.passwordHash)).toBe(true);
   });
 });
 
-describe("forced password change (S1): the confinement", () => {
+describe("no forced password change", () => {
   const src = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
-  it("every confined trade call lands on one 403 with the code", async () => {
-    const { GET, POST } = await import("@/app/api/trade/password-change-required/route");
-    for (const h of [GET, POST]) {
-      const r = await h();
-      expect(r.status).toBe(403);
-      expect((await r.json()).code).toBe("PASSWORD_CHANGE_REQUIRED");
+  it("nothing confines a trader session, on the web or the gateway", () => {
+    for (const f of ["lib/account-auth.ts", "services/api-gateway/src/auth.ts", "services/api-gateway/src/ws.ts", "app/api/trade/change-password/route.ts"]) {
+      expect(src(f)).not.toContain("mustChangePassword");
     }
-  });
-  it("only change-password, sign-out and the session info stay open", async () => {
-    const { TRADER_PASSWORD_CHANGE_ALLOWLIST } = await import("@/lib/account-auth");
-    expect([...TRADER_PASSWORD_CHANGE_ALLOWLIST].sort()).toEqual(["/api/trade/change-password", "/api/trade/logout", "/api/trade/me", "/api/trade/password-change-required"]);
-    expect(src("lib/account-auth.ts")).toContain("if (path.startsWith(\"/api/\") && !TRADER_PASSWORD_CHANGE_ALLOWLIST.has(path)) redirect(TRADER_PASSWORD_CHANGE_REQUIRED_PATH);");
-  });
-  it("the gateway refuses the same sessions (REST 403, no account stream)", () => {
-    expect(src("services/api-gateway/src/auth.ts")).toContain("if (payload.mustChangePassword) {");
-    expect(src("services/api-gateway/src/ws.ts")).toContain("return byCookie?.mustChangePassword ? null : byCookie;");
-  });
-  it("the trader's own change clears the flag and un-confines the current session", () => {
-    const c = src("app/api/trade/change-password/route.ts");
-    expect(c).toContain("mustChangePassword: false");
-    expect(c).toContain("await clearMustChangeOnCurrentSession();");
+    expect(fs.existsSync(path.join(process.cwd(), "app/api/trade/password-change-required/route.ts"))).toBe(false);
   });
 });
