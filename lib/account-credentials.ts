@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { sendBrokerEmail } from "@/lib/email/adapter";
 import { renderBrokerEmail } from "@/lib/email/template";
 
@@ -12,14 +13,17 @@ export type EmailOutcome = { emailed: boolean; to: string | null; notEmailedReas
 
 export type CredentialAccount = { id: string; brokerId: string; accountNumber: string; email: string | null; isInternal: boolean };
 
-// Same gate as the password reset always had: BROKER_ADMIN or any MANAGER of the account's own broker. SUPPORT and
-// other brokers are refused; another broker's account answers 404 exactly like a missing one.
+// Web security batch 1 S1 (owner 2026-10-29): BROKER_ADMIN, or a MANAGER granted "Reset client passwords" (CLIENT_PASSWORD_RESET), of the
+// account's own broker. SUPPORT and other brokers are refused; another broker's account answers 404 exactly like a missing one.
 export async function requireAccountForCredentials(id: string): Promise<
   { ok: true; adminId: string; brokerId: string; account: CredentialAccount } | { ok: false; response: NextResponse }
 > {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return { ok: false, response: NextResponse.json({ error: "forbidden" }, { status: 403 }) };
+  }
+  if (await forbidUnlessBrokerAdminOrPermission(session, "CLIENT_PASSWORD_RESET")) {
+    return { ok: false, response: NextResponse.json({ error: "forbidden", permission: "CLIENT_PASSWORD_RESET", permissionLabel: PERMISSION_LABELS.CLIENT_PASSWORD_RESET }, { status: 403 }) };
   }
   const account = await prisma.account.findUnique({
     where: { id },

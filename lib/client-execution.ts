@@ -91,6 +91,8 @@ const ACCOUNT_INFO_FIELDS = [
   "id", "accountNumber", "accountMode", "currency", "leverage", "balance", "credit", "status", "tradingRights", "fullName",
   "twoFactorEnabled", "tradingDayStart", "tradingWeekStart", "tradingDaySource", "marginCallLevel", "stopOutLevel",
   "tradingState", "tradingRestriction", "accountPlan",
+  // web security batch 1 S1: a staff reset is pending; the terminal opens the change-password screen and nothing else
+  "mustChangePassword",
 ] as const;
 
 type Row = Record<string, unknown>;

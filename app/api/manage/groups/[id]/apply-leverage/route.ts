@@ -16,6 +16,8 @@ import { previewGroupLeverage } from "@/lib/group-leverage-apply";
 async function gate() {
   const session = await getAdminSession();
   if (await forbidUnlessBrokerAdminOrPermission(session, "ACCOUNT_FINANCE")) return null;
+  // web security batch 1 S2 (owner 2026-10-29): any group route that writes leverage also needs "Risk settings" (BROKER_ADMIN has both)
+  if (await forbidUnlessBrokerAdminOrPermission(session, "RISK_SETTINGS")) return null;
   return session!;
 }
 

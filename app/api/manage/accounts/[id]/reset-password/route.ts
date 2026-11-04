@@ -21,7 +21,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   const passwordHash = await bcrypt.hash(password, 10);
 
   await prisma.$transaction([
-    prisma.account.update({ where: { id: account.id }, data: { passwordHash } }),
+    prisma.account.update({ where: { id: account.id }, data: { passwordHash, mustChangePassword: true } }),   // S1: a one-time password: the client chooses a new one at the next sign-in
     prisma.auditLog.create({
       data: {
         brokerId,
