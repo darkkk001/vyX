@@ -40,7 +40,7 @@ export type CompletenessInput = {
 };
 
 const CATEGORIES = ["FOREX", "METALS", "INDICES", "CRYPTO", "COMMODITIES", "STOCKS"];
-const MODES = ["BOTH", "BUY_ONLY", "SELL_ONLY"];
+const MODES = ["BOTH", "BUY_ONLY", "SELL_ONLY", "CLOSE_ONLY"];
 const BOOKS = ["A_BOOK", "B_BOOK"];
 /** A symbol whose last feed tick is older than this has no working price feed (a weekend gap is shorter than 5 days). */
 export const FEED_STALE_MS = 5 * 24 * 3600 * 1000;

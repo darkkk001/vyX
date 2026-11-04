@@ -89,6 +89,9 @@ export function checkAccountTradingRights(
 // side even when the symbol is otherwise enabled -- a stronger
 // restriction than `enabled`, not a replacement for it.
 export function checkSymbolTradingMode(tradingMode: TradingMode, side: OrderSide): string | null {
+  // CLOSE_ONLY (symbols tab, 2026-11-04): every caller of this check is an order path that opens a position; closes
+  // (position close, close-by, bulk close, stop-out) never call it, so refusing here leaves closes untouched.
+  if (tradingMode === "CLOSE_ONLY") return "this symbol is close-only right now: new positions cannot be opened, existing ones can still be closed";
   if (tradingMode === "BUY_ONLY" && side !== "BUY") return "this symbol is buy-only right now";
   if (tradingMode === "SELL_ONLY" && side !== "SELL") return "this symbol is sell-only right now";
   return null;
@@ -289,6 +292,14 @@ export function isDefaultFxSessionClosed(now: Date): boolean {
   return isWeeklyClosed(now);
 }
 
+// A TradingSession row is a trading window (kind TRADE, the default and every row before 2026-11-04) or a quote
+// window (kind QUOTE: price streaming, not trading). Only TRADE rows decide whether an order is accepted; a row that
+// carries no kind is TRADE.
+export type SessionRow = { dayOfWeek: number; openTime: string; closeTime: string; kind?: string };
+export function tradeSessions<T extends { kind?: string }>(rows: T[]): T[] {
+  return rows.filter((r) => r.kind === undefined || r.kind === "TRADE");
+}
+
 // `sessions` (admin-configured TradingSession rows) take priority when
 // present -- an explicit configuration always wins over the default.
 // Zero configured rows now falls through to isDefaultFxSessionClosed
@@ -303,12 +314,13 @@ export function isDefaultFxSessionClosed(now: Date): boolean {
 // function (backoffice dealing-queue/positions/mirror routes) is
 // staff-facing, where the bare code is precise enough to act on as-is.
 export function checkTradingSession(
-  sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
+  allSessions: SessionRow[],
   now: Date,
   category: SymbolCategory,
   symbolName?: string | null // the commodity daily break depends on the symbol (dailyBreakHours)
 ): string | null {
   if (isContinuouslyTraded(category)) return null;
+  const sessions = tradeSessions(allSessions);
 
   if (sessions.length === 0) {
     return isDefaultFxSessionClosed(now) || isInDailyBreak(now, category, symbolName) ? "MARKET_CLOSED" : null;
@@ -356,11 +368,12 @@ export function sessionCovers(s: { dayOfWeek: number; openTime: string; closeTim
 // sorted in the DB, make a closed-form formula more error-prone than a
 // plain forward scan.
 export function computeNextSessionOpen(
-  sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
+  allSessions: SessionRow[],
   now: Date,
   category?: SymbolCategory,
   symbolName?: string | null
 ): Date {
+  const sessions = tradeSessions(allSessions);
   if (sessions.length === 0) {
     // a daily break reopens when it ends: 18:00 New York for metals and SpotCrude, 3 hours after the anchor for SpotBrent
     const breakStart = category && !isDefaultFxSessionClosed(now) ? dailyBreakStart(now, category, symbolName) : null;
