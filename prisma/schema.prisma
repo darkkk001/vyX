@@ -2027,6 +2027,9 @@ model Order {
   requestedPrice  Decimal?    @db.Decimal(18, 5) // null for MARKET
   slPrice         Decimal?    @db.Decimal(18, 5)
   tpPrice         Decimal?    @db.Decimal(18, 5)
+  /// Amount SL / TP in the account currency (native release 2026-11-04, lib/amount-sltp.ts): a leg is a price OR an amount; copied onto the position on fill
+  slAmount        Decimal?    @db.Decimal(18, 2)
+  tpAmount        Decimal?    @db.Decimal(18, 2)
   // Numeric ticket shown to traders (MT-style), assigned by the DB from a server-wide
   // sequence -- see prisma/migrations/20260911200000_numeric_ticket. Never the cuid.
   // autoincrement() is how Prisma introspects that nextval() default (`prisma db pull`); the database is unchanged.
@@ -2110,6 +2113,9 @@ model Position {
   openPrice              Decimal          @db.Decimal(18, 5)
   slPrice                Decimal?         @db.Decimal(18, 5)
   tpPrice                Decimal?         @db.Decimal(18, 5)
+  /// Amount SL / TP in the account currency (native release 2026-11-04): closes when floating P/L <= -slAmount or >= +tpAmount
+  slAmount               Decimal?         @db.Decimal(18, 2)
+  tpAmount               Decimal?         @db.Decimal(18, 2)
   status                 PositionStatus   @default(OPEN)
   closePrice             Decimal?         @db.Decimal(18, 5)
   realizedPnl            Decimal?         @db.Decimal(18, 4)

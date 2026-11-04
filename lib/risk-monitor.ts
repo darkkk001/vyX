@@ -1,4 +1,5 @@
 import "server-only";
+import { amountTrigger } from "@/lib/amount-sltp";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getFreshPrices } from "@/lib/live-price";
@@ -48,6 +49,9 @@ type OpenPositionWithMarket = {
   openPrice: Prisma.Decimal;
   slPrice: Prisma.Decimal | null;
   tpPrice: Prisma.Decimal | null;
+  // amount SL / TP in the account currency (lib/amount-sltp.ts)
+  slAmount: Prisma.Decimal | null;
+  tpAmount: Prisma.Decimal | null;
   contractSize: Prisma.Decimal;
   ticket: number;
   symbol: string;
@@ -133,6 +137,8 @@ async function loadMarketBook(accountIds: string[]): Promise<Map<string, OpenPos
       openPrice: p.openPrice,
       slPrice: p.slPrice,
       tpPrice: p.tpPrice,
+      slAmount: p.slAmount,
+      tpAmount: p.tpAmount,
       contractSize: p.symbol.contractSize,
       ticket: p.ticket,
       symbol: p.symbol.name,
@@ -161,7 +167,15 @@ function slTpTrigger(p: OpenPositionWithMarket): SlTpReason | null {
     if (p.slPrice != null && cp.gte(p.slPrice)) return "stop_loss";
     if (p.tpPrice != null && cp.lte(p.tpPrice)) return "take_profit";
   }
-  return null;
+  // amount SL / TP (owner 2026-11-04): the floating P/L in the account currency against the amounts, same price and rate as the P/L above
+  return amountTrigger(p, cp, p.fxRate);
+}
+
+/** The close note: which leg, and whether it was an amount. */
+function slTpNote(p: OpenPositionWithMarket, reason: SlTpReason): string {
+  const amount = reason === "stop_loss" ? p.slAmount != null && p.slPrice == null : p.tpAmount != null && p.tpPrice == null;
+  const leg = reason === "stop_loss" ? "Stop loss" : "Take profit";
+  return amount ? `${leg} amount hit (automatic)` : `${leg} hit (automatic)`;
 }
 
 // The ONE place an account's equity, used margin and margin level are computed for risk decisions
@@ -277,7 +291,7 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
             symbol: { contractSize: p.contractSize },
           },
           closePrice: cp,
-          note: reason === "stop_loss" ? "Stop loss hit (automatic)" : "Take profit hit (automatic)",
+          note: slTpNote(p, reason),
           riskActor: "WEB",
           deal: { reason: reason === "stop_loss" ? "SL" : "TP", capture: { requestedAt: new Date(), platform: "Server", executionMode: "AUTO" } },
         });
