@@ -121,5 +121,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261103190000_bridge_license_machine",
   "20261104120000_broker_custom_domain_verified",
   "20261104130000_crm_module",
-  "20261104140000_native_release_server"
+  "20261104140000_native_release_server",
+  "20261104190000_close_idempotency"
 ];
