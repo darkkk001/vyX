@@ -65,6 +65,8 @@ export async function loadDealExecutions(accountId: string, deals: Deal[], digit
 const POSITION_FIELDS = [
   "id", "ticket", "symbolId", "originOrderId", "side", "volume", "openPrice", "slPrice", "tpPrice", "status", "closePrice",
   "realizedPnl", "swap", "commission", "closedVolume", "closedSwap", "initialVolume", "openedAt", "closedAt", "closePendingOrderId",
+  // staff order brief point 4 / 37b: "Added by broker" (a Manual position); openedByStaff is computed below from the origin order
+  "manual",
   // relations the client routes select (already narrowed by their own selects)
   "symbol", "originOrder", "closePendingOrder",
 ] as const;
@@ -109,6 +111,9 @@ export function clientPosition(p: Row): Row {
   const out: Row = {};
   for (const k of POSITION_FIELDS) if (k in p) out[k] = p[k];
   if (p.closedByAdminId != null) out.closedByAdminId = "staff"; // clients test presence only (closed by the desk)
+  // staff order brief point 4: "Opened by dealer". Never the staff member's name.
+  const src = (p.originOrder as { source?: unknown } | null | undefined)?.source;
+  if (src !== undefined || "originOrder" in p) out.openedByStaff = src === "ADMIN";
   return out;
 }
 
@@ -117,6 +122,7 @@ export function clientOrder(o: Row): Row {
   const out: Row = {};
   for (const k of ORDER_FIELDS) if (k in o) out[k] = o[k];
   if (o.clientIp != null && CLIENT_ORDER_SOURCES.has(String(o.source ?? ""))) out.clientIp = o.clientIp;
+  if ("source" in o) out.openedByStaff = o.source === "ADMIN";   // staff order brief point 4: "Opened by dealer" / "Placed by dealer"
   if (o.position != null && typeof o.position === "object") out.position = toClientShape(o.position);
   return out;
 }

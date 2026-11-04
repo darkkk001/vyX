@@ -187,6 +187,13 @@ const LABELS: Record<string, string> = {
   NOTIFICATIONS_MARKED_ALL_READ: "Marked all notifications read",
 };
 
+/** Staff order brief point 3 (owner 2026-10-28): a row that carries its own activity line ("Opened BUY 0.10 XAUUSD for 50005721", written by the
+ *  staff order routes into newValue.activity) shows that line; every other row its action label. */
+export function activityLabel(action: string, newValue: Prisma.JsonValue | null): string {
+  const v = newValue != null && typeof newValue === "object" && !Array.isArray(newValue) ? (newValue as Record<string, unknown>).activity : null;
+  return typeof v === "string" && v.trim() ? v : humanizeAction(action);
+}
+
 export function humanizeAction(action: string): string {
   return (
     LABELS[action] ??

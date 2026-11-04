@@ -2151,6 +2151,9 @@ model Position {
   deleteReason     String?
 
   openedAt DateTime  @default(now()) @db.Timestamptz(3)
+  // Manual position (staff order brief, owner 2026-10-28): added by a broker admin at a stated price and time, never filled against the market.
+  // Every report, statement and deals export shows it as manual; clients see "Added by broker".
+  manual   Boolean   @default(false)
   closedAt DateTime? @db.Timestamptz(3)
 
   // Dealer coverage (BOOK NOW) -- true once a dealer has booked this

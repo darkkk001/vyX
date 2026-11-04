@@ -16,3 +16,6 @@ CREATE TABLE "BrokerAppMinVersion" (
     CONSTRAINT "BrokerAppMinVersion_pkey" PRIMARY KEY ("id")
 );
 CREATE UNIQUE INDEX "BrokerAppMinVersion_brokerId_app_key" ON "BrokerAppMinVersion"("brokerId", "app");
+
+-- manual positions (staff order brief): booked by a broker admin at a stated price and time, never filled against the market
+ALTER TABLE "Position" ADD COLUMN "manual" BOOLEAN NOT NULL DEFAULT false;

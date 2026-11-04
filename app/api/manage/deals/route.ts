@@ -200,7 +200,7 @@ async function dealsView(brokerId: string, f: { accountId: string | null; groupI
   const positionIds = [...new Set(deals.flatMap((d) => (d.byPositionId ? [d.positionId, d.byPositionId] : [d.positionId])))];
   const orderIds = [...new Set(deals.map((d) => d.orderId).filter((id): id is string => !!id))];
   const [positions, accounts, symbols, orders, pending] = await Promise.all([
-    prisma.position.findMany({ where: { brokerId, id: { in: positionIds } }, select: { id: true, ticket: true, deletedAt: true, bookType: true } }),
+    prisma.position.findMany({ where: { brokerId, id: { in: positionIds } }, select: { id: true, ticket: true, deletedAt: true, bookType: true, manual: true } }),
     prisma.account.findMany({ where: { brokerId, id: { in: [...new Set(deals.map((d) => d.accountId))] } }, select: { id: true, accountNumber: true, fullName: true, currency: true } }),
     prisma.symbol.findMany({ where: { id: { in: [...new Set(deals.map((d) => d.symbolId))] } }, select: { id: true, name: true, digits: true } }),
     orderIds.length === 0 ? Promise.resolve([]) : prisma.order.findMany({ where: { brokerId, id: { in: orderIds } }, select: { id: true, ...EXEC_SELECT } }),
@@ -224,6 +224,7 @@ async function dealsView(brokerId: string, f: { accountId: string | null; groupI
       ticket: Number(d.ticket),
       positionId: d.positionId,
       positionTicket: p.ticket,
+      manual: p.manual,   // staff order brief 37b: every report shows a manual position as manual
       accountNumber: a.accountNumber,
       currency: a.currency,
       accountFullName: a.fullName,
