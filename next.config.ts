@@ -6,7 +6,7 @@ import type { NextConfig } from "next";
 // to R2. The index files (releases.win.json, RELEASES, assets.win.json) stay here, under git review. A slug is added
 // only after its binaries are byte-checked in R2 and an installed copy updated through the redirect (QoreTrader), or,
 // where no installed copy is behind its feed, every file was downloaded through www and byte-checked (Futurix).
-const R2_FEED_SLUGS = ["qoretrader", "futurixglobal"];
+const R2_FEED_SLUGS = ["qoretrader", "futurixglobal", "tradenextfx"];
 
 const nextConfig: NextConfig = {
   async redirects() {
