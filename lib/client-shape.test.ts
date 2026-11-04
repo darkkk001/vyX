@@ -84,6 +84,17 @@ afterAll(async () => {
   await prisma.$disconnect();
 }, 30000);
 
+describe("a Transaction row is never read as an Order row", () => {
+  it("keeps the ledger allow-list although both models have idempotencyKey and type", async () => {
+    const { toClientShape } = await import("@/lib/client-execution");
+    const row = { id: "t1", type: "TRADE_PNL", status: "COMPLETED", idempotencyKey: "k", amount: "1", balanceBefore: "0", balanceAfter: "1", referenceType: "Position", referenceId: "p1",
+      createdByAdminId: "a1", reviewNote: "staff note", pspReference: "psp", destinationAddress: "addr", receiptDataUrl: "data:x", paymentReference: "ref", payoutMethodId: "pm" };
+    const out = toClientShape({ transaction: row }) as { transaction: Record<string, unknown> };
+    for (const k of ["idempotencyKey", "createdByAdminId", "reviewNote", "pspReference", "destinationAddress", "receiptDataUrl", "paymentReference", "payoutMethodId"]) expect(out.transaction).not.toHaveProperty(k);
+    expect(out.transaction).toMatchObject({ id: "t1", type: "TRADE_PNL", balanceAfter: "1" });
+  });
+});
+
 describe("client routes answer only allow-listed fields (live DB)", () => {
   it("POST /api/trade/orders (a fill), GET /api/trade/positions, GET /api/trade/orders, then the close and GET /api/trade/history (both views)", async () => {
     if (!dbReachable) return;

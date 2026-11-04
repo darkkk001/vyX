@@ -129,7 +129,8 @@ const CLIENT_ORDER_SOURCES = new Set(["WEB", "DESKTOP_NATIVE", "MOBILE", "API", 
 // A raw DB row is recognised by keys only the database row carries: a Position always has bookType (non-null enum),
 // an Order always has idempotencyKey. Anything else (computed fields, closes, executions, balances) is kept as it is.
 const isPositionRow = (v: Row) => "bookType" in v && "openPrice" in v;
-const isOrderRow = (v: Row) => "idempotencyKey" in v && "type" in v;
+// Transaction has idempotencyKey and type too (close idempotency), so the ledger columns must rule it out or its row skips its own allow-list
+const isOrderRow = (v: Row) => "idempotencyKey" in v && "type" in v && !("balanceBefore" in v);
 const isTransactionRow = (v: Row) => "balanceBefore" in v && "balanceAfter" in v && "referenceType" in v;
 function pick(v: Row, keys: readonly string[]): Row {
   const out: Row = {};
