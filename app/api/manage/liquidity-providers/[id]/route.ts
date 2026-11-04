@@ -19,7 +19,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   }
 
   const body = await request.json().catch(() => null);
-  const data: { status?: "PROSPECTIVE" | "NEGOTIATING" | "CONTRACTED" | "CONNECTED"; notes?: string | null } = {};
+  const data: { status?: "PROSPECTIVE" | "NEGOTIATING" | "CONTRACTED" | "CONNECTED"; notes?: string | null; name?: string } = {};
 
   if (body?.status != null) {
     if (!VALID_STATUS.includes(body.status)) {
@@ -29,6 +29,15 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   }
   if ("notes" in (body ?? {})) {
     data.notes = typeof body.notes === "string" ? body.notes.trim() || null : null;
+  }
+  // bo 1.0.101 (owner 2026-11-05): the broker names its liquidity provider as it wants it shown (the row is per broker already)
+  if ("name" in (body ?? {})) {
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) return NextResponse.json({ error: "Enter a name for this liquidity provider." }, { status: 400 });
+    if (name.length > 80) return NextResponse.json({ error: "The name can be at most 80 characters." }, { status: 400 });
+    const clash = await prisma.liquidityProvider.findFirst({ where: { brokerId, name: { equals: name, mode: "insensitive" }, NOT: { id } }, select: { id: true } });
+    if (clash) return NextResponse.json({ error: `Another liquidity provider is already called ${name}.` }, { status: 409 });
+    data.name = name;
   }
   if (Object.keys(data).length === 0) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
@@ -50,6 +59,19 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
         },
       });
     }
+    if (data.name !== undefined && data.name !== existing.name) {
+      await tx.auditLog.create({
+        data: {
+          brokerId,
+          actorAdminId: session!.adminId,
+          action: "LP_NAME_CHANGED",
+          entityType: "LiquidityProvider",
+          entityId: id,
+          oldValue: { name: existing.name },
+          newValue: { name: provider.name },
+        },
+      });
+    }
     if (data.status !== undefined) {
       await tx.auditLog.create({
         data: {
@@ -66,7 +88,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return provider;
   });
 
-  return NextResponse.json({ id: updated.id, status: updated.status, notes: updated.notes });
+  return NextResponse.json({ id: updated.id, name: updated.name, status: updated.status, notes: updated.notes });
 }
 
 // Step 2 (owner 2026-09-30): LP "Delete provider…". BROKER_ADMIN (the same gate as PATCH). Refused (409, with the
