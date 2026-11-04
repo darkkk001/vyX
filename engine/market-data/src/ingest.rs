@@ -620,6 +620,14 @@ fn merge_dedup(batch: Vec<CandleUpdate>) -> Vec<CandleUpdate> {
                 e.low = u.low;
             }
             e.close = u.close;
+            // native release 2026-11-04 (Volume pane): two sampled deltas add; two broker totals keep the larger; a broker
+            // total folded with a sampled delta is the total (the folded row is written through the broker statement)
+            e.tick_volume = match (e.open_authoritative, u.open_authoritative) {
+                (false, false) => e.tick_volume + u.tick_volume,
+                (true, true) => e.tick_volume.max(u.tick_volume),
+                (true, false) => e.tick_volume,
+                (false, true) => u.tick_volume,
+            };
             // fix/candle-open-seed -- a broker-seeded open beats a sampled one
             // whichever order they were folded in; a later broker value wins
             // over an earlier broker value (same bar, MT5 does not change its
@@ -801,6 +809,7 @@ mod tests {
             low,
             close,
             open_authoritative: false,
+            tick_volume: 0,
         };
         let out = merge_dedup(vec![
             mk(dec!(2400), dec!(2401), dec!(2400), dec!(2401)),
@@ -828,11 +837,15 @@ mod tests {
             low: dec!(2399),
             close: dec!(2400),
             open_authoritative: authoritative,
+            tick_volume: if authoritative { 30 } else { 1 },
         };
         let out = merge_dedup(vec![mk(dec!(2400.5), false), mk(dec!(2400.0), true)]);
         assert_eq!((out[0].open, out[0].open_authoritative), (dec!(2400.0), true), "broker open folded in after a sampled one wins");
         let out = merge_dedup(vec![mk(dec!(2400.0), true), mk(dec!(2400.5), false)]);
         assert_eq!((out[0].open, out[0].open_authoritative), (dec!(2400.0), true), "a sampled open folded in after a broker one does not demote it");
+        assert_eq!(out[0].tick_volume, 30, "the folded broker row keeps the broker's total");
+        let out = merge_dedup(vec![mk(dec!(2400.5), false), mk(dec!(2400.6), false), mk(dec!(2400.7), false)]);
+        assert_eq!(out[0].tick_volume, 3, "sampled deltas add");
     }
 
     #[test]
@@ -847,6 +860,7 @@ mod tests {
             low: dec!(2400),
             close: dec!(2400),
             open_authoritative: false,
+            tick_volume: 0,
         };
         let out = merge_dedup(vec![mk(2), mk(0), mk(1)]);
         let starts: Vec<_> = out.iter().map(|u| u.bucket_start).collect();
@@ -961,7 +975,7 @@ mod dual_write_tests {
         }
         let gap = GapFillTracker::new();
         let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap(); // Wednesday
-        let real = |m: i64, px: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: base + Duration::minutes(m), open: px, high: px, low: px, close: px, open_authoritative: false };
+        let real = |m: i64, px: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: base + Duration::minutes(m), open: px, high: px, low: px, close: px, open_authoritative: false, tick_volume: 0 };
 
         // 10:00 baseline lands and is recorded.
         let baseline = vec![real(0, dec!(2400))];
@@ -1032,13 +1046,42 @@ mod dual_write_tests {
         let Some((neon, local)) = pools().await else { return };
         let symbol = format!("TESTOHLC{}", Utc::now().timestamp_millis() % 1_000_000);
         let bucket = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
-        let upd = |o: Decimal, h: Decimal, l: Decimal, c: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: bucket, open: o, high: h, low: l, close: c, open_authoritative: false };
+        let upd = |o: Decimal, h: Decimal, l: Decimal, c: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: bucket, open: o, high: h, low: l, close: c, open_authoritative: false, tick_volume: 0 };
         for batch in [vec![upd(dec!(100), dec!(110), dec!(95), dec!(101))], vec![upd(dec!(101), dec!(105), dec!(90), dec!(99))]] {
             let mut tx = local.begin().await.unwrap();
             db::upsert_candles_batch(&mut tx, &batch).await.unwrap();
             tx.commit().await.unwrap();
         }
         assert_eq!(m1_row(&local, &symbol, bucket).await, Some((dec!(100), dec!(110), dec!(90), dec!(99))), "open = first flush's open, high/low = widest of both, close = latest");
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+    }
+
+    /// Native release 2026-11-04 (terminal Volume pane): seeded flushes ADD their tick count; a broker bar's running total
+    /// and the history backfill keep the LARGER of stored and sent; a 0 (an older EA) never lowers it; /internal/candles reads it.
+    #[tokio::test]
+    async fn tick_volume_adds_seeded_flushes_and_keeps_the_brokers_larger_total() {
+        let Some((neon, local)) = pools().await else { return };
+        let symbol = format!("TESTVOL{}", Utc::now().timestamp_millis() % 1_000_000);
+        let bucket = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        let upd = |auth: bool, v: i64| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: bucket, open: dec!(100), high: dec!(101), low: dec!(99), close: dec!(100), open_authoritative: auth, tick_volume: v };
+        let vol = |p: PgPool| { let symbol = symbol.clone(); async move { db::fetch_candles(&p, &symbol, Timeframe::M1, 5, None).await.unwrap().first().map(|c| c.tick_volume) } };
+        let write = |batch: Vec<CandleUpdate>, authoritative_batch: bool| { let local = local.clone(); async move {
+            let mut tx = local.begin().await.unwrap();
+            if authoritative_batch { db::upsert_candles_authoritative_batch(&mut tx, &batch).await.unwrap(); } else { db::upsert_candles_batch(&mut tx, &batch).await.unwrap(); }
+            tx.commit().await.unwrap();
+        } };
+        write(vec![upd(false, 1)], false).await; write(vec![upd(false, 1)], false).await; write(vec![upd(false, 1)], false).await;
+        assert_eq!(vol(local.clone()).await, Some(3), "three sampled flushes");
+        write(vec![upd(true, 40)], false).await;
+        assert_eq!(vol(local.clone()).await, Some(40), "the broker's running total replaces the smaller sampled count");
+        write(vec![upd(true, 0)], false).await;
+        assert_eq!(vol(local.clone()).await, Some(40), "an older EA's 0 never lowers it");
+        write(vec![upd(true, 35)], true).await;
+        assert_eq!(vol(local.clone()).await, Some(40), "a backfill never lowers it");
+        write(vec![upd(true, 57)], true).await;
+        assert_eq!(vol(local.clone()).await, Some(57), "a backfill's larger final count wins");
         for p in [&neon, &local] {
             sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
         }
@@ -1103,7 +1146,7 @@ mod dual_write_tests {
     }
 
     fn broker_bar(tf: &str, t: DateTime<Utc>, o: Decimal, h: Decimal, l: Decimal) -> protocol::BrokerBar {
-        protocol::BrokerBar { tf: tf.to_string(), t: t.timestamp_millis(), o, h, l }
+        protocol::BrokerBar { tf: tf.to_string(), t: t.timestamp_millis(), o, h, l, v: None }
     }
 
     /// fix/candle-open-seed -- the bug behind "the forming candle's open is
@@ -1163,7 +1206,7 @@ mod dual_write_tests {
         // slightly wider range MT5 saw between pushes. Neither a following
         // live flush WITH broker bars nor one WITHOUT (an old EA) may
         // re-diverge that open, and the widened range must survive.
-        let backfilled = CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: m1, open: dec!(2402.0), high: dec!(2403.2), low: dec!(2401.7), close: dec!(2403.0), open_authoritative: true };
+        let backfilled = CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: m1, open: dec!(2402.0), high: dec!(2403.2), low: dec!(2401.7), close: dec!(2403.0), open_authoritative: true, tick_volume: 0 };
         {
             let mut tx = local.begin().await.unwrap();
             db::upsert_candles_authoritative_batch(&mut tx, &[backfilled]).await.unwrap();

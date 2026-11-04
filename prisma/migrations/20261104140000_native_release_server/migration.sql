@@ -19,3 +19,8 @@ CREATE UNIQUE INDEX "BrokerAppMinVersion_brokerId_app_key" ON "BrokerAppMinVersi
 
 -- manual positions (staff order brief): booked by a broker admin at a stated price and time, never filled against the market
 ALTER TABLE "Position" ADD COLUMN "manual" BOOLEAN NOT NULL DEFAULT false;
+
+-- Candle tick volume (terminal Volume pane). Neon's Candle is frozen (the engine writes the VPS store, deploy/market_data.sql);
+-- the column keeps both schemas the same.
+-- INTEGER here (a Prisma Int serialises as a JSON number; BigInt would throw in NextResponse.json); the VPS store is BIGINT.
+ALTER TABLE "Candle" ADD COLUMN "tickVolume" INTEGER NOT NULL DEFAULT 0;

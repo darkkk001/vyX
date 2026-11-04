@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.44"
+#property version   "1.45"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -848,7 +848,8 @@ bool SendDirect(string ticksJson)
 // bar) is simply left out of that push; the engine falls back to its
 // sampled open for that timeframe until the next push carries it.
 // Close is deliberately not sent -- the tick's own bid IS bar 0's close.
-// Terse keys (tf/t/o/h/l): this rides on every tick, nine times over.
+// Terse keys (tf/t/o/h/l/v): this rides on every tick, nine times over.
+// v1.45 (native release 2026-11-04, terminal Volume pane): v = the bar's tick volume so far (MqlRates.tick_volume).
 string BrokerBarsJson(string brokerSymbol)
 {
    string out = "";
@@ -858,9 +859,9 @@ string BrokerBarsJson(string brokerSymbol)
       if (CopyRates(brokerSymbol, HistoryBackfillPeriods[p], 0, 1, r) < 1) continue;
       if (r[0].open <= 0 || r[0].low <= 0 || r[0].high < r[0].low) continue;
       if (StringLen(out) > 0) out += ",";
-      out += StringFormat("{\"tf\":\"%s\",\"t\":%I64d,\"o\":%.5f,\"h\":%.5f,\"l\":%.5f}",
+      out += StringFormat("{\"tf\":\"%s\",\"t\":%I64d,\"o\":%.5f,\"h\":%.5f,\"l\":%.5f,\"v\":%I64d}",
                           HistoryBackfillPeriodNames[p], ((long)r[0].time - BrokerOffsetSec) * 1000,
-                          r[0].open, r[0].high, r[0].low);
+                          r[0].open, r[0].high, r[0].low, (long)r[0].tick_volume);
    }
    return out;
 }
@@ -917,8 +918,8 @@ void SendHistoryPage(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
       if (minUtcSec > 0 && bucketStartSec < minUtcSec) continue; // older than the full-history floor -- the pager stops after this page anyway
       if (sent > 0) bars += ",";
       bars += StringFormat(
-         "{\"bucket_start_ms\":%I64d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f}",
-         bucketStartSec * 1000, rates[i].open, rates[i].high, rates[i].low, rates[i].close
+         "{\"bucket_start_ms\":%I64d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"tick_volume\":%I64d}",
+         bucketStartSec * 1000, rates[i].open, rates[i].high, rates[i].low, rates[i].close, (long)rates[i].tick_volume
       );
       sent++;
    }

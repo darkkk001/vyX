@@ -1898,6 +1898,8 @@ model Candle {
   high        Decimal         @db.Decimal(18, 5)
   low         Decimal         @db.Decimal(18, 5)
   close       Decimal         @db.Decimal(18, 5)
+  /// Native release 2026-11-04 (terminal Volume pane): tick volume per bar; the engine's VPS store is the live copy
+  tickVolume  Int             @default(0)
   updatedAt   DateTime        @updatedAt @db.Timestamptz(3)
 
   @@id([symbol, timeframe, bucketStart])

@@ -12,6 +12,7 @@ const engineRow = {
   high: "1.1558",
   low: "1.15571",
   close: "1.15575",
+  tickVolume: 1234,
   updatedAt: "2026-09-14T18:21:03.521Z",
 };
 
@@ -32,6 +33,14 @@ describe("toPrismaCandle", () => {
     // the mapped row must round-trip to the same JSON the engine sent.
     const json = JSON.parse(JSON.stringify(toPrismaCandle(engineRow)));
     expect(json).toEqual(engineRow);
+  });
+
+  it("tick volume: an older engine without it, or a bad value, is 0 (no volume recorded)", () => {
+    const { tickVolume: _omit, ...older } = engineRow;
+    expect(toPrismaCandle(older)?.tickVolume).toBe(0);
+    expect(toPrismaCandle({ ...engineRow, tickVolume: -5 })?.tickVolume).toBe(0);
+    expect(toPrismaCandle({ ...engineRow, tickVolume: Number.NaN })?.tickVolume).toBe(0);
+    expect(toPrismaCandle(engineRow)?.tickVolume).toBe(1234);
   });
 
   it("refuses rows that would corrupt a chart", () => {

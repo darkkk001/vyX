@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS "Candle" (
     CONSTRAINT "Candle_pkey" PRIMARY KEY ("symbol", "timeframe", "bucketStart")
 );
 
+-- Native release 2026-11-04 (terminal Volume pane): the bar's tick volume (the broker's MqlRates.tick_volume from the EA,
+-- else the engine's sampled count). A constant default is metadata-only on PG 11+ (no table rewrite). MUST run on the VPS
+-- store BEFORE the engine build that writes "tickVolume" starts, or every candle upsert fails.
+ALTER TABLE "Candle" ADD COLUMN IF NOT EXISTS "tickVolume" BIGINT NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS "LivePrice" (
     "symbol"    TEXT           NOT NULL,
     "bid"       DECIMAL(18,5)  NOT NULL,
