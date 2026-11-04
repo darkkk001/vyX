@@ -14,6 +14,7 @@ thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Phase 1 trust pack §3 -- generates the id for a new Notification row
 # (Prisma-managed, `id String @id @default(cuid())`) the first time this
 # engine writes one directly. Postgres has no format constraint on that
