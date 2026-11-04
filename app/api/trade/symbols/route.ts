@@ -34,9 +34,11 @@ export async function GET() {
       // the trading schedule the server itself gates orders on (lib/risk.ts checkTradingSession) --
       // the desktop terminal evaluates the same rule locally so a closed market reads "market closed",
       // never "no live feed", before a request is even sent
-      tradingSessions: { select: { dayOfWeek: true, openTime: true, closeTime: true }, orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] },
+      // only TRADE windows: a QUOTE window (symbols tab) is not a trading schedule
+      tradingSessions: { where: { kind: "TRADE" }, select: { dayOfWeek: true, openTime: true, closeTime: true }, orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] },
     },
-    orderBy: { symbol: { name: "asc" } },
+    // owner order (symbols tab): displayOrder first, symbols without one last, then by name
+    orderBy: [{ displayOrder: { sort: "asc", nulls: "last" } }, { symbol: { name: "asc" } }],
   });
   // A symbol the account still HOLDS (an open position or a resting order) stays listed even when the group no longer
   // allows it: the terminal / WebTrader price and value those rows from this list (digits, contract size, quote
