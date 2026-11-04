@@ -344,6 +344,11 @@ async fn server_time() -> Json<ServerTimeResponse> {
     Json(ServerTimeResponse { server_utc_ms: Utc::now().timestamp_millis() })
 }
 
+/// The index that makes a double fill impossible: `"Order"` UNIQUE (accountId, idempotencyKey), named
+/// by Prisma's convention. Matched by name rather than by code alone, so that some OTHER unique
+/// violation -- a ticket collision, say, which is a real incident -- keeps reporting as a 500.
+const ORDER_IDEMPOTENCY_CONSTRAINT: &str = "Order_accountId_idempotencyKey_key";
+
 async fn place_market_order(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlaceMarketOrderBody>,
@@ -402,6 +407,18 @@ async fn place_market_order(
             // the two conditions failed so an operator fixes the right thing.
             order_management::PlaceOrderError::IngressDemoOnly(account) => {
                 (StatusCode::FORBIDDEN, format!("account {account} is not a DEMO account; the engine order path is scoped to DEMO accounts"))
+            }
+            // FAILOVER: this key has already been answered -- by the web, or by an earlier attempt
+            // whose answer was lost. The unique index on ("Order".accountId, idempotencyKey) refused
+            // the whole fill, which is exactly the designed behaviour, so it is not an engine fault
+            // and must not be reported as one: 409 tells the caller to go and read the existing order
+            // rather than to suspect the engine. 500 here would trip the guard's breaker and bench a
+            // healthy engine for fifteen seconds over a duplicate it is meant to absorb.
+            order_management::PlaceOrderError::Db(sqlx::Error::Database(ref dbe))
+                if dbe.code().as_deref() == Some("23505") && dbe.constraint() == Some(ORDER_IDEMPOTENCY_CONSTRAINT) =>
+            {
+                tracing::info!(constraint = ORDER_IDEMPOTENCY_CONSTRAINT, "order refused: this idempotency key was already answered");
+                (StatusCode::CONFLICT, "this order was already answered".to_string())
             }
             err => {
                 tracing::error!(?err, "place_market_order failed");
