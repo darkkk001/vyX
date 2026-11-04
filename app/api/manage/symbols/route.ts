@@ -9,8 +9,11 @@ import { getLivePriceRows } from "@/lib/live-price";
 import { symbolSlippageCapPoints } from "@/lib/slippage-cap";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { hoursSummary, validateSessions } from "@/lib/symbol-sessions";
+import { CORE_KEYS, EXTRA_KEYS, crossCheck, fieldsView, gateReason, parseSymbolFields, symbolGates } from "@/lib/symbol-config";
+import { createBrokerSymbol, readSessions } from "@/lib/symbol-write";
 
-const TRADING_MODES: TradingMode[] = ["BOTH", "BUY_ONLY", "SELL_ONLY"];
+const TRADING_MODES: TradingMode[] = ["BOTH", "BUY_ONLY", "SELL_ONLY", "CLOSE_ONLY"];
 const BOOK_TYPES: BookType[] = ["A_BOOK", "B_BOOK"];
 
 // BrokerSymbol's own schema defaults (prisma/schema.prisma) -- mirrored
@@ -70,7 +73,7 @@ export async function GET() {
   const [allSymbols, visible] = await Promise.all([
     prisma.symbol.findMany({
       orderBy: { name: "asc" },
-      include: { brokerSymbols: { where: { brokerId: session.brokerId! }, include: { _count: { select: { tradingSessions: true } } } } },
+      include: { brokerSymbols: { where: { brokerId: session.brokerId! }, include: { tradingSessions: { orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] } } } },
     }),
     symbolVisibility(prisma, session.brokerId!),
   ]);
@@ -79,13 +82,19 @@ export async function GET() {
   const symbols = allSymbols.filter((s) => visible(s.name));
   // the effective slippage cap per symbol is the server's number (owner rule: no app computes it): the broker's base,
   // its gold reference and each added symbol's live price, one batched read (a symbol with no price shows no figure)
-  const [capBroker, capPrices] = await Promise.all([
-    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId! }, select: { slippageCapXauPoints: true, slippageCapRefPrice: true } }),
+  const symbolIds = symbols.filter((s) => s.brokerSymbols[0]).map((s) => s.id);
+  const [capBroker, capPrices, lpRules, lpConns] = await Promise.all([
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId! }, select: { slippageCapXauPoints: true, slippageCapRefPrice: true, timeZone: true } }),
     getLivePriceRows(symbols.filter((s) => s.brokerSymbols[0]).map((s) => s.name)).catch(() => new Map()),
+    // price source / LP mapping per symbol: the existing routing rules and connection symbols, read-only
+    prisma.lpRoutingRule.findMany({ where: { brokerId: session.brokerId!, symbolId: { in: symbolIds } }, include: { liquidityProvider: { select: { name: true } } }, orderBy: [{ priority: "asc" }] }),
+    prisma.lpConnectionSymbol.findMany({ where: { symbolId: { in: symbolIds }, lpConnection: { brokerId: session.brokerId! } }, include: { lpConnection: { select: { id: true, role: true, enabled: true, liquidityProvider: { select: { name: true } } } } } }),
   ]);
 
   const rows = symbols.map((symbol) => {
     const cfg = symbol.brokerSymbols[0];
+    const sessionRows = cfg ? cfg.tradingSessions.map((s) => ({ kind: s.kind, dayOfWeek: s.dayOfWeek, openTime: s.openTime, closeTime: s.closeTime })) : [];
+    const view = cfg ? fieldsView(cfg) : null;
     return {
       symbolId: symbol.id,
       brokerSymbolId: cfg ? cfg.id : null,
@@ -116,7 +125,19 @@ export async function GET() {
       ...effectiveCap(capBroker, symbol, cfg?.maxSlippagePoints ?? null, capPrices.get(symbol.name)),
       // Step 2 (owner 2026-09-30): how many trading-hours rows this broker has for the symbol (0 = the default week),
       // so SYM's hours summary needs no per-symbol sessions read.
-      sessionCount: cfg ? cfg._count.tradingSessions : 0,
+      sessionCount: sessionRows.length,
+      // Symbols tab (backoffice 1.0.101): the new settings, null = not set (the UI shows "Not set"); never derived in the app
+      ...Object.fromEntries(EXTRA_KEYS.map((k) => [k, view ? view[k] : null])),
+      // the configured windows (kind TRADE / QUOTE, UTC) and the server-built hours line, in the broker's zone (null = UTC)
+      sessions: sessionRows,
+      hoursSummary: hoursSummary(sessionRows, { category: symbol.category, timeZone: capBroker.timeZone }),
+      timeZone: capBroker.timeZone,
+      lpRouting: lpRules
+        .filter((r) => r.symbolId === symbol.id)
+        .map((r) => ({ ruleId: r.id, liquidityProviderId: r.liquidityProviderId, liquidityProviderName: r.liquidityProvider.name, groupId: r.groupId, priority: r.priority, weight: r.weight.toString(), enabled: r.enabled })),
+      lpConnections: lpConns
+        .filter((c) => c.symbolId === symbol.id)
+        .map((c) => ({ lpConnectionId: c.lpConnection.id, liquidityProviderName: c.lpConnection.liquidityProvider.name, role: c.lpConnection.role, enabled: c.lpConnection.enabled, venueId: c.venueId })),
       // hotfix 2026-10-08 (lib/symbol-completeness.ts): what this symbol still needs before it can trade, in plain words ([] = complete)
       missing: cfg ? missingForSymbol({ symbol, brokerSymbol: cfg }) : [],
     };
@@ -255,6 +276,11 @@ async function patchHandler(request: NextRequest) {
   const maxExposureRaw = body?.maxExposure;
   const maxExposure = maxExposureRaw == null || maxExposureRaw === "" ? null : parseDecimal(maxExposureRaw);
   const enabled = typeof body?.enabled === "boolean" ? body.enabled : null;
+  // Symbols tab (1.0.101) fields, all optional: not sent = unchanged, null / "" = cleared (no value = not set)
+  const extras = parseSymbolFields((body ?? {}) as Record<string, unknown>, EXTRA_KEYS);
+  if (extras.errors.length > 0) {
+    return NextResponse.json({ error: extras.errors.map((e) => `${e.field} ${e.reason}`).join("; "), fieldErrors: extras.errors }, { status: 400 });
+  }
   const tradingMode = TRADING_MODES.includes(body?.tradingMode as TradingMode) ? (body!.tradingMode as TradingMode) : null;
   // OPTIONAL as of Stage 4 piece 5. Routing is decided by the account's group
   // (Group.category), never per symbol, so backoffice 1.0.10 stopped sending
@@ -373,6 +399,7 @@ async function patchHandler(request: NextRequest) {
     ...(stopLevel === null ? {} : { stopLevel }),
     // optional: blank / null = back to the value derived from the broker's base; not sent = unchanged
     ...(maxSlippagePoints === undefined ? {} : { maxSlippagePoints }),
+    ...extras.data,
   };
 
   const updated = await prisma.brokerSymbol.upsert({
@@ -403,8 +430,9 @@ async function patchHandler(request: NextRequest) {
             defaultBookType: existing.defaultBookType,
             hedgedMarginPct: existing.hedgedMarginPct.toString(),
             stopLevel: existing.stopLevel,
+            ...extraSnapshot(existing),
           }
-        : DEFAULTS,
+        : { ...DEFAULTS, ...extraSnapshot(null) },
       newValue: {
         spreadMarkup: updated.spreadMarkup.toString(),
         minLot: updated.minLot.toString(),
@@ -420,6 +448,7 @@ async function patchHandler(request: NextRequest) {
         defaultBookType: updated.defaultBookType,
         hedgedMarginPct: updated.hedgedMarginPct.toString(),
         stopLevel: updated.stopLevel,
+        ...extraSnapshot(updated),
         ...(confirmBelowFloor ? { confirmedBelowHedgedFloor: true } : {}),
       },
     },
@@ -442,8 +471,84 @@ async function patchHandler(request: NextRequest) {
     defaultBookType: updated.defaultBookType,
     hedgedMarginPct: updated.hedgedMarginPct.toString(),
     stopLevel: updated.stopLevel,
+    ...extraSnapshot(updated),
   });
+}
+
+// the Symbols-tab settings of a row (all null when the row does not exist yet), as strings / numbers for audit and response
+function extraSnapshot(bs: Parameters<typeof fieldsView>[0] | null) {
+  const view = bs ? fieldsView(bs) : null;
+  return Object.fromEntries(EXTRA_KEYS.map((k) => [k, view ? view[k] : null]));
+}
+
+// POST /api/manage/symbols
+//   add:   { symbolName, ...settings, sessions? }   the Symbol must exist in the platform catalogue
+//   clone: { fromBrokerSymbolId, symbolName }       copies every BrokerSymbol setting plus its sessions
+// Both answer 201 with the new row: { brokerSymbolId, symbolId, symbolName, ...settings, sessions }. A new symbol is NOT
+// enabled unless the request says so (and the caller may); a clone of an enabled symbol whose quote currency is not USD
+// is created disabled (same rule as enabling it by hand).
+async function postHandler(request: NextRequest) {
+  const session = await requireManager();
+  if (!session) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  const brokerId = session.brokerId!;
+  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ error: "send a JSON object" }, { status: 400 });
+  const symbolName = typeof body.symbolName === "string" ? body.symbolName.trim() : "";
+  if (!symbolName) return NextResponse.json({ error: "symbolName is required" }, { status: 400 });
+
+  const symbol = await prisma.symbol.findUnique({ where: { name: symbolName } });
+  if (!symbol || (await symbolHiddenFromBroker(prisma, brokerId, symbol.name))) {
+    return NextResponse.json({ error: `${symbolName} is not in the platform catalogue, so it cannot be added` }, { status: 400 });
+  }
+  const already = await prisma.brokerSymbol.findUnique({ where: { brokerId_symbolId: { brokerId, symbolId: symbol.id } } });
+  if (already) return NextResponse.json({ error: `${symbol.name} is already added`, brokerSymbolId: already.id }, { status: 409 });
+
+  const gates = await symbolGates(session);
+  const ctx = { brokerId, adminId: session.adminId, symbolName: symbol.name };
+  const nonUsd = symbol.quoteCurrency !== "USD";
+
+  if (typeof body.fromBrokerSymbolId === "string" && body.fromBrokerSymbolId !== "") {
+    const source = await prisma.brokerSymbol.findUnique({ where: { id: body.fromBrokerSymbolId }, include: { symbol: { select: { name: true } } } });
+    if (!source || source.brokerId !== brokerId) return NextResponse.json({ error: "the symbol to clone from was not found" }, { status: 404 });
+    // the copied settings: everything except identity and timestamps
+    const { id, brokerId: _b, symbolId: _s, createdAt: _c, updatedAt: _u, symbol: _sym, ...settings } = source;
+    void id; void _b; void _s; void _c; void _u; void _sym;
+    const copied = { ...settings, enabled: settings.enabled && !nonUsd };
+    const touched = [
+      ...(["spreadMarkup", "commissionPerLot", "swapLong", "swapShort"] as const).filter((k) => !source[k].isZero()),
+      ...(copied.enabled ? ["enabled"] : []),
+    ];
+    const denied = gateReason(gates, touched);
+    if (denied) return NextResponse.json({ error: `forbidden: cloning ${source.symbol.name} copies settings that ${denied}` }, { status: 403 });
+    const created = await prisma.$transaction(async (tx) => {
+      const sessions = await readSessions(tx, source.id);
+      const row = await createBrokerSymbol(tx, { ...ctx, source: "clone" }, symbol.id, copied, sessions, source.id);
+      return { row, sessions };
+    });
+    return NextResponse.json({ brokerSymbolId: created.row.id, symbolId: symbol.id, symbolName: symbol.name, ...fieldsView(created.row), sessions: created.sessions }, { status: 201 });
+  }
+
+  const { data, errors } = parseSymbolFields(body, [...CORE_KEYS, ...EXTRA_KEYS]);
+  if (errors.length > 0) return NextResponse.json({ error: errors.map((e) => `${e.field} ${e.reason}`).join("; "), fieldErrors: errors }, { status: 400 });
+  let sessions: ReturnType<typeof validateSessions>["rows"] = [];
+  if ("sessions" in body) {
+    const v = validateSessions(body.sessions);
+    if (v.rowErrors.length > 0) return NextResponse.json({ error: "some sessions are invalid", rowErrors: v.rowErrors }, { status: 400 });
+    sessions = v.rows;
+  }
+  const cross = crossCheck(null, data);
+  if (cross.length > 0) return NextResponse.json({ error: cross[0].reason, fieldErrors: cross }, { status: 400 });
+  if (data.enabled === true && nonUsd) {
+    return NextResponse.json({ error: `${symbol.name} cannot be enabled yet: P/L in ${displayCurrency(symbol.quoteCurrency)} is not supported.` }, { status: 400 });
+  }
+  const denied = gateReason(gates, Object.keys(data));
+  if (denied) return NextResponse.json({ error: `forbidden: ${denied}` }, { status: 403 });
+  const row = await prisma.$transaction((tx) => createBrokerSymbol(tx, { ...ctx, source: "add" }, symbol.id, { enabled: false, ...data }, sessions));
+  return NextResponse.json({ brokerSymbolId: row.id, symbolId: symbol.id, symbolName: symbol.name, ...fieldsView(row), sessions }, { status: 201 });
 }
 
 // Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
 export const PATCH = withConfigEvent("symbols", patchHandler);
+export const POST = withConfigEvent("symbols", postHandler);

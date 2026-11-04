@@ -234,7 +234,10 @@ describe("ConfigChanged: every backoffice config write announces itself", () => 
 
   it("every broker-config write route is wrapped", () => {
     const routes: [string, string[], string][] = [
-      ["symbols/route.ts", ["PATCH"], "symbols"],
+      ["symbols/route.ts", ["PATCH", "POST"], "symbols"],
+      ["symbols/[id]/route.ts", ["PATCH"], "symbols"],
+      ["symbols/bulk/route.ts", ["PATCH"], "symbols"],
+      ["symbols/order/route.ts", ["PATCH"], "symbols"],
       ["symbols/[id]/sessions/route.ts", ["PUT"], "sessions"],
       ["risk/route.ts", ["PATCH"], "risk"],
       ["groups/route.ts", ["POST"], "groups"],
