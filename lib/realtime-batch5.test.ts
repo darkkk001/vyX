@@ -268,7 +268,9 @@ describe("gateway fan-out (services/api-gateway/src/ws.ts)", () => {
   const admin = ws.slice(ws.indexOf("export async function attachAdminEventStream"));
   it("trader stream subscribes config.> and forwards broker-wide ConfigChanged to every socket of that broker", () => {
     expect(trader).toContain('nc.subscribe("config.>")');
-    expect(trader).toContain("clientsByBroker.get(parsed.broker_id)");
+    // the fan-out goes through the coalescer, keyed by the target broker
+    expect(trader).toContain("traderConfigCoalesce(`${targetBroker}|${parsed.scope ?? \"\"}`");
+    expect(trader).toContain("clientsByBroker.get(targetBroker)");
     expect(trader).toContain("registerClient(ws, session.accountId, session.brokerId, wantsKeepalive(url), session.observer === true)");
   });
   it("Trader's Room: room.> reaches observer sockets only, and an observer never counts the account online", () => {

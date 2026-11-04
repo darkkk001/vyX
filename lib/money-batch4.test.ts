@@ -215,6 +215,11 @@ describe("permissions (owner decisions 16 / 20) and reject = approve authority",
     const refused = await call(PATCH, "/api/manage/symbols", "PATCH", { ...base, spreadMarkup: "1.5" });
     expect(refused.status).toBe(403);
     expect(refused.json.permission).toBe("PRICING");
+    // a non-pricing field needs GROUPS_SYMBOLS (web security batch 1 S3): refused without it, saved with it
+    const noKey = await call(PATCH, "/api/manage/symbols", "PATCH", { ...base, maxLot: "50" });
+    expect(noKey.status).toBe(403);
+    expect(noKey.json.permission).toBe("GROUPS_SYMBOLS");
+    await as(fx, await admin(fx, "MANAGER", ["GROUPS_SYMBOLS"]));
     const ok = await call(PATCH, "/api/manage/symbols", "PATCH", { ...base, maxLot: "50" });
     expect(ok.status).toBe(200);
   });
