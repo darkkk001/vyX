@@ -605,3 +605,15 @@
   .wt-root.m-shell .mobile-nav-item.active svg { color: var(--m-gold); }
   .wt-root.m-shell .mobile-nav-item span { max-width: 100%; overflow: hidden; white-space: nowrap; }
 }
+
+/* ---------- amount SL / TP (Price / Pips / Amount) ---------- */
+.nt-sltp-error {
+  padding: 4px 8px 5px; border-bottom: 1px solid var(--border); font-size: 11px; line-height: 1.35; color: var(--err);
+  white-space: normal; overflow-wrap: anywhere;
+}
+.wt-root .nt-row .stm-seg button[role="radio"] { min-width: 44px; }
+/* an amount leg in the Trade / Pending tables: money in the account currency, TP blue and SL red like the chart lines */
+.sltp-amount { display: inline-flex; align-items: baseline; gap: 3px; }
+.sltp-amount.sl { color: var(--sell); }
+.sltp-amount.tp { color: var(--buy); }
+.sltp-amount .nt-ccy { margin-left: 0; }

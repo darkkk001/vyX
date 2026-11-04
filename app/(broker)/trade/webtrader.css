@@ -934,6 +934,11 @@ html[data-mode="light"], html[data-mode="light"] body {
 .sltp-edit-card { width: 240px; background: var(--bg-1); border: 1px solid var(--border-strong); border-radius: 12px; padding: 18px; box-shadow: 0 24px 48px -16px rgba(0,0,0,.5); }
 .sltp-edit-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; font-size: 13px; font-weight: 600; }
 .sltp-edit-side { font-size: 11px; color: var(--text-3); font-weight: 500; }
+.sltp-edit-unit { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-bottom: 10px; }
+.sltp-edit-unit .stm-seg { display: grid; grid-template-columns: repeat(3, 1fr); }
+.sltp-edit-unit .stm-seg button { padding: 4px 0; font-size: 11px; }
+.sltp-edit-unit-hint { min-height: 14px; font-size: 11px; color: var(--text-3); line-height: 1.3; }
+.sltp-edit-error { margin: -2px 0 10px; font-size: 11.5px; line-height: 1.4; color: var(--err); overflow-wrap: anywhere; }
 
 .generic-modal-card { width: 260px; background: var(--bg-1); border: 1px solid var(--border-strong); border-radius: 12px; padding: 18px; box-shadow: 0 24px 48px -16px rgba(0,0,0,.5); }
 .generic-modal-title { font-size: 13.5px; font-weight: 600; margin-bottom: 8px; letter-spacing: -.005em; }
