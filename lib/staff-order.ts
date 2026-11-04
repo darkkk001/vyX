@@ -2,6 +2,8 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { AMOUNT_NO_RATE_TEXT, AMOUNT_NOT_AVAILABLE_TEXT, amountRefusalBody, amountRefusedForAuthority, parseAmountLegs, setsAnAmount, type AmountCode } from "@/lib/amount-sltp";
+import { conversionRate, loadFxLookup } from "@/lib/fx";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { evaluatePreTradeMargin, loadAccountMarginState } from "@/lib/margin";
 import {
@@ -30,7 +32,7 @@ import {
 // LIMIT / STOP order (POST manage/accounts/[id]/orders) and the Manual position (POST manage/accounts/[id]/manual-positions). The same broker /
 // symbol / account policies as the trader's own order, in the same order (lib/risk.ts), so the three staff paths can never drift apart.
 
-export type StaffOrderInput = { symbolId: string; side: "BUY" | "SELL"; volume: Prisma.Decimal; slPrice: Prisma.Decimal | null; tpPrice: Prisma.Decimal | null; note: string | null };
+export type StaffOrderInput = { symbolId: string; side: "BUY" | "SELL"; volume: Prisma.Decimal; slPrice: Prisma.Decimal | null; tpPrice: Prisma.Decimal | null; slAmount: Prisma.Decimal | null; tpAmount: Prisma.Decimal | null; note: string | null };
 
 const dec = (v: unknown): Prisma.Decimal | null | "bad" => {
   if (v == null || String(v).trim() === "") return null;
@@ -38,7 +40,7 @@ const dec = (v: unknown): Prisma.Decimal | null | "bad" => {
 };
 
 /** symbolId, side, volume (> 0), optional slPrice / tpPrice / note. */
-export function parseStaffOrder(body: Record<string, unknown> | null): StaffOrderInput | { error: string } {
+export function parseStaffOrder(body: Record<string, unknown> | null): StaffOrderInput | { error: string; amountCode?: AmountCode } {
   const symbolId = typeof body?.symbolId === "string" ? body.symbolId : "";
   const side = body?.side === "SELL" ? "SELL" : body?.side === "BUY" ? "BUY" : null;
   if (!symbolId || !side) return { error: "symbolId and side are required" };
@@ -49,8 +51,11 @@ export function parseStaffOrder(body: Record<string, unknown> | null): StaffOrde
   if (slPrice === "bad") return { error: "invalid slPrice" };
   const tpPrice = dec(body?.tpPrice);
   if (tpPrice === "bad") return { error: "invalid tpPrice" };
+  // amount SL / TP in the account currency (lib/amount-sltp.ts): a leg is a price OR an amount
+  const amountLegs = parseAmountLegs(body);
+  if (!amountLegs.ok) return { error: amountLegs.error, amountCode: amountLegs.code };
   const note = typeof body?.note === "string" && body.note.trim() ? body.note.trim().slice(0, 500) : null;
-  return { symbolId, side, volume, slPrice, tpPrice, note };
+  return { symbolId, side, volume, slPrice, tpPrice, slAmount: amountLegs.slAmount ?? null, tpAmount: amountLegs.tpAmount ?? null, note };
 }
 
 export async function loadStaffAccount(brokerId: string, accountId: string) {
@@ -71,6 +76,10 @@ export async function staffOrderContext(brokerId: string, accountId: string, inp
     return { response: NextResponse.json({ error: `volume must be between ${brokerSymbol.minLot} and ${brokerSymbol.maxLot}` }, { status: 400 }) };
   }
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
+  // amount SL / TP: until the engine watches amounts, a Rust-owned account takes none (lib/amount-sltp.ts)
+  if (setsAnAmount(input) && amountRefusedForAuthority(broker, account.accountMode)) {
+    return { response: NextResponse.json(amountRefusalBody("AMOUNT_SLTP_NOT_AVAILABLE", AMOUNT_NOT_AVAILABLE_TEXT), { status: 400 }) };
+  }
   const g = account.group;
   const riskError =
     checkTradingHalted(broker) ??
@@ -94,6 +103,19 @@ export async function staffOrderContext(brokerId: string, accountId: string, inp
     (opts.market ? await checkMaxDailyLoss(prisma, accountId, account.maxDailyLoss) : null);
   if (riskError) return { response: NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 }) };
   return { account, brokerSymbol, broker };
+}
+
+/** Amount SL / TP on a staff order: the quote->account rate must be known, and on a MARKET open an SL amount inside the spread cost is refused (it would
+ *  close at once). null = fine; otherwise the 400 body. */
+export async function staffAmountRefusal(account: { currency: string }, brokerSymbol: { symbol: { contractSize: Prisma.Decimal; quoteCurrency: string } }, input: { volume: Prisma.Decimal; slAmount: Prisma.Decimal | null; tpAmount: Prisma.Decimal | null }, live: { bid: Prisma.Decimal; ask: Prisma.Decimal } | null) {
+  if (!setsAnAmount(input)) return null;
+  const rate = conversionRate(brokerSymbol.symbol.quoteCurrency, account.currency, await loadFxLookup(prisma, [[brokerSymbol.symbol.quoteCurrency, account.currency]]));
+  if (!rate) return amountRefusalBody("NO_CONVERSION_RATE", AMOUNT_NO_RATE_TEXT);
+  if (live && input.slAmount) {
+    const spreadCost = live.ask.sub(live.bid).mul(brokerSymbol.symbol.contractSize).mul(input.volume).mul(rate);
+    if (input.slAmount.lte(spreadCost)) return amountRefusalBody("AMOUNT_INSIDE_SPREAD", `SL amount ${input.slAmount.toFixed(2)} ${account.currency} is inside the spread cost (${spreadCost.toFixed(2)} ${account.currency}): it would close at once`);
+  }
+  return null;
 }
 
 /** The pre-trade margin gate (lib/margin.ts) at `price`: null = it fits; otherwise the refusal body (the same one the client route returns). */

@@ -308,6 +308,8 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
         openPrice: fillPrice,
         slPrice: order.slPrice,
         tpPrice: order.tpPrice,
+        slAmount: order.slAmount,
+        tpAmount: order.tpAmount,
         bookType,
       },
     });
@@ -324,6 +326,8 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
           requestedPrice: order.requestedPrice?.toString() ?? null,
           slPrice: order.slPrice?.toString() ?? null,
           tpPrice: order.tpPrice?.toString() ?? null,
+          slAmount: order.slAmount?.toString() ?? null,
+          tpAmount: order.tpAmount?.toString() ?? null,
           status: "PENDING",
         },
         newValue: { triggerPrice, filledPrice: fillPrice.toString(), status: "FILLED", origin },
@@ -397,7 +401,7 @@ async function fillCoverageOrder(args: {
     if (claimed.count === 0) return null;
     const filledOrder = await tx.order.findUniqueOrThrow({ where: { id: order.id } });
     const position = await tx.position.create({
-      data: { brokerId: order.brokerId, accountId: order.accountId, symbolId: order.symbolId, originOrderId: order.id, side: order.side, volume: order.volume, openPrice: fillPrice, slPrice: order.slPrice, tpPrice: order.tpPrice, bookType: "A_BOOK" },
+      data: { brokerId: order.brokerId, accountId: order.accountId, symbolId: order.symbolId, originOrderId: order.id, side: order.side, volume: order.volume, openPrice: fillPrice, slPrice: order.slPrice, tpPrice: order.tpPrice, slAmount: order.slAmount, tpAmount: order.tpAmount, bookType: "A_BOOK" },
     });
     await writeOpenDealInTx(tx, { positionId: position.id, reason: "COVERAGE" });
     await tx.auditLog.create({

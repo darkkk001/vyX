@@ -77,6 +77,9 @@ function bodyFor(params: { accountNumber: string; symbol: string; side: "BUY" | 
     if (v.oldTpPrice !== undefined || v.newTpPrice !== undefined) slTp.push(`TP ${v.oldTpPrice ?? "not set"}→${v.newTpPrice ?? "not set"}`);
     if (slTp.length) parts.push(slTp.join(", "));
   }
+  // amount SL / TP in the account currency (lib/amount-sltp.ts)
+  if (v.oldSlAmount !== undefined || v.newSlAmount !== undefined) parts.push(`SL amount ${v.oldSlAmount ?? "not set"}→${v.newSlAmount ?? "not set"}`);
+  if (v.oldTpAmount !== undefined || v.newTpAmount !== undefined) parts.push(`TP amount ${v.oldTpAmount ?? "not set"}→${v.newTpAmount ?? "not set"}`);
   return parts.join(" ");
 }
 
@@ -397,6 +400,8 @@ export async function getDealerActivityFeedRows(
           filledPrice: after.filledPrice,
           slPrice: after.slPrice,
           tpPrice: after.tpPrice,
+          slAmount: after.slAmount,
+          tpAmount: after.tpAmount,
           oldSlPrice: before.slPrice,
           newSlPrice: after.slPrice,
           oldTpPrice: before.tpPrice,
@@ -486,6 +491,8 @@ export type RestingOrderRow = {
   requestedPrice: string | null;
   slPrice: string | null;
   tpPrice: string | null;
+  slAmount: string | null;
+  tpAmount: string | null;
   createdAt: string;
 };
 
@@ -535,6 +542,8 @@ export async function getDealingDeskRestingOrders(brokerId: string): Promise<Res
       requestedPrice: o.requestedPrice ? o.requestedPrice.toString() : null,
       slPrice: o.slPrice ? o.slPrice.toString() : null,
       tpPrice: o.tpPrice ? o.tpPrice.toString() : null,
+      slAmount: o.slAmount ? o.slAmount.toString() : null,
+      tpAmount: o.tpAmount ? o.tpAmount.toString() : null,
       createdAt: o.createdAt.toISOString(),
     }));
 }

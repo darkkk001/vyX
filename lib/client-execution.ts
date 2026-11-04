@@ -63,7 +63,7 @@ export async function loadDealExecutions(accountId: string, deals: Deal[], digit
 // 2026-10-23) is in the lists.
 
 const POSITION_FIELDS = [
-  "id", "ticket", "symbolId", "originOrderId", "side", "volume", "openPrice", "slPrice", "tpPrice", "status", "closePrice",
+  "id", "ticket", "symbolId", "originOrderId", "side", "volume", "openPrice", "slPrice", "tpPrice", "slAmount", "tpAmount", "status", "closePrice",
   "realizedPnl", "swap", "commission", "closedVolume", "closedSwap", "initialVolume", "openedAt", "closedAt", "closePendingOrderId",
   // staff order brief point 4 / 37b: "Added by broker" (a Manual position); openedByStaff is computed below from the origin order
   "manual",
@@ -72,7 +72,7 @@ const POSITION_FIELDS = [
 ] as const;
 
 const ORDER_FIELDS = [
-  "id", "ticket", "symbolId", "side", "type", "volume", "requestedPrice", "slPrice", "tpPrice", "status", "filledPrice", "filledAt",
+  "id", "ticket", "symbolId", "side", "type", "volume", "requestedPrice", "slPrice", "tpPrice", "slAmount", "tpAmount", "status", "filledPrice", "filledAt",
   "rejectionReason", "requotedPrice", "idempotencyKey", "source", "closesPositionId", "closeVolume", "closeByPositionId",
   "requestedAt", "executedAt", "platform", "createdAt", "updatedAt",
   // computed, not a column: when a waiting offer (REQUOTED, or a MARKET order with the dealer) lapses (lib/order-expiry.ts)

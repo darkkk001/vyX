@@ -24,7 +24,3 @@ ALTER TABLE "Position" ADD COLUMN "manual" BOOLEAN NOT NULL DEFAULT false;
 -- the column keeps both schemas the same.
 -- INTEGER here (a Prisma Int serialises as a JSON number; BigInt would throw in NextResponse.json); the VPS store is BIGINT.
 ALTER TABLE "Candle" ADD COLUMN "tickVolume" INTEGER NOT NULL DEFAULT 0;
-
--- Amount SL / TP in the account currency (owner 2026-11-04): a leg is a price OR an amount (lib/amount-sltp.ts).
-ALTER TABLE "Order" ADD COLUMN "slAmount" DECIMAL(18,2), ADD COLUMN "tpAmount" DECIMAL(18,2);
-ALTER TABLE "Position" ADD COLUMN "slAmount" DECIMAL(18,2), ADD COLUMN "tpAmount" DECIMAL(18,2);

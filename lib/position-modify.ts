@@ -3,6 +3,8 @@ import { Prisma } from "@prisma/client";
 import { accountClosePrice, NO_MARKUP, type AskRule } from "@/lib/ask-markup";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { validateSlTp } from "@/lib/trading";
+import { AMOUNT_NO_RATE_TEXT, AMOUNT_NOT_AVAILABLE_TEXT, amountRefusalBody, amountRefusedForAuthority, amountsReachedError } from "@/lib/amount-sltp";
+import { conversionRate, loadFxLookup } from "@/lib/fx";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
@@ -14,10 +16,10 @@ import { prisma } from "@/lib/prisma";
 
 export type ModifyRefusal = { status: number; body: Record<string, unknown> };
 
-type PositionForModify = { side: "BUY" | "SELL"; status: string; slPrice: Prisma.Decimal | null; tpPrice: Prisma.Decimal | null; symbolId: string };
+type PositionForModify = { side: "BUY" | "SELL"; status: string; slPrice: Prisma.Decimal | null; tpPrice: Prisma.Decimal | null; symbolId: string; openPrice: Prisma.Decimal; volume: Prisma.Decimal };
 type BrokerSymbolForModify = {
   stopLevel: number | null;
-  symbol: { digits: number; category: Parameters<typeof checkTradingSession>[2] };
+  symbol: { digits: number; contractSize: Prisma.Decimal; category: Parameters<typeof checkTradingSession>[2] };
   tradingSessions: Parameters<typeof checkTradingSession>[0];
 };
 
@@ -34,6 +36,12 @@ export function refuseModify(input: {
   askRuleFor: ((symbolId: string) => AskRule | null) | null;
   slPrice: string | null | undefined;
   tpPrice: string | null | undefined;
+  // amount SL / TP (lib/amount-sltp.ts) being SET by this change (undefined / null = nothing to check), the quote->account rate (null =
+  // unknown) and the account currency; an amount the position has already reached at the server's close-side price is refused
+  slAmount?: Prisma.Decimal | null;
+  tpAmount?: Prisma.Decimal | null;
+  fxRate?: Prisma.Decimal | null;
+  accountCurrency?: string;
   now?: Date;
 }): ModifyRefusal | null {
   const { position, brokerSymbol, live } = input;
@@ -64,17 +72,51 @@ export function refuseModify(input: {
     digits: brokerSymbol?.symbol.digits,
     stopLevel: brokerSymbol?.stopLevel ?? undefined,
   });
-  return validationError ? { status: 400, body: { error: validationError } } : null;
+  if (validationError) return { status: 400, body: { error: validationError } };
+  if (input.slAmount != null || input.tpAmount != null) {
+    if (!input.fxRate || !brokerSymbol) return { status: 400, body: amountRefusalBody("NO_CONVERSION_RATE", AMOUNT_NO_RATE_TEXT) };
+    const reached = amountsReachedError(
+      { side: position.side, openPrice: position.openPrice, volume: position.volume, contractSize: brokerSymbol.symbol.contractSize, slAmount: input.slAmount ?? null, tpAmount: input.tpAmount ?? null },
+      new Prisma.Decimal(serverClosePrice),
+      input.fxRate,
+      input.accountCurrency ?? "",
+    );
+    if (reached) return { status: 400, body: amountRefusalBody("AMOUNT_ALREADY_REACHED", reached) };
+  }
+  return null;
+}
+
+/** What an amount write needs about the account: whether the RUST-authority refusal applies (lib/amount-sltp.ts), the account currency and the
+ *  quote->account rate (null = none right now). Read only when a request actually sets an amount, so the price paths pay nothing. */
+export async function loadAmountContext(accountId: string, quoteCurrency: string | null): Promise<{ refused: ModifyRefusal | null; currency: string; fxRate: Prisma.Decimal | null }> {
+  const account = await prisma.account.findUniqueOrThrow({
+    where: { id: accountId },
+    select: { currency: true, accountMode: true, broker: { select: { riskAuthority: true, riskAuthorityDemoOnly: true } } },
+  });
+  if (amountRefusedForAuthority(account.broker, account.accountMode)) {
+    return { refused: { status: 400, body: amountRefusalBody("AMOUNT_SLTP_NOT_AVAILABLE", AMOUNT_NOT_AVAILABLE_TEXT) }, currency: account.currency, fxRate: null };
+  }
+  let fxRate: Prisma.Decimal | null = null;
+  if (quoteCurrency) {
+    try {
+      fxRate = conversionRate(quoteCurrency, account.currency, await loadFxLookup(prisma, [[quoteCurrency, account.currency]]));
+    } catch {
+      fxRate = null;
+    }
+  }
+  return { refused: null, currency: account.currency, fxRate };
 }
 
 /** The change-event plus the dealer-activity feed row for one modified position (after the response, as the single route did). */
 export async function announcePositionModified(input: {
   session: { brokerId: string; accountId: string };
-  before: { id: string; accountId: string; side: "BUY" | "SELL"; volume: Prisma.Decimal; slPrice: Prisma.Decimal | null; tpPrice: Prisma.Decimal | null };
+  before: { id: string; accountId: string; side: "BUY" | "SELL"; volume: Prisma.Decimal; slPrice: Prisma.Decimal | null; tpPrice: Prisma.Decimal | null; slAmount?: Prisma.Decimal | null; tpAmount?: Prisma.Decimal | null };
   row: Record<string, unknown>;
   symbolName: string;
   slPrice: string | null | undefined;
   tpPrice: string | null | undefined;
+  slAmount?: Prisma.Decimal | null;
+  tpAmount?: Prisma.Decimal | null;
 }): Promise<void> {
   const { session, before } = input;
   // Latency fix 2 (docs/audit/2026-09-24/latency-contract.md): the updated row in the response AND the event, so the
@@ -107,6 +149,9 @@ export async function announcePositionModified(input: {
         newSlPrice: input.slPrice === undefined ? (before.slPrice?.toString() ?? null) : input.slPrice,
         oldTpPrice: before.tpPrice?.toString() ?? null,
         newTpPrice: input.tpPrice === undefined ? (before.tpPrice?.toString() ?? null) : input.tpPrice,
+        // amount SL / TP (account currency); only written when the change touches an amount
+        ...(input.slAmount !== undefined || before.slAmount != null ? { oldSlAmount: before.slAmount?.toString() ?? null, newSlAmount: input.slAmount === undefined ? (before.slAmount?.toString() ?? null) : input.slAmount?.toString() ?? null } : {}),
+        ...(input.tpAmount !== undefined || before.tpAmount != null ? { oldTpAmount: before.tpAmount?.toString() ?? null, newTpAmount: input.tpAmount === undefined ? (before.tpAmount?.toString() ?? null) : input.tpAmount?.toString() ?? null } : {}),
         onOpenPosition: true,
       },
       positionId: before.id,
@@ -116,7 +161,14 @@ export async function announcePositionModified(input: {
 
 // ---- bulk spec -> per-position prices ----
 
-export type LevelSpec = { price: string } | { points: number | string } | { breakEven: true } | { clear: true };
+export type LevelSpec = { price: string } | { points: number | string } | { breakEven: true } | { clear: true } | { amount: Prisma.Decimal };
+
+/** The amount a bulk spec writes for one leg: a Decimal for { amount }, null for anything else that sets or clears the leg (a price replaces an amount,
+ *  clear removes the leg), undefined for no spec (leave it). */
+export function amountOfSpec(spec: LevelSpec | undefined): Prisma.Decimal | null | undefined {
+  if (spec === undefined) return undefined;
+  return "amount" in spec ? spec.amount : null;
+}
 
 /**
  * One position's new level from a bulk spec. Points are MT5 points (10^-digits) from the position's own entry, the
@@ -130,6 +182,7 @@ export function levelFromSpec(
 ): string | null | undefined | { error: string } {
   if (spec === undefined) return undefined;
   if ("clear" in spec) return null;
+  if ("amount" in spec) return null; // an amount leg has no price
   if ("price" in spec) {
     const p = String(spec.price).trim();
     if (!p || Number.isNaN(Number(p))) return { error: `${kind} price is not a number` };

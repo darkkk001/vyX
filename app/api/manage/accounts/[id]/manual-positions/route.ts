@@ -36,8 +36,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try { openPrice = new Prisma.Decimal(String(body?.openPrice ?? "").replace(/,/g, "")); } catch { return NextResponse.json({ error: "invalid openPrice" }, { status: 400 }); }
   if (!openPrice.gt(0)) return NextResponse.json({ error: "openPrice must be positive" }, { status: 400 });
   const input = parseStaffOrder(body);
-  if ("error" in input) return NextResponse.json({ error: input.error }, { status: 400 });
+  if ("error" in input) return NextResponse.json({ error: input.error, ...(input.amountCode ? { amountCode: input.amountCode } : {}) }, { status: 400 });
   const { side, volume, slPrice, tpPrice } = input;
+  // a Manual position books a trade that already happened: no amount SL / TP on it
+  if (input.slAmount || input.tpAmount) return NextResponse.json({ error: "Amount take profit / stop loss is not available on a manual position", amountCode: "AMOUNT_SLTP_NOT_AVAILABLE" }, { status: 400 });
   const ctx = await staffOrderContext(brokerId, accountId, input, { market: false });
   if (ctx.response) return ctx.response;
   const { account, brokerSymbol, broker } = ctx;

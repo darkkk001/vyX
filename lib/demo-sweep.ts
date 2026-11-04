@@ -41,11 +41,11 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
   const [posRows, orderRows, hedgedPct] = await Promise.all([
     prisma.position.findMany({
       where: { accountId, status: "OPEN" },
-      select: { id: true, side: true, volume: true, openPrice: true, slPrice: true, tpPrice: true, openedAt: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
+      select: { id: true, side: true, volume: true, openPrice: true, slPrice: true, tpPrice: true, slAmount: true, tpAmount: true, openedAt: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
     }),
     prisma.order.findMany({
       where: { accountId, status: "PENDING", type: { in: ["LIMIT", "STOP"] }, requestedPrice: { not: null }, closesPositionId: null },
-      select: { id: true, side: true, type: true, volume: true, requestedPrice: true, slPrice: true, tpPrice: true, createdAt: true, symbolId: true, symbol: { select: { name: true } } },
+      select: { id: true, side: true, type: true, volume: true, requestedPrice: true, slPrice: true, tpPrice: true, slAmount: true, tpAmount: true, createdAt: true, symbolId: true, symbol: { select: { name: true } } },
     }),
     loadHedgedMarginPct(prisma, account.brokerId),
   ]);
@@ -55,7 +55,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
     if (!isDemoSymbolName(p.symbol.name)) continue;
     symbolIdByName.set(p.symbol.name, p.symbolId);
     positions.push({
-      id: p.id, side: p.side, volume: p.volume, openPrice: p.openPrice, slPrice: p.slPrice, tpPrice: p.tpPrice, symbol: p.symbol.name,
+      id: p.id, side: p.side, volume: p.volume, openPrice: p.openPrice, slPrice: p.slPrice, tpPrice: p.tpPrice, slAmount: p.slAmount, tpAmount: p.tpAmount, symbol: p.symbol.name,
       contractSize: p.symbol.contractSize, quoteCurrency: p.symbol.quoteCurrency, openedMs: p.openedAt.getTime(), hedgedMarginPct: hedgedPct.get(p.symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT,
     });
   }
@@ -63,7 +63,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
   for (const o of orderRows) {
     if (!isDemoSymbolName(o.symbol.name) || (o.type !== "LIMIT" && o.type !== "STOP")) continue;
     symbolIdByName.set(o.symbol.name, o.symbolId);
-    orders.push({ id: o.id, side: o.side, type: o.type, volume: o.volume, entry: o.requestedPrice!, slPrice: o.slPrice, tpPrice: o.tpPrice, symbol: o.symbol.name, createdMs: o.createdAt.getTime() });
+    orders.push({ id: o.id, side: o.side, type: o.type, volume: o.volume, entry: o.requestedPrice!, slPrice: o.slPrice, tpPrice: o.tpPrice, slAmount: o.slAmount, tpAmount: o.tpAmount, symbol: o.symbol.name, createdMs: o.createdAt.getTime() });
   }
 
   const state = await readDemoState(accountId);
@@ -92,7 +92,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
         const created = await tx.position.create({
           data: {
             brokerId: accountRow.brokerId, accountId, symbolId, originOrderId: o.id, side: o.side, volume: o.volume, openPrice: fillPrice,
-            slPrice: o.slPrice, tpPrice: o.tpPrice, bookType: "B_BOOK", openedAt: new Date(atMs),
+            slPrice: o.slPrice, tpPrice: o.tpPrice, slAmount: o.slAmount ?? null, tpAmount: o.tpAmount ?? null, bookType: "B_BOOK", openedAt: new Date(atMs),
           },
           include: { symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
         });
@@ -104,7 +104,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
           },
         });
         const sim: SimPos = {
-          id: created.id, side: created.side, volume: created.volume, openPrice: created.openPrice, slPrice: created.slPrice, tpPrice: created.tpPrice, symbol: created.symbol.name,
+          id: created.id, side: created.side, volume: created.volume, openPrice: created.openPrice, slPrice: created.slPrice, tpPrice: created.tpPrice, slAmount: created.slAmount, tpAmount: created.tpAmount, symbol: created.symbol.name,
           contractSize: created.symbol.contractSize, quoteCurrency: created.symbol.quoteCurrency, openedMs: atMs, hedgedMarginPct: hedgedPct.get(symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT,
         };
         return sim;

@@ -10,6 +10,8 @@ import { validateSlTp } from "@/lib/trading";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 import { runAfterResponse } from "@/lib/after-response";
+import { AMOUNT_NO_RATE_TEXT, amountRefusalBody, amountsReachedError, parseAmountLegs, setsAnAmount } from "@/lib/amount-sltp";
+import { loadAmountContext } from "@/lib/position-modify";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -40,7 +42,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const position = await prisma.position.findUnique({
     where: { id },
-    include: { symbol: { select: { name: true } }, account: { select: { accountNumber: true } } },
+    include: { symbol: { select: { name: true, contractSize: true, quoteCurrency: true } }, account: { select: { accountNumber: true } } },
   });
   if (!position || position.brokerId !== brokerId) {
     return NextResponse.json({ error: "position not found" }, { status: 404 });
@@ -72,6 +74,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
   }
 
+  // amount SL / TP in the account currency (lib/amount-sltp.ts): a leg is a price OR an amount; setting one unit clears the other
+  const amountLegs = parseAmountLegs(body);
+  if (!amountLegs.ok) return NextResponse.json(amountRefusalBody(amountLegs.code, amountLegs.error), { status: 400 });
+  let slAmount: Prisma.Decimal | null = position.slAmount;
+  let tpAmount: Prisma.Decimal | null = position.tpAmount;
+  if (body?.slPrice != null && body.slPrice !== "") slAmount = null;
+  if (body?.tpPrice != null && body.tpPrice !== "") tpAmount = null;
+  if (amountLegs.slAmount !== undefined) { slAmount = amountLegs.slAmount; if (slAmount) slPrice = null; }
+  if (amountLegs.tpAmount !== undefined) { tpAmount = amountLegs.tpAmount; if (tpAmount) tpPrice = null; }
+  const amountCtx = setsAnAmount(amountLegs) ? await loadAmountContext(position.accountId, position.symbol.quoteCurrency) : null;
+  if (amountCtx?.refused) return NextResponse.json(amountCtx.refused.body, { status: amountCtx.refused.status });
+
   // Validated against the current market price -- what closing (or
   // triggering) the position right now would actually reference -- same
   // bid/BUY, ask/SELL convention as the close route's own closePrice.
@@ -102,11 +116,22 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (validationError) {
     return NextResponse.json({ error: validationError }, { status: 400 });
   }
+  if (amountCtx) {
+    if (!amountCtx.fxRate) return NextResponse.json(amountRefusalBody("NO_CONVERSION_RATE", AMOUNT_NO_RATE_TEXT), { status: 400 });
+    // only the amounts this request SETS are judged (an older, untouched one just closes the position when it is reached)
+    const reached = amountsReachedError(
+      { side: position.side, openPrice: position.openPrice, volume: position.volume, contractSize: position.symbol.contractSize, slAmount: amountLegs.slAmount ?? null, tpAmount: amountLegs.tpAmount ?? null },
+      referencePrice,
+      amountCtx.fxRate,
+      amountCtx.currency,
+    );
+    if (reached) return NextResponse.json(amountRefusalBody("AMOUNT_ALREADY_REACHED", reached), { status: 400 });
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
     const result = await tx.position.update({
       where: { id: position.id },
-      data: { slPrice, tpPrice },
+      data: { slPrice, tpPrice, slAmount, tpAmount },
     });
 
     await tx.auditLog.create({
@@ -119,12 +144,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         oldValue: {
           slPrice: position.slPrice?.toString() ?? null,
           tpPrice: position.tpPrice?.toString() ?? null,
+          slAmount: position.slAmount?.toString() ?? null,
+          tpAmount: position.tpAmount?.toString() ?? null,
         },
         newValue: {
           accountNumber: position.account.accountNumber,
           symbol: position.symbol.name,
           slPrice: slPrice?.toString() ?? null,
           tpPrice: tpPrice?.toString() ?? null,
+          slAmount: slAmount?.toString() ?? null,
+          tpAmount: tpAmount?.toString() ?? null,
           reason,
         },
       },
@@ -157,6 +186,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         newSlPrice: slPrice?.toString() ?? null,
         oldTpPrice: position.tpPrice?.toString() ?? null,
         newTpPrice: tpPrice?.toString() ?? null,
+        oldSlAmount: position.slAmount?.toString() ?? null,
+        newSlAmount: slAmount?.toString() ?? null,
+        oldTpAmount: position.tpAmount?.toString() ?? null,
+        newTpAmount: tpAmount?.toString() ?? null,
         onOpenPosition: true,
         origin: "admin",
         reason,
@@ -170,5 +203,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     positionId: updated.id,
     slPrice: updated.slPrice?.toString() ?? null,
     tpPrice: updated.tpPrice?.toString() ?? null,
+    slAmount: updated.slAmount?.toString() ?? null,
+    tpAmount: updated.tpAmount?.toString() ?? null,
   });
 }

@@ -67,6 +67,10 @@ export function clientReasonFor(internal: Internal): ClientReason {
 // What a refusal answer may keep besides clientReason: the client's own numbers and when to try again. Never the
 // internal code, sub-reason, symbol-level feed timing or anything else the route attached.
 // `rejected` / `pending` are states a pending-order fill answers with (the order is now rejected / still pending).
+// An amount SL / TP refusal (lib/amount-sltp.ts) is the trader's own request judged, so its plain sentence and code are client-safe: the
+// clientReason stays INVALID_SLTP (one of the eleven) and `message` / `amountCode` carry the exact reason.
+const AMOUNT_CODES = new Set(["AMOUNT_SLTP_NOT_AVAILABLE", "AMOUNT_INVALID", "AMOUNT_BOTH_UNITS", "AMOUNT_ALREADY_REACHED", "AMOUNT_INSIDE_SPREAD", "NO_CONVERSION_RATE"]);
+
 const SAFE_EXTRAS = ["nextOpenAt", "retryAfterSeconds", "orderId", "required", "available", "balance", "serverPrice", "rejected", "pending"] as const;
 
 /** A refusal answer cut to what a client may see. CLOSE_PENDING is a state the client acts on (the close awaiting the
@@ -74,6 +78,9 @@ const SAFE_EXTRAS = ["nextOpenAt", "retryAfterSeconds", "orderId", "required", "
 export function clientRefusal(internal: Record<string, unknown>): Record<string, unknown> {
   // owner 2026-10-23: 11 codes; CLOSE_PENDING keeps its state code + the order id, TOO_MANY_REQUESTS keeps retryAfterSeconds
   if (internal.error === "CLOSE_PENDING") return { error: "CLOSE_PENDING", clientReason: "CLOSE_PENDING" satisfies ClientReason, message: CLIENT_REASON_TEXT.CLOSE_PENDING, orderId: internal.orderId };
+  if (typeof internal.amountCode === "string" && AMOUNT_CODES.has(internal.amountCode) && typeof internal.amountMessage === "string") {
+    return { error: internal.amountMessage, clientReason: "INVALID_SLTP" satisfies ClientReason, message: internal.amountMessage, amountCode: internal.amountCode };
+  }
   const clientReason = clientReasonFor(internal);
   // the rate limit's own sentence is already plain and says when to try again
   const message = CLIENT_REASON_TEXT[clientReason];

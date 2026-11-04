@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { DEMO_GRID_MS, demoDef, demoMaxDeviation, demoPointSize, demoQuoteAt, demoSlopePerSec, type DemoQuote } from "@/lib/demo-prices";
 import { closePriceFor, computeRealizedPnl } from "@/lib/trading";
+import { amountTrigger } from "@/lib/amount-sltp";
 import { checkPreTradeMargin, hedgedUsedMargin, liveUsedMarginFor, type MarginLeg } from "@/lib/margin";
 
 // The QoreTrader demo has no background worker. Everything a live system's risk monitor would have done while the trader was
@@ -31,6 +32,9 @@ export type SimPos = {
   openPrice: Prisma.Decimal;
   slPrice: Prisma.Decimal | null;
   tpPrice: Prisma.Decimal | null;
+  // amount SL / TP in the account currency (lib/amount-sltp.ts); absent = none
+  slAmount?: Prisma.Decimal | null;
+  tpAmount?: Prisma.Decimal | null;
   symbol: string; // the q-name
   contractSize: Prisma.Decimal;
   quoteCurrency: string;
@@ -46,6 +50,8 @@ export type SimOrder = {
   entry: Prisma.Decimal;
   slPrice: Prisma.Decimal | null;
   tpPrice: Prisma.Decimal | null;
+  slAmount?: Prisma.Decimal | null;
+  tpAmount?: Prisma.Decimal | null;
   symbol: string;
   createdMs: number;
 };
@@ -269,9 +275,20 @@ export async function simulateSweep(input: {
         if (slPts != null && cpPts >= slPts) reason = "stop_loss";
         else if (tpPts != null && cpPts <= tpPts) reason = "take_profit";
       }
+      // amount SL / TP (lib/amount-sltp.ts): the floating P/L in the account currency, same rate and price as the live monitor
+      let byAmount = false;
+      if (!reason && (p.slAmount != null || p.tpAmount != null)) {
+        const rate = rateOf(p.quoteCurrency, q);
+        if (rate) {
+          const cp = closePriceFor(p.side, D(qt.bid), D(qt.ask));
+          reason = amountTrigger({ side: p.side, openPrice: p.openPrice, volume: p.volume, contractSize: p.contractSize, slAmount: p.slAmount ?? null, tpAmount: p.tpAmount ?? null }, cp, rate);
+          byAmount = reason != null;
+        }
+      }
       if (!reason) continue;
       const price = D(p.side === "BUY" ? qt.bid : qt.ask);
-      const r = await ports.closePosition(p, price, tMs, reason === "stop_loss" ? "Stop loss hit (demo)" : "Take profit hit (demo)", reason === "stop_loss" ? "SL" : "TP");
+      const leg = reason === "stop_loss" ? "Stop loss" : "Take profit";
+      const r = await ports.closePosition(p, price, tMs, `${leg}${byAmount ? " amount" : ""} hit (demo)`, reason === "stop_loss" ? "SL" : "TP");
       positions = positions.filter((x) => x.id !== p.id);
       acct.balance = r.balance;
       acct.credit = r.credit;
@@ -320,6 +337,20 @@ export async function simulateSweep(input: {
         if (tpPts != null) gaps.push(cpPts - tpPts);
       }
       for (const gap of gaps) step = Math.min(step, Math.max(1, Math.ceil(gap / info.lipPts)));
+      // amount legs: the money still to go, over the most the P/L can move in one tick (largest price move x largest rate; a non-USD quote also
+      // drifts with its rate, hence the extra margin), so no touch is skipped
+      if (p.slAmount != null || p.tpAmount != null) {
+        const rate = rateOf(p.quoteCurrency, q);
+        if (!rate) continue;
+        const units = p.volume.toNumber() * p.contractSize.toNumber();
+        const cpPrice = cpPts / info.pow;
+        const pnl = (p.side === "BUY" ? cpPrice - p.openPrice.toNumber() : p.openPrice.toNumber() - cpPrice) * units * rate.toNumber();
+        const perTick = units * info.rateBound * info.maxPriceMovePerTick * (p.quoteCurrency === "USD" ? 1.05 : 1.5);
+        const moneyGaps: number[] = [];
+        if (p.slAmount != null) moneyGaps.push(pnl + p.slAmount.toNumber());
+        if (p.tpAmount != null) moneyGaps.push(p.tpAmount.toNumber() - pnl);
+        for (const g of moneyGaps) step = Math.min(step, Math.max(1, Math.floor(Math.max(0, g) / perTick)));
+      }
     }
     for (const o of orders) {
       const st = startTickOf(o.createdMs);

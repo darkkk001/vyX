@@ -28,6 +28,9 @@ export async function openPositionFromOrder(
     volume: Prisma.Decimal;
     slPrice: Prisma.Decimal | null;
     tpPrice: Prisma.Decimal | null;
+    // amount SL / TP (lib/amount-sltp.ts): copied onto the position with the prices
+    slAmount: Prisma.Decimal | null;
+    tpAmount: Prisma.Decimal | null;
   },
   fillPrice: Prisma.Decimal,
   bookType: BookType,
@@ -53,6 +56,8 @@ export async function openPositionFromOrder(
       openPrice: fillPrice,
       slPrice: order.slPrice,
       tpPrice: order.tpPrice,
+      slAmount: order.slAmount,
+      tpAmount: order.tpAmount,
       bookType,
     },
   });
