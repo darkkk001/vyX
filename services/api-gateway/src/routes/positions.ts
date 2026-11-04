@@ -210,7 +210,17 @@ router.post(
     const upstream = await fetch(`${TRADING_CORE_URL}/v1/positions/${encodeURIComponent(positionId)}/close`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-internal-secret": INTERNAL_SERVICE_SECRET },
-      body: JSON.stringify({ account_id: session.accountId, bid: price.bid.toString(), ask: price.ask.toString() }),
+      // idempotency_key is FORWARDED, not just accepted. It was missing in the first cut of this route,
+      // written when the engine's close had no key parameter -- so the key was validated here, written to
+      // the audit row, and then dropped. The smoke caught it: a replayed key closed a SECOND position
+      // instead of answering 409, which is precisely the failure the key exists to prevent. The engine
+      // stamps it on the close's TRADE_PNL row, where UNIQUE (accountId, idempotencyKey) refuses a replay.
+      body: JSON.stringify({
+        account_id: session.accountId,
+        bid: price.bid.toString(),
+        ask: price.ask.toString(),
+        idempotency_key: body.idempotencyKey ?? null,
+      }),
     });
     const upstreamData = await parseUpstreamJson(upstream);
     if (!upstream.ok) {
