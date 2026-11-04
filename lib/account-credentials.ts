@@ -37,6 +37,12 @@ export async function requireAccountForCredentials(id: string): Promise<
 
 // At least 8 characters, a letter and a digit, at most 128. The platform had no shared rule (each form checked only
 // "at least 8"); this is the owner's stated fallback for staff-chosen client passwords.
+// S1, off by default (owner 2026-11-04). The forced change confines the account to change-password, and terminal 1.0.102 has
+// no such screen, so a reset would leave the trader refused with no way out. Set FORCE_PASSWORD_CHANGE=1 once the clients ship it.
+export function forcedPasswordChange(): { mustChangePassword?: true } {
+  return process.env.FORCE_PASSWORD_CHANGE === "1" ? { mustChangePassword: true } : {};
+}
+
 export const PASSWORD_RULE_TEXT = "Use at least 8 characters with letters and digits.";
 export function passwordIsStrong(pw: string): boolean {
   return pw.length >= 8 && pw.length <= 128 && /[A-Za-z]/.test(pw) && /[0-9]/.test(pw);
