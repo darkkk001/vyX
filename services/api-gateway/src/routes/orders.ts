@@ -21,8 +21,11 @@ import { Router } from "express";
 import type { AuthedRequest } from "../auth.js";
 import { requireTraderSession } from "../auth.js";
 import { rateLimitOrders } from "../rate-limit.js";
-import { getAccount, getAccountAndContractSize, getSymbolContractSize, writeAuditLog } from "../db.js";
+import { getAccount, getAccountAndContractSize, getFreshPrice, getOpenSlippageInputs, getSymbolContractSize, query, writeAuditLog } from "../db.js";
 import { parseUpstreamJson } from "../http.js";
+import { Decimal } from "decimal.js";
+import { clientAsk, clientBid, loadAskRules } from "../client-ask.js";
+import { effectiveCapPoints, slippageVerdict, symbolSlippageCapPoints, traderSlippagePoints } from "../slippage.js";
 import { recordOrderAckLatency } from "../ws.js";
 import { placeMarketOrderSchema, placePendingOrderSchema, validateBody } from "../validation.js";
 import type { z } from "zod";
@@ -168,6 +171,70 @@ router.post(
     if (!contractSize) {
       res.status(400).json({ error: `unknown symbol: ${body.symbol}` });
       return;
+    }
+
+    // ---- SLIPPAGE CAP, when the client sent its own screen price --------------------------------
+    //
+    // WHY THIS IS HERE AT ALL. The engine has NO slippage cap: it fills at its own tick, and before this
+    // the Gateway sent no reference price, so an order through here was filled however far the market had
+    // moved from what the trader saw. The web's market route has refused that since 2026-10-26
+    // (lib/slippage-cap.ts). This closes that gap with the SAME configuration -- the broker's XAU base
+    // scaled to the symbol, its own override if set, tightened by the trader's value -- and the SAME
+    // basis: the price the engine will actually fill at, which is the ACCOUNT's marked price
+    // (`pricing::quoted_tick` -> a BUY at the account's ask, a SELL at its bid), not the raw tick.
+    //
+    // WHAT IT CANNOT DO, and this is a real gap, not a rounding of one. Over the cap the web either
+    // REQUOTES (writes a REQUOTED "Order" the client answers via /api/trade/orders/:id/requote-response)
+    // or REJECTS, per `Broker.slippageAction` -- and EVERY broker is set to REQUOTE. Writing a REQUOTED
+    // order is a book write this service does not do and the engine has no path for, so the requote
+    // STATE MACHINE stays on the web. What this does is refuse to fill at a price outside the cap and say
+    // so, carrying the same detail the web records, plus `requoteRequired` so a client can fall back to
+    // the web path for the offer. Strictly safer than today (fill at any distance), strictly less than
+    // the web (no offer). Closing it needs the engine to write a REQUOTED order.
+    if (body.price != null) {
+      const slip = await getOpenSlippageInputs(brokerId, body.symbol);
+      const tick = await getFreshPrice(body.symbol);
+      if (slip && tick) {
+        const rules = await loadAskRules(query, [session.accountId], brokerId);
+        const rule = rules.get(session.accountId)?.get(body.symbol) ?? {
+          mode: "markup" as const,
+          markupPips: new Decimal(0),
+          digits: slip.digits,
+        };
+        // the side the engine fills at: a BUY buys at the account's ask, a SELL sells at its bid
+        const fill = body.side === "BUY" ? clientAsk(rule, tick.bid, tick.ask) : clientBid(rule, tick.bid, tick.ask);
+        // the cap's own reference is the RAW side price, as the web passes it
+        const capRef = body.side === "BUY" ? tick.ask : tick.bid;
+        const capPoints = effectiveCapPoints(
+          traderSlippagePoints(body, slip.digits),
+          symbolSlippageCapPoints(
+            { slippageCapXauPoints: slip.brokerCapXauPoints, slippageCapRefPrice: slip.brokerCapRefPrice },
+            { name: body.symbol, digits: slip.digits, maxSlippagePoints: slip.symbolCapPoints },
+            capRef
+          )
+        );
+        const verdict = slippageVerdict({
+          side: body.side,
+          requested: new Decimal(body.price),
+          fill,
+          digits: slip.digits,
+          capPoints,
+        });
+        if (verdict.over) {
+          res.status(400).json({
+            error: "SLIPPAGE_EXCEEDED",
+            serverPrice: fill.toString(),
+            requestedPrice: body.price,
+            livePrice: capRef.toString(),
+            adversePoints: verdict.adversePoints.toString(),
+            capPoints: verdict.capPoints.toString(),
+            // the web would REQUOTE for every broker configured today; this service cannot write that
+            // order, so the client has to take the offer from the web path
+            requoteRequired: slip.slippageAction !== "REJECT",
+          });
+          return;
+        }
+      }
     }
 
     // L2 Step 5 (latency): equity and used margin are NOT computed here any more, and the two Neon

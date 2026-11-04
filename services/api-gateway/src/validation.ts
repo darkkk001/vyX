@@ -45,6 +45,11 @@ const volume = decimalString({ positive: true });
 // here just because `.optional()` alone only covers "key omitted."
 const optionalPrice = decimalString().nullable().optional();
 
+// A trader's own slippage max: a decimal string in points/pips, or the literal "unlimited" that every
+// client already sends when the trader set no cap (lib/risk.ts's isValidMaxSlippageInput accepts the
+// same two forms). Rejecting "unlimited" here would refuse the common case.
+const slippageInput = z.union([z.literal("unlimited"), decimalString()]);
+
 export const placeMarketOrderSchema = z.object({
   symbol,
   side,
@@ -59,6 +64,17 @@ export const placeMarketOrderSchema = z.object({
   // value's meaning, it only carries it. An absent key keeps the old behaviour exactly (the engine
   // falls back to `engine:<order id>`), so a client that does not send one is not refused.
   idempotencyKey: z.string().trim().min(1).max(128).optional(),
+  // THE CLIENT'S OWN SCREEN PRICE, for the slippage cap only -- the engine prices the fill itself.
+  //
+  // OPTIONAL, deliberately. The web guard (lib/engine-ingress.ts) forwards symbol/side/volume/key and no
+  // price, so requiring one here would refuse every order that path sends. Absent = no reference to
+  // compare against and therefore no cap check, exactly as the close route treats a missing closePrice.
+  // A client calling this Gateway DIRECTLY must send it to get the cap the web applies -- making it
+  // mandatory belongs with retiring the web guard, not before.
+  price: decimalString().nullable().optional(),
+  // the trader's own SLIPPAGE MAX, either spelling; points wins when both are sent, as on the web
+  maxSlippagePoints: slippageInput.nullable().optional(),
+  maxSlippagePips: slippageInput.nullable().optional(),
 });
 
 export const placePendingOrderSchema = z.object({
@@ -86,11 +102,6 @@ export const modifyPositionSchema = z.object({
 // (typed) result on success, so downstream handlers read already-valid
 // data. On failure, responds 400 with every issue at once (not just the
 // first) rather than making the client guess-and-check field by field.
-// A trader's own slippage max: a decimal string in points/pips, or the literal "unlimited" that every
-// client already sends when the trader set no cap (lib/risk.ts's isValidMaxSlippageInput accepts the
-// same two forms). Rejecting "unlimited" here would refuse the common case.
-const slippageInput = z.union([z.literal("unlimited"), decimalString()]);
-
 // POST /v1/positions/:id/close. Everything is optional, because the engine prices the close itself off
 // the Gateway's fresh tick: `closePrice` is the client's OWN reference (what its screen showed) and is
 // used only for the slippage comparison, exactly as the web close route uses it. Sending none means

@@ -408,3 +408,40 @@ export async function getCloseResultView(
     balance: arows.length > 0 ? String(arows[0].balance) : "0",
   };
 }
+
+/** Everything the slippage cap needs for an OPEN on one symbol: the symbol's digits and its own cap
+ *  override, plus the broker's XAU base, reference price and action. Same columns the web's market route
+ *  reads (broker + BrokerSymbol), so the cap is computed off the same configuration, not a copy of it. */
+export interface OpenSlippageInputs {
+  digits: number;
+  symbolCapPoints: Decimal | null;
+  brokerCapXauPoints: Decimal | null;
+  brokerCapRefPrice: Decimal | null;
+  slippageAction: string | null;
+}
+
+export async function getOpenSlippageInputs(
+  brokerId: string,
+  symbol: string
+): Promise<OpenSlippageInputs | null> {
+  const { rows } = await pool.query(
+    `SELECT s.digits,
+            bs."maxSlippagePoints" AS symbol_cap,
+            b."slippageCapXauPoints", b."slippageCapRefPrice", b."slippageAction"::text AS slippage_action
+       FROM "Symbol" s
+       JOIN "Broker" b ON b.id = $1
+       LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = $1 AND bs."symbolId" = s.id
+      WHERE s.name = $2`,
+    [brokerId, symbol]
+  );
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  const dec = (v: unknown): Decimal | null => (v == null ? null : new Decimal(String(v)));
+  return {
+    digits: Number(r.digits),
+    symbolCapPoints: dec(r.symbol_cap),
+    brokerCapXauPoints: dec(r.slippageCapXauPoints),
+    brokerCapRefPrice: dec(r.slippageCapRefPrice),
+    slippageAction: (r.slippage_action as string | null) ?? null,
+  };
+}

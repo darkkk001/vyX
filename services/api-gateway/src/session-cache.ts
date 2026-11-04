@@ -14,7 +14,7 @@
 // stop finding sessions and 401 every order. No auth logic moves, no token is trusted that was not
 // trusted before, and a cache miss still does exactly the lookup it always did.
 
-import { getTraderSession, type AccountSessionPayload } from "./auth.js";
+import { getTraderSession, getTraderSessionByToken, type AccountSessionPayload } from "./auth.js";
 
 /**
  * How long a VALIDATED session may be answered from memory. Short on purpose, and the whole of the
@@ -46,10 +46,10 @@ function sweep(now: number) {
  * re-validated every TTL. A refresh that finds the session gone drops it, so the next order does the
  * full lookup and 401s.
  */
-export async function getTraderSessionCached(cookieHeader: string | undefined): Promise<AccountSessionPayload | null> {
-  if (TTL_MS <= 0) return getTraderSession(cookieHeader);
-  const key = cookieHeader ?? "";
-  if (!key) return getTraderSession(cookieHeader);
+export async function getTraderSessionCachedByToken(token: string): Promise<AccountSessionPayload | null> {
+  if (TTL_MS <= 0) return getTraderSessionByToken(token);
+  if (!token) return null;
+  const key = token;
 
   const now = Date.now();
   const hit = cache.get(key);
@@ -59,7 +59,7 @@ export async function getTraderSessionCached(cookieHeader: string | undefined): 
     // stale: answer from memory, re-validate behind the request
     if (!hit.refreshing) {
       hit.refreshing = true;
-      void getTraderSession(cookieHeader)
+      void getTraderSessionByToken(token)
         .then((fresh) => {
           if (fresh) cache.set(key, { payload: fresh, at: Date.now() });
           else cache.delete(key);
@@ -73,12 +73,23 @@ export async function getTraderSessionCached(cookieHeader: string | undefined): 
     return hit.payload;
   }
 
-  const fresh = await getTraderSession(cookieHeader);
+  const fresh = await getTraderSessionByToken(token);
   if (fresh) {
     sweep(now);
     cache.set(key, { payload: fresh, at: now });
   }
   return fresh;
+}
+
+/**
+ * The cookie-header form, kept for any caller that still has only a Cookie header. Resolves the token
+ * first so both transports share one cache entry per session.
+ */
+export async function getTraderSessionCached(cookieHeader: string | undefined): Promise<AccountSessionPayload | null> {
+  const { sessionTokenFrom } = await import("./auth.js");
+  const token = sessionTokenFrom({ cookie: cookieHeader });
+  if (!token) return getTraderSession(cookieHeader);
+  return getTraderSessionCachedByToken(token);
 }
 
 /** Test/diagnostic: forget everything cached. */
