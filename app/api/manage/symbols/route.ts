@@ -101,6 +101,10 @@ export async function GET() {
       symbolName: symbol.name,
       category: symbol.category,
       digits: symbol.digits,
+      // bo 1.0.101 item 3: the catalogue fields the Symbols list shows (read-only; the Symbol row owns them)
+      contractSize: symbol.contractSize.toString(),
+      baseCurrency: symbol.baseCurrency,
+      quoteCurrency: symbol.quoteCurrency,
       spreadMarkup: cfg ? cfg.spreadMarkup.toString() : DEFAULTS.spreadMarkup,
       minLot: cfg ? cfg.minLot.toString() : DEFAULTS.minLot,
       maxLot: cfg ? cfg.maxLot.toString() : DEFAULTS.maxLot,
