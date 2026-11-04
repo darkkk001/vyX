@@ -920,8 +920,15 @@ fn assert_bars_look_like_utc(symbol: &str, timeframe: &str, offset_sec: Option<i
 #[derive(Debug, Serialize)]
 struct HistoryResponse {
     ok: bool,
+    /// authoritative + inserted_if_missing (kept for older callers)
     upserted: usize,
     skipped_unrecognized_timeframe: bool,
+    /// bars written as authoritative overwrites (bucket before HISTORY_OVERWRITE_BEFORE, or no cutoff set)
+    authoritative: usize,
+    /// bars at/after the cutoff that created a missing row
+    inserted_if_missing: usize,
+    /// bars at/after the cutoff that hit an existing row and changed nothing
+    skipped: usize,
 }
 
 /// fix/realtime-sync §4 -- the EA's periodic CopyRates backfill
@@ -936,11 +943,17 @@ struct HistoryResponse {
 /// happened to send CopyRates' natural newest-first order would
 /// otherwise make every real historical bar look like a "gap" relative
 /// to the one already recorded ahead of it.
-async fn ingest_history(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<HistoryBody>,
-) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
+async fn ingest_history(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<HistoryBody>) -> Response {
+    use axum::response::IntoResponse;
+    match ingest_history_inner(state, headers, body).await {
+        Ok(json) => json.into_response(),
+        // 422 = the offset guard: a JSON error body so the sender's log shows the reason
+        Err((StatusCode::UNPROCESSABLE_ENTITY, message)) => (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "ok": false, "error": message }))).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn ingest_history_inner(state: Arc<AppState>, headers: HeaderMap, body: HistoryBody) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
     let provided = headers.get("x-price-feed-secret").and_then(|v| v.to_str().ok());
     if provided != Some(state.price_feed_secret.as_str()) {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
@@ -957,8 +970,20 @@ async fn ingest_history(
         // this engine never acknowledges, but one unrecognized value in
         // a broker's symbol list shouldn't fail every other bar in the
         // same request.
-        return Ok(Json(HistoryResponse { ok: true, upserted: 0, skipped_unrecognized_timeframe: true }));
+        return Ok(Json(HistoryResponse { ok: true, upserted: 0, skipped_unrecognized_timeframe: true, authoritative: 0, inserted_if_missing: 0, skipped: 0 }));
     };
+
+    // Day-boundary guard (candle de-dup): every timeframe is checked, a wrong offset shifts every bar's time. A missing
+    // or non-NY-close offset stores nothing; warned once per request.
+    if let Err(reason) = market_data::history_guard::check_server_offset(body.server_offset_sec, Utc::now()) {
+        tracing::warn!(
+            symbol = %body.symbol,
+            timeframe = %body.timeframe,
+            server_offset_sec = ?body.server_offset_sec,
+            "history post refused (422), nothing stored: {reason}"
+        );
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, reason));
+    }
 
     let mut bars = body.bars;
     bars.sort_by_key(|b| b.bucket_start_ms);
@@ -1041,7 +1066,20 @@ async fn ingest_history(
             "history bars off the timeframe grid -- skipped, not stored. The sender's UTC offset is not a whole number of minutes (EA < v1.39 could straddle a second boundary computing it)"
         );
     }
-    let upserted = authoritative.len();
+    // HISTORY_OVERWRITE_BEFORE: bars from the FIX switch on only fill gaps (never replace a live bar)
+    let cutoff = match market_data::history_guard::parse_cutoff(std::env::var("HISTORY_OVERWRITE_BEFORE").ok().as_deref()) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::warn!("{err}; treating the cutoff as unset");
+            None
+        }
+    };
+    let (authoritative, gap_only) = market_data::history_guard::partition_by_cutoff(authoritative, cutoff);
+    // gap-fill flats at/after the cutoff must not touch an existing row either
+    let (gap_fills, late_gap_fills) = market_data::history_guard::partition_by_cutoff(gap_fills, cutoff);
+    let gap_only: Vec<CandleUpdate> = gap_only.into_iter().chain(late_gap_fills).collect();
+    let authoritative_count = authoritative.len();
+    let mut inserted_if_missing = 0usize;
 
     // Every persistence target of the current MARKET_DATA_WRITE mode gets
     // the same backfill in its own transaction (market_data::sink) -- the
@@ -1060,13 +1098,19 @@ async fn ingest_history(
             tracing::warn!(?err, symbol = %body.symbol, sink = sink.as_str(), "ingest_history: authoritative batch upsert failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
         })?;
+        let inserted = market_data::db::insert_candles_if_missing_batch(&mut tx, &gap_only).await.map_err(|err| {
+            tracing::warn!(?err, symbol = %body.symbol, sink = sink.as_str(), "ingest_history: insert-if-missing batch failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+        inserted_if_missing = inserted_if_missing.max(inserted as usize);
         tx.commit().await.map_err(|err| {
             tracing::warn!(?err, sink = sink.as_str(), "ingest_history: commit failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
         })?;
     }
 
-    Ok(Json(HistoryResponse { ok: true, upserted, skipped_unrecognized_timeframe: false }))
+    let skipped = gap_only.len().saturating_sub(inserted_if_missing);
+    Ok(Json(HistoryResponse { ok: true, upserted: authoritative_count + inserted_if_missing, skipped_unrecognized_timeframe: false, authoritative: authoritative_count, inserted_if_missing, skipped }))
 }
 
 /// Latency/health snapshot for the tick pipeline — Phase 4 of the audit.

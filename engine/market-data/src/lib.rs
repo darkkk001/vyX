@@ -162,7 +162,7 @@ pub(crate) fn fixed_ms(tf: Timeframe) -> Option<i64> {
 /// codebase's history, so that's flagged, not fixed, here.
 /// The UTC offset a New-York-close broker server (UTC+2 in winter, UTC+3 while New York is on daylight time) has at
 /// instant `t`.
-fn ny_close_server_offset_sec(t: DateTime<Utc>) -> i64 {
+pub fn ny_close_server_offset_sec(t: DateTime<Utc>) -> i64 {
     if crate::gap_fill::us_eastern_is_dst(t) { 3 * 3600 } else { 2 * 3600 }
 }
 
@@ -282,6 +282,106 @@ fn broker_period_start(now: DateTime<Utc>, broker_offset_sec: i64, period_ms: i6
     let offset_ms = broker_offset_sec * 1000;
     let floored = ((now.timestamp_millis() + offset_ms) / period_ms) * period_ms - offset_ms;
     Utc.timestamp_millis_opt(floored).unwrap()
+}
+
+/// Guards for `POST /internal/history` (candle de-dup, owner 2026-11-05).
+pub mod history_guard {
+    use super::{ny_close_server_offset_sec, CandleUpdate};
+    use chrono::{DateTime, Utc};
+
+    /// A history post must carry the New-York-close server offset in force now (+3h in US summer time, +2h
+    /// otherwise): a missing or different offset shifts every bar's time and files a second key beside the real one.
+    /// `Err` carries the human-readable reason.
+    pub fn check_server_offset(server_offset_sec: Option<i64>, now: DateTime<Utc>) -> Result<(), String> {
+        let expected = ny_close_server_offset_sec(now);
+        match server_offset_sec {
+            None => Err(format!("server_offset_sec is missing; the New-York-close offset in force now is {expected}")),
+            Some(got) if got != expected => Err(format!(
+                "server_offset_sec {got} is not the New-York-close offset in force now ({expected}); refused so no bar is filed on a wrong key"
+            )),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// `HISTORY_OVERWRITE_BEFORE`: an RFC3339 instant; unset (or empty) = every bar is authoritative. An unparseable
+    /// value is an `Err` (the caller logs it and falls back to unset).
+    pub fn parse_cutoff(raw: Option<&str>) -> Result<Option<DateTime<Utc>>, String> {
+        match raw.map(str::trim) {
+            None | Some("") => Ok(None),
+            Some(v) => DateTime::parse_from_rfc3339(v).map(|d| Some(d.with_timezone(&Utc))).map_err(|e| format!("HISTORY_OVERWRITE_BEFORE {v:?}: {e}")),
+        }
+    }
+
+    /// Splits bars into (authoritative overwrite, insert-if-missing only): bucket_start < cutoff overwrites,
+    /// bucket_start >= cutoff only fills gaps. No cutoff: everything is authoritative.
+    pub fn partition_by_cutoff(bars: Vec<CandleUpdate>, cutoff: Option<DateTime<Utc>>) -> (Vec<CandleUpdate>, Vec<CandleUpdate>) {
+        match cutoff {
+            None => (bars, Vec::new()),
+            Some(c) => bars.into_iter().partition(|b| b.bucket_start < c),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::Timeframe;
+        use chrono::TimeZone;
+        use rust_decimal::Decimal;
+
+        fn at(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+            Utc.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap()
+        }
+
+        #[test]
+        fn missing_offset_is_refused() {
+            assert!(check_server_offset(None, at(2026, 7, 15)).is_err());
+            assert!(check_server_offset(None, at(2026, 12, 15)).is_err());
+        }
+
+        #[test]
+        fn offset_zero_and_plus_one_hour_are_refused() {
+            for now in [at(2026, 7, 15), at(2026, 12, 15)] {
+                assert!(check_server_offset(Some(0), now).is_err());
+                assert!(check_server_offset(Some(3600), now).is_err());
+            }
+        }
+
+        #[test]
+        fn the_season_offset_passes_and_the_other_season_is_refused() {
+            assert!(check_server_offset(Some(3 * 3600), at(2026, 7, 15)).is_ok(), "summer +3h");
+            assert!(check_server_offset(Some(2 * 3600), at(2026, 12, 15)).is_ok(), "winter +2h");
+            assert!(check_server_offset(Some(2 * 3600), at(2026, 7, 15)).is_err());
+            assert!(check_server_offset(Some(3 * 3600), at(2026, 12, 15)).is_err());
+        }
+
+        fn bar(t: DateTime<Utc>) -> CandleUpdate {
+            CandleUpdate { symbol: "XAUUSD".into(), timeframe: Timeframe::D1, bucket_start: t, open: Decimal::ONE, high: Decimal::ONE, low: Decimal::ONE, close: Decimal::ONE, open_authoritative: true }
+        }
+
+        #[test]
+        fn cutoff_parsing() {
+            assert_eq!(parse_cutoff(None), Ok(None));
+            assert_eq!(parse_cutoff(Some("  ")), Ok(None));
+            assert_eq!(parse_cutoff(Some("2026-10-01T00:00:00+02:00")), Ok(Some(Utc.with_ymd_and_hms(2026, 9, 30, 22, 0, 0).unwrap())));
+            assert!(parse_cutoff(Some("yesterday")).is_err());
+        }
+
+        #[test]
+        fn partition_splits_at_the_cutoff_and_the_cutoff_bar_itself_is_gap_only() {
+            let cutoff = at(2026, 10, 1);
+            let (auth, gaps) = partition_by_cutoff(vec![bar(at(2026, 9, 30)), bar(cutoff), bar(at(2026, 10, 2))], Some(cutoff));
+            assert_eq!(auth.len(), 1);
+            assert_eq!(auth[0].bucket_start, at(2026, 9, 30));
+            assert_eq!(gaps.len(), 2);
+        }
+
+        #[test]
+        fn no_cutoff_keeps_todays_behaviour() {
+            let (auth, gaps) = partition_by_cutoff(vec![bar(at(2026, 9, 30)), bar(at(2030, 1, 1))], None);
+            assert_eq!(auth.len(), 2);
+            assert!(gaps.is_empty());
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

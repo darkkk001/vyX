@@ -281,6 +281,48 @@ pub async fn upsert_candles_authoritative_batch(
     Ok(())
 }
 
+/// The gap-only half of the history overwrite guard (`HISTORY_OVERWRITE_BEFORE`,
+/// see `history_guard`): bars at or after the cutoff are the live feed's own
+/// (cTrader FIX) and a backfill from another venue must never replace them.
+/// Same UNNEST shape as `upsert_candles_authoritative_batch`, but `ON CONFLICT
+/// DO NOTHING`: a missing bucket is created, an existing row is left exactly
+/// as it is. Returns how many rows were actually inserted (the rest existed).
+pub async fn insert_candles_if_missing_batch(
+    tx: &mut sqlx::PgTransaction<'_>,
+    updates: &[CandleUpdate],
+) -> Result<u64, sqlx::Error> {
+    if updates.is_empty() {
+        return Ok(0);
+    }
+    let symbols: Vec<&str> = updates.iter().map(|u| u.symbol.as_str()).collect();
+    let timeframes: Vec<&str> = updates.iter().map(|u| timeframe_to_str(u.timeframe)).collect();
+    let bucket_starts: Vec<chrono::DateTime<chrono::Utc>> = updates.iter().map(|u| u.bucket_start).collect();
+    let opens: Vec<Decimal> = updates.iter().map(|u| u.open).collect();
+    let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
+    let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
+    let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close)
+        ON CONFLICT (symbol, timeframe, "bucketStart") DO NOTHING
+        "#,
+    )
+    .bind(&symbols)
+    .bind(&timeframes)
+    .bind(&bucket_starts)
+    .bind(&opens)
+    .bind(&highs)
+    .bind(&lows)
+    .bind(&closes)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Synchronous current bid/ask read — the path `docs/market-data.md` §2's
 /// diagram calls out for the Execution module. Not wired into Execution
 /// yet (separate slice); added now since the query is a one-liner against
@@ -524,6 +566,41 @@ mod tests {
         let output = fut.await;
         drop(guard);
         (counter.load(std::sync::atomic::Ordering::SeqCst), output)
+    }
+
+    /// History overwrite guard: insert-if-missing creates a missing bucket and leaves an existing row untouched;
+    /// the authoritative batch still replaces. Needs MARKET_DATA_TEST_LOCAL_URL (scratch Postgres), else skips.
+    #[tokio::test]
+    async fn insert_if_missing_never_touches_an_existing_row() {
+        let Ok(url) = std::env::var("MARKET_DATA_TEST_LOCAL_URL") else {
+            eprintln!("skipping: MARKET_DATA_TEST_LOCAL_URL not set");
+            return;
+        };
+        let pool = PgPool::connect(&url).await.expect("connect");
+        let symbol = format!("TESTDB_GUARD{}", chrono::Utc::now().timestamp_millis() % 1_000_000);
+        let t0 = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 8, 11, 21, 0, 0).unwrap();
+        let t1 = t0 + chrono::Duration::days(1);
+        let mk = |t, v: i64| CandleUpdate {
+            symbol: symbol.clone(),
+            timeframe: Timeframe::D1,
+            bucket_start: t,
+            open: Decimal::from(v),
+            high: Decimal::from(v + 1),
+            low: Decimal::from(v - 1),
+            close: Decimal::from(v),
+            open_authoritative: true,
+        };
+        let mut tx = pool.begin().await.unwrap();
+        upsert_candles_authoritative_batch(&mut tx, &[mk(t0, 100)]).await.unwrap();
+        let inserted = insert_candles_if_missing_batch(&mut tx, &[mk(t0, 500), mk(t1, 500)]).await.unwrap();
+        assert_eq!(inserted, 1, "only the missing bucket is created");
+        let rows: Vec<(chrono::DateTime<chrono::Utc>, Decimal)> =
+            sqlx::query_as(r#"SELECT "bucketStart", open FROM "Candle" WHERE symbol = $1 ORDER BY "bucketStart""#).bind(&symbol).fetch_all(&mut *tx).await.unwrap();
+        assert_eq!(rows, vec![(t0, Decimal::from(100)), (t1, Decimal::from(500))]);
+        upsert_candles_authoritative_batch(&mut tx, &[mk(t0, 700)]).await.unwrap();
+        let open: Decimal = sqlx::query_scalar(r#"SELECT open FROM "Candle" WHERE symbol = $1 AND "bucketStart" = $2"#).bind(&symbol).bind(t0).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(open, Decimal::from(700), "the authoritative batch still replaces");
+        let _ = tx.rollback().await;
     }
 
     #[tokio::test(flavor = "current_thread")]
