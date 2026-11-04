@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { DEMO_GRID_MS, DEMO_SYMBOLS, demoDef, demoQuoteAt } from "@/lib/demo-prices";
 import { simulateSweep, type SimAccount, type SimOrder, type SimPos, type SweepEvent, type SweepPorts } from "@/lib/demo-sweep-core";
 import { closePriceFor, computeRealizedPnl } from "@/lib/trading";
+import { amountTrigger } from "@/lib/amount-sltp";
 import { checkPreTradeMargin, hedgedUsedMargin, liveUsedMarginFor, type MarginLeg } from "@/lib/margin";
 
 // The lazy replay of the demo's risk (lib/demo-sweep-core.ts): SL, TP, stop-out and pending fills found on the deterministic
@@ -43,7 +44,7 @@ function fakePorts(acct: { balance: Prisma.Decimal }, log: SweepEvent[] = []) {
     },
     async fillPending(o, fillPrice, atMs) {
       const def = demoDef(o.symbol)!;
-      return { id: `pos-of-${o.id}-${++n}`, side: o.side, volume: o.volume, openPrice: fillPrice, slPrice: o.slPrice, tpPrice: o.tpPrice, symbol: o.symbol, contractSize: D(def.contractSize), quoteCurrency: def.quoteCurrency, openedMs: atMs, hedgedMarginPct: D(200) };
+      return { id: `pos-of-${o.id}-${++n}`, side: o.side, volume: o.volume, openPrice: fillPrice, slPrice: o.slPrice, tpPrice: o.tpPrice, slAmount: o.slAmount ?? null, tpAmount: o.tpAmount ?? null, symbol: o.symbol, contractSize: D(def.contractSize), quoteCurrency: def.quoteCurrency, openedMs: atMs, hedgedMarginPct: D(200) };
     },
     async rejectPending() {},
   };
@@ -108,6 +109,10 @@ async function oracle(args: { account: SimAccount; positions: SimPos[]; orders: 
       } else {
         if (p.slPrice && cp.gte(p.slPrice)) reason = "stop_loss";
         else if (p.tpPrice && cp.lte(p.tpPrice)) reason = "take_profit";
+      }
+      // amount SL / TP: the floating P/L in the account currency at this tick (gross, same conversion as the position's close)
+      if (!reason && (p.slAmount || p.tpAmount)) {
+        reason = amountTrigger({ side: p.side, openPrice: p.openPrice, volume: p.volume, contractSize: p.contractSize, slAmount: p.slAmount ?? null, tpAmount: p.tpAmount ?? null }, cp, rate(p, t));
       }
       if (!reason) continue;
       positions = positions.filter((x) => x.id !== p.id);
@@ -200,6 +205,40 @@ describe("demo sweep: stop loss and take profit", () => {
   });
 });
 
+describe("demo sweep: amount stop loss and take profit", () => {
+  it("a BUY SL amount closes on the first tick whose floating P/L is at or below -amount, at that tick's bid, noted as an amount", async () => {
+    const p = pos("a1", "qXAUUSD", "BUY", "0.10", T0);
+    // 0.10 lot x 100 oz: a 4.00 fall is 40.00
+    const k = firstTick("qXAUUSD", T0, 8 * 3600 * 4, (b) => b.sub(p.openPrice).mul(10).lte(-40));
+    expect(k).not.toBeNull();
+    const { res, balance } = await run({ account: account(), positions: [{ ...p, slAmount: D("40") }], fromMs: T0, toMs: T0 + 12 * HOUR });
+    expect(res.events).toEqual([{ kind: "close", atMs: k!, positionId: "a1", reason: "stop_loss", price: bid("qXAUUSD", k!).toString() }]);
+    expect(balance.sub(10000).lte(D(-40))).toBe(true);
+  });
+  it("a SELL TP amount closes at the ask of the first tick that is at or above +amount", async () => {
+    const p = pos("a2", "qEURUSD", "SELL", "1", T0);
+    const k = firstTick("qEURUSD", T0, 6 * 3600 * 4, (_b, a) => p.openPrice.sub(a).mul(100000).gte(120));
+    expect(k).not.toBeNull();
+    const { res } = await run({ account: account(), positions: [{ ...p, tpAmount: D("120") }], fromMs: T0, toMs: T0 + 10 * HOUR });
+    expect(res.events).toEqual([{ kind: "close", atMs: k!, positionId: "a2", reason: "take_profit", price: ask("qEURUSD", k!).toString() }]);
+  });
+  it("a pending order's amounts are copied onto the position it opens, and then work", async () => {
+    const created = T0;
+    const q = demoQuoteAt("qXAUUSD", created)!;
+    const order: SimOrder = { id: "ao", side: "BUY", type: "LIMIT", volume: D("0.10"), entry: D(q.ask).add(1), slPrice: null, tpPrice: null, slAmount: D("25"), tpAmount: D("60"), symbol: "qXAUUSD", createdMs: created };
+    const want = await oracle({ account: account(), positions: [], orders: [order], fromMs: T0 - 1, toMs: T0 + 6 * HOUR });
+    const { res } = await run({ account: account(), positions: [], orders: [order], fromMs: T0 - 1, toMs: T0 + 6 * HOUR });
+    expect(res.events).toEqual(want.events);
+    expect(res.events.some((e) => e.kind === "fill")).toBe(true);
+    expect(res.events.some((e) => e.kind === "close")).toBe(true);
+  });
+  it("a position without a rate (unpriced) is never closed by an amount", async () => {
+    const p = pos("a3", "qXAUUSD", "BUY", "0.10", T0, { quoteCurrency: "ZZZ", slAmount: D("0.01") });
+    const { res } = await run({ account: account(), positions: [p], fromMs: T0, toMs: T0 + 2 * HOUR });
+    expect(res.events.filter((e) => e.kind === "close" && e.reason !== "stop_out")).toEqual([]);
+  });
+});
+
 describe("demo sweep: stop-out", () => {
   it("closes the position with the largest loss first when the margin level reaches the stop-out level, at that tick", async () => {
     // 2 lots of gold on 10,000: margin about 8,900, level 112%; stop-out 50% = equity 4,450 -> a $28 fall
@@ -263,6 +302,7 @@ describe("demo sweep: the jumping walk equals the tick-by-tick oracle", () => {
   const rng = (seed: number) => () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
   it("random books of positions and resting orders over several hours", async () => {
     const rand = rng(20261012);
+    const rand2 = rng(20261105); // its own stream, so adding the amount legs leaves the scenarios above unchanged
     let events = 0;
     for (let scenario = 0; scenario < 24; scenario++) {
       const start = T0 + scenario * 5 * HOUR + Math.floor(rand() * 90_000);
@@ -277,7 +317,11 @@ describe("demo sweep: the jumping walk equals the tick-by-tick oracle", () => {
         const dist = def.base * (0.0002 + rand() * 0.003);
         const slp = rand() < 0.7 ? D(side === "BUY" ? base.openPrice.toNumber() - dist : base.openPrice.toNumber() + dist).toDecimalPlaces(def.digits) : null;
         const tpp = rand() < 0.6 ? D(side === "BUY" ? base.openPrice.toNumber() + dist * 1.3 : base.openPrice.toNumber() - dist * 1.3).toDecimalPlaces(def.digits) : null;
-        positions.push({ ...base, slPrice: slp, tpPrice: tpp });
+        // some positions also carry an amount leg (money, in the account currency): scaled to the price move the legs above use
+        const money = base.volume.toNumber() * def.contractSize * dist * (def.quoteCurrency === "USD" ? 1 : 0.0067);
+        const slA = rand2() < 0.4 ? D((money * (0.4 + rand2() * 1.2)).toFixed(2)) : null;
+        const tpA = rand2() < 0.3 ? D((money * (0.5 + rand2() * 1.5)).toFixed(2)) : null;
+        positions.push({ ...base, slPrice: slp, tpPrice: tpp, slAmount: slA && slA.gt(0) ? slA : null, tpAmount: tpA && tpA.gt(0) ? tpA : null });
       }
       if (rand() < 0.7) {
         const def = DEMO_SYMBOLS[Math.floor(rand() * DEMO_SYMBOLS.length)];
