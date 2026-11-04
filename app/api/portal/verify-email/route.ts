@@ -10,8 +10,8 @@ import { requestOrigin } from "@/lib/request-origin";
 // (a link in an email), never fetch().
 export async function GET(request: NextRequest) {
   const origin = requestOrigin(request);
-  // one path for every broker: /portal/login shows the Trader's Room sign-in when the CRM module is on
-  const login = "/portal/login";
+  // one path for every broker: /login shows the Trader's Room sign-in when the CRM module is on
+  const login = "/login";
   const token = request.nextUrl.searchParams.get("token");
   if (!token) {
     return NextResponse.redirect(`${origin}${login}?verify=invalid`, { status: 303 });

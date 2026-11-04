@@ -10,7 +10,7 @@ export default async function RoomRegisterView({ broker, referral }: { broker: R
   const formToken = await issueRegisterFormToken();
   const ref = referral ?? "";
   return (
-    <Onboarding brokerName={broker.name} logoUrl={broker.logoUrl} step={0} right={<>Already registered? <a href="/portal/login" style={{ fontWeight: 600 }}>Sign in</a></>}>
+    <Onboarding brokerName={broker.name} logoUrl={broker.logoUrl} step={0} right={<>Already registered? <a href="/login" style={{ fontWeight: 600 }}>Sign in</a></>}>
       <RegisterForm formToken={formToken} referral={/^[A-Za-z0-9]{2,16}$/.test(ref) ? ref : ""} />
     </Onboarding>
   );

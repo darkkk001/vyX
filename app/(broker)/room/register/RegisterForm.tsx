@@ -37,7 +37,7 @@ export default function RegisterForm({ formToken, referral }: { formToken: strin
         <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Check your email</h1>
         <div style={{ fontSize: 13.5, color: "var(--r-text-2)", lineHeight: 1.6 }}>We sent a link to <span className="mono" style={{ color: "var(--r-text)" }}>{sentTo}</span>. Open it to confirm your email, then sign in.</div>
         {devLink ? <a href={devLink} style={{ fontSize: 12.5 }}>Open the link (test build)</a> : null}
-        <a href="/portal/login" style={{ fontSize: 13, fontWeight: 600 }}>Go to sign in</a>
+        <a href="/login" style={{ fontSize: 13, fontWeight: 600 }}>Go to sign in</a>
       </div>
     );
   }

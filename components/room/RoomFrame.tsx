@@ -5,7 +5,7 @@ import type { RoomBroker } from "@/lib/room/context";
 import "@/app/(broker)/room/room.css";
 
 // The Trader's Room root: fonts, theme and tenant accent. Wraps /room/* (room/layout.tsx) and the room's sign-in and
-// sign-up, which live at /portal/login and /portal/register (owner routes 2026-11-04), outside that layout.
+// sign-up, which live at /login and /register (owner routes 2026-11-04), outside that layout.
 // Theme: dark by default, light from the room_theme cookie (no flash).
 const inter = Inter({ subsets: ["latin"], variable: "--r-font-inter", display: "swap" });
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--r-font-mono", display: "swap" });

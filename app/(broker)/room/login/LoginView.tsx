@@ -6,7 +6,7 @@ import LoginForm from "./LoginForm";
 import ServerClock from "./ServerClock";
 
 // Trader's Room sign-in (artboard "Login"): split brand panel + form, "Powered by QoreTrader" footer. Served at
-// /portal/login for a broker with the CRM module.
+// /login for a broker with the CRM module.
 export default async function RoomLoginView({ broker, verify }: { broker: RoomBroker; verify?: string }) {
   // what a client depends on: the way in and the prices (readInfraSummary never throws; no report shows no line)
   const checks = await Promise.all([readInfraSummary("caddy"), readInfraSummary("qorebridge-feed")]);

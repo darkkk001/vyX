@@ -47,7 +47,7 @@ export function RoomDataProvider({ children }: { children: ReactNode }) {
     try {
       const res = await fetch("/api/room/overview", { cache: "no-store" });
       if (res.status === 401) {
-        window.location.assign("/portal/login");
+        window.location.assign("/login");
         return;
       }
       if (!res.ok) {

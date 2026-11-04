@@ -7,14 +7,14 @@ import { RoomDataProvider } from "@/components/room/RoomData";
 import RoomSidebar from "@/components/room/RoomSidebar";
 import { partnerAccountOf } from "@/lib/room/partner";
 
-// Signed-in Trader's Room screens. Sign-in and sign-up are /portal/login and /portal/register, outside this group.
+// Signed-in Trader's Room screens. Sign-in and sign-up are /login and /register, outside this group.
 export default async function RoomShellLayout({ children }: { children: ReactNode }) {
   const broker = await roomBroker();
   if (!broker) notFound();
   const session = await getClientSession();
-  if (!session) redirect("/portal/login");
+  if (!session) redirect("/login");
   const client = await prisma.client.findUnique({ where: { id: session.clientId }, select: { id: true, status: true } });
-  if (!client || client.status !== "ACTIVE") redirect("/portal/login");
+  if (!client || client.status !== "ACTIVE") redirect("/login");
   const isPartner = (await partnerAccountOf(prisma, client.id)) !== null;
   return (
     <RoomDataProvider>
