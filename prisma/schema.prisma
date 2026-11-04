@@ -236,6 +236,31 @@ enum TradingMode {
   BOTH
   BUY_ONLY
   SELL_ONLY
+  CLOSE_ONLY // symbols tab (2026-11-04): no new positions on the symbol, closes still allowed (lib/risk.ts checkSymbolTradingMode)
+}
+
+// Symbols tab (backoffice 1.0.101): how the symbol is executed and filled, and how its swap is quoted. All stored as
+// configured; nothing is derived in the app.
+enum SymbolExecutionMode {
+  MARKET
+  INSTANT
+}
+
+enum FillPolicy {
+  FOK
+  IOC
+}
+
+enum SwapType {
+  POINTS
+  PERCENT
+  MONEY
+}
+
+// A TradingSession row is either a trading window or a quote-streaming window (existing rows are TRADE).
+enum SessionKind {
+  TRADE
+  QUOTE
 }
 
 // Controls which book a group's accounts' new positions default into,
@@ -353,6 +378,8 @@ model Broker {
   // White-label domain check (2026-11-04): set when the platform saw customDomain answer through it (DNS points here,
   // HTTPS works); only then does the broker's vyxtrader subdomain redirect to it. null = configured but not live yet.
   customDomainVerifiedAt     DateTime?       @db.Timestamptz(3)
+  // IANA zone ("America/New_York") the symbol hours are shown in; null = UTC (symbols tab, 2026-11-04)
+  timeZone                   String?
   tier                       BrokerTier      @default(STANDARD)
   status                     BrokerStatus    @default(ACTIVE)
   // See ExecutionEngine's own doc comment -- currently decorative.
@@ -1975,6 +2002,22 @@ model BrokerSymbol {
   // lib/trading.ts's validateSlTp.
   stopLevel        Int         @default(0)
 
+  // Symbols tab (backoffice 1.0.101): every field below is nullable, null = not set (the UI shows "Not set"). Stored as
+  // configured, never derived in the app.
+  tickSize          Decimal?             @db.Decimal(18, 10)
+  tickValue         Decimal?             @db.Decimal(18, 6)
+  marginCurrency    String?
+  profitCurrency    String?
+  executionMode     SymbolExecutionMode?
+  fillPolicy        FillPolicy?
+  swapType          SwapType?
+  tripleSwapDay     Int? // 0-6, 0 = Sunday
+  freezeLevel       Int? // points
+  marginInitial     Decimal?             @db.Decimal(10, 4)
+  marginMaintenance Decimal?             @db.Decimal(10, 4)
+  description       String?
+  displayOrder      Int? // trader symbol list order, nulls last
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
@@ -1996,6 +2039,7 @@ model TradingSession {
   dayOfWeek      Int // 0 = Sunday .. 6 = Saturday (UTC)
   openTime       String // "HH:MM", UTC
   closeTime      String // "HH:MM", UTC
+  kind           SessionKind  @default(TRADE)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 
