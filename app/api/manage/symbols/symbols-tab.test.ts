@@ -55,7 +55,7 @@ async function call(handler: unknown, method: string, body?: unknown, id = "x", 
     init.headers = { "content-type": typeof body === "string" ? "text/csv" : "application/json" };
     init.body = typeof body === "string" ? body : JSON.stringify(body);
   }
-  const res = await (handler as (r: NextRequest, c: unknown) => Promise<Response>)(new NextRequest(`https://t.local/api/manage/symbols${query}`, init), ctx(id));
+  const res = await (handler as (r: NextRequest, c: unknown) => Promise<Response>)(new NextRequest(`https://t.local/api/manage/symbols${query}`, init as never), ctx(id));
   const text = await res.text();
   return { status: res.status, json: text ? JSON.parse(text) : null };
 }
