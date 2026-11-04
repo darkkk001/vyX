@@ -84,18 +84,30 @@ async function runStep(id: string, step: string, work: (tx: Prisma.TransactionCl
 function closeSteps(row: Row): { name: string; work: (tx: Prisma.TransactionClient) => Promise<void> }[] {
   const p = row.payload as ClosePayload;
   const positionId = row.positionId!;
-  const reason = row.reason as "stop_loss" | "take_profit" | "stop_out";
+  // "client" (2026-11-04): the engine's own HTTP close route, i.e. a TRADER-INITIATED close, now writes
+  // this reason. It is listed here because everything below used to narrow to the three automatic
+  // reasons and fall through to TAKE_PROFIT for anything else -- so an unrecognised reason did not fail,
+  // it silently told the trader their own close was a take-profit and published that as the event. The
+  // three automatic reasons behave exactly as before.
+  const reason = row.reason as "stop_loss" | "take_profit" | "stop_out" | "client";
   const closedLots = D(p.closedLots);
   const sourceVolumeBeforeClose = D(p.sourceVolumeBeforeClose);
   const closePrice = D(p.closePrice);
   const stopOut = reason === "stop_out";
+  const clientClose = reason === "client";
   // the engine only closes in full today; a partial row (future) keeps its queued close, as the web's paths do
   const partial = closedLots.lt(sourceVolumeBeforeClose);
   const steps: { name: string; work: (tx: Prisma.TransactionClient) => Promise<void> }[] = [
     {
       name: "cancel_pending_close",
       work: async (tx) => {
-        const why = stopOut ? "position closed by stop-out" : reason === "stop_loss" ? "position closed by stop loss" : "position closed by take profit";
+        const why = stopOut
+          ? "position closed by stop-out"
+          : clientClose
+            ? "position closed by the client"
+            : reason === "stop_loss"
+              ? "position closed by stop loss"
+              : "position closed by take profit";
         if (!partial) await cancelPendingClose(tx, positionId, why);
       },
     },
@@ -133,7 +145,7 @@ function closeSteps(row: Row): { name: string; work: (tx: Prisma.TransactionClie
       work: (tx) =>
         coverage.onClose(
           tx,
-          { positionId, brokerId: row.brokerId, closedLots, sourceVolumeBeforeClose, reason: stopOut ? "stop_out" : "sl_tp", marginLevel: stopOut ? p.marginLevel : undefined },
+          { positionId, brokerId: row.brokerId, closedLots, sourceVolumeBeforeClose, reason: stopOut ? "stop_out" : clientClose ? "manual" : "sl_tp", marginLevel: stopOut ? p.marginLevel : undefined },
           { retryWithoutPrice: row.attempts < NO_PRICE_RETRIES }
         ),
     },
@@ -161,9 +173,15 @@ function closeSteps(row: Row): { name: string; work: (tx: Prisma.TransactionClie
     {
       name: "activity",
       work: async (tx) => {
-        const closeReason: CloseReason = stopOut ? "STOP_OUT" : reason === "stop_loss" ? "STOP_LOSS" : "TAKE_PROFIT";
+        const closeReason: CloseReason = stopOut
+          ? "STOP_OUT"
+          : clientClose
+            ? "MANUAL"
+            : reason === "stop_loss"
+              ? "STOP_LOSS"
+              : "TAKE_PROFIT";
         await publishTradingEvent("PositionClosed", { position_id: positionId, account_id: row.accountId, broker_id: row.brokerId, reason });
-        await emitPositionClosedActivity(tx, { positionId, closePrice, closeVolume: closedLots, partial, realizedPnl: D(p.realizedPnl), closeReason, origin: "risk_monitor_engine" });
+        await emitPositionClosedActivity(tx, { positionId, closePrice, closeVolume: closedLots, partial, realizedPnl: D(p.realizedPnl), closeReason, origin: clientClose ? "client_close_engine" : "risk_monitor_engine" });
       },
     }
   );
