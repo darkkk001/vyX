@@ -1,3 +1,4 @@
+import { withConfigEvent } from "@/lib/config-events";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
@@ -5,7 +6,7 @@ import { parseRuleFields, ruleSnapshot, RuleInputError } from "@/lib/lp-routing-
 
 /** PATCH: change a rule (provider, group, symbol, failover level, weight, on / off, notes); absent fields stay. Audited
  *  as LP_ROUTING_RULE_CHANGED with the old and new rule; a request that changes nothing writes nothing. */
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -36,7 +37,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   return NextResponse.json({ ok: true, changed: true });
 }
 
-export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function deleteHandler(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -64,3 +65,7 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   });
   return NextResponse.json({ ok: true });
 }
+
+// live reference data (owner 2026-10-29): every open backoffice re-reads this list at once
+export const PATCH = withConfigEvent("lps", patchHandler);
+export const DELETE = withConfigEvent("lps", deleteHandler);

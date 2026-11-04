@@ -3,6 +3,7 @@ import { createHash, createSign, createPrivateKey } from "crypto";
 import { getRedis } from "@/lib/redis";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
+import { compareVersions } from "@/lib/download-feed";
 
 // Native-client build registry + tenant binding (2026-09-15, security audit item 4/7).
 //
@@ -34,6 +35,9 @@ export type ClientBuild = {
   createdAt: string;
   revokedAt: string | null;
   note: string;
+  // Mandatory-update policy: set when this build's version is below its broker's minimum for its app (computed whenever the record is
+  // written, so the per-request check stays one Redis GET)
+  updateRequired?: { minVersion: string; latestVersion: string } | null;
 };
 
 const KEY = (id: string) => `client_build:${id}`;
@@ -60,6 +64,7 @@ function recordToRow(b: ClientBuild): ClientBuildRow {
 
 async function writeRedis(rec: ClientBuild): Promise<void> {
   const r = getRedis();
+  rec = { ...rec, updateRequired: rec.app === "bridge" ? null : await updateRequiredFor(rec.brokerId, rec.app, rec.version) };
   await r.set(KEY(rec.buildId), JSON.stringify(rec));
   await r.sadd(INDEX, rec.buildId);
 }
@@ -126,7 +131,10 @@ export function prefetchClientBuild(h: Headers): Promise<ClientBuild | null> | n
   return p;
 }
 
-export type ClientBuildVerdict = { ok: true; buildId: string | null } | { ok: false; reason: "missing" | "unknown" | "revoked" | "wrong-tenant"; buildId: string };
+export type ClientBuildVerdict =
+  | { ok: true; buildId: string | null }
+  | { ok: false; reason: "missing" | "unknown" | "revoked" | "wrong-tenant"; buildId: string }
+  | { ok: false; reason: "update-required"; buildId: string; minVersion: string; latestVersion: string };
 
 /// The check every authenticated request and both logins run. Cheap: one Redis GET, only for
 /// native clients (browser requests return ok immediately).
@@ -153,11 +161,14 @@ export async function checkClientBuild(brokerId: string | null, brokerSubdomain:
   if (!b || b.app === "bridge") return { ok: false, reason: "unknown", buildId };
   if (b.status !== "ACTIVE") return { ok: false, reason: "revoked", buildId };
   if (brokerId && b.brokerId !== brokerId) return { ok: false, reason: "wrong-tenant", buildId };
+  if (b.updateRequired) return { ok: false, reason: "update-required", buildId, minVersion: b.updateRequired.minVersion, latestVersion: b.updateRequired.latestVersion };
   return { ok: true, buildId };
 }
 
 export function clientBuildErrorMessage(v: Exclude<ClientBuildVerdict, { ok: true }>): string {
   switch (v.reason) {
+    case "update-required":
+      return "UPDATE_REQUIRED";
     case "revoked":
       return "BUILD_RETIRED: this installation has been retired. Install the latest version.";
     case "wrong-tenant":
@@ -200,4 +211,29 @@ export function signJson(value: unknown): { payload: string; signature: string; 
   const sig = signer.sign({ key: createPrivateKey(pem.replace(/\\n/g, "\n")), dsaEncoding: "ieee-p1363" });
   const keyId = createHash("sha256").update(pem).digest("hex").slice(0, 8);
   return { payload: json.toString("base64"), signature: sig.toString("base64"), keyId };
+}
+
+// ---- mandatory-update policy (owner 2026-10-29, web-min-version-brief.md) ----
+
+/** The 426 body the apps switch to "Update required" on: { error: "UPDATE_REQUIRED", minVersion, latestVersion }. */
+export function updateRequiredBody(v: { minVersion: string; latestVersion: string }) {
+  return { error: "UPDATE_REQUIRED", minVersion: v.minVersion, latestVersion: v.latestVersion };
+}
+
+/** Where getAdminSession / getAccountSession send a request from a build below the minimum (a thrown redirect, the confinement pattern). */
+export const UPDATE_REQUIRED_PATH = "/api/client/update-required";
+
+/** Below the broker's minimum for this app? The latest version is the one the minimum was checked against when it was set. */
+export async function updateRequiredFor(brokerId: string, app: string, version: string): Promise<{ minVersion: string; latestVersion: string } | null> {
+  const row = await prisma.brokerAppMinVersion.findUnique({ where: { brokerId_app: { brokerId, app } } });
+  if (!row || !row.minVersion) return null;
+  if (compareVersions(version, row.minVersion) >= 0) return null;
+  return { minVersion: row.minVersion, latestVersion: row.latestVersion || row.minVersion };
+}
+
+/** After a minimum changed: every build of that broker and app is rewritten, so its record carries the new verdict. */
+export async function refreshUpdateRequired(brokerId: string, app: string): Promise<number> {
+  const rows = await prisma.clientBuild.findMany({ where: { brokerId, app } });
+  for (const r of rows) await writeRedis(rowToRecord(r));
+  return rows.length;
 }

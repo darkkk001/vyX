@@ -18,12 +18,12 @@ export type LeadRow = {
   phone: string | null;
   country: string | null;
   source: string | null;
-  status: "NEW" | "CONTACTED" | "QUALIFIED" | "CONVERTED" | "LOST";
+  status: "NEW" | "CONTACTED" | "QUALIFIED" | "CONVERTED" | "LOST" | "DEMO" | "FUNDED";
   convertedAccountNumber: string | null;
   createdAt: string;
 };
 
-const statusTone = { NEW: "info", CONTACTED: "accent", QUALIFIED: "warning", CONVERTED: "success", LOST: "neutral" } as const;
+const statusTone = { NEW: "info", CONTACTED: "accent", QUALIFIED: "warning", CONVERTED: "success", LOST: "neutral", DEMO: "accent", FUNDED: "success" } as const;
 
 // Self-fetches from the already-existing /api/manage/leads GET, plus
 // /api/manage/shell-info for the requesting admin's own role (canConvert

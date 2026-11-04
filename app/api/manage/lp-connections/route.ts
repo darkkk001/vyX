@@ -1,3 +1,4 @@
+import { withConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -33,7 +34,7 @@ export async function GET() {
 
 /** POST: a new connection for one of the broker's providers, optionally with its symbol rows (`symbols: [...]`) in the
  *  same step. A cTrader connection starts disabled unless it comes with its symbols. Audited LP_CONNECTION_CREATED. */
-export async function POST(request: NextRequest) {
+async function postHandler(request: NextRequest) {
   const session = await brokerAdmin();
   if (!session) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const brokerId = session.brokerId!;
@@ -98,3 +99,6 @@ export async function POST(request: NextRequest) {
     throw e;
   }
 }
+
+// live reference data (owner 2026-10-29): every open backoffice re-reads this list at once
+export const POST = withConfigEvent("lps", postHandler);

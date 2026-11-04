@@ -132,8 +132,9 @@ export default function BrokerLandingPage({
               </p>
               {terminalVersion ? (
                 <div className={styles.cardAction}>
-                  {/* a file download: /download/terminal answers 302 to this broker's own installer, never a page */}
-                  <a href="/download/terminal" className={styles.heroPrimaryBtn} download>
+                  {/* the download page (version, button, Windows warning line): a full page load */}
+                  {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+                  <a href="/download/terminal" className={styles.heroPrimaryBtn}>
                     Download for Windows
                   </a>
                   <span className={styles.cardMeta}>Windows 10/11 · 64-bit · v{terminalVersion}</span>

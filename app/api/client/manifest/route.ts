@@ -37,7 +37,10 @@ export async function GET(request: NextRequest) {
   // a bridge license past its expiry: EXPIRED (the bridge stops; owner 2026-10-23)
   const expiredBridge = app === "bridge" && status === "ACTIVE" && expiryState((await bridgeLicenseExpiries([buildId])).get(buildId)) === "expired";
   const now = Math.floor(Date.now() / 1000);
-  const manifest: ClientManifest = { slug: broker.subdomain, apiHost: `${broker.subdomain}.${rootDomain}`, app, buildId, status: expiredBridge ? "EXPIRED" : status, minVersion: "", iat: now, exp: now + 24 * 3600 };
+  // mandatory-update policy (owner 2026-10-29): the broker's minimum for this app, inside the signed payload ("" = none); a blocked client still gets
+  // this manifest and the feed, so it can update
+  const minRow = await prisma.brokerAppMinVersion.findUnique({ where: { brokerId_app: { brokerId: broker.id, app } }, select: { minVersion: true } });
+  const manifest: ClientManifest = { slug: broker.subdomain, apiHost: `${broker.subdomain}.${rootDomain}`, app, buildId, status: expiredBridge ? "EXPIRED" : status, minVersion: minRow?.minVersion ?? "", iat: now, exp: now + 24 * 3600 };
   try {
     return NextResponse.json(signManifest(manifest), { headers: { "cache-control": "no-store" } });
   } catch (err) {

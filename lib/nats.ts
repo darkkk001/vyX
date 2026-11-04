@@ -78,6 +78,10 @@ const SUBJECTS = {
   // under account.> the trader stream would forward it and the installed terminal would print the raw type in its LOG.
   // The backoffice's funds queue and dashboard refresh at once instead of on the 20 s poll.
   FundsRequestChanged: "dealing.funds_request",
+  // Trader's Room (CRM 2026-11-03): something only the client's web room shows changed for this account (a funds request
+  // filed / rejected, a KYC decision, a support reply). Under room.>, which the gateway's trader stream forwards to the
+  // account's ROOM sockets only (observer tickets), never to a terminal. The room refetches what it shows.
+  RoomChanged: "room.changed",
   // Phase 2 batch 8 (issue 112): the trader's own deposit / withdrawal request was approved or rejected. Account-scoped
   // under account.> (no gateway change): the trader's terminal / WebTrader tells them at once; the backoffice sees it
   // as the "funds" family too.

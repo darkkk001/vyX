@@ -220,6 +220,18 @@ async function patchHandler(request: NextRequest) {
     if (enabledChanged && (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS"))) {
       return NextResponse.json({ error: "forbidden", permission: "EMERGENCY_CONTROLS", permissionLabel: PERMISSION_LABELS.EMERGENCY_CONTROLS }, { status: 403 });
     }
+    // web security batch 1 S2 / S3 (owner 2026-10-29): every other symbol setting (lots, slippage cap, exposure, trading mode, book, stop level)
+    // needs "Edit groups / symbols"; pricing keeps PRICING and enabling keeps EMERGENCY_CONTROLS, so a pricing-only save never needs it
+    const configChanged =
+      differs(b.minLot, current?.minLot) || differs(b.maxLot, current?.maxLot) || differs(b.lotStep, current?.lotStep) ||
+      (b.maxExposure !== undefined && differs(b.maxExposure, current?.maxExposure)) ||
+      (b.stopLevel !== undefined && Number(b.stopLevel ?? 0) !== Number(current?.stopLevel ?? 0)) ||
+      ("maxSlippagePoints" in b && differs(b.maxSlippagePoints, current?.maxSlippagePoints)) ||
+      (typeof b.tradingMode === "string" && b.tradingMode !== (current?.tradingMode ?? "BOTH")) ||
+      (typeof b.defaultBookType === "string" && b.defaultBookType !== (current?.defaultBookType ?? null));
+    if (configChanged && (await forbidUnlessBrokerAdminOrPermission(session, "GROUPS_SYMBOLS"))) {
+      return NextResponse.json({ error: "forbidden", permission: "GROUPS_SYMBOLS", permissionLabel: PERMISSION_LABELS.GROUPS_SYMBOLS }, { status: 403 });
+    }
   }
 
   const spreadMarkup = parseDecimalOrZero(body?.spreadMarkup);

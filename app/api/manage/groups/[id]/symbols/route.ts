@@ -3,6 +3,7 @@ import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { writeRefusal } from "@/lib/group-permissions";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -52,6 +53,7 @@ async function putHandler(request: NextRequest, { params }: { params: Promise<{ 
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
+  { const refused = await writeRefusal(session, ["config"], "manage/groups/[id]/symbols PUT"); if (refused) return refused; }   // S2: GROUPS_SYMBOLS
   const brokerId = session.brokerId!;
   const { id } = await params;
 

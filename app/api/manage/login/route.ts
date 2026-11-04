@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions, staffTwoFactorRequired, TWO_FACTOR_SETUP_REQUIRED } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
+import { checkClientBuild, clientBuildErrorMessage, updateRequiredBody } from "@/lib/client-builds";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
 import { staffAddressAllowed, STAFF_IP_REFUSED } from "@/lib/staff-access";
 import { recordStaffSignIn } from "@/lib/staff-devices";
@@ -30,6 +30,7 @@ export async function POST(request: NextRequest) {
   const requestBrokerId = request.headers.get("x-broker-id");
   // native-client build binding: refused before any credential is looked at
   const buildVerdict = await checkClientBuild(requestBrokerId, request.headers.get("x-broker-slug"));
+  if (!buildVerdict.ok && buildVerdict.reason === "update-required") return NextResponse.json(updateRequiredBody(buildVerdict), { status: 426 });   // mandatory-update policy
   if (!buildVerdict.ok) return NextResponse.json({ error: clientBuildErrorMessage(buildVerdict) }, { status: 426 });
 
   // Same throttle as the trade-login route (5/min per broker+identifier) --

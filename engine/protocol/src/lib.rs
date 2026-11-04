@@ -145,6 +145,10 @@ pub struct BrokerBar {
     pub o: Decimal,
     pub h: Decimal,
     pub l: Decimal,
+    /// Native release 2026-11-04 (terminal Volume pane): the bar's MT5 tick volume
+    /// (MqlRates.tick_volume) so far. Optional: an EA before v1.45 omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

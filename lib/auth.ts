@@ -1,5 +1,5 @@
 import "server-only";
-import { checkClientBuild } from "@/lib/client-builds";
+import { checkClientBuild, UPDATE_REQUIRED_PATH } from "@/lib/client-builds";
 import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -343,6 +343,8 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   {
     const h = await headers();
     const verdict = await checkClientBuild(session.brokerId, h.get("x-broker-slug"));
+    // mandatory-update policy: a backoffice below the broker's minimum gets 426 UPDATE_REQUIRED (its "Update required" screen), not a sign-out
+    if (!verdict.ok && verdict.reason === "update-required") redirect(`${UPDATE_REQUIRED_PATH}?min=${encodeURIComponent(verdict.minVersion)}&latest=${encodeURIComponent(verdict.latestVersion)}`);
     if (!verdict.ok) { console.error("[auth] getAdminSession: client build rejected", verdict); return null; }
   }
   if (session.brokerId !== null) {

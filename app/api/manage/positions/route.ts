@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { displayCurrency } from "@/lib/demo-policy";
 import { accountClosePrice, askRuleWire, loadAskRules, NO_MARKUP } from "@/lib/ask-markup";
-import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
@@ -13,27 +12,7 @@ import { loadRateResolver } from "@/lib/fx";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
-import {
-  checkTradingHalted,
-  checkCloseOnly,
-  checkSymbolTradingMode,
-  checkTradingSession,
-  checkLotStep,
-  checkGroupMaxLot,
-  checkGroupMinLot,
-  checkGroupLotStep,
-  riskCode,
-  checkGroupTradingRestriction,
-  checkGroupTradingHalted,
-  checkAccountStatusForOpen,
-  checkGroupCloseOnly,
-  checkGroupAllowedSymbol,
-  checkMaxOpenPositions,
-  checkSymbolExposure,
-  checkBrokerExposure,
-  checkMaxDailyLoss,
-  checkAccountTradingRights,
-} from "@/lib/risk";
+import { parseStaffOrder, staffOrderContext, staffActivityText } from "@/lib/staff-order";
 import * as mirror from "@/lib/mirror";
 import { writeOpenDealInTx } from "@/lib/deals";
 
@@ -214,6 +193,7 @@ export async function GET(request: NextRequest) {
       // open branch both stamp, so this is no longer a heuristic.
       isManualOrigin: p.originOrder.source === "ADMIN",
       source: p.originOrder.source,
+      manual: p.manual,   // staff order brief 37b
       mirrored: mirroredAccountIds.has(p.accountId) || (p.account.groupId != null && mirroredGroupIds.has(p.account.groupId)),
       openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
     };
@@ -229,15 +209,10 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ rows, accounts, symbols: tradableSymbols, groups, ibOptions, fx: { quotes: fx.quotes.map((q) => ({ ...q, symbol: displayCurrency(q.symbol) })) } });
 }
 
-// Manual position open -- a dealing desk placing a MARKET trade for an
-// account directly (correction, demo setup, favor), not the trader's
-// own order flow (app/api/trade/orders/route.ts). Mirrors that route's
-// lot-size validation and fill shape. `price` is optional: an explicit
-// admin-typed price fills at exactly that value (confirmed with the
-// user -- a dealer correcting a phone order often needs the trade
-// booked at the price actually agreed with the client, not whatever
-// the feed shows right now); omitting it falls back to the live
-// LivePrice tick, same as before this was configurable.
+// Staff MARKET open for a client account (CLIENT_TRADING): the same broker / symbol / account checks as the trader's own order
+// (lib/staff-order.ts), filled at the account's live price. OWNER DECISION 2026-10-28 (staff order brief change 2): there is no `price`
+// field any more; a request that sends one is refused with PRICE_NOT_ALLOWED. A position at a stated price and time is a Manual position
+// (POST manage/accounts/[id]/manual-positions, BROKER_ADMIN only, audited, marked manual).
 export async function POST(request: NextRequest) {
   const session = await requireManager();
   if (!session) {
@@ -252,130 +227,26 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => null);
   const accountId = typeof body?.accountId === "string" ? body.accountId : "";
-  const symbolId = typeof body?.symbolId === "string" ? body.symbolId : "";
-  const side = body?.side === "SELL" ? "SELL" : body?.side === "BUY" ? "BUY" : null;
-  const note = typeof body?.note === "string" && body.note.trim() ? body.note.trim() : null;
-
-  if (!accountId || !symbolId || !side) {
-    return NextResponse.json({ error: "accountId, symbolId, and side are required" }, { status: 400 });
-  }
-
-  // Optional -- see this route's own doc comment. A blank/missing value
-  // means "use the live tick", same as before this was ever configurable.
-  let explicitPrice: Prisma.Decimal | null = null;
+  if (!accountId) return NextResponse.json({ error: "accountId, symbolId, and side are required" }, { status: 400 });
+  // OWNER DECISION 2026-10-28 (staff order brief, change 2): a staff MARKET order fills at the account's live price only. A request that still sends
+  // `price` is refused, never silently ignored; a custom open price exists only in the audited Manual position route (BROKER_ADMIN only).
   if (body?.price != null && String(body.price).trim() !== "") {
-    try {
-      explicitPrice = new Prisma.Decimal(String(body.price));
-    } catch {
-      return NextResponse.json({ error: "invalid price" }, { status: 400 });
-    }
-    if (explicitPrice.lte(0)) {
-      return NextResponse.json({ error: "price must be positive" }, { status: 400 });
-    }
+    return NextResponse.json({ error: "Staff market orders fill at the live price. Use Manual position for a custom price.", code: "PRICE_NOT_ALLOWED" }, { status: 400 });
   }
-  let slPrice: Prisma.Decimal | null = null;
-  if (body?.slPrice != null && String(body.slPrice).trim() !== "") {
-    try {
-      slPrice = new Prisma.Decimal(String(body.slPrice));
-    } catch {
-      return NextResponse.json({ error: "invalid slPrice" }, { status: 400 });
-    }
-  }
-  let tpPrice: Prisma.Decimal | null = null;
-  if (body?.tpPrice != null && String(body.tpPrice).trim() !== "") {
-    try {
-      tpPrice = new Prisma.Decimal(String(body.tpPrice));
-    } catch {
-      return NextResponse.json({ error: "invalid tpPrice" }, { status: 400 });
-    }
-  }
+  const input = parseStaffOrder(body);
+  if ("error" in input) return NextResponse.json({ error: input.error }, { status: 400 });
+  const { symbolId, side, volume, slPrice, tpPrice, note } = input;
+  const ctx = await staffOrderContext(brokerId, accountId, input, { market: true });
+  if (ctx.response) return ctx.response;
+  const { account, brokerSymbol, broker } = ctx;
 
-  let volume: Prisma.Decimal;
-  try {
-    volume = new Prisma.Decimal(String(body?.volume ?? ""));
-  } catch {
-    return NextResponse.json({ error: "invalid volume" }, { status: 400 });
+  const price = await getFreshPrice(brokerSymbol.symbol.name);
+  if (!price) {
+    return NextResponse.json({ error: `No live price for ${brokerSymbol.symbol.name} right now. Try again when it quotes.` }, { status: 409 });
   }
-  if (!volume.gt(0)) {
-    return NextResponse.json({ error: "volume must be positive" }, { status: 400 });
-  }
-
-  const account = await prisma.account.findUnique({
-    where: { id: accountId },
-    include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
-  });
-  if (!account || account.brokerId !== brokerId) {
-    return NextResponse.json({ error: "account not found" }, { status: 404 });
-  }
-  if (account.status !== "ACTIVE") {
-    return NextResponse.json({ error: "account is not active" }, { status: 400 });
-  }
-
-  const brokerSymbol = await prisma.brokerSymbol.findFirst({
-    where: { brokerId, symbolId, enabled: true },
-    include: { symbol: true, tradingSessions: true },
-  });
-  if (!brokerSymbol) {
-    return NextResponse.json({ error: "symbol not available for this broker" }, { status: 400 });
-  }
-  if (volume.lt(brokerSymbol.minLot) || volume.gt(brokerSymbol.maxLot)) {
-    return NextResponse.json(
-      { error: `volume must be between ${brokerSymbol.minLot} and ${brokerSymbol.maxLot}` },
-      { status: 400 }
-    );
-  }
-
-  // Risk checks -- see lib/risk.ts. Same checks and order as the
-  // trader-facing route (app/api/trade/orders/route.ts) -- a manual
-  // dealing-desk open must respect the same broker/symbol/account
-  // policies as a trader's own order.
-  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
-  const riskError =
-    checkTradingHalted(broker) ??
-    checkCloseOnly(broker) ??
-    checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
-    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category, brokerSymbol.symbol.name) ??
-    checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
-    (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
-    (account.group ? checkGroupMinLot(volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
-    (account.group ? checkGroupLotStep(volume, account.group.lotStep, account.group.minLotSize, brokerSymbol) : null) ??
-    (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
-    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
-    checkAccountTradingRights(account, "open") ??
-    (account.group ? checkGroupTradingHalted(account.group) : null) ??
-    // account status (2026-09-29): a suspended / closed account opens nothing
-    checkAccountStatusForOpen(account) ??
-    (account.group ? checkGroupCloseOnly(account.group) : null) ??
-    (account.group
-      ? checkGroupAllowedSymbol(
-          account.group.restrictSymbols,
-          account.group.allowedSymbols.map((s) => s.symbolId),
-          brokerSymbol.symbolId
-        )
-      : null) ??
-    (await checkHedgingAllowed(prisma, broker, { accountId: accountId, symbolId: symbolId, side: side })) ??
-    (await checkMaxOpenPositions(prisma, accountId, broker.maxOpenPositionsPerAccount)) ??
-    (await checkSymbolExposure(prisma, accountId, symbolId, volume, brokerSymbol.maxExposure)) ??
-    (await checkBrokerExposure(prisma, brokerId, volume, broker.totalExposureLimit)) ??
-    (await checkMaxDailyLoss(prisma, accountId, account.maxDailyLoss));
-  if (riskError) {
-    return NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 });
-  }
-
-  let fillPrice: Prisma.Decimal;
-  let liveBaseSpreadPips: Prisma.Decimal | null = null;
-  if (explicitPrice) {
-    fillPrice = explicitPrice;
-  } else {
-    const price = await getFreshPrice(brokerSymbol.symbol.name);
-    if (!price) {
-      return NextResponse.json({ error: `no live price for ${brokerSymbol.symbol.name}, type a price to open anyway` }, { status: 409 });
-    }
-    // BUY fills at ask, SELL fills at bid -- same convention as
-    // engine/execution's execute_market_order.
-    fillPrice = side === "BUY" ? price.ask : price.bid;
-    liveBaseSpreadPips = price.ask.sub(price.bid).div(pipSize(brokerSymbol.symbol.digits));
-  }
+  // BUY fills at ask, SELL fills at bid -- same convention as engine/execution's execute_market_order.
+  let fillPrice: Prisma.Decimal = side === "BUY" ? price.ask : price.bid;
+  const liveBaseSpreadPips: Prisma.Decimal | null = price.ask.sub(price.bid).div(pipSize(brokerSymbol.symbol.digits));
 
   // See lib/group-pricing.ts's own comments -- a group's
   // GroupSymbolConfig overrides this symbol's broker-wide pricing, and
@@ -457,6 +328,7 @@ export async function POST(request: NextRequest) {
           side,
           volume: volume.toString(),
           openPrice: fillPrice.toString(),
+          activity: staffActivityText("open", { side, volume: volume.toString(), symbol: brokerSymbol.symbol.name, account: account.accountNumber }),
           // Optional dealing-desk reason, e.g. "Phone order -- client
           // unable to access platform" -- no schema field for it, so it
           // rides along in the AuditLog row rather than the Position/Order

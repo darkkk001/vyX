@@ -119,5 +119,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261103120000_drift_reconcile",
   "20261103180000_lp_connection",
   "20261103190000_bridge_license_machine",
-  "20261104120000_broker_custom_domain_verified"
+  "20261104120000_broker_custom_domain_verified",
+  "20261104130000_crm_module",
+  "20261104140000_native_release_server"
 ];

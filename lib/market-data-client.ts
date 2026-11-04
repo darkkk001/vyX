@@ -37,6 +37,8 @@ type EngineCandle = {
   high: string;
   low: string;
   close: string;
+  /** native release 2026-11-04 (terminal Volume pane): absent from an engine before this release */
+  tickVolume?: number;
   updatedAt: string;
 };
 
@@ -158,6 +160,8 @@ export function toPrismaCandle(c: EngineCandle): Candle | null {
     high,
     low,
     close,
+    // a non-number / negative (an older engine sends none) is 0: no volume recorded
+    tickVolume: typeof c.tickVolume === "number" && Number.isFinite(c.tickVolume) && c.tickVolume > 0 ? Math.min(Math.trunc(c.tickVolume), 2_147_483_647) : 0,
     updatedAt,
   };
 }

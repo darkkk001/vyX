@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { leadFromSignup } from "@/lib/crm/leads";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { hashPassword } from "@/lib/client-auth";
 import { sendClientVerificationEmail } from "@/lib/email/verification-email";
@@ -83,10 +84,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ email: existing.email });
   }
 
+  // Partner portal (CRM 2026-11-03): a sign-up through a partner's link (?ref=CODE on /portal/register) remembers the
+  // partner; their live accounts are attached to it later (lib/room/partner.ts). An unknown code is simply ignored.
+  const ref = typeof body?.ref === "string" ? body.ref.trim().toUpperCase().slice(0, 16) : "";
+  const referrer = ref ? await prisma.client.findFirst({ where: { brokerId, referralCode: ref }, select: { id: true } }) : null;
+
   const passwordHash = await hashPassword(password);
   const client = await prisma.client.create({
-    data: { brokerId, email, passwordHash, fullName },
+    data: { brokerId, email, passwordHash, fullName, source: referrer ? `IB · ${ref}` : "WEBSITE", ...(referrer ? { referredByClientId: referrer.id } : {}) },
   });
+  // CRM module: every sign-up is a lead in the pipeline (lib/crm/leads.ts); brokers without it get none
+  const crm = await prisma.broker.findUnique({ where: { id: brokerId }, select: { crmEnabled: true } });
+  if (crm?.crmEnabled) await leadFromSignup({ brokerId, clientId: client.id, fullName, email, source: client.source ?? "WEBSITE" });
 
   // The verification e-mail lives in lib/email/verification-email.ts, shared with
   // app/api/portal/resend-verification so the two can never drift apart.

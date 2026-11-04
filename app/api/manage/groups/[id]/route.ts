@@ -8,6 +8,7 @@ import { checkAccountStructure } from "@/lib/account-structure";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { same, writeRefusal, type WriteClass } from "@/lib/group-permissions";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
 import { parseGroupMinLot } from "@/lib/group-min-volume";
 import { parseGroupLotStep } from "@/lib/group-lot-step";
@@ -135,6 +136,19 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   const groupType = legacyGroupTypeFor(routing);
   const forceDealingMode = category === "DEALING" && forceDealingModeRequested;
 
+  // web security batch 1 S2: the permission of every field class this save changes (routing: DEALING; leverage / margin call / stop-out:
+  // RISK_SETTINGS; the rest: GROUPS_SYMBOLS); BROKER_ADMIN holds all three
+  {
+    const changed = new Set<WriteClass>();
+    if (!same(leverage, existing.leverage) || !same(marginCallLevel, existing.marginCallLevel) || !same(stopOutLevel, existing.stopOutLevel)) changed.add("risk");
+    if (category !== existing.category || modeRestriction !== existing.modeRestriction || dealingMode !== existing.dealingMode || forceDealingMode !== existing.forceDealingMode) changed.add("routing");
+    if (name !== existing.name || (hasDisplayName && displayName !== existing.displayName) || isDefault !== existing.isDefault || !same(maxLotSize, existing.maxLotSize)
+      || !same(minLotSize, existing.minLotSize) || !same(lotStep, existing.lotStep) || tradingRestriction !== existing.tradingRestriction || swapFree !== existing.swapFree
+      || groupType !== existing.groupType || tier !== existing.tier || isClientSelectable !== existing.isClientSelectable) changed.add("config");
+    const refused = await writeRefusal(session, changed, "manage/groups/[id] PATCH");
+    if (refused) return refused;
+  }
+
   if (category !== existing.category || modeRestriction !== existing.modeRestriction) {
     const byMode = await prisma.account.groupBy({ by: ["accountMode"], where: { groupId: id }, _count: { _all: true } });
     for (const m of byMode) {
@@ -260,9 +274,10 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
 // FK is ON DELETE RESTRICT).
 async function deleteHandler(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
+  { const refused = await writeRefusal(session, ["config"], "manage/groups/[id] DELETE"); if (refused) return refused; }   // S2: GROUPS_SYMBOLS
   const brokerId = session!.brokerId!;
   const { id } = await params;
 

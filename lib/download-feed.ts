@@ -1,5 +1,5 @@
-// Stable download addresses (hotfix 2026-10-08): /download/terminal and /download/backoffice on a broker's own host
-// always lead to the CURRENT Setup.exe of that broker's update feed, and /download shows the current version. The feed
+// Stable download addresses (hotfix 2026-10-08): /download/terminal (a page) and /download/backoffice (a redirect) on a
+// broker's own host always lead to the CURRENT Setup.exe of that broker's update feed, and /download shows the current version. The feed
 // is the same static folder the installed apps update from (public/native-<app>-updates/<broker>/): its
 // releases.win.json lists the packages (PackageId + Version) and the installer is always Setup-<PackageId minus
 // "Native">.exe, so nothing here is hard-coded to one broker.

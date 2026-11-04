@@ -10,17 +10,19 @@ import { requestOrigin } from "@/lib/request-origin";
 // (a link in an email), never fetch().
 export async function GET(request: NextRequest) {
   const origin = requestOrigin(request);
+  // one path for every broker: /login shows the Trader's Room sign-in when the CRM module is on
+  const login = "/login";
   const token = request.nextUrl.searchParams.get("token");
   if (!token) {
-    return NextResponse.redirect(`${origin}/portal/login?verify=invalid`, { status: 303 });
+    return NextResponse.redirect(`${origin}${login}?verify=invalid`, { status: 303 });
   }
 
   const clientId = await consumeEmailVerificationToken(token);
   if (!clientId) {
-    return NextResponse.redirect(`${origin}/portal/login?verify=invalid`, { status: 303 });
+    return NextResponse.redirect(`${origin}${login}?verify=invalid`, { status: 303 });
   }
 
   await prisma.client.update({ where: { id: clientId }, data: { emailVerifiedAt: new Date() } });
 
-  return NextResponse.redirect(`${origin}/portal/login?verify=success`, { status: 303 });
+  return NextResponse.redirect(`${origin}${login}?verify=success`, { status: 303 });
 }

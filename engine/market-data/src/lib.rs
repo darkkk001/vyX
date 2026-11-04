@@ -301,6 +301,11 @@ pub struct CandleUpdate {
     /// created the row -- a 50ms-late sampled tick, or a gap-sweep flat fill
     /// racing the first real tick -- fix the open for the bar's whole life.
     pub open_authoritative: bool,
+    /// Native release 2026-11-04 (terminal Volume pane): tick volume. For a seeded
+    /// update (`open_authoritative` false) it is a DELTA the upsert adds (one per
+    /// sampled flush; 0 for a gap fill); for a broker bar it is the broker's own
+    /// running tick volume for the bar (a TOTAL; the upsert keeps the larger).
+    pub tick_volume: i64,
 }
 
 /// Given a tick and "now", produces the candle upsert for every timeframe.
@@ -339,6 +344,7 @@ pub fn candle_updates_for_tick_ohlc(
             low,
             close: tick.bid,
             open_authoritative: false,
+            tick_volume: 1,
         })
         .collect()
 }
@@ -397,6 +403,8 @@ pub fn apply_broker_bars(updates: &mut [CandleUpdate], bars: &[BrokerBar], broke
         }
         update.open = bar.o;
         update.open_authoritative = true;
+        // the broker's running tick volume (a total); 0 when the EA predates v1.45 (then the stored value is kept)
+        update.tick_volume = bar.v.filter(|v| *v > 0).unwrap_or(0);
         if bar.h > update.high {
             update.high = bar.h;
         }
@@ -446,11 +454,31 @@ mod tests {
     }
 
     fn bar(tf: &str, t: DateTime<Utc>, o: &str, h: &str, l: &str) -> BrokerBar {
-        BrokerBar { tf: tf.into(), t: t.timestamp_millis(), o: o.parse().unwrap(), h: h.parse().unwrap(), l: l.parse().unwrap() }
+        BrokerBar { tf: tf.into(), t: t.timestamp_millis(), o: o.parse().unwrap(), h: h.parse().unwrap(), l: l.parse().unwrap(), v: None }
     }
 
     fn by_tf(updates: &[CandleUpdate], tf: Timeframe) -> &CandleUpdate {
         updates.iter().find(|u| u.timeframe == tf).unwrap()
+    }
+
+    /// Native release 2026-11-04 (terminal Volume pane): a seeded update carries one sampled tick (a delta); a matched broker
+    /// bar carries the broker's running tick volume (a total); a bar from an EA before v1.45 (no `v`) carries 0 (keep stored).
+    #[test]
+    fn tick_volume_is_one_per_sampled_flush_and_the_brokers_total_on_a_matched_bar() {
+        use rust_decimal_macros::dec;
+        let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap() + chrono::Duration::milliseconds(40);
+        let m1 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap();
+        let mut with_v = bar("M1", m1, "2402.0", "2402.5", "2401.8"); with_v.v = Some(512);
+        let tick = bars_tick(dec!(2402.5), vec![with_v]);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
+        assert!(updates.iter().all(|u| u.tick_volume == 1), "every seeded update is one sampled flush");
+        apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
+        assert_eq!(by_tf(&updates, Timeframe::M1).tick_volume, 512, "the broker's total for the matched bar");
+        assert_eq!(by_tf(&updates, Timeframe::M5).tick_volume, 1, "an unmatched timeframe stays a delta");
+        let old = bars_tick(dec!(2402.5), vec![bar("M1", m1, "2402.0", "2402.5", "2401.8")]);
+        let mut updates = candle_updates_for_tick_ohlc(&old, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
+        apply_broker_bars(&mut updates, &old.bars, 0, Utc::now());
+        assert_eq!(by_tf(&updates, Timeframe::M1).tick_volume, 0, "no v (older EA): 0, the upsert keeps the stored value");
     }
 
     #[test]

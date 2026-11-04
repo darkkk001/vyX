@@ -57,6 +57,7 @@ export async function GET() {
       status: b.status,
       executionEngine: b.executionEngine,
       pricingEngineEnabled: b.pricingEngineEnabled,
+      crmEnabled: b.crmEnabled,
       orderBurst: b.orderBurst,
       orderPerMinute: b.orderPerMinute,
       staffTwoFactorRequired: b.requireAdmin2fa,

@@ -1,3 +1,4 @@
+import { withBrokerConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, revokeAllAdminSessions } from "@/lib/auth";
@@ -13,7 +14,7 @@ async function requireSuperAdmin() {
 // Status-only, same convention as app/api/manage/admins/[id] (the
 // broker-scoped equivalent this mirrors): never hard-delete an AdminUser,
 // disable it. Used by the Tenant Detail modal's "Remove admin" action.
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireSuperAdmin();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -56,3 +57,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   return NextResponse.json({ id: updated.id, status: updated.status });
 }
+
+// live reference data (owner 2026-10-29): the target broker's open backoffices re-read it at once
+export const PATCH = withBrokerConfigEvent("permissions", patchHandler, async (_req, ctx: { params: Promise<{ id: string }> }) => (await prisma.adminUser.findUnique({ where: { id: (await ctx.params).id }, select: { brokerId: true } }))?.brokerId ?? null);

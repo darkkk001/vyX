@@ -521,6 +521,16 @@ model Broker {
   // Branding — resolved at request time, never hardcoded or baked into a build.
   logoUrl      String?
   primaryColor String? // CSS custom property override, e.g. "#1e8a5f"
+  // CRM module (owner brief 2026-11-03): one switch per broker. On = the Trader's Room (/room) answers on the broker's
+  // host and the backoffice shows its CRM tab; off = the platform is unchanged (/room is a 404).
+  crmEnabled           Boolean @default(false)
+  // On = a client's leverage change from the Trader's Room waits for staff approval; off = applied at once.
+  leverageChangeReview Boolean @default(false)
+  // My Tier config: {"tiers":[{"name","minLots","benefits":[...]}]}; null = the defaults (Silver 0, Gold 150, Platinum 500)
+  tierConfig           Json?
+  // Trader's Room Downloads: the broker's own store listings of the mobile app; null = that button is not shown
+  androidAppUrl        String?
+  iosAppUrl            String?
   // Shown in WebTrader's Help menu ("Contact support") instead of the
   // platform's own address -- a white-label promise means a broker's
   // trader emailing support reaches the broker, not us. Null = hide that
@@ -606,6 +616,7 @@ model Broker {
   // job, report and view and the Rust engine skip it, and the engine never loads its positions or orders. Set by
   // scripts/seed-qoredemo.ts only; never by a form.
   isDemoSandbox Boolean @default(false)
+  leverageChangeRequests LeverageChangeRequest[]
 }
 
 model AdminUser {
@@ -739,6 +750,8 @@ model Account {
   accountNumber String           @unique // sequential login id shown to the trader
   email         String
   passwordHash  String
+  // web security batch 1 S1 (owner 2026-10-29): set by a staff reset / set-password; the trader's session is confined to changing it
+  mustChangePassword Boolean   @default(false)
   fullName      String
   accountMode   AccountMode
   currency      String           @default("USD")
@@ -939,6 +952,7 @@ model Account {
   @@index([groupId])
   @@index([clientId])
   @@index([accountTypeId])
+  leverageChangeRequests LeverageChangeRequest[]
 }
 
 // Per-broker pricing-tier classification an Account can be tagged with
@@ -1065,6 +1079,9 @@ enum LeadStatus {
   QUALIFIED
   CONVERTED
   LOST
+  // CRM pipeline (2026-11-03): the client opened a demo / funded a live account
+  DEMO
+  FUNDED
 }
 
 // Prospective client, pre-Account -- CRM's "Leads" list. Conversion
@@ -1085,6 +1102,11 @@ model Lead {
 
   convertedAccountId String?  @unique
   convertedAccount   Account? @relation(fields: [convertedAccountId], references: [id])
+
+  // CRM pipeline (2026-11-03): L-<number>; the Client it became (sign-up or CONVERT); the last staff contact
+  number        Int       @unique @default(autoincrement())
+  clientId      String?
+  lastContactAt DateTime? @db.Timestamptz(3)
 
   // Step 2 (owner 2026-09-30, CRM "Assign to staff"): the staff member who owns this lead. Same broker, ACTIVE staff
   // only (app/api/manage/leads/[id] PATCH). null = unassigned. Removing the staff row un-assigns, never deletes.
@@ -1120,6 +1142,12 @@ model Group {
   // What the CLIENT sees as their account plan (owner 2026-10-23): "Standard", "Pro"... Several groups may share one.
   // Group.name ("Dealing", "Reverse", ...) is internal and never reaches a client; client routes send this as accountPlan.
   displayName        String               @default("Standard")
+  // Trader's Room plan cards (CRM 2026-11-03): client-facing figures, null = the line is not shown.
+  // maxLeverage also caps a client's own leverage change (null = the group's leverage is the ceiling).
+  planMinDeposit     Decimal?             @db.Decimal(18, 2)
+  planMaxLeverage    Int?
+  planSpreadFrom     String?
+  planCommissionPerLot Decimal?           @db.Decimal(10, 2)
   leverage           Int                  @default(100)
   marginCallLevel    Decimal              @default(100) @db.Decimal(6, 2)
   stopOutLevel       Decimal              @default(50) @db.Decimal(6, 2)
@@ -1426,6 +1454,24 @@ model Client {
 
   status ClientStatus @default(ACTIVE)
 
+  // Trader's Room (CRM 2026-11-03): the client's own number, shown as C-<n>; sign-in times for "Last login"
+  clientNumber Int       @unique @default(autoincrement())
+  lastLoginAt  DateTime? @db.Timestamptz(3)
+  prevLoginAt  DateTime? @db.Timestamptz(3)
+  // Trader's Room 2FA (TOTP, lib/totp.ts): asked at sign-in and on every withdrawal once enabled; the secret is set at
+  // setup and only counts once a code from it was confirmed
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean @default(false)
+  // Partner (IB) portal (CRM 2026-11-03): partnerAccountId = the client's account the broker made an IB (it receives the
+  // commissions, IbRelationship.ibAccountId); null = not a partner. referralCode = their link's code; referredByClientId =
+  // the partner whose link this client signed up through (their live accounts are attached to that partner).
+  partnerAccountId   String?
+  referralCode       String? @unique
+  referredByClientId String?
+  // CRM (2026-11-03): the staff member who owns the client, and where they came from ("WEBSITE", "IB · HK4210", ...)
+  ownerAdminId       String?
+  source             String?
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
@@ -1435,6 +1481,8 @@ model Client {
 
   @@unique([brokerId, email])
   @@index([brokerId])
+  payoutMethods ClientPayoutMethod[]
+  supportTickets SupportTicket[]
 }
 
 // One KYC submission per CLIENT (the person), not per account -- real
@@ -1542,6 +1590,12 @@ model LiveAccountRequest {
   accountTypeId String?
   accountType   AccountType? @relation(fields: [accountTypeId], references: [id])
 
+  // Trader's Room (CRM 2026-11-03): the plan (a client-selectable Group), leverage and currency the client asked for.
+  // The approver's own choice still wins; these are the defaults the approval starts from.
+  requestedGroupId  String?
+  requestedLeverage Int?
+  requestedCurrency String?
+
   status          RequestStatus @default(PENDING)
   rejectionReason String?
 
@@ -1646,6 +1700,10 @@ model Transaction {
   // column's practical limit by the API route accepting it (frontend-
   // first: real object storage is Phase 2, alongside the real PSP).
   receiptDataUrl     String?        @db.Text
+  // Trader's Room (CRM 2026-11-03): the reference the client puts on a bank transfer (DEP-<account>-<4>), and the
+  // saved payout method a withdrawal was requested to
+  paymentReference   String?
+  payoutMethodId     String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   // First Transaction field to change after creation -- a PENDING
@@ -1700,6 +1758,11 @@ model PaymentMethod {
   // static address (a real per-transaction-generated address needs an
   // actual PSP/wallet integration, Phase 2). Null for BANK_TRANSFER.
   walletAddress String?
+  // Trader's Room deposit card (CRM 2026-11-03): the broker's own receiving details for a bank transfer,
+  // {"beneficiary","bank","iban","swift"}; null = only `instructions` is shown
+  bankDetails   Json?
+  // the line under the method in the Trader's Room ("credited after broker approval", "Same day"); null = none
+  processingTime String?
   pspProvider   String?
   pspApiKey     String?
 
@@ -1835,6 +1898,8 @@ model Candle {
   high        Decimal         @db.Decimal(18, 5)
   low         Decimal         @db.Decimal(18, 5)
   close       Decimal         @db.Decimal(18, 5)
+  /// Native release 2026-11-04 (terminal Volume pane): tick volume per bar; the engine's VPS store is the live copy
+  tickVolume  Int             @default(0)
   updatedAt   DateTime        @updatedAt @db.Timestamptz(3)
 
   @@id([symbol, timeframe, bucketStart])
@@ -2088,6 +2153,9 @@ model Position {
   deleteReason     String?
 
   openedAt DateTime  @default(now()) @db.Timestamptz(3)
+  // Manual position (staff order brief, owner 2026-10-28): added by a broker admin at a stated price and time, never filled against the market.
+  // Every report, statement and deals export shows it as manual; clients see "Added by broker".
+  manual   Boolean   @default(false)
   closedAt DateTime? @db.Timestamptz(3)
 
   // Dealer coverage (BOOK NOW) -- true once a dealer has booked this
@@ -2425,11 +2493,14 @@ model AuditLog {
   entityId     String
   oldValue     Json?
   newValue     Json?
+  // CRM activity feed (2026-11-03): the Client this row is about, when there is one. Null on older rows.
+  clientId     String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([brokerId])
   @@index([entityType, entityId])
+  @@index([clientId, createdAt])
 }
 
 // Durable per-login IP record (Risk Radar same-IP-multi-account pass).
@@ -2911,6 +2982,22 @@ model HedgeResult {
 // request); this table is the source a cold Redis is rebuilt from (instrumentation.ts -> restoreClientBuildRegistry).
 // brokerId is not a foreign key on purpose: a build record must survive whatever happens to its broker row, it is the
 // audit of what was issued.
+// Mandatory-update policy (owner 2026-10-29, web-min-version-brief.md): per broker and app, the lowest version allowed to sign in and trade.
+// Builds below it are refused with 426 UPDATE_REQUIRED (lib/client-builds.ts); the apps show "Update required" and update in one step.
+model BrokerAppMinVersion {
+  id           String   @id @default(cuid())
+  brokerId     String
+  app          String // "terminal" | "backoffice" | "bridge"
+  minVersion   String
+  // the latest version of the broker's feed when the minimum was set (the one a blocked client updates to)
+  latestVersion String  @default("")
+  reason       String   @default("") // staff only, never shown to a client
+  setByAdminId String?
+  setAt        DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([brokerId, app])
+}
+
 model ClientBuild {
   buildId         String    @id
   brokerId        String
@@ -2977,4 +3064,158 @@ model AccountEquitySnapshot {
 
   @@index([accountId, at])
   @@index([at])
+}
+
+// Trader's Room leverage change (CRM 2026-11-03). Written only when the broker reviews leverage changes
+// (Broker.leverageChangeReview); otherwise the change applies at once and only the LEVERAGE_CHANGE audit row exists.
+model LeverageChangeRequest {
+  id                String        @id @default(cuid())
+  brokerId          String
+  broker            Broker        @relation(fields: [brokerId], references: [id])
+  accountId         String
+  account           Account       @relation(fields: [accountId], references: [id])
+  clientId          String
+  fromLeverage      Int
+  toLeverage        Int
+  status            RequestStatus @default(PENDING)
+  rejectionReason   String?
+  reviewedByAdminId String?
+  reviewedAt        DateTime?     @db.Timestamptz(3)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerId, status, createdAt])
+  @@index([accountId, status])
+}
+
+// Trader's Room saved payout methods (CRM 2026-11-03): where a client's withdrawals go. Own name only: a bank
+// account's holder must match the client's name; the broker marks a method checked (verifiedAt) after review.
+model ClientPayoutMethod {
+  id         String            @id @default(cuid())
+  brokerId   String
+  clientId   String
+  client     Client            @relation(fields: [clientId], references: [id])
+  type       PaymentMethodType
+  holderName String
+  // bank: {"bank","account","swift"}; crypto: {"address"}
+  details    Json
+  verifiedAt DateTime?         @db.Timestamptz(3)
+  removedAt  DateTime?         @db.Timestamptz(3)
+  createdAt  DateTime          @default(now()) @db.Timestamptz(3)
+
+  @@index([clientId, removedAt])
+}
+
+// Trader's Room support (CRM 2026-11-03): a client's ticket and its thread; staff answer in the backoffice.
+enum SupportTicketStatus {
+  OPEN // waiting for the broker
+  ANSWERED // the broker replied, waiting for the client
+  RESOLVED
+}
+
+model SupportTicket {
+  id              String              @id @default(cuid())
+  number          Int                 @unique @default(autoincrement())
+  brokerId        String
+  clientId        String
+  client          Client              @relation(fields: [clientId], references: [id])
+  subject         String
+  status          SupportTicketStatus @default(OPEN)
+  assignedAdminId String?
+  createdAt       DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime            @default(now()) @db.Timestamptz(3)
+  resolvedAt      DateTime?           @db.Timestamptz(3)
+  messages        SupportTicketMessage[]
+
+  @@index([brokerId, status, updatedAt])
+  @@index([clientId, updatedAt])
+}
+
+model SupportTicketMessage {
+  id            String        @id @default(cuid())
+  ticketId      String
+  ticket        SupportTicket @relation(fields: [ticketId], references: [id])
+  // null = written by the client; else the staff member
+  authorAdminId String?
+  body          String
+  createdAt     DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@index([ticketId, createdAt])
+}
+
+// Trader's Room journal (CRM 2026-11-03): the client's own notes on one closed trade. Every closed trade is in the
+// journal by itself (the list reads the positions); a row here exists only once the client saved tags, a note or the
+// rules check for it.
+model TradeJournalEntry {
+  id         String   @id @default(cuid())
+  positionId String   @unique
+  clientId   String
+  tags       String[] @default([])
+  note       String?
+  // {"plan":true,"confirmation":true,"risk":true,"breakeven":false}
+  checklist  Json?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([clientId])
+}
+
+// Partner portal rates card (CRM 2026-11-03): the broker's commission per lot for each plan (a client-selectable
+// Group). A referred client's live account gets an IbRelationship at its plan's rate.
+model IbPlanRate {
+  id         String   @id @default(cuid())
+  brokerId   String
+  groupId    String
+  ratePerLot Decimal  @db.Decimal(10, 4)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([brokerId, groupId])
+}
+
+// A partner asked for a payout from the Partner portal; staff pay it through the existing IB payout (backoffice IB tab).
+model IbPayoutRequest {
+  id          String        @id @default(cuid())
+  brokerId    String
+  clientId    String
+  ibAccountId String
+  amount      Decimal       @db.Decimal(18, 2)
+  status      RequestStatus @default(PENDING)
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  reviewedAt  DateTime?     @db.Timestamptz(3)
+
+  @@index([brokerId, status])
+  @@index([clientId, createdAt])
+}
+
+// CRM notes and tasks (2026-11-03), on a lead or a client. Staff-only, never shown to the client.
+enum CrmEntity {
+  LEAD
+  CLIENT
+}
+
+model CrmNote {
+  id            String    @id @default(cuid())
+  brokerId      String
+  entityType    CrmEntity
+  entityId      String
+  authorAdminId String?
+  body          String
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([entityType, entityId, createdAt])
+}
+
+model CrmTask {
+  id                String    @id @default(cuid())
+  brokerId          String
+  entityType        CrmEntity
+  entityId          String
+  title             String
+  dueAt             DateTime? @db.Timestamptz(3)
+  doneAt            DateTime? @db.Timestamptz(3)
+  assignedAdminId   String?
+  createdByAdminId  String?
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([entityType, entityId])
+  @@index([brokerId, doneAt, dueAt])
 }

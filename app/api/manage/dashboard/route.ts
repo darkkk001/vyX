@@ -5,7 +5,7 @@ import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { tradingDayStart } from "@/lib/trading-day";
 import { bookPnlFloating, bookPnlRealized, currencyAmountsJson, legacySum, type CurrencyAmount } from "@/lib/book-pnl";
-import { humanizeAction, excludeSuperAdminActor, auditActorKind, auditSource, deleteAuditFilter } from "@/lib/audit-labels";
+import { activityLabel, excludeSuperAdminActor, auditActorKind, auditSource, deleteAuditFilter } from "@/lib/audit-labels";
 import { parseDashRange, rangeFromKey, rangeJson } from "@/lib/dash-range";
 import { bigTrades, feedAndBridge, largePositions, netExposure, onlineNow, periodMoney, periodNewClients, topAccounts } from "@/lib/dashboard-panels";
 
@@ -220,7 +220,7 @@ export async function GET(request: Request) {
     depositsWithdrawalsByDay: [...byDay.entries()].map(([date, v]) => ({ date, deposits: v.deposits, withdrawals: v.withdrawals })),
     activity: activity.map((a) => ({
       id: a.id,
-      actionLabel: humanizeAction(a.action),
+      actionLabel: activityLabel(a.action, a.newValue),
       actorEmail: a.actorAdmin?.email ?? "system",
       actorKind: auditActorKind(a), // Step 2: STAFF / SYSTEM / CLIENT / DIRECT
       source: auditSource(a.newValue),

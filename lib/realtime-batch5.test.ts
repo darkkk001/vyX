@@ -269,7 +269,13 @@ describe("gateway fan-out (services/api-gateway/src/ws.ts)", () => {
   it("trader stream subscribes config.> and forwards broker-wide ConfigChanged to every socket of that broker", () => {
     expect(trader).toContain('nc.subscribe("config.>")');
     expect(trader).toContain("clientsByBroker.get(parsed.broker_id)");
-    expect(trader).toContain("registerClient(ws, session.accountId, session.brokerId, wantsKeepalive(url))");
+    expect(trader).toContain("registerClient(ws, session.accountId, session.brokerId, wantsKeepalive(url), session.observer === true)");
+  });
+  it("Trader's Room: room.> reaches observer sockets only, and an observer never counts the account online", () => {
+    expect(trader).toContain('nc.subscribe("room.>")');
+    expect(trader).toContain("if (roomOnly && !observers.has(client)) continue;");
+    expect(trader).toContain("if (observer) observers.add(ws);");
+    expect(trader).toContain("else markOnline(brokerId, accountId, 1);");
   });
   it("admin stream subscribes config.> and margin.>", () => {
     expect(admin).toContain('nc.subscribe("config.>")');

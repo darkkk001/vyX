@@ -1,3 +1,4 @@
+import { withConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
@@ -13,7 +14,7 @@ async function brokerAdmin() {
   return requireAdminRole(session, ["BROKER_ADMIN"]) && session!.brokerId ? session! : null;
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string; rowId: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string; rowId: string }> }) {
   const session = await brokerAdmin();
   if (!session) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const brokerId = session.brokerId!;
@@ -52,7 +53,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string; rowId: string }> }) {
+async function deleteHandler(_request: NextRequest, { params }: { params: Promise<{ id: string; rowId: string }> }) {
   const session = await brokerAdmin();
   if (!session) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const brokerId = session.brokerId!;
@@ -78,3 +79,7 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
     throw e;
   }
 }
+
+// live reference data (owner 2026-10-29): every open backoffice re-reads this list at once
+export const PATCH = withConfigEvent("lps", patchHandler);
+export const DELETE = withConfigEvent("lps", deleteHandler);

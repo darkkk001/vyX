@@ -1,10 +1,11 @@
+import { withConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 const VALID_STATUS = ["PROSPECTIVE", "NEGOTIATING", "CONTRACTED", "CONNECTED"];
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -72,7 +73,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 // reason) while any routing rule points at the provider -- the owner's rule: never delete the rules with it -- and while
 // a bridge connection (LpConnection, A.1.3) belongs to it (its foreign key would refuse the delete as a 500 otherwise).
 // The audit row keeps a full snapshot of the provider record.
-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function deleteHandler(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -119,3 +120,7 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
   if (result.status !== 200) return NextResponse.json({ error: result.error }, { status: result.status });
   return NextResponse.json({ id, deleted: true });
 }
+
+// live reference data (owner 2026-10-29): every open backoffice re-reads this list at once
+export const PATCH = withConfigEvent("lps", patchHandler);
+export const DELETE = withConfigEvent("lps", deleteHandler);

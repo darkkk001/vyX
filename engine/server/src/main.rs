@@ -770,6 +770,9 @@ struct HistoryBar {
     high: Decimal,
     low: Decimal,
     close: Decimal,
+    /// Native release 2026-11-04: MqlRates.tick_volume (EA v1.45+); absent = keep the stored value.
+    #[serde(default)]
+    tick_volume: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -925,6 +928,7 @@ async fn ingest_history(
             // Written via upsert_candles_authoritative_batch below, which
             // replaces every field regardless of this flag.
             open_authoritative: true,
+            tick_volume: bar.tick_volume.filter(|v| *v > 0).unwrap_or(0),
         };
         gap_fills.extend(state.gap_fill.fill_gaps_and_record(&update));
         authoritative.push(update);
@@ -1068,6 +1072,9 @@ struct CandleRow {
     high: String,
     low: String,
     close: String,
+    /// Native release 2026-11-04 (terminal Volume pane): the bar's tick volume (0 = none recorded).
+    #[serde(rename = "tickVolume")]
+    tick_volume: i64,
     #[serde(rename = "updatedAt")]
     updated_at: String,
 }
@@ -1101,6 +1108,7 @@ async fn internal_candles(
                     high: decimal_json(c.high),
                     low: decimal_json(c.low),
                     close: decimal_json(c.close),
+                    tick_volume: c.tick_volume,
                     updated_at: iso_ms(c.updated_at),
                 })
                 .collect(),

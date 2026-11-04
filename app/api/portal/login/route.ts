@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateClient, createClientSession, CLIENT_SESSION_COOKIE_NAME, clientSessionCookieOptions } from "@/lib/client-auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { prisma } from "@/lib/prisma";
+import { verifyTotp } from "@/lib/totp";
+import { clientIp } from "@/lib/order-execution";
 
 // Client Portal login -- email + password, distinct from the trader
 // account-number login (app/api/trade/login) this doesn't touch or
@@ -30,7 +33,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "please verify your email before logging in, check your inbox" }, { status: 403 });
   }
 
-  const token = await createClientSession({ clientId: client.id, brokerId }, remember);
+  // Trader's Room 2FA (2026-11-03): a client who turned it on sends the 6-digit code with the password; without a valid
+  // one no session is made. Only the Trader's Room can turn it on, so the portal's own form never meets this.
+  if (client.twoFactorEnabled && client.twoFactorSecret) {
+    const code = typeof body?.code === "string" ? body.code.replace(/\s+/g, "") : "";
+    if (!code) return NextResponse.json({ error: "enter the code from your authenticator app", code: "TWO_FACTOR_REQUIRED" }, { status: 401 });
+    if (!verifyTotp(client.twoFactorSecret, code)) return NextResponse.json({ error: "wrong code", code: "TWO_FACTOR_INVALID" }, { status: 401 });
+  }
+
+  const token = await createClientSession({ clientId: client.id, brokerId }, remember, { userAgent: request.headers.get("user-agent"), ip: clientIp(request.headers) });
+  // Trader's Room "Last login": the previous sign-in moves down one slot (best effort, never blocks a login)
+  await prisma.client
+    .update({ where: { id: client.id }, data: { prevLoginAt: client.lastLoginAt, lastLoginAt: new Date() } })
+    .catch((err) => console.error("[portal-login] login time update failed", err));
 
   const response = NextResponse.json({
     clientId: client.id,

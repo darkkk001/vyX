@@ -1,3 +1,4 @@
+import { withBrokerConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
@@ -56,7 +57,7 @@ export async function GET() {
 
 const CREATABLE_ROLES = new Set(["BROKER_ADMIN", "MANAGER", "SUPPORT"]);
 
-export async function POST(request: NextRequest) {
+async function postHandler(request: NextRequest) {
   const session = await requireSuperAdmin();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -116,3 +117,6 @@ export async function POST(request: NextRequest) {
     throw error;
   }
 }
+
+// live reference data (owner 2026-10-29): the target broker's open backoffices re-read it at once
+export const POST = withBrokerConfigEvent("permissions", postHandler, async (req) => { const b = await req.json().catch(() => null); return typeof b?.brokerId === "string" ? b.brokerId : null; });

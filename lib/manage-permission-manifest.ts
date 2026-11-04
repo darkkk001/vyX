@@ -25,7 +25,12 @@ export type PermKey =
   // Batch 4 owner decisions (2026-09-25)
   | "PRICING"
   | "CLIENT_TRADING"
-  | "DEALING";
+  | "DEALING"
+  // owner 2026-10-29 (super-admin k1, web security batch 1 S1-S2)
+  | "REPORTS"
+  | "GROUPS_SYMBOLS"
+  | "STAFF_MANAGE"
+  | "CLIENT_PASSWORD_RESET";
 
 export type PersonaKey = "readonly" | "dealer" | "finance" | "support";
 
@@ -71,6 +76,16 @@ export const MANIFEST: Row[] = [
   { mod: "account-types/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
   { mod: "account-types/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "account-types/route", method: "GET", perm: "ANY_MANAGER" },
+  // Registrations tab (portal sign-ups) and the CRM tab (2026-11-03): reads open to SUPPORT like the other client screens
+  { mod: "clients/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
+  { mod: "crm/leads/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
+  { mod: "crm/leads/[id]/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
+  { mod: "crm/clients/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
+  { mod: "crm/clients/[id]/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
+  { mod: "crm/tasks/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
+  { mod: "crm/tickets/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
+  { mod: "crm/tickets/[id]/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
+  { mod: "crm/settings/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
   { mod: "accounts/[id]/activity/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/funds-history/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/adjust-balance/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
@@ -86,10 +101,10 @@ export const MANIFEST: Row[] = [
   { mod: "accounts/summary/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
   { mod: "accounts/[id]/kyc/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "accounts/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "accounts/[id]/reset-password/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
+  { mod: "accounts/[id]/reset-password/route", method: "POST", perm: "CLIENT_PASSWORD_RESET", needsId: true, body: {} },
   // owner 2026-10-05 (docs/contracts/staff-credentials.md): same gate as the reset
-  { mod: "accounts/[id]/set-password/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "accounts/[id]/password-revealed/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
+  { mod: "accounts/[id]/set-password/route", method: "POST", perm: "CLIENT_PASSWORD_RESET", needsId: true, body: {} },
+  { mod: "accounts/[id]/password-revealed/route", method: "POST", perm: "CLIENT_PASSWORD_RESET", needsId: true, body: {} },
   // owner 2026-10-05: staff "Resend verification e-mail" on a client-portal login (same gate as the password reset)
   { mod: "clients/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
   { mod: "clients/[id]/resend-verification/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
@@ -111,7 +126,7 @@ export const MANIFEST: Row[] = [
   { mod: "accounts/[id]/risk/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/security/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
-  { mod: "admins/[id]/route", method: "PATCH", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
+  { mod: "admins/[id]/route", method: "PATCH", perm: "STAFF_MANAGE", needsId: true, body: {} },
   { mod: "admins/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
   { mod: "admins/route", method: "POST", perm: "BROKER_ADMIN_ONLY", body: {} },
   // Phase 2 batch 4: broker-side staff password reset (temporary password shown once)
@@ -144,9 +159,13 @@ export const MANIFEST: Row[] = [
   { mod: "groups/[id]/halt/route", method: "PATCH", perm: "EMERGENCY_CONTROLS", needsId: true, body: {} },
   { mod: "groups/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
   { mod: "groups/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "groups/[id]/route", method: "DELETE", perm: "BROKER_ADMIN_ONLY", needsId: true },
+  { mod: "groups/[id]/route", method: "DELETE", perm: "GROUPS_SYMBOLS", needsId: true },
   { mod: "groups/[id]/symbols/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "groups/route", method: "GET", perm: "ANY_MANAGER" },
+  { mod: "groups/route", method: "GET", perm: "ANY_MANAGER" },
+  { mod: "permissions/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
+  { mod: "accounts/[id]/orders/route", method: "POST", perm: "CLIENT_TRADING", needsId: true, body: {} },
+  { mod: "accounts/[id]/manual-positions/route", method: "POST", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
+  { mod: "accounts/[id]/manual-positions/price-time/route", method: "GET", perm: "BROKER_ADMIN_ONLY", needsId: true },
   { mod: "ib-relationships/[id]/route", method: "PATCH", perm: "IB_PAYOUTS", needsId: true, body: {} },
   { mod: "ib-relationships/route", method: "GET", perm: "IB_PAYOUTS" },
   { mod: "kyc-requests/[id]/document/route", method: "GET", perm: "KYC_REVIEW", needsId: true, supportRead: true },

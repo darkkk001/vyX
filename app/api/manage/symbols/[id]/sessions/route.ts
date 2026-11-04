@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { writeRefusal } from "@/lib/group-permissions";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -49,6 +50,7 @@ async function putHandler(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const { id } = await params;
+  { const refused = await writeRefusal(session, ["config"], "manage/symbols/[id]/sessions PUT"); if (refused) return refused; }   // S3: GROUPS_SYMBOLS
 
   const brokerSymbol = await prisma.brokerSymbol.findUnique({ where: { id }, include: { symbol: { select: { name: true } } } });
   if (!brokerSymbol || brokerSymbol.brokerId !== session.brokerId) {

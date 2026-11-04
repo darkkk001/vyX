@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
+import { writeRefusal, type WriteClass } from "@/lib/group-permissions";
 import { parseGroupMinLot } from "@/lib/group-min-volume";
 import { parseGroupLotStep } from "@/lib/group-lot-step";
 import { symbolVisibility } from "@/lib/synthetic-symbols";
@@ -210,6 +211,14 @@ async function postHandler(request: NextRequest) {
   // dealing-desk readers that have not moved yet.
   const routing = resolveGroupRouting(body, dealingMode);
   const { category, modeRestriction } = routing;
+  // web security batch 1 S2: creating a group needs "Edit groups / symbols"; a routing other than the default also needs the dealing desk
+  {
+    const plain = resolveGroupRouting(null, "INHERIT");
+    const classes: WriteClass[] = ["config"];
+    if (category !== plain.category || modeRestriction !== plain.modeRestriction || dealingMode !== "INHERIT" || body?.forceDealingMode === true) classes.push("routing");
+    const refused = await writeRefusal(session, classes, "manage/groups POST");
+    if (refused) return refused;
+  }
   // QoreTrader demo: a hard B-book guard (nothing the demo broker owns may route to a liquidity provider or a coverage account)
   if (category !== "B_BOOK" && (await isDemoBrokerId(brokerId))) {
     return NextResponse.json({ error: "The demo broker trades the B-book only." }, { status: 400 });

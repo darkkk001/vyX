@@ -38,6 +38,12 @@ function sessionIdKey(sessionId: string) {
 function sessionIndexKey(clientId: string) {
   return `client_sessions_index:${clientId}`;
 }
+// Display-only device details of a session (Trader's Room "Active sessions", 2026-11-03), same idea as
+// lib/account-auth.ts's session metadata. A session minted without them is listed as an unknown device.
+function sessionMetaKey(sessionId: string) {
+  return `client_session_meta:${sessionId}`;
+}
+export type ClientSessionMeta = { userAgent: string | null; ip: string | null; createdAt: string };
 function emailVerifyKey(token: string) {
   return `client_email_verify:${token}`;
 }
@@ -68,9 +74,10 @@ export async function consumeEmailVerificationToken(token: string): Promise<stri
   return getRedis().getdel(emailVerifyKey(token));
 }
 
-export async function issuePasswordResetToken(clientId: string): Promise<string> {
+// ttlSeconds: a CRM invitation (lead converted by staff) lives 72 h; a self-service reset keeps the default
+export async function issuePasswordResetToken(clientId: string, ttlSeconds: number = PASSWORD_RESET_TTL_SECONDS): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
-  await getRedis().set(passwordResetKey(token), clientId, "EX", PASSWORD_RESET_TTL_SECONDS);
+  await getRedis().set(passwordResetKey(token), clientId, "EX", ttlSeconds);
   return token;
 }
 
@@ -84,7 +91,8 @@ export async function hashPassword(password: string): Promise<string> {
 
 export async function createClientSession(
   payload: Omit<ClientSessionPayload, "sessionId">,
-  remember: boolean = true
+  remember: boolean = true,
+  meta?: { userAgent: string | null; ip: string | null }
 ): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
   const sessionId = crypto.randomBytes(16).toString("hex");
@@ -93,11 +101,44 @@ export async function createClientSession(
   await redis.set(sessionKey(token), JSON.stringify({ ...payload, sessionId } satisfies ClientSessionPayload), "EX", ttlSeconds);
   // Indexed under the client so revokeAllClientSessions can find it when
   // the credential changes (pentest 2026-09-18 finding #2).
+  const metadata: ClientSessionMeta = { userAgent: meta?.userAgent?.slice(0, 300) ?? null, ip: meta?.ip ?? null, createdAt: new Date().toISOString() };
   await Promise.all([
     redis.set(sessionIdKey(sessionId), token, "EX", ttlSeconds),
+    redis.set(sessionMetaKey(sessionId), JSON.stringify(metadata), "EX", ttlSeconds),
     redis.sadd(sessionIndexKey(payload.clientId), sessionId),
   ]);
   return token;
+}
+
+/** The client's live sessions, newest first; stale index entries are dropped on the way. */
+export async function listClientSessions(clientId: string, currentSessionId: string | undefined): Promise<(ClientSessionMeta & { sessionId: string; current: boolean })[]> {
+  const redis = getRedis();
+  const ids = await redis.smembers(sessionIndexKey(clientId));
+  const out: (ClientSessionMeta & { sessionId: string; current: boolean })[] = [];
+  const stale: string[] = [];
+  for (const id of ids) {
+    const [token, raw] = await Promise.all([redis.get(sessionIdKey(id)), redis.get(sessionMetaKey(id))]);
+    if (!token) { stale.push(id); continue; }
+    let meta: ClientSessionMeta = { userAgent: null, ip: null, createdAt: "" };
+    try { if (raw) meta = JSON.parse(raw) as ClientSessionMeta; } catch { /* listed as unknown */ }
+    out.push({ ...meta, sessionId: id, current: id === currentSessionId });
+  }
+  if (stale.length) await redis.srem(sessionIndexKey(clientId), ...stale);
+  return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+/** Ends one of the client's own sessions by its display id; false when it is not theirs or already gone. */
+export async function revokeClientSessionById(clientId: string, sessionId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!(await redis.sismember(sessionIndexKey(clientId), sessionId))) return false;
+  const token = await redis.get(sessionIdKey(sessionId));
+  await Promise.all([
+    token ? redis.del(sessionKey(token)) : Promise.resolve(0),
+    redis.del(sessionIdKey(sessionId)),
+    redis.del(sessionMetaKey(sessionId)),
+    redis.srem(sessionIndexKey(clientId), sessionId),
+  ]);
+  return Boolean(token);
 }
 
 export async function verifyClientSessionToken(token: string): Promise<ClientSessionPayload | null> {
@@ -129,6 +170,7 @@ export async function revokeAllClientSessions(clientId: string, exceptSessionId?
     await Promise.all([
       token ? redis.del(sessionKey(token)) : Promise.resolve(0),
       redis.del(sessionIdKey(sessionId)),
+      redis.del(sessionMetaKey(sessionId)),
       redis.srem(sessionIndexKey(clientId), sessionId),
     ]);
     if (token) revoked++;

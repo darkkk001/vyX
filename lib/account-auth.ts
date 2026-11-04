@@ -2,7 +2,8 @@ import "server-only";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
-import { checkClientBuild, prefetchClientBuild } from "@/lib/client-builds";
+import { redirect } from "next/navigation";
+import { checkClientBuild, prefetchClientBuild, UPDATE_REQUIRED_PATH } from "@/lib/client-builds";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
@@ -21,6 +22,9 @@ const REMEMBER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 export type AccountSessionPayload = {
   accountId: string;
   brokerId: string;
+  // web security batch 1 S1: the account had a staff reset; every trade route but change-password, sign-out and the session info answers
+  // 403 PASSWORD_CHANGE_REQUIRED (lib/account-auth getAccountSession, the gateway's requireTraderSession)
+  mustChangePassword?: boolean;
   // Present on every session created after device/session management
   // shipped -- absent on any session still alive from before that (a
   // 7-day TTL means old ones age out on their own; they simply won't
@@ -89,9 +93,11 @@ function wsTicketKey(ticket: string) {
 // instead of reading a cookie it was never going to receive. 30s TTL --
 // only needs to survive the moment between minting it and the handshake
 // that consumes it, never sits around as a replayable credential.
-export async function issueWsTicket(accountId: string, brokerId: string): Promise<string> {
+// `observer` (Trader's Room, 2026-11-03): the gateway forwards this socket the account's events (and room.>) but does
+// not count the account as online.
+export async function issueWsTicket(accountId: string, brokerId: string, opts?: { observer?: boolean }): Promise<string> {
   const ticket = crypto.randomBytes(24).toString("hex");
-  await getRedis().set(wsTicketKey(ticket), JSON.stringify({ accountId, brokerId }), "EX", 30);
+  await getRedis().set(wsTicketKey(ticket), JSON.stringify({ accountId, brokerId, ...(opts?.observer ? { observer: true } : {}) }), "EX", 30);
   return ticket;
 }
 
@@ -108,10 +114,13 @@ export async function createAccountSession(
   // cookie could outlive its own Redis-backed session data and start
   // failing auth well before the cookie itself expires.
   const ttlSeconds = remember ? REMEMBER_TTL_SECONDS : SESSION_TTL_SECONDS;
+  // web security batch 1 S1: a session of an account with a pending forced change carries the flag (a staff reset revokes every older session)
+  const flags = await prisma.account.findUnique({ where: { id: payload.accountId }, select: { mustChangePassword: true } });
+  const mustChangePassword = flags?.mustChangePassword === true ? true : undefined;
 
   await redis.set(
     sessionKey(token),
-    JSON.stringify({ ...payload, sessionId } satisfies AccountSessionPayload),
+    JSON.stringify({ ...payload, ...(mustChangePassword ? { mustChangePassword } : {}), sessionId } satisfies AccountSessionPayload),
     "EX",
     ttlSeconds
   );
@@ -276,13 +285,47 @@ export async function getAccountSession(): Promise<AccountSessionPayload | null>
 
   // native-client build binding (lib/client-builds.ts): a revoked / foreign / unregistered build gets no session
   const verdict = await checkClientBuild(session.brokerId, headerList.get("x-broker-slug"), buildLookup);
+  // mandatory-update policy: a build below the broker's minimum gets 426 UPDATE_REQUIRED (the app shows "Update required"), not a sign-out
+  if (!verdict.ok && verdict.reason === "update-required") redirect(`${UPDATE_REQUIRED_PATH}?min=${encodeURIComponent(verdict.minVersion)}&latest=${encodeURIComponent(verdict.latestVersion)}`);
   if (!verdict.ok) return null;
 
   // QoreTrader demo (lib/demo-hook.ts): lazy SL/TP, pending orders and stop-out for a guest; a deleted guest has no session.
   // Returns at once for every other tenant.
   if (!(await demoSessionHook(session))) return null;
 
+  // web security batch 1 S1: a forced change after a staff reset confines the session (the staff confinement's shape: a thrown redirect to a
+  // route that answers 403 { error, code } for every method). No x-pathname (a request that skipped middleware) fails closed.
+  if (session.mustChangePassword) {
+    const path = headerList.get("x-pathname") ?? "";
+    if (path.length === 0) return null;
+    if (path.startsWith("/api/") && !TRADER_PASSWORD_CHANGE_ALLOWLIST.has(path)) redirect(TRADER_PASSWORD_CHANGE_REQUIRED_PATH);
+  }
+
   return session;
+}
+
+export const TRADER_PASSWORD_CHANGE_REQUIRED_PATH = "/api/trade/password-change-required";
+/** The routes a confined trader session may still call: change the password, sign out, the session info. */
+export const TRADER_PASSWORD_CHANGE_ALLOWLIST: ReadonlySet<string> = new Set([
+  "/api/trade/change-password",
+  "/api/trade/logout",
+  "/api/trade/me",
+  TRADER_PASSWORD_CHANGE_REQUIRED_PATH,
+]);
+
+/** The trader's own change-password cleared the flag: the CURRENT session continues unconfined (the others were revoked by the change). */
+export async function clearMustChangeOnCurrentSession(): Promise<void> {
+  const token = (await cookies()).get(ACCOUNT_SESSION_COOKIE_NAME)?.value ?? bearerToken((await headers()).get("authorization"));
+  if (!token) return;
+  const redis = getRedis();
+  const raw = await redis.get(sessionKey(token));
+  if (!raw) return;
+  try {
+    const p = JSON.parse(raw) as AccountSessionPayload;
+    if (!p.mustChangePassword) return;
+    delete p.mustChangePassword;
+    await redis.set(sessionKey(token), JSON.stringify(p), "KEEPTTL");
+  } catch { /* a damaged payload is left for verify to refuse */ }
 }
 
 // Shared by the JSON login route (WebTrader's own fetch-based login) and

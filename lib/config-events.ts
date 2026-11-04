@@ -18,7 +18,9 @@ export type ConfigScope =
   | "payments"
   | "permissions"
   | "settings"
-  | "kyc";
+  | "kyc"
+  // live reference data (owner 2026-10-29, list item 13): liquidity providers, LP connections and routing rules
+  | "lps";
 
 export async function publishConfigChanged(brokerId: string, scope: ConfigScope, extra?: { symbol?: string; group_id?: string }): Promise<void> {
   await publishTradingEvent("ConfigChanged", { broker_id: brokerId, scope, ...(extra ?? {}) }).catch(() => {});
@@ -41,6 +43,23 @@ export function withConfigEvent<A extends unknown[]>(scope: ConfigScope, handler
       invalidateAskRules();
       const session = await getAdminSession().catch(() => null);
       if (session?.brokerId) await publishConfigChanged(session.brokerId, scope);
+    }
+    return res;
+  };
+}
+
+/**
+ * Live reference data (owner 2026-10-29, web-reference-events-brief.md): a write whose broker is NOT the session's (a Super Admin changing a
+ * broker's staff or settings) announces it for THAT broker. `brokerOf` reads the target from the request (a clone: the handler keeps the
+ * original body) and its route params; null = nothing to announce. Published only after a 2xx.
+ */
+export function withBrokerConfigEvent<R extends Request, A extends unknown[]>(scope: ConfigScope, handler: (req: R, ...rest: A) => Promise<Response>, brokerOf: (req: Request, ...rest: A) => Promise<string | null>) {
+  return async (req: R, ...rest: A): Promise<Response> => {
+    const copy = req.clone();
+    const res = await handler(req, ...rest);
+    if (res.status >= 200 && res.status < 300) {
+      const brokerId = await brokerOf(copy, ...rest).catch(() => null);
+      if (brokerId) await publishConfigChanged(brokerId, scope);
     }
     return res;
   };
