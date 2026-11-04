@@ -45,6 +45,11 @@ input int    PushIntervalSeconds  = 1;
 // existing on top of that just means the chart's own symbol *can* push
 // slightly sooner than the next timer firing; it no longer carries the
 // "otherwise other symbols go stale" responsibility by itself.
+// v1.46 (owner 2026-11-05): MT5 is a DEMO account used ONLY for historical bars / backfill / broker reference; the live
+// price feed is cTrader over FIX (QoreBridgeFeed). With SendLivePrices = false (the default) this EA posts NO live ticks
+// and no bars[] to /internal/price-feed, so demo quotes can never mix with the live prices; only the history passes
+// (shallow + deep) run. Set true ONLY if this terminal is ever the live feed again.
+input bool   SendLivePrices       = false;
 input bool   PushOnEveryTick      = true;
 input int    PushMinIntervalMs    = 50;
 
@@ -930,6 +935,17 @@ void SendHistoryPage(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
    out.sent = sent;
    if (sent == 0) return; // every bar in this page predates minUtcSec
 
+   // v1.46 (owner 2026-11-05): calendar bars stored under a wrong offset become a second day key (the 00:00 UTC D1 copies).
+   // The broker is NY-close: its offset is +2h or +3h. A disconnected terminal (TimeTradeServer() is then not the server's
+   // clock) or any other offset sends nothing; the next pass retries once the terminal is connected again.
+   if (!TerminalInfoInteger(TERMINAL_CONNECTED) || (BrokerOffsetSec != 7200 && BrokerOffsetSec != 10800))
+   {
+      Print("VyXTraderPriceFeed: history page NOT sent (", canonicalSymbol, " ", timeframeName, "): terminal connected=",
+            TerminalInfoInteger(TERMINAL_CONNECTED), ", broker offset ", BrokerOffsetSec, " s is not the NY-close +2h / +3h");
+      out.failed = true; // retried like a failed request, never read as the end of history
+      return;
+   }
+
    // server_offset_sec travels with the payload so the engine can assert
    // the conversion actually happened rather than trusting it: a bar
    // batch whose newest bucket still sits ~offset seconds in the future
@@ -1334,6 +1350,9 @@ void BuildAndSend()
 
    if (GetTickCount() - lastClockSyncMs >= (uint)(ClockSyncIntervalSec * 1000))
       SyncClockOffset();
+
+   // v1.46: history-only (the default) -- the clock sync above keeps running, nothing live is posted
+   if (!SendLivePrices) return;
 
    // Origin timestamp for the latency audit -- MUST be UTC epoch ms.
    // Replaces the old TimeGMT()/GetTickCount() approximation entirely:
