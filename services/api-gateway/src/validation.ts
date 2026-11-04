@@ -86,6 +86,31 @@ export const modifyPositionSchema = z.object({
 // (typed) result on success, so downstream handlers read already-valid
 // data. On failure, responds 400 with every issue at once (not just the
 // first) rather than making the client guess-and-check field by field.
+// A trader's own slippage max: a decimal string in points/pips, or the literal "unlimited" that every
+// client already sends when the trader set no cap (lib/risk.ts's isValidMaxSlippageInput accepts the
+// same two forms). Rejecting "unlimited" here would refuse the common case.
+const slippageInput = z.union([z.literal("unlimited"), decimalString()]);
+
+// POST /v1/positions/:id/close. Everything is optional, because the engine prices the close itself off
+// the Gateway's fresh tick: `closePrice` is the client's OWN reference (what its screen showed) and is
+// used only for the slippage comparison, exactly as the web close route uses it. Sending none means
+// "fill at the server price, no reference to check against" -- the same meaning it has there.
+export const closePositionSchema = z.object({
+  closePrice: decimalString().nullable().optional(),
+  maxSlippagePoints: slippageInput.nullable().optional(),
+  maxSlippagePips: slippageInput.nullable().optional(),
+  // Carried for traceability only, and length-bounded like the market route's. A DIRECT close has no
+  // key-based dedupe to offer -- see the route's own comment: neither this service nor the web has one,
+  // the guarantee is the engine's compare-and-set. Declared so it survives `req.body = result.data`.
+  idempotencyKey: z.string().trim().min(1).max(128).optional(),
+  // PARTIAL CLOSE IS NOT SUPPORTED HERE, and this is why it is DECLARED rather than omitted: an
+  // undeclared key is stripped by `req.body = result.data`, so a client asking to close 0.01 of a 1.00
+  // position would have been silently closed in FULL. `z.never()` makes that a 400 instead. The engine's
+  // own /v1/positions/{id}/close takes no volume either -- it is a full-close primitive, so partial
+  // closes stay on the web route until the engine grows one.
+  volume: z.never().optional(),
+});
+
 export function validateBody(schema: z.ZodTypeAny) {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.body);

@@ -289,3 +289,122 @@ export async function adminMayStream(adminId: string): Promise<boolean> {
   const row = rows[0] as { status: string; tfa: boolean } | undefined;
   return !!row && row.status === "ACTIVE" && row.tfa === true;
 }
+
+// ---- close-position support (gateway close route, 2026-11-04) ----------------------------------------
+//
+// These read Prisma's "Position" / "Symbol" / "Broker" / "BrokerSymbol", NOT the legacy lowercase
+// `positions` that getOpenPositionsSummary above still reads. The close route writes through the
+// engine, which is on the Prisma book; reading the legacy table here would answer about a book nothing
+// fills any more.
+
+export interface PositionForClose {
+  id: string;
+  accountId: string;
+  brokerId: string;
+  side: "BUY" | "SELL";
+  volume: Decimal;
+  openPrice: Decimal;
+  status: string;
+  ticket: string | null;
+  closePendingOrderId: string | null;
+  symbolName: string;
+  digits: number;
+  symbolCapPoints: Decimal | null;
+  brokerCapXauPoints: Decimal | null;
+  brokerCapRefPrice: Decimal | null;
+  defaultMaxSlippagePoints: Decimal | null;
+  defaultMaxSlippagePips: Decimal | null;
+}
+
+/** The position, scoped to this session's account AND broker, with everything the slippage cap needs.
+ *  Returns null when it does not exist or is not this account's -- the caller answers 404 either way, so
+ *  a position id cannot be used to probe another account. Status is returned rather than filtered, so
+ *  the caller can tell "already closed" (409) from "not yours" (404). */
+export async function getPositionForClose(
+  positionId: string,
+  accountId: string,
+  brokerId: string
+): Promise<PositionForClose | null> {
+  const { rows } = await pool.query(
+    `SELECT p.id, p."accountId", p."brokerId", p.side::text AS side, p.volume, p."openPrice",
+            p.status::text AS status, p.ticket, p."closePendingOrderId",
+            s.name AS symbol_name, s.digits,
+            bs."maxSlippagePoints" AS symbol_cap,
+            b."slippageCapXauPoints", b."slippageCapRefPrice",
+            b."defaultMaxSlippagePoints", b."defaultMaxSlippagePips"
+       FROM "Position" p
+       JOIN "Symbol" s ON s.id = p."symbolId"
+       JOIN "Broker" b ON b.id = p."brokerId"
+       LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
+      WHERE p.id = $1 AND p."accountId" = $2 AND p."brokerId" = $3 AND p."deletedAt" IS NULL`,
+    [positionId, accountId, brokerId]
+  );
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  const dec = (v: unknown): Decimal | null => (v == null ? null : new Decimal(String(v)));
+  return {
+    id: r.id as string,
+    accountId: r.accountId as string,
+    brokerId: r.brokerId as string,
+    side: r.side as "BUY" | "SELL",
+    volume: new Decimal(String(r.volume)),
+    openPrice: new Decimal(String(r.openPrice)),
+    status: r.status as string,
+    ticket: r.ticket == null ? null : String(r.ticket),
+    closePendingOrderId: (r.closePendingOrderId as string | null) ?? null,
+    symbolName: r.symbol_name as string,
+    digits: Number(r.digits),
+    symbolCapPoints: dec(r.symbol_cap),
+    brokerCapXauPoints: dec(r.slippageCapXauPoints),
+    brokerCapRefPrice: dec(r.slippageCapRefPrice),
+    defaultMaxSlippagePoints: dec(r.defaultMaxSlippagePoints),
+    defaultMaxSlippagePips: dec(r.defaultMaxSlippagePips),
+  };
+}
+
+/** One symbol's live bid/ask, only if the tick is fresh. Same 15 s window and same `tickAt` (not
+ *  `updatedAt`) column as getOpenPositionsSummary -- a frozen feed that keeps heartbeating must read as
+ *  NO price, not as a stale one, or a close prices off a dead market. */
+export async function getFreshPrice(symbol: string): Promise<{ bid: Decimal; ask: Decimal } | null> {
+  const { rows } = await marketDataPool.query(
+    `SELECT bid, ask FROM "LivePrice" WHERE symbol = $1 AND "tickAt" > now() - interval '15 seconds'`,
+    [symbol]
+  );
+  if (rows.length === 0) return null;
+  return { bid: new Decimal(String(rows[0].bid)), ask: new Decimal(String(rows[0].ask)) };
+}
+
+/** What the client gets back after a close: the closed Position, its TRADE_PNL ledger row and the new
+ *  balance. Field lists are the web's own client allow-lists (lib/client-execution.ts POSITION_FIELDS /
+ *  TRANSACTION_FIELDS) so the shape the UI receives is the shape it already handles. The reference keys
+ *  are the ones a real close writes: type TRADE_PNL, referenceType 'Position', referenceId = position. */
+export async function getCloseResultView(
+  positionId: string,
+  accountId: string
+): Promise<{ position: Record<string, unknown>; transaction: Record<string, unknown> | null; balance: string } | null> {
+  const { rows: prows } = await pool.query(
+    `SELECT p.id, p.ticket, p."symbolId", p."originOrderId", p.side::text AS side, p.volume, p."openPrice",
+            p."slPrice", p."tpPrice", p.status::text AS status, p."closePrice", p."realizedPnl", p.swap,
+            p.commission, p."closedVolume", p."closedSwap", p."initialVolume", p."openedAt", p."closedAt",
+            p."closePendingOrderId",
+            json_build_object('id', s.id, 'name', s.name, 'digits', s.digits, 'contractSize', s."contractSize") AS symbol
+       FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId"
+      WHERE p.id = $1`,
+    [positionId]
+  );
+  if (prows.length === 0) return null;
+  const { rows: trows } = await pool.query(
+    `SELECT id, type::text AS type, status::text AS status, amount, "balanceBefore", "balanceAfter", note,
+            "createdAt", "referenceType", "referenceId", "closeVolume", "closePrice", "closeSwap", "closeByPositionId"
+       FROM "Transaction"
+      WHERE "referenceType" = 'Position' AND "referenceId" = $1 AND type = 'TRADE_PNL'
+      ORDER BY "createdAt" DESC LIMIT 1`,
+    [positionId]
+  );
+  const { rows: arows } = await pool.query(`SELECT balance FROM "Account" WHERE id = $1`, [accountId]);
+  return {
+    position: prows[0],
+    transaction: trows[0] ?? null,
+    balance: arows.length > 0 ? String(arows[0].balance) : "0",
+  };
+}
