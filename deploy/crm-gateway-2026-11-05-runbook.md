@@ -6,7 +6,7 @@ volume, not tonight), so the engine must stay on its current build.
 
 Target commit: `e2f62b4d7c46f58ed668ab521ff46831f038bf6a`, branch `gateway/crm-on-vps` on darkkk001/vyX. Its gateway code is exactly `db2fbdf`: `264cc59` (the running gateway, with Bearer sessions and the open-route slippage cap) plus only the Trader's Room, forced password change and config coalescing changes in `services/api-gateway`. The target commit adds the `close_idempotency` migration and schema field, so the VPS repo matches the live database. It does NOT contain the web release.
 
-The VPS repo must be at `264cc59ff8692d3be0e825ab8dc6f46950ade668` (detached, clean). It fast-forwards from there, so nothing is rolled back. Block 1 stops on any other HEAD. The commit after the target on the branch only adds this file.
+State at the start of 2026-11-05: the VPS repo is already on the target `e2f62b4` (blocks 0 to 3 ran on 2026-11-04), and the 264cc59 dist was restored without a restart, so the running gateway and the dist on disk are both the 264cc59 build. Re-run blocks 0 to 3 before the window. Block 1 accepts HEAD at the target or at `264cc59` and stops on anything else. Block 2 stops if the dist on disk is already the new build. The commit after the target on the branch only adds this file.
 
 The `264cc59` deploy (22:21 UTC 2026-11-04, scoped to demo 50005725) passed gates 1 and 2; gates 3 and 4 never finished. Treat Bearer and the slippage cap as live but not fully verified. Block 6 adds a no-order auth check only.
 
@@ -58,7 +58,7 @@ The pull is fast-forward only. If the VPS repo holds anything that is not in the
 Set-Location $Repo
 $PreHead = (git rev-parse HEAD).Trim(); "pre HEAD: $PreHead  branch: $((git rev-parse --abbrev-ref HEAD).Trim())"
 $PreHead | Set-Content "$Bk\pre-head.txt"
-if ($PreHead -ne $Live) { throw "VPS HEAD is not 264cc59 -- stop and report, nothing touched" }
+if ($PreHead -ne $Live -and $PreHead -ne $Target) { throw "VPS HEAD is neither 264cc59 nor the target -- stop and report, nothing touched" }
 if (git status --porcelain --untracked-files=no) { throw "tracked files changed -- stop and report, nothing touched" }
 Invoke-Native { git fetch --all } -Tail 3
 Invoke-Native { git cat-file -e "$Target^{commit}" }
@@ -79,6 +79,7 @@ Copy-Item -Recurse -Force "$Gw\dist" "$Bk\gateway-dist"
 Copy-Item -Force $GwCmd "$Bk\start-gateway.cmd"
 if (-not (Select-String -Path "$Bk\gateway-dist\auth.js" -Pattern 'bearerToken' -Quiet)) { throw "backup has no Bearer sessions -- this is not the 264cc59 build, stop" }
 if (-not (Select-String -Path "$Bk\gateway-dist\routes\orders.js" -Pattern 'slippage' -Quiet)) { throw "backup has no slippage cap -- this is not the 264cc59 build, stop" }
+if (Select-String -Path "$Bk\gateway-dist\ws.js" -Pattern 'observer' -Quiet) { throw "dist on disk is already the new build, the 264cc59 restore did not happen -- stop and report" }
 "backed up dist ($((Get-ChildItem "$Bk\gateway-dist" -Recurse -File).Count) files) + start-gateway.cmd"
 ```
 
@@ -154,7 +155,8 @@ Returns to the `264cc59` build, the one running before this deploy, with Bearer 
 $Bk = Get-ChildItem "C:\vyxtrader\backup" -Directory -Filter "crm-gateway-*" | Sort-Object Name -Descending |
   Where-Object { (Test-Path "$($_.FullName)\gateway-dist\auth.js") -and (Test-Path "$($_.FullName)\gateway-dist\routes\orders.js") -and
     (Select-String -Path "$($_.FullName)\gateway-dist\auth.js" -Pattern 'bearerToken' -Quiet) -and
-    (Select-String -Path "$($_.FullName)\gateway-dist\routes\orders.js" -Pattern 'slippage' -Quiet) } |
+    (Select-String -Path "$($_.FullName)\gateway-dist\routes\orders.js" -Pattern 'slippage' -Quiet) -and
+    -not (Select-String -Path "$($_.FullName)\gateway-dist\ws.js" -Pattern 'observer' -Quiet) } |
   Select-Object -First 1 -ExpandProperty FullName
 if (-not $Bk) { throw "no backup holds the 264cc59 build -- do not stop the gateway, report" }
 "rolling back from $Bk"
