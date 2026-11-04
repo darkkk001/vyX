@@ -18,6 +18,7 @@ import { getAccountSession } from "@/lib/account-auth";
 
 let dbReachable = false;
 beforeAll(async () => {
+  process.env.SESSIONS_QUOTE_ENABLED = "1";
   try {
     await prisma.$queryRaw`SELECT 1`;
     dbReachable = true;
@@ -454,5 +455,121 @@ describe("order and the trader list", () => {
     const { GET } = await import("@/app/api/trade/symbols/route");
     const list = (await (await GET()).json()) as { symbols: { name: string }[] };
     expect(list.symbols.map((s) => s.name)).toEqual([names.C, names.B, names.A, names.D]);
+  });
+});
+
+describe("quote sessions are off until the server flag is set", () => {
+  it("PUT refuses QUOTE rows with 400 unless SESSIONS_QUOTE_ENABLED=1; TRADE rows and GET are unaffected", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const row = await mkRow(fx, (await mkSymbol(fx, "Q")).id);
+    await prisma.tradingSession.create({ data: { brokerSymbolId: row.id, kind: "QUOTE", dayOfWeek: 1, openTime: "08:00", closeTime: "17:00" } });
+    as(fx);
+    const { PUT, GET } = await import("./[id]/sessions/route");
+    const quote = { sessions: [{ kind: "QUOTE", dayOfWeek: 1, openTime: "08:00", closeTime: "17:00" }] };
+    const prev = process.env.SESSIONS_QUOTE_ENABLED;
+    try {
+      delete process.env.SESSIONS_QUOTE_ENABLED;
+      const off = await call(PUT, "PUT", quote, row.id);
+      expect(off.status).toBe(400);
+      expect(off.json.error).toBe("Quote sessions arrive with the next server update");
+      expect((await call(PUT, "PUT", { sessions: [{ kind: "TRADE", dayOfWeek: 1, openTime: "08:00", closeTime: "17:00" }] }, row.id)).status).toBe(200);
+      await prisma.tradingSession.create({ data: { brokerSymbolId: row.id, kind: "QUOTE", dayOfWeek: 2, openTime: "08:00", closeTime: "17:00" } });
+      expect((await call(GET, "GET", undefined, row.id)).json.map((s: { kind: string }) => s.kind).sort()).toEqual(["QUOTE", "TRADE"]);
+      process.env.SESSIONS_QUOTE_ENABLED = "0";
+      expect((await call(PUT, "PUT", quote, row.id)).status).toBe(400);
+      process.env.SESSIONS_QUOTE_ENABLED = "1";
+      expect((await call(PUT, "PUT", quote, row.id)).status).toBe(200);
+    } finally {
+      process.env.SESSIONS_QUOTE_ENABLED = prev;
+    }
+  });
+});
+
+// Permissions (bfe2161 rule): settings and hours need GROUPS_SYMBOLS, pricing keeps PRICING, enabling keeps EMERGENCY_CONTROLS,
+// all judged on the fields a request CHANGES.
+describe("write permissions on every new route", () => {
+  async function manager(fx: Fx, extra: string[]): Promise<Fx> {
+    const a = await prisma.adminUser.create({ data: { brokerId: fx.brokerId, email: `perm-${randomUUID().slice(0, 8)}@test.local`, passwordHash: "x", role: "MANAGER", extraPermissions: extra } });
+    return { ...fx, adminId: a.id };
+  }
+  const refused = (r: { status: number; json: { permission?: string; permissionLabel?: string } }, permission: string) => {
+    expect(r.status).toBe(403);
+    expect(r.json.permission).toBe(permission);
+    expect(typeof r.json.permissionLabel).toBe("string");
+  };
+
+  it("without GROUPS_SYMBOLS every write route answers 403 with the key and label; with it the same request passes", async () => {
+    if (!dbReachable) return;
+    const base = await fixture();
+    const a = await mkSymbol(base, "A");
+    const b2 = await mkSymbol(base, "B");
+    const row = await mkRow(base, a.id, { displayOrder: 1 });
+    const src = await mkRow(base, b2.id);
+    const target = await mkSymbol(base, "T");
+    const noKey = await manager(base, []);
+    const withKey = await manager(base, ["GROUPS_SYMBOLS"]);
+    const { PATCH: patchId } = await import("./[id]/route");
+    const { PATCH: bulk } = await import("./bulk/route");
+    const { PATCH: order } = await import("./order/route");
+    const { POST: importPost } = await import("./import/route");
+    const { POST: post } = await import("./route");
+    const { PUT: putSessions } = await import("./[id]/sessions/route");
+    const csv = `symbolName,freezeLevel
+${a.name},4
+`;
+
+    as(noKey, "MANAGER");
+    refused(await call(patchId, "PATCH", { freezeLevel: 5 }, row.id), "GROUPS_SYMBOLS");
+    refused(await call(bulk, "PATCH", { ids: [row.id], set: { maxLot: "2" } }), "GROUPS_SYMBOLS");
+    refused(await call(bulk, "PATCH", { ids: [row.id], set: { sessions: [] } }), "GROUPS_SYMBOLS");
+    refused(await call(order, "PATCH", { order: [{ id: row.id, displayOrder: 9 }] }), "GROUPS_SYMBOLS");
+    refused(await call(importPost, "POST", csv, "x", "/import?dryRun=1"), "GROUPS_SYMBOLS");
+    refused(await call(importPost, "POST", csv, "x", "/import"), "GROUPS_SYMBOLS");
+    refused(await call(post, "POST", { symbolName: target.name }), "GROUPS_SYMBOLS");
+    refused(await call(post, "POST", { fromBrokerSymbolId: src.id, symbolName: target.name }), "GROUPS_SYMBOLS");
+    refused(await call(putSessions, "PUT", { sessions: [] }, row.id), "GROUPS_SYMBOLS");
+    // nothing changed
+    expect((await prisma.brokerSymbol.findUniqueOrThrow({ where: { id: row.id } })).freezeLevel).toBeNull();
+    expect(await prisma.brokerSymbol.count({ where: { brokerId: base.brokerId, symbolId: target.id } })).toBe(0);
+    // a save that changes nothing is not gated
+    expect((await call(order, "PATCH", { order: [{ id: row.id, displayOrder: 1 }] })).status).toBe(200);
+    expect((await call(patchId, "PATCH", { freezeLevel: null }, row.id)).status).toBe(200);
+    // reads keep today's rule
+    const { GET } = await import("./route");
+    expect((await GET()).status).toBe(200);
+
+    as(withKey, "MANAGER");
+    expect((await call(patchId, "PATCH", { freezeLevel: 5 }, row.id)).status).toBe(200);
+    expect((await call(importPost, "POST", csv, "x", "/import?dryRun=1")).status).toBe(200);
+    expect((await call(order, "PATCH", { order: [{ id: row.id, displayOrder: 9 }] })).status).toBe(200);
+    expect((await call(putSessions, "PUT", { sessions: [] }, row.id)).status).toBe(200);
+    expect((await call(post, "POST", { symbolName: target.name })).status).toBe(201);
+  });
+
+  it("pricing needs PRICING and enabling needs EMERGENCY_CONTROLS on top, on bulk, add and import", async () => {
+    if (!dbReachable) return;
+    const base = await fixture();
+    const sym = await mkSymbol(base, "P");
+    const row = await mkRow(base, sym.id);
+    const cfgOnly = await manager(base, ["GROUPS_SYMBOLS"]);
+    const cfgPricing = await manager(base, ["GROUPS_SYMBOLS", "PRICING"]);
+    const { PATCH: bulk } = await import("./bulk/route");
+    const { POST: post } = await import("./route");
+    const { POST: importPost } = await import("./import/route");
+    const newSym = await mkSymbol(base, "N");
+
+    as(cfgOnly, "MANAGER");
+    refused(await call(bulk, "PATCH", { ids: [row.id], set: { swapLong: "-1" } }), "PRICING");
+    refused(await call(bulk, "PATCH", { ids: [row.id], set: { enabled: true } }), "EMERGENCY_CONTROLS");
+    refused(await call(post, "POST", { symbolName: newSym.name, spreadMarkup: "1" }), "PRICING");
+    refused(await call(importPost, "POST", `symbolName,spreadMarkup
+${sym.name},2
+`, "x", "/import?dryRun=1"), "PRICING");
+    // an unchanged pricing value is not a pricing change
+    expect((await call(bulk, "PATCH", { ids: [row.id], set: { spreadMarkup: "0", maxLot: "5" } })).json.results[0].ok).toBe(true);
+    as(cfgPricing, "MANAGER");
+    expect((await call(bulk, "PATCH", { ids: [row.id], set: { swapLong: "-1" } })).status).toBe(200);
+    refused(await call(bulk, "PATCH", { ids: [row.id], set: { enabled: true } }), "EMERGENCY_CONTROLS");
   });
 });

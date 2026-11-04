@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { crossCheck, gateReason, parseSymbolFields, symbolGates, type FieldKey } from "@/lib/symbol-config";
+import { changedAgainst, crossCheck, fieldsView, parseSymbolFields, symbolWriteRefusal, type FieldKey } from "@/lib/symbol-config";
 import { validateSessions } from "@/lib/symbol-sessions";
 import { updateBrokerSymbol } from "@/lib/symbol-write";
 
@@ -39,11 +39,16 @@ async function patchHandler(request: NextRequest) {
     sessions = v.rows;
   }
 
-  const gates = await symbolGates(session!);
-  const denied = gateReason(gates, Object.keys(data));
-  if (denied) return NextResponse.json({ error: `forbidden: ${denied}` }, { status: 403 });
-
   const rows = await prisma.brokerSymbol.findMany({ where: { id: { in: ids }, brokerId }, include: { symbol: true } });
+  // permissions, judged on what the request changes across the rows (an unknown id counts as changing everything sent;
+  // a sessions list counts as a trading-hours write): pricing -> PRICING, enabled -> EMERGENCY_CONTROLS, the rest -> GROUPS_SYMBOLS
+  const changed = new Set<string>(sessions ? ["sessions"] : []);
+  for (const id of ids) {
+    const r = rows.find((x) => x.id === id);
+    for (const k of changedAgainst(r ? fieldsView(r) : null, data)) changed.add(k);
+  }
+  const refused = await symbolWriteRefusal(session, [...changed], "manage/symbols/bulk PATCH");
+  if (refused) return refused;
   const byId = new Map(rows.map((r) => [r.id, r]));
   const results: { id: string; ok: boolean; error?: string }[] = [];
   for (const id of ids) {

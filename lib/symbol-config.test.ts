@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
-import { EXTRA_KEYS, crossCheck, gateReason, parseSymbolFields } from "@/lib/symbol-config";
+import { EXTRA_KEYS, changedAgainst, crossCheck, parseSymbolFields } from "@/lib/symbol-config";
 import { parseCsv } from "@/lib/symbol-csv";
 
 const parse = (input: Record<string, unknown>) => parseSymbolFields(input, EXTRA_KEYS);
@@ -89,10 +89,10 @@ describe("parseSymbolFields: the core settings keep the existing rules", () => {
     expect(crossCheck(cur, { maxLot: new Prisma.Decimal(5) })).toHaveLength(0);
     expect(crossCheck(null, { minLot: new Prisma.Decimal(200) })).toHaveLength(1);
   });
-  it("gateReason: pricing and enabled need their permissions", () => {
-    expect(gateReason({ pricing: false, emergency: true }, ["swapLong"])).toContain("permission");
-    expect(gateReason({ pricing: true, emergency: false }, ["enabled"])).toContain("permission");
-    expect(gateReason({ pricing: false, emergency: false }, ["maxLot", "tickSize"])).toBeNull();
+  it("changedAgainst: only the keys that differ from the stored row; every key when there is no row", () => {
+    const view = { swapLong: "0", maxLot: "100", tickSize: null } as never;
+    expect(changedAgainst(view, { swapLong: new Prisma.Decimal(0), maxLot: new Prisma.Decimal(5), tickSize: null })).toEqual(["maxLot"]);
+    expect(changedAgainst(null, { swapLong: 0 })).toEqual(["swapLong"]);
   });
 });
 

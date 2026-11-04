@@ -10,7 +10,7 @@ import { symbolSlippageCapPoints } from "@/lib/slippage-cap";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hoursSummary, validateSessions } from "@/lib/symbol-sessions";
-import { CORE_KEYS, EXTRA_KEYS, crossCheck, fieldsView, gateReason, parseSymbolFields, symbolGates } from "@/lib/symbol-config";
+import { CORE_KEYS, EXTRA_KEYS, crossCheck, fieldsView, parseSymbolFields, symbolWriteRefusal } from "@/lib/symbol-config";
 import { createBrokerSymbol, readSessions } from "@/lib/symbol-write";
 
 const TRADING_MODES: TradingMode[] = ["BOTH", "BUY_ONLY", "SELL_ONLY", "CLOSE_ONLY"];
@@ -497,6 +497,9 @@ async function postHandler(request: NextRequest) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ error: "send a JSON object" }, { status: 400 });
   const symbolName = typeof body.symbolName === "string" ? body.symbolName.trim() : "";
   if (!symbolName) return NextResponse.json({ error: "symbolName is required" }, { status: 400 });
+  // adding or cloning a symbol writes its settings: GROUPS_SYMBOLS before anything is looked up (pricing / enabled are judged below)
+  const early = await symbolWriteRefusal(session, ["tradingMode"], "manage/symbols POST");
+  if (early) return early;
 
   const symbol = await prisma.symbol.findUnique({ where: { name: symbolName } });
   if (!symbol || (await symbolHiddenFromBroker(prisma, brokerId, symbol.name))) {
@@ -505,7 +508,6 @@ async function postHandler(request: NextRequest) {
   const already = await prisma.brokerSymbol.findUnique({ where: { brokerId_symbolId: { brokerId, symbolId: symbol.id } } });
   if (already) return NextResponse.json({ error: `${symbol.name} is already added`, brokerSymbolId: already.id }, { status: 409 });
 
-  const gates = await symbolGates(session);
   const ctx = { brokerId, adminId: session.adminId, symbolName: symbol.name };
   const nonUsd = symbol.quoteCurrency !== "USD";
 
@@ -520,8 +522,9 @@ async function postHandler(request: NextRequest) {
       ...(["spreadMarkup", "commissionPerLot", "swapLong", "swapShort"] as const).filter((k) => !source[k].isZero()),
       ...(copied.enabled ? ["enabled"] : []),
     ];
-    const denied = gateReason(gates, touched);
-    if (denied) return NextResponse.json({ error: `forbidden: cloning ${source.symbol.name} copies settings that ${denied}` }, { status: 403 });
+    // a clone writes every setting: GROUPS_SYMBOLS, plus PRICING / EMERGENCY_CONTROLS when it copies non-zero pricing or an enabled symbol
+    const denied = await symbolWriteRefusal(session, ["tradingMode", ...touched], "manage/symbols POST");
+    if (denied) return denied;
     const created = await prisma.$transaction(async (tx) => {
       const sessions = await readSessions(tx, source.id);
       const row = await createBrokerSymbol(tx, { ...ctx, source: "clone" }, symbol.id, copied, sessions, source.id);
@@ -543,8 +546,9 @@ async function postHandler(request: NextRequest) {
   if (data.enabled === true && nonUsd) {
     return NextResponse.json({ error: `${symbol.name} cannot be enabled yet: P/L in ${displayCurrency(symbol.quoteCurrency)} is not supported.` }, { status: 400 });
   }
-  const denied = gateReason(gates, Object.keys(data));
-  if (denied) return NextResponse.json({ error: `forbidden: ${denied}` }, { status: 403 });
+  // adding a symbol is a settings write (GROUPS_SYMBOLS) plus PRICING / EMERGENCY_CONTROLS for the pricing and enabled values sent
+  const denied = await symbolWriteRefusal(session, ["tradingMode", ...Object.keys(data), ...(sessions.length > 0 ? ["sessions"] : [])], "manage/symbols POST");
+  if (denied) return denied;
   const row = await prisma.$transaction((tx) => createBrokerSymbol(tx, { ...ctx, source: "add" }, symbol.id, { enabled: false, ...data }, sessions));
   return NextResponse.json({ brokerSymbolId: row.id, symbolId: symbol.id, symbolName: symbol.name, ...fieldsView(row), sessions }, { status: 201 });
 }

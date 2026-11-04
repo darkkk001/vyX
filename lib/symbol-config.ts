@@ -3,6 +3,8 @@
 // audits the same way. The app never derives or validates these values: it sends them, the server owns the rules.
 import { Prisma, type BrokerSymbol, type TradingMode } from "@prisma/client";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
+import { NextResponse } from "next/server";
+import { writeRefusal } from "@/lib/group-permissions";
 import type { AdminSessionPayload } from "@/lib/auth";
 
 export type FieldError = { field: string; reason: string };
@@ -215,17 +217,32 @@ export function changedKeys(before: FieldsView | null, after: FieldsView): Field
   return FIELD_KEYS.filter((k) => !before || before[k] !== after[k]);
 }
 
-/** What the caller may change, resolved once per request. */
-export async function symbolGates(session: AdminSessionPayload): Promise<{ pricing: boolean; emergency: boolean }> {
-  return {
-    pricing: !(await forbidUnlessBrokerAdminOrPermission(session, "PRICING")),
-    emergency: !(await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS")),
-  };
+/** Equal for the changed-fields compare: numbers, Decimals and strings by their text, null / undefined alike. */
+function sameText(a: unknown, b: unknown): boolean {
+  const t = (v: unknown) => (v === null || v === undefined ? "" : String(v));
+  return t(a) === t(b);
 }
 
-/** A sentence when the caller may not change one of these keys, else null. */
-export function gateReason(gates: { pricing: boolean; emergency: boolean }, keys: readonly string[]): string | null {
-  if (!gates.pricing && keys.some((k) => (PRICING_KEYS as string[]).includes(k))) return `needs the ${PERMISSION_LABELS.PRICING} permission`;
-  if (!gates.emergency && keys.some((k) => (EMERGENCY_KEYS as string[]).includes(k))) return `needs the ${PERMISSION_LABELS.EMERGENCY_CONTROLS} permission`;
+/** The keys of `data` whose value differs from the stored view (all of them when there is no stored row). */
+export function changedAgainst(view: FieldsView | null, data: Record<string, unknown>): string[] {
+  return Object.keys(data).filter((k) => !view || !sameText(view[k as FieldKey], data[k]));
+}
+
+/**
+ * The write rule for every symbols-tab write (2026-11-04, same as lib/group-permissions.ts and PATCH /api/manage/symbols),
+ * judged on the keys a request CHANGES: pricing keys need PRICING, `enabled` needs EMERGENCY_CONTROLS, every other setting
+ * and the trading hours ("sessions") need GROUPS_SYMBOLS. BROKER_ADMIN holds all. null = allowed, otherwise the 403 to return
+ * ({ error, permission, permissionLabel }, the shape those routes already use).
+ */
+export async function symbolWriteRefusal(session: AdminSessionPayload | null, keys: readonly string[], routeName: string): Promise<NextResponse | null> {
+  if (keys.some((k) => (PRICING_KEYS as string[]).includes(k)) && (await forbidUnlessBrokerAdminOrPermission(session, "PRICING"))) {
+    return NextResponse.json({ error: "forbidden", permission: "PRICING", permissionLabel: PERMISSION_LABELS.PRICING }, { status: 403 });
+  }
+  if (keys.some((k) => (EMERGENCY_KEYS as string[]).includes(k)) && (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS"))) {
+    return NextResponse.json({ error: "forbidden", permission: "EMERGENCY_CONTROLS", permissionLabel: PERMISSION_LABELS.EMERGENCY_CONTROLS }, { status: 403 });
+  }
+  if (keys.some((k) => !(PRICING_KEYS as string[]).includes(k) && !(EMERGENCY_KEYS as string[]).includes(k))) {
+    return writeRefusal(session, ["config"], routeName);
+  }
   return null;
 }

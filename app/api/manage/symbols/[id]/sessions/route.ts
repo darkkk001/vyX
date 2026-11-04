@@ -65,6 +65,11 @@ async function putHandler(request: NextRequest, { params }: { params: Promise<{ 
   if (rowErrors.length > 0) {
     return NextResponse.json({ error: "some sessions are invalid", rowErrors }, { status: 400 });
   }
+  // Old-engine safety: until the engine that filters kind = TRADE (engine/order-management book.rs) is deployed, a QUOTE row
+  // would be read as a trading window. Off unless SESSIONS_QUOTE_ENABLED=1.
+  if (process.env.SESSIONS_QUOTE_ENABLED !== "1" && rows.some((r) => r.kind === "QUOTE")) {
+    return NextResponse.json({ error: "Quote sessions arrive with the next server update" }, { status: 400 });
+  }
 
   // Phase 2 batch 6 (issue 172): the replace and its audit row (old and new windows) commit together
   await prisma.$transaction(async (tx) => {

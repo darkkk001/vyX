@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { fieldsView, parseSymbolFields } from "@/lib/symbol-config";
+import { changedAgainst, fieldsView, parseSymbolFields, symbolWriteRefusal } from "@/lib/symbol-config";
 import { updateBrokerSymbol } from "@/lib/symbol-write";
 
 // PATCH /api/manage/symbols/[id]: `id` is BrokerSymbol.id (like the sessions route). Partial update of the symbols-tab
@@ -33,10 +33,8 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const { id } = await params;
-  const existing = await prisma.brokerSymbol.findUnique({ where: { id }, include: { symbol: { select: { name: true } } } });
-  if (!existing || existing.brokerId !== session!.brokerId) {
-    return NextResponse.json({ error: "symbol not found" }, { status: 404 });
-  }
+  const found = await prisma.brokerSymbol.findUnique({ where: { id }, include: { symbol: { select: { name: true } } } });
+  const existing = found && found.brokerId === session!.brokerId ? found : null;
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return NextResponse.json({ error: "send a JSON object with the fields to change" }, { status: 400 });
@@ -45,6 +43,10 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   if (errors.length > 0) {
     return NextResponse.json({ error: errors.map((e) => `${e.field} ${e.reason}`).join("; "), fieldErrors: errors }, { status: 400 });
   }
+  // permissions, judged on the fields this save changes: settings need GROUPS_SYMBOLS (an unknown id counts as changing them)
+  const refused = await symbolWriteRefusal(session, changedAgainst(existing ? fieldsView(existing) : null, data), "manage/symbols/[id] PATCH");
+  if (refused) return refused;
+  if (!existing) return NextResponse.json({ error: "symbol not found" }, { status: 404 });
   const { symbol, ...bs } = existing;
   const { row } = await prisma.$transaction((tx) =>
     updateBrokerSymbol(tx, { brokerId: session!.brokerId!, adminId: session!.adminId, symbolName: symbol.name, source: "edit" }, bs, data, null),

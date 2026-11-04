@@ -34,7 +34,7 @@ describe("CLOSE_ONLY", () => {
       expect(read(rel), rel).not.toContain("checkSymbolTradingMode");
     }
     // the open paths all refuse through it
-    for (const rel of ["app/api/trade/orders/route.ts", "app/api/manage/positions/route.ts", "lib/pending-trigger.ts", "lib/mirror.ts"]) {
+    for (const rel of ["app/api/trade/orders/route.ts", "lib/staff-order.ts", "lib/pending-trigger.ts", "lib/mirror.ts"]) {
       expect(read(rel), rel).toContain("checkSymbolTradingMode");
     }
   });

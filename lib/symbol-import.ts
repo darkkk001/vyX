@@ -8,7 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { symbolHiddenFromBroker } from "@/lib/synthetic-symbols";
 import { displayCurrency } from "@/lib/demo-policy";
 import { parseCsv } from "@/lib/symbol-csv";
-import { FIELD_KEYS, crossCheck, fieldsView, gateReason, parseSymbolFields, symbolGates, type FieldKey } from "@/lib/symbol-config";
+import { FIELD_KEYS, crossCheck, fieldsView, parseSymbolFields, type FieldKey } from "@/lib/symbol-config";
 import { createBrokerSymbol, updateBrokerSymbol } from "@/lib/symbol-write";
 import type { AdminSessionPayload } from "@/lib/auth";
 
@@ -22,7 +22,7 @@ function same(current: unknown, next: unknown): boolean {
   return current === next;
 }
 
-export async function planImport(session: AdminSessionPayload, text: string): Promise<{ error: string } | { rows: PlannedRow[] }> {
+export async function planImport(session: AdminSessionPayload, text: string): Promise<{ error: string } | { rows: PlannedRow[]; keys: string[] }> {
   const records = parseCsv(text);
   if (records.length === 0) return { error: "the file is empty" };
   const header = records[0].cells.map((h) => h.trim());
@@ -39,7 +39,7 @@ export async function planImport(session: AdminSessionPayload, text: string): Pr
   const symByName = new Map(symbols.map((s) => [s.name, s]));
   const existing = await prisma.brokerSymbol.findMany({ where: { brokerId, symbolId: { in: symbols.map((s) => s.id) } } });
   const bsBySymbol = new Map(existing.map((b) => [b.symbolId, b]));
-  const gates = await symbolGates(session);
+  const keys = new Set<string>(); // every setting the ok rows would change
   const seen = new Set<string>();
   const rows: PlannedRow[] = [];
 
@@ -93,22 +93,14 @@ export async function planImport(session: AdminSessionPayload, text: string): Pr
         row.ok = true; // nothing to change
         continue;
       }
-      const denied = gateReason(gates, Object.keys(changed));
-      if (denied) {
-        row.errors.push(denied);
-        continue;
-      }
+      Object.keys(changed).forEach((k) => keys.add(k));
       Object.assign(row, { action: "update", ok: true, data: changed, existingId: current.id, symbolId: symbol.id });
     } else {
-      const denied = gateReason(gates, Object.keys(data));
-      if (denied) {
-        row.errors.push(denied);
-        continue;
-      }
+      Object.keys(data).forEach((k) => keys.add(k));
       Object.assign(row, { action: "create", ok: true, data: { enabled: false, ...data }, symbolId: symbol.id });
     }
   }
-  return { rows };
+  return { rows, keys: [...keys] };
 }
 
 /** Writes the ok create / update rows (one transaction and one audit row each). A row that fails to write is reported, the others still apply. */

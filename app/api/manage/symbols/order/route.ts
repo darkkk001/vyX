@@ -3,6 +3,7 @@ import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { updateBrokerSymbol } from "@/lib/symbol-write";
+import { symbolWriteRefusal } from "@/lib/symbol-config";
 
 // PATCH /api/manage/symbols/order: { order: [{ id: BrokerSymbol.id, displayOrder: whole number >= 0 }] }
 // The trader symbol list (GET /api/trade/symbols) is sorted by displayOrder, symbols without one last, then by name.
@@ -28,6 +29,11 @@ async function patchHandler(request: NextRequest) {
 
   const rows = await prisma.brokerSymbol.findMany({ where: { id: { in: items.map((i) => i.id) }, brokerId }, include: { symbol: { select: { name: true } } } });
   const byId = new Map(rows.map((r) => [r.id, r]));
+  // GROUPS_SYMBOLS, judged on the symbols whose order actually changes (an unknown id counts as a change)
+  if (items.some((i) => byId.get(i.id)?.displayOrder !== i.displayOrder)) {
+    const refused = await symbolWriteRefusal(session, ["displayOrder"], "manage/symbols/order PATCH");
+    if (refused) return refused;
+  }
   const results: { id: string; ok: boolean; error?: string }[] = [];
   for (const item of items) {
     const found = byId.get(item.id);
