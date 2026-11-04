@@ -12,7 +12,7 @@ import { conversionRate, loadFxLookup } from "@/lib/fx";
 
 const MAX_POSITIONS = 200;
 
-type Result = { positionId: string; ok: boolean; slPrice: string | null; tpPrice: string | null; slAmount?: string | null; tpAmount?: string | null; error: string | null; nextOpenAt?: string };
+type Result = { positionId: string; ok: boolean; amountCode?: string; amountMessage?: string; slPrice: string | null; tpPrice: string | null; slAmount?: string | null; tpAmount?: string | null; error: string | null; nextOpenAt?: string };
 
 type AmountSpecError = { amountError: { code: "AMOUNT_INVALID"; error: string } };
 
@@ -102,7 +102,7 @@ async function postInner(request: NextRequest) {
     const refused = refuseModify({ position, brokerSymbol, symbolName: symbol?.name ?? null, live, askRuleFor, slPrice, tpPrice, slAmount, tpAmount, fxRate, accountCurrency: amountCtx?.currency });
     if (refused) {
       const error = String(refused.body.error ?? "refused");
-      results.push({ positionId: id, ok: false, slPrice: null, tpPrice: null, error, ...(typeof refused.body.nextOpenAt === "string" ? { nextOpenAt: refused.body.nextOpenAt } : {}) });
+      results.push({ positionId: id, ok: false, slPrice: null, tpPrice: null, error, ...(typeof refused.body.amountCode === "string" ? { amountCode: refused.body.amountCode, amountMessage: error } : {}), ...(typeof refused.body.nextOpenAt === "string" ? { nextOpenAt: refused.body.nextOpenAt } : {}) });
       continue;
     }
     // guarded on OPEN so a position closed a moment ago is not written to
