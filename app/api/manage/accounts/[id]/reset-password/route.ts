@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { revokeAllAccountSessions } from "@/lib/account-auth";
 import { generateTemporaryPassword } from "@/lib/passwords";
-import { emailNewPassword, forcedPasswordChange, requireAccountForCredentials } from "@/lib/account-credentials";
+import { emailNewPassword, requireAccountForCredentials } from "@/lib/account-credentials";
 
 // Resets a trading account's password (docs/contracts/staff-credentials.md, owner 2026-10-05). The answer ALWAYS
 // carries the new temporary password (the backoffice card shows it masked; revealing it is audited through
@@ -21,7 +21,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   const passwordHash = await bcrypt.hash(password, 10);
 
   await prisma.$transaction([
-    prisma.account.update({ where: { id: account.id }, data: { passwordHash, ...forcedPasswordChange() } }),   // S1: a one-time password: the client chooses a new one at the next sign-in
+    prisma.account.update({ where: { id: account.id }, data: { passwordHash, mustChangePassword: true } }),   // S1: a one-time password: the client chooses a new one at the next sign-in
     prisma.auditLog.create({
       data: {
         brokerId,

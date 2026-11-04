@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { revokeAllAccountSessions } from "@/lib/account-auth";
-import { emailNewPassword, forcedPasswordChange, PASSWORD_RULE_TEXT, passwordIsStrong, requireAccountForCredentials } from "@/lib/account-credentials";
+import { emailNewPassword, PASSWORD_RULE_TEXT, passwordIsStrong, requireAccountForCredentials } from "@/lib/account-credentials";
 
 // Staff set a password they chose (owner 2026-10-05, docs/contracts/staff-credentials.md). Same gate as the reset,
 // same session revocation, audited ACCOUNT_PASSWORD_SET without the password, optional e-mail (never for an
@@ -24,7 +24,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const passwordHash = await bcrypt.hash(password, 10);
   await prisma.$transaction([
-    prisma.account.update({ where: { id: account.id }, data: { passwordHash, ...forcedPasswordChange() } }),   // S1: whatever staff typed is only a one-time password
+    prisma.account.update({ where: { id: account.id }, data: { passwordHash, mustChangePassword: true } }),   // S1: whatever staff typed is only a one-time password
     prisma.auditLog.create({
       data: {
         brokerId,

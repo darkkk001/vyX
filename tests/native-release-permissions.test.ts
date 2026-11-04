@@ -150,16 +150,7 @@ describe("client password reset (S1)", () => {
     await as(resetter.id, fx.brokerId, "MANAGER");
     const ok = await POST(json(`https://test.local/x`, "POST"), { params: Promise.resolve({ id: acc.id }) });
     expect(ok.status).toBe(200);
-    // off by default: a reset leaves the account free to trade until the clients have a change-password screen
-    expect((await prisma.account.findUniqueOrThrow({ where: { id: acc.id } })).mustChangePassword).toBe(false);
-    process.env.FORCE_PASSWORD_CHANGE = "1";
-    try {
-      const forced = await POST(json(`https://test.local/x`, "POST"), { params: Promise.resolve({ id: acc.id }) });
-      expect(forced.status).toBe(200);
-      expect((await prisma.account.findUniqueOrThrow({ where: { id: acc.id } })).mustChangePassword).toBe(true);
-    } finally {
-      delete process.env.FORCE_PASSWORD_CHANGE;
-    }
+    expect((await prisma.account.findUniqueOrThrow({ where: { id: acc.id } })).mustChangePassword).toBe(true);
   });
 });
 
