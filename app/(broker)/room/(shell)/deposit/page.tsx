@@ -80,7 +80,7 @@ export default function RoomDeposit() {
               );
             })}
             {funds && funds.methods.length === 0 ? <div className="r-note">Your broker has no deposit methods open right now.</div> : null}
-            <div style={{ fontSize: 11.5, color: "var(--r-faint)", lineHeight: 1.6, padding: "6px 2px" }}>Funds are received directly by your broker. QoreTrader does not hold client money.</div>
+            <div style={{ fontSize: 11.5, color: "var(--r-faint)", lineHeight: 1.6, padding: "6px 2px" }}>Funds are received directly by your broker. The platform does not hold client money.</div>
           </div>
 
           <div className="r-card" style={{ flex: "2 1 480px", minWidth: 0, padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
