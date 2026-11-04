@@ -368,6 +368,16 @@ async function route(request: NextRequest) {
     }
   }
 
+  // 2026-11-04 (owner, live issue): a broker's own client domain (my.futurixglobal.com) is the client portal, never the platform's built-in
+  // broker landing: its root goes to /login. The marketing landing lives only on the broker's own marketing site (www.futurixglobal.com, not
+  // served here). Custom-domain hosts only, and never the QoreTrader public demo (its root IS the demo terminal): the platform subdomains (futurixglobal.vyxtrader.com, qoretrader.vyxtrader.com, ...) keep their
+  // landing at "/". 307 (not cached for good), the query kept.
+  if (!subdomain && !isDemo && pathname === "/") {
+    const to = request.nextUrl.clone();
+    to.pathname = "/login";
+    return NextResponse.redirect(to, 307);
+  }
+
   // On the broker's own domain (not its platform subdomain) the portal spellings move to the clean paths.
   const cleanPath = subdomain ? undefined : PORTAL_TO_CLEAN[pathname];
   const shortPath = cleanPath ?? BROKER_SHORT_PATHS[pathname];
