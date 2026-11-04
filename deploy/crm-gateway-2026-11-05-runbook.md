@@ -4,9 +4,11 @@ Each step still needs the owner's go on the day. Gateway ONLY: service `vyxtrade
 candle-store, do NOT touch the EA. This commit contains engine code that needs a candle-store column first (tick
 volume, not tonight), so the engine must stay on its current build.
 
-Target commit: `db2fbdfc7f17a0a753d237facbd8f95f33131ef3`, branch `gateway/crm-on-vps` on darkkk001/vyX. It is `a793247` (tip of `l2-localstack-integration`, the state the VPS session pushed on 2026-11-04) plus only the Trader's Room, forced password change and config coalescing changes in `services/api-gateway`. It does NOT contain the web release. It fast-forwards from `d6c7851`, `b5188c56` and `a793247`, so nothing is rolled back.
+Target commit: `e2f62b4d7c46f58ed668ab521ff46831f038bf6a`, branch `gateway/crm-on-vps` on darkkk001/vyX. Its gateway code is exactly `db2fbdf`: `264cc59` (the running gateway, with Bearer sessions and the open-route slippage cap) plus only the Trader's Room, forced password change and config coalescing changes in `services/api-gateway`. The target commit adds the `close_idempotency` migration and schema field, so the VPS repo matches the live database. It does NOT contain the web release.
 
-If the running gateway is `b5188c56`, this deploy also brings in `264cc59` (Bearer sessions, slippage cap on the open route). Block 1 stops if the VPS holds any commit that is not in the target. The commit after the target on the branch only adds this file.
+The VPS repo must be at `264cc59ff8692d3be0e825ab8dc6f46950ade668` (detached, clean). It fast-forwards from there, so nothing is rolled back. Block 1 stops on any other HEAD. The commit after the target on the branch only adds this file.
+
+The `264cc59` deploy (22:21 UTC 2026-11-04, scoped to demo 50005725) passed gates 1 and 2; gates 3 and 4 never finished. Treat Bearer and the slippage cap as live but not fully verified. Block 6 adds a no-order auth check only.
 
 Timing: blocks 0 to 3 may run any time (the old gateway keeps serving). Blocks 4 to 6 restart it: ONLY inside
 22:00-23:00 UTC (New York 17:00 close, winter time since 1 Nov). A restart drops price-stream sockets for a few seconds;
@@ -18,7 +20,8 @@ Run in elevated Windows PowerShell, one block at a time. Any `throw` means stop 
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Target  = "db2fbdfc7f17a0a753d237facbd8f95f33131ef3"
+$Target  = "e2f62b4d7c46f58ed668ab521ff46831f038bf6a"
+$Live    = "264cc59ff8692d3be0e825ab8dc6f46950ade668"
 $Nssm    = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"
 $Repo    = "C:\vyxtrader\repo"
 $Gw      = "$Repo\services\api-gateway"
@@ -55,6 +58,7 @@ The pull is fast-forward only. If the VPS repo holds anything that is not in the
 Set-Location $Repo
 $PreHead = (git rev-parse HEAD).Trim(); "pre HEAD: $PreHead  branch: $((git rev-parse --abbrev-ref HEAD).Trim())"
 $PreHead | Set-Content "$Bk\pre-head.txt"
+if ($PreHead -ne $Live) { throw "VPS HEAD is not 264cc59 -- stop and report, nothing touched" }
 if (git status --porcelain --untracked-files=no) { throw "tracked files changed -- stop and report, nothing touched" }
 Invoke-Native { git fetch --all } -Tail 3
 Invoke-Native { git cat-file -e "$Target^{commit}" }
@@ -73,6 +77,8 @@ if (-not (Select-String -Path "$Gw\src\ws.ts" -Pattern 'room\.>' -Quiet)) { thro
 ```powershell
 Copy-Item -Recurse -Force "$Gw\dist" "$Bk\gateway-dist"
 Copy-Item -Force $GwCmd "$Bk\start-gateway.cmd"
+if (-not (Select-String -Path "$Bk\gateway-dist\auth.js" -Pattern 'bearerToken' -Quiet)) { throw "backup has no Bearer sessions -- this is not the 264cc59 build, stop" }
+if (-not (Select-String -Path "$Bk\gateway-dist\routes\orders.js" -Pattern 'slippage' -Quiet)) { throw "backup has no slippage cap -- this is not the 264cc59 build, stop" }
 "backed up dist ($((Get-ChildItem "$Bk\gateway-dist" -Recurse -File).Count) files) + start-gateway.cmd"
 ```
 
@@ -87,6 +93,8 @@ if ($LASTEXITCODE -ne 0) { throw "gateway tests failed -- nothing restarted" }
 Invoke-Native { npm run build } -Tail 3
 if ($LASTEXITCODE -ne 0) { throw "build failed -- nothing restarted; restore dist from $Bk\gateway-dist" }
 if (-not (Select-String -Path "$Gw\dist\ws.js" -Pattern 'observer' -Quiet)) { throw "dist\ws.js is not the new build -- nothing restarted" }
+if (-not (Select-String -Path "$Gw\dist\auth.js" -Pattern 'bearerToken' -Quiet)) { throw "new build lost Bearer sessions -- nothing restarted" }
+if (-not (Select-String -Path "$Gw\dist\routes\orders.js" -Pattern 'slippage' -Quiet)) { throw "new build lost the slippage cap -- nothing restarted" }
 "OK: new gateway built ($((Get-Item "$Gw\dist\ws.js").LastWriteTime))"
 ```
 
@@ -127,18 +135,28 @@ Start-Sleep 15
 $b = Invoke-RestMethod -Uri http://127.0.0.1:8080/internal/gateway-stats -Headers $H -TimeoutSec 5
 "ticks forwarded in 15 s: $($b.ticksForwardedTotal - $a.ticksForwardedTotal) ; NATS msgs: $($b.natsMessagesReceivedTotal - $a.natsMessagesReceivedTotal)"
 $H = $null
+# no credentials, so no order can be placed: must answer 401
+$c = try { (Invoke-WebRequest -UseBasicParsing -Method Post -Uri http://127.0.0.1:8080/v1/orders/market -TimeoutSec 5).StatusCode } catch { [int]$_.Exception.Response.StatusCode }
+"unauthenticated order: HTTP $c"
 $log = Get-GwLog
 Get-Content $log -Tail 80 | Select-String -Pattern "listening|ALERT|Error|error" | Select-Object -Last 15
 ```
 
-Expected: a fresh `api-gateway listening on 127.0.0.1:8080`, no `[ALERT]` line.
+Expected: `unauthenticated order: HTTP 401`, a fresh `api-gateway listening on 127.0.0.1:8080`, no `[ALERT]` line.
 
-Then report: "gateway on db2fbdf running, health 200, log clean". The web deploy waits for this report.
+Then report: "gateway on e2f62b4 running, health 200, log clean". The web deploy waits for this report.
 
 ## ROLLBACK
 
+Returns to the `264cc59` build, the one running before this deploy, with Bearer sessions and the slippage cap. It uses the newest backup that holds that build, and stops if there is none. An empty backup folder from a re-run of block 0 is skipped. Never restore the 21:27 build.
+
 ```powershell
-$Bk = (Get-ChildItem "C:\vyxtrader\backup" -Directory -Filter "crm-gateway-*" | Sort-Object Name | Select-Object -Last 1).FullName
+$Bk = Get-ChildItem "C:\vyxtrader\backup" -Directory -Filter "crm-gateway-*" | Sort-Object Name -Descending |
+  Where-Object { (Test-Path "$($_.FullName)\gateway-dist\auth.js") -and (Test-Path "$($_.FullName)\gateway-dist\routes\orders.js") -and
+    (Select-String -Path "$($_.FullName)\gateway-dist\auth.js" -Pattern 'bearerToken' -Quiet) -and
+    (Select-String -Path "$($_.FullName)\gateway-dist\routes\orders.js" -Pattern 'slippage' -Quiet) } |
+  Select-Object -First 1 -ExpandProperty FullName
+if (-not $Bk) { throw "no backup holds the 264cc59 build -- do not stop the gateway, report" }
 "rolling back from $Bk"
 & $Nssm stop vyxtrader-gateway
 Remove-Item -Recurse -Force "C:\vyxtrader\repo\services\api-gateway\dist"
