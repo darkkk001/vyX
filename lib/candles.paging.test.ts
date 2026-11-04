@@ -62,7 +62,7 @@ describe("fetchCandleHistory paging", () => {
     expect(iso((await fetchCandleHistory(sym, "M1", 3)).candles).at(-1)).toBe(new Date(T0 + 9 * 60_000).toISOString());
   });
 
-  it("VPS: `before` and `limit` reach the engine's /internal/candles; an empty older page falls back to Neon with the same bound", async () => {
+  it("VPS: `before` and `limit` reach the engine's /internal/candles; an empty older page is the end of history (owner 2026-11-05: never Neon)", async () => {
     if (!ready) return;
     const sym = `PV${randomUUID().slice(0, 6).toUpperCase()}`;
     await seedNeon(sym, 10);
@@ -82,10 +82,10 @@ describe("fetchCandleHistory paging", () => {
     expect({ source: vps.source, n: vps.candles.length, limit: q.get("limit"), before: q.get("before"), tf: q.get("tf"), symbol: q.get("symbol") }).toEqual({
       source: "vps", n: 2, limit: "1200", before: String(T0), tf: "M1", symbol: sym,
     });
-    // past the VPS retention the engine answers [] -> Neon, bounded the same way
+    // past the store's oldest bar the engine answers [] -> an empty page, Neon is never read
     answer = [];
     const old = await fetchCandleHistory(sym, "M1", 2, new Date(T0 + 5 * 60_000));
-    expect({ source: old.source, at: iso(old.candles) }).toEqual({ source: "neon-fallback", at: [new Date(T0 + 3 * 60_000).toISOString(), new Date(T0 + 4 * 60_000).toISOString()] });
+    expect({ source: old.source, n: old.candles.length }).toEqual({ source: "vps", n: 0 });
     // no `before` = no param (the newest page, exactly as before web6)
     await fetchCandleHistory(sym, "M1", 300);
     expect(new URL(urls.at(-1)!).searchParams.has("before")).toBe(false);
@@ -153,13 +153,31 @@ describe("newest page of a VPS symbol: never from Neon", () => {
     expect({ source: r.source, at: iso(r.candles), calls: urls.length }).toEqual({ source: "vps", at: [new Date(T0 + 60 * 60_000).toISOString()], calls: 2 });
   });
 
-  it("a scroll-back page (`before`) still falls back to Neon's older history, without a retry", async () => {
+  it("a scroll-back page (`before`) past the oldest bar is empty: the end of history, no retry, never Neon (owner 2026-11-05)", async () => {
     if (!ready) return;
     const sym = `NB${randomUUID().slice(0, 6).toUpperCase()}`;
     await seedNeon(sym, 10);
     const urls = vpsAnswers(sym, [[]]);
     const r = await fetchCandleHistory(sym, "M1", 2, new Date(T0 + 5 * 60_000));
-    expect({ source: r.source, n: r.candles.length, calls: urls.length }).toEqual({ source: "neon-fallback", n: 2, calls: 1 });
+    expect({ source: r.source, n: r.candles.length, calls: urls.length }).toEqual({ source: "vps", n: 0, calls: 1 });
+  });
+
+  it("a failed scroll-back read gets one retry, then unavailable (never Neon's partial copy)", async () => {
+    if (!ready) return;
+    const sym = `NF${randomUUID().slice(0, 6).toUpperCase()}`;
+    await seedNeon(sym, 10);
+    const urls = vpsAnswers(sym, ["error", "error"]);
+    const r = await fetchCandleHistory(sym, "M1", 2, new Date(T0 + 5 * 60_000));
+    expect({ source: r.source, n: r.candles.length, calls: urls.length }).toEqual({ source: "vps-unavailable", n: 0, calls: 2 });
+  });
+
+  it("a failed scroll-back read that answers on the retry returns the VPS bars", async () => {
+    if (!ready) return;
+    const sym = `NG${randomUUID().slice(0, 6).toUpperCase()}`;
+    await seedNeon(sym, 10);
+    const urls = vpsAnswers(sym, ["error", [engineRow(sym, T0 + 60_000)]]);
+    const r = await fetchCandleHistory(sym, "M1", 2, new Date(T0 + 5 * 60_000));
+    expect({ source: r.source, at: iso(r.candles), calls: urls.length }).toEqual({ source: "vps", at: [new Date(T0 + 60_000).toISOString()], calls: 2 });
   });
 
   it("the trade route answers 503 + Retry-After for an unavailable newest page (the client keeps its chart)", async () => {

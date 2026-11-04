@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.45"
+#property version   "1.46"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -306,9 +306,9 @@ string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M15",      "M
 //   M30 1500 -> ~31 days   full window
 //   H1   750 -> ~31 days   full window
 //   H4   200 -> ~33 days   full window already
-//   D1   200 -> 200 days   full window already
-//   W1   200 -> ~3.8 years full window already
-//   MN1  200 -> ~16.6 years full window already
+//   D1  2000 -> ~8 years   (v1.46; was 200 = ~200 trading days)
+//   W1  2000 -> all the broker holds (v1.46)
+//   MN1 2000 -> all the broker holds (v1.46)
 //
 // M1/M5/M15 stay deliberately short of 30 days: they are the timeframes a
 // live feed refills fastest anyway, and going further (43,200 bars for a
@@ -324,7 +324,10 @@ string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M15",      "M
 // HISTORY_BACKFILL_SHALLOW_BAR_COUNT below instead (see
 // RunShallowHistoryBackfill) -- these deep counts are worth their ~37s-
 // per-symbol cost exactly once, not every 15 minutes forever.
-int HistoryBackfillBarCounts[]          = { 1500,      1500,      1500,      1500,      750,       200,       200,       200,       200      };
+// v1.46 (owner 2026-11-05): D1 / W1 / MN1 go to 2000 so the deep pass keeps years of daily history (200 D1 bars was
+// only ~200 trading days; the broker returns what it holds, fewer is fine). H4 stays 200: the one-off deep backfill
+// (ForceDeepBackfill + DeepBackfillFullHistory) covers H1 / H4 history.
+int HistoryBackfillBarCounts[]          = { 1500,      1500,      1500,      1500,      750,       200,       2000,      2000,      2000     };
 // Steady-state-only (see above) -- outage repair, not a full refill: the
 // live tick feed already keeps recent history current, this just catches
 // whatever gap happened while this EA/terminal wasn't running.

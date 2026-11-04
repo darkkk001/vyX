@@ -196,6 +196,31 @@ export async function fetchVpsCandles(symbol: string, timeframe: string, limit =
   return rows.length > 0 ? rows : null;
 }
 
+/**
+ * A scroll-back page (`before` set) from the VPS store, telling "no older bars" apart from a failed read (owner
+ * 2026-11-05, candle history option 4): `{ ok: true, rows: [] }` = the store holds nothing older, the chart's history
+ * ends here; `{ ok: false }` = unreachable / error / bad body. Never falls back to Neon's partial 2026-08/09 copy.
+ */
+export async function fetchVpsCandlesPage(symbol: string, timeframe: string, limit: number, before: Date): Promise<{ ok: true; rows: Candle[] } | { ok: false }> {
+  const q = new URLSearchParams({ symbol, tf: timeframe, limit: String(limit), before: String(before.getTime()) });
+  const body = await getJson(`/internal/candles?${q.toString()}`);
+  if (body === null) return { ok: false };
+  if (!Array.isArray(body) || !body.every(isEngineCandle)) {
+    console.warn("market-data-client: /internal/candles returned an unexpected body");
+    return { ok: false };
+  }
+  const rows: Candle[] = [];
+  for (const c of body) {
+    const row = toPrismaCandle(c);
+    if (!row) {
+      console.warn("market-data-client: /internal/candles row did not convert", c);
+      return { ok: false };
+    }
+    rows.push(row);
+  }
+  return { ok: true, rows };
+}
+
 /** The engine's answer to a price read, telling a FAILED read (unreachable, timeout, 5xx, auth) apart from "this symbol
  *  has no price": only a failure raises the no-price alert (lib/price-source-alert.ts). Owner decision 2026-09-26: a
  *  failed read is never answered from Neon's LivePrice (frozen since 2026-09-14). */

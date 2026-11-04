@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { fetchVpsCandles, isVpsSymbol, priceReadRetryDelayMs } from "@/lib/market-data-client";
+import { fetchVpsCandles, fetchVpsCandlesPage, isVpsSymbol, priceReadRetryDelayMs } from "@/lib/market-data-client";
 
 // Shared OHLC history read used by BOTH the account-authed trade chart
 // (app/api/trade/candles) and the admin-authed backoffice Dealing chart
@@ -60,17 +60,25 @@ export async function fetchCandleHistory(
 ): Promise<{ candles: unknown[]; source: CandleSource }> {
   const vpsSymbol = isVpsSymbol(symbol);
   if (vpsSymbol) {
-    const vps = await fetchVpsCandles(symbol, timeframe, limit, before);
-    if (vps) return { candles: vps, source: "vps" };
-    // owner 2026-10-26: the newest page is never served from Neon (frozen for VPS symbols since 2026-09-14). One retry,
-    // then "unavailable"; only a scroll-back page (`before`) may fall back to Neon's older history (past the VPS
-    // retention: M1 30 days, M5 180 days)
-    if (!before) {
+    // owner 2026-11-05 (candle history option 4): a scroll-back page stops at the store's oldest real bar. An empty answer
+    // = the end of history (an empty array, the chart stops paging); a failed read gets one retry, then "unavailable" (the
+    // client asks again). Neon's partial 2026-08/09 copy is never mixed in any more (M1 / M5 keep their retention).
+    if (before) {
+      const page = await fetchVpsCandlesPage(symbol, timeframe, limit, before);
+      if (page.ok) return { candles: page.rows, source: "vps" };
       await new Promise((r) => setTimeout(r, priceReadRetryDelayMs()));
-      const again = await fetchVpsCandles(symbol, timeframe, limit, null);
-      if (again) return { candles: again, source: "vps" };
+      const again = await fetchVpsCandlesPage(symbol, timeframe, limit, before);
+      if (again.ok) return { candles: again.rows, source: "vps" };
       return { candles: [], source: "vps-unavailable" };
     }
+    const vps = await fetchVpsCandles(symbol, timeframe, limit, null);
+    if (vps) return { candles: vps, source: "vps" };
+    // owner 2026-10-26: the newest page is never served from Neon (frozen for VPS symbols since 2026-09-14). One retry,
+    // then "unavailable"
+    await new Promise((r) => setTimeout(r, priceReadRetryDelayMs()));
+    const again = await fetchVpsCandles(symbol, timeframe, limit, null);
+    if (again) return { candles: again, source: "vps" };
+    return { candles: [], source: "vps-unavailable" };
   }
 
   const candles = await prisma.candle.findMany({
