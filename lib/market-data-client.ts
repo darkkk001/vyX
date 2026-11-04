@@ -1,4 +1,5 @@
 import "server-only";
+import { collapseCalendarRows } from "@/lib/candle-keys";
 import { Prisma, type Candle, type CandleTimeframe } from "@prisma/client";
 
 // Neon -> VPS market-data migration, stage S3/S4 (docs/market-data.md §8):
@@ -193,7 +194,8 @@ export async function fetchVpsCandles(symbol: string, timeframe: string, limit =
   }
   // an empty answer is suspicious for a symbol the feed serves -- let Neon
   // decide rather than blank a chart because the local store is mid-restore
-  return rows.length > 0 ? rows : null;
+  // owner 2026-11-05 (candle de-dup fix 5): one bar per broker day / week / month, whatever older copies the store holds
+  return rows.length > 0 ? collapseCalendarRows(timeframe, rows) : null;
 }
 
 /**
@@ -218,7 +220,7 @@ export async function fetchVpsCandlesPage(symbol: string, timeframe: string, lim
     }
     rows.push(row);
   }
-  return { ok: true, rows };
+  return { ok: true, rows: collapseCalendarRows(timeframe, rows) };
 }
 
 /** The engine's answer to a price read, telling a FAILED read (unreachable, timeout, 5xx, auth) apart from "this symbol
