@@ -1,3 +1,4 @@
+import { withBrokerConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
@@ -14,7 +15,7 @@ const INVOICE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 // config-only lifecycle states (see BrokerStatus's schema comment) -- no
 // payment processor is involved, this just gates nothing yet either
 // (existing app/api/trade/* routes don't check Broker.status at all).
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["SUPER_ADMIN"])) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -275,3 +276,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     orderPerMinute: updated.orderPerMinute,
   });
 }
+
+// live reference data (owner 2026-10-29): the target broker's open backoffices re-read it at once
+export const PATCH = withBrokerConfigEvent("settings", patchHandler, async (_req, ctx: { params: Promise<{ id: string }> }) => (await ctx.params).id);

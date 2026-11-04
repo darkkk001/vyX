@@ -16,6 +16,7 @@
 // trader session on any broker proves "this is a logged-in trader," which
 // is all this stream needs to gate on.
 
+import { createConfigCoalescer, TRADER_HIDDEN_SCOPES } from "./config-coalesce.js";
 import type { IncomingMessage, Server } from "http";
 import { connect, type NatsConnection } from "nats";
 import { WebSocket, WebSocketServer } from "ws";
@@ -214,6 +215,9 @@ async function resolveTraderSession(req: IncomingMessage): Promise<import("./aut
   // web security batch 1 S1: no account stream for a session confined to changing its password
   return byCookie?.mustChangePassword ? null : byCookie;
 }
+
+const traderConfigCoalesce = createConfigCoalescer();
+const adminConfigCoalesce = createConfigCoalescer();
 
 export async function attachPriceStream(server: Server, natsUrl: string): Promise<void> {
   const nc: NatsConnection = await connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 });
@@ -568,12 +572,17 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
             void refreshSymbolFilter(brokerId).then((turnedOn) => {
               if (!turnedOn) askRegistry.onConfigChanged(brokerId);
             });
-            for (const client of clientsByBroker.get(parsed.broker_id) ?? []) {
-              if (client.readyState === WebSocket.OPEN) {
-                sendFrame(client, text);
-                gatewayStats.tradingEventsForwardedTotal += 1;
+            // live reference data: staff and LP changes never reach a terminal; a burst reaches it as one event per scope per second
+            if (TRADER_HIDDEN_SCOPES.has(parsed.scope ?? "")) continue;
+            const targetBroker = parsed.broker_id;
+            traderConfigCoalesce(`${targetBroker}|${parsed.scope ?? ""}`, () => {
+              for (const client of clientsByBroker.get(targetBroker) ?? []) {
+                if (client.readyState === WebSocket.OPEN) {
+                  sendFrame(client, text);
+                  gatewayStats.tradingEventsForwardedTotal += 1;
+                }
               }
-            }
+            });
           }
           continue;
         }
@@ -702,19 +711,29 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
         const text = Buffer.from(msg.data).toString("utf-8");
 
         let brokerId: string | undefined;
+        let configScope: string | null = null;
         try {
-          brokerId = JSON.parse(text)?.broker_id;
+          const parsedAdmin = JSON.parse(text);
+          brokerId = parsedAdmin?.broker_id;
+          if (parsedAdmin?.type === "ConfigChanged") configScope = String(parsedAdmin.scope ?? "");
         } catch {
           continue; // malformed payload -- nothing to route it to
         }
         if (!brokerId) continue; // no broker_id -- can't be scoped, never forwarded here
 
-        for (const [client, clientBrokerId] of clientsByBroker) {
-          if (clientBrokerId !== brokerId) continue;
-          if (client.readyState !== WebSocket.OPEN) continue;
-          sendFrame(client, text);
-          gatewayStats.adminEventsForwardedTotal += 1;
-        }
+        const forward = (target: string) => {
+          for (const [client, clientBrokerId] of clientsByBroker) {
+            if (clientBrokerId !== target) continue;
+            if (client.readyState !== WebSocket.OPEN) continue;
+            sendFrame(client, text);
+            gatewayStats.adminEventsForwardedTotal += 1;
+          }
+        };
+        // live reference data: a burst of config changes reaches the backoffice as one event per scope per second
+        if (configScope !== null) {
+          const target = brokerId;
+          adminConfigCoalesce(`${target}|${configScope}`, () => forward(target));
+        } else forward(brokerId);
       }
     })().catch((err) => {
       console.error("admin event stream: NATS subscription loop ended", err);

@@ -1,3 +1,4 @@
+import { withConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -7,7 +8,7 @@ import { connectionView, loadConnection } from "@/lib/lp-connections";
 
 // POST: map one more platform symbol on an LP connection (the bridge's [[lp.symbol]]): venue symbol, contract size,
 // minimum and step in units. BROKER_ADMIN; audited LP_CONNECTION_SYMBOL_ADDED. Answers the whole connection.
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function postHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const brokerId = session!.brokerId!;
@@ -35,3 +36,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     throw e;
   }
 }
+
+// live reference data (owner 2026-10-29): every open backoffice re-reads this list at once
+export const POST = withConfigEvent("lps", postHandler);

@@ -1,3 +1,4 @@
+import { withConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
@@ -49,7 +50,7 @@ export async function GET() {
   );
 }
 
-export async function POST(request: NextRequest) {
+async function postHandler(request: NextRequest) {
   const session = await requireBrokerAdmin();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -93,3 +94,6 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({ id: rule.id }, { status: 201 });
 }
+
+// live reference data (owner 2026-10-29): every open backoffice re-reads this list at once
+export const POST = withConfigEvent("lps", postHandler);
