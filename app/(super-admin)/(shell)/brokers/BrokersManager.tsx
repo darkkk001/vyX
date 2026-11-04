@@ -12,6 +12,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { PLAN_PRICING, formatUsd } from "@/lib/billing";
 import EngineSwitch from "./EngineSwitch";
 import CrmSwitch from "./CrmSwitch";
+import CustomDomainPanel from "./CustomDomainPanel";
 import PricingEngineSwitch from "./PricingEngineSwitch";
 import BridgeLicenses from "./BridgeLicenses";
 import OrderRateLimit from "./OrderRateLimit";
@@ -862,6 +863,12 @@ export default function BrokersManager() {
                 On: the Trader&apos;s Room opens at /room on this broker&apos;s domain and its backoffice shows the CRM tab. Off: nothing changes for the broker.
               </p>
               <CrmSwitch key={detailTarget.id} brokerId={detailTarget.id} initialEnabled={detailTarget.crmEnabled} onSaved={reload} />
+            </ModalSection>
+            <ModalSection label="Client domain">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                The broker&apos;s own address for login, sign-up, WebTrader and downloads, so clients never see the platform domain.
+              </p>
+              <CustomDomainPanel key={detailTarget.id} brokerId={detailTarget.id} />
             </ModalSection>
 
             <ModalSection label="Order rate limit">

@@ -62,6 +62,7 @@ export async function GET(request: NextRequest) {
       logoUrl: true,
       primaryColor: true,
       customDomain: true,
+      customDomainVerifiedAt: true,
     },
   });
 
@@ -69,5 +70,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "broker not found" }, { status: 404 });
   }
 
-  return NextResponse.json(broker);
+  // the middleware redirects to customDomain only once it was seen live (lib/custom-domain.ts); the date stays here
+  const { customDomainVerifiedAt, ...rest } = broker;
+  return NextResponse.json({ ...rest, customDomainLive: customDomainVerifiedAt !== null });
 }

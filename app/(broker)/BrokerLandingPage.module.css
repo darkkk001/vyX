@@ -333,3 +333,18 @@
 .footerLink:hover {
   color: var(--accent);
 }
+
+/* Desktop Terminal card: the broker's own installer (2026-11-04) */
+.cardAction {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.cardMeta {
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
