@@ -11,6 +11,7 @@
 //! same reason (no compile-time schema check available everywhere).
 
 use chrono::{DateTime, Utc};
+use market_data::ask_markup::{AskLevels, Level};
 use protocol::{OrderSide, OrderStatus, OrderType};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -28,6 +29,25 @@ use uuid::Uuid;
 pub async fn connect_pool(database_url: &str, max_connections: u32) -> Result<PgPool, sqlx::Error> {
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(max_connections)
+        // L2 Step 4 (latency). Two sqlx defaults were costing the fill path far more than its SQL.
+        //
+        // test_before_acquire defaults to TRUE: every acquire pings the server before handing the
+        // connection over, which is a FULL ROUND TRIP. The fill path acquires three times, so it paid
+        // three extra Neon round trips -- about as much as all of its real queries put together. It is
+        // safe to turn off here because every caller already treats a broken connection as a normal
+        // error (a failed order is answered, not swallowed) and sqlx still removes a connection that
+        // errors; the ping only moves the discovery of a dead connection earlier, at the price of a
+        // round trip on every healthy one.
+        .test_before_acquire(false)
+        // min_connections defaults to 0, so a connection reaped by the idle timeout is re-established
+        // ON the next request -- TCP + TLS + startup through Neon's pooler, tens of milliseconds, and
+        // it lands on whichever order happens to be next. Keeping a floor warm takes that off the
+        // critical path. Sized against max_connections so a small pool is not asked for more than it
+        // has.
+        .min_connections(max_connections.min(4))
+        // and do not let a reaped-then-rebuilt connection be the common case: the fill path runs every
+        // few seconds at most, well inside this.
+        .idle_timeout(Some(std::time::Duration::from_secs(600)))
         .connect(database_url)
         .await
 }
@@ -111,10 +131,566 @@ fn position_status_from_str(s: &str) -> PositionStatus {
     }
 }
 
+// ---- what the ported admission gates need (L2 Step 1 Part B) --------------------------------------
+
+/// Everything `crate::gates` judges, for one (broker, account, symbol). ONE round trip.
+///
+/// The gates themselves are pure (see that module's doc); this is the only read they need, and it is
+/// deliberately one statement rather than the five or six the fields are spread across — the order
+/// path's latency is round trips, not rows (see C:\vyx\handoff\l2-latency-and-minimal-path.md).
+///
+/// `None` = no such account, which the caller treats as it already treats an unknown account.
+#[derive(Debug, Clone)]
+pub struct GateInputs {
+    // broker
+    pub broker_trading_halted: bool,
+    pub broker_close_only: bool,
+    /// `Broker.hedgingAllowed`, with a NULL column resolved to TRUE -- the web tests `!== false`.
+    pub hedging_allowed: bool,
+    pub total_exposure_limit: Option<Decimal>,
+    // the account's group (all None/false when the account has no group)
+    pub group_trading_halted: bool,
+    pub group_close_only: bool,
+    pub group_trading_restriction: String,
+    pub group_max_lot: Option<Decimal>,
+    pub group_min_lot: Option<Decimal>,
+    pub group_lot_step: Option<Decimal>,
+    pub group_restrict_symbols: bool,
+    pub group_allowed_symbol_ids: Vec<String>,
+    /// `Group.category`, for the routing refusal (L2 Step 1c item B). None = the account has no group,
+    /// which routes like B_BOOK.
+    pub group_category: Option<String>,
+    /// `Group.forceDealingMode` -- "always send to dealer", DEALING groups only.
+    pub group_force_dealing_mode: bool,
+    /// `lib/dealing-routing.ts deskIsOn`: the dealer desk is ON when `Broker.dealingDeskAutoFillAt` is
+    /// null. Resolved in SQL so the engine never holds a half-interpreted timestamp.
+    pub desk_on: bool,
+    // the account
+    pub account_status: String,
+    pub account_trading_rights: String,
+    pub max_daily_loss: Option<Decimal>,
+    // the broker's view of the symbol
+    pub symbol_trading_mode: String,
+    /// `Group.marginCallLevel`, 100 when the account has no group -- the web's
+    /// `account.group?.marginCallLevel ?? 100`. The pre-trade margin gate judges the PROJECTED level
+    /// against this, never against a hardcoded 100 (L2 Step 1d).
+    pub margin_call_level: Decimal,
+    /// `BrokerSymbol.hedgedMarginPct` for THIS symbol, 200 when the broker has no row -- the web's
+    /// `pctFor(newOrderSymbolId)`. It is the new leg's own %, which decides how much of an opposing
+    /// open position it offsets (calc::used_margin).
+    pub symbol_hedged_margin_pct: Decimal,
+    /// `Symbol.quoteCurrency` -- the currency the new leg's margin comes out in, to be converted to
+    /// `account_currency` before it is compared with anything.
+    pub symbol_quote_currency: String,
+    /// `Account.currency` -- what every money figure in the margin gate is denominated in.
+    pub account_currency: String,
+    /// `Account.accountMode` (DEMO / LIVE). Read for the ingress scope's DEMO-only rule
+    /// (`ingress::mode_allowed`), which is checked on the database's answer rather than on the
+    /// environment variable someone maintained by hand. Costs nothing: it rides the one read.
+    pub account_mode: String,
+    // aggregates
+    /// The broker's OPEN client volume: the coverage account, COVERAGE groups and internal accounts are
+    /// excluded, because those are the broker's own hedge legs and not client exposure (the web's audit
+    /// note of 2026-09-24 -- counting them let every hedge eat into the clients' limit).
+    pub broker_open_volume: Decimal,
+    /// Signed TRADE_PNL since the start of the BROKER DAY. A loss is NEGATIVE.
+    ///
+    /// THE BOUNDARY (L2 Step 1c, item C): broker-local midnight, from the live `broker_offset_sec` --
+    /// the identical arithmetic `market_data::broker_day_start` uses to bucket D1 candles, so it is
+    /// DST-aware (21:00 UTC in summer, 22:00 UTC in winter for a GMT+2/+3 server) rather than a fixed
+    /// hour. The web reads the same instant from the other end: `lib/trading-day.ts tradingDayStart`
+    /// takes the start of the latest D1 candle, which this engine wrote with that same function, and
+    /// `checkMaxDailyLoss` now receives it instead of computing a process-local midnight of its own.
+    ///
+    /// Pinned both ways by `docs/contracts/broker-day-vectors.json`.
+    pub realized_today: Decimal,
+    /// The broker-day start this `realized_today` was summed from -- returned so a test can assert the
+    /// instant rather than only the sum.
+    pub broker_day_start: chrono::DateTime<Utc>,
+    /// Is there an OPEN position on the other side of this symbol for this account?
+    pub has_opposite_open_position: bool,
+    // the trading-session gate (L2 Step 1b item A)
+    /// `Symbol.category` -- CRYPTO is always open, METALS / COMMODITIES take a daily break.
+    pub symbol_category: String,
+    /// The broker's configured `"TradingSession"` rows for this symbol. EMPTY means "no configuration",
+    /// which falls through to the default weekly close -- NOT "always tradable" (that default was wrong
+    /// for the whole platform once, and filled XAUUSD on a Saturday).
+    pub sessions: Vec<crate::session::SessionWindow>,
+}
+
+pub async fn get_gate_inputs(
+    pool: &PgPool,
+    broker_id: &str,
+    account_id: &str,
+    symbol_id: &str,
+    side: OrderSide,
+    // The broker server's UTC offset, from `market_data::broker_offset::BrokerOffsetTracker`. 0 (no
+    // tick has reported one yet) reduces the broker day to UTC midnight, exactly as
+    // `broker_day_start`'s own doc guarantees.
+    broker_offset_sec: i64,
+) -> Result<Option<GateInputs>, sqlx::Error> {
+    let opposite = if side == OrderSide::Buy { "SELL" } else { "BUY" };
+    // Read by alias (sqlx::Row), not as a tuple: 19 columns is past the 16 that sqlx's tuple `FromRow`
+    // goes up to -- the same reason book.rs and get_pending_orders_for_symbol read by name.
+    let row = sqlx::query(
+        r#"SELECT
+             b."tradingHaltedAt" IS NOT NULL AS broker_halted,
+             b."closeOnlyAt" IS NOT NULL AS broker_close_only,
+             COALESCE(b."hedgingAllowed", true) AS hedging_allowed,
+             b."totalExposureLimit" AS total_exposure_limit,
+             g."tradingHaltedAt" IS NOT NULL AS group_halted,
+             g."closeOnlyAt" IS NOT NULL AS group_close_only,
+             COALESCE(g."tradingRestriction"::text, 'BOTH') AS group_restriction,
+             g."maxLotSize" AS group_max_lot,
+             g."minLotSize" AS group_min_lot,
+             g."lotStep" AS group_lot_step,
+             COALESCE(g."restrictSymbols", false) AS group_restrict_symbols,
+             g.category::text AS group_category,
+             COALESCE(g."forceDealingMode", false) AS group_force_dealing_mode,
+             (b."dealingDeskAutoFillAt" IS NULL) AS desk_on,
+             COALESCE((SELECT array_agg(gs."symbolId") FROM "GroupSymbol" gs WHERE gs."groupId" = a."groupId"), ARRAY[]::text[]) AS group_allowed,
+             a.status::text AS account_status,
+             a."tradingRights"::text AS account_rights,
+             a."maxDailyLoss" AS max_daily_loss,
+             COALESCE(bs."tradingMode"::text, 'BOTH') AS symbol_trading_mode,
+             COALESCE(g."marginCallLevel", 100) AS margin_call_level,
+             COALESCE(bs."hedgedMarginPct", 200) AS symbol_hedged_margin_pct,
+             sym."quoteCurrency" AS symbol_quote_currency,
+             a.currency AS account_currency,
+             COALESCE((SELECT SUM(p.volume) FROM "Position" p
+                         JOIN "Account" pa ON pa.id = p."accountId"
+                         LEFT JOIN "Group" pg ON pg.id = pa."groupId"
+                        WHERE p."brokerId" = $1 AND p.status = 'OPEN'
+                          AND NOT pa."isInternal"
+                          AND COALESCE(pg.category::text, '') <> 'COVERAGE'
+                          AND (b."coverageAccountId" IS NULL OR p."accountId" <> b."coverageAccountId")), 0) AS broker_open_volume,
+             -- broker-local midnight, the same arithmetic as market_data::broker_day_start: shift now
+             -- by the broker's offset, truncate to its own day, shift back. date_trunc runs on a NAIVE
+             -- timestamp on purpose -- on a timestamptz it would truncate in the SESSION's timezone.
+             ((date_trunc('day', (now() AT TIME ZONE 'UTC') + make_interval(secs => $5)) - make_interval(secs => $5)) AT TIME ZONE 'UTC') AS broker_day_start,
+             COALESCE((SELECT SUM(t.amount) FROM "Transaction" t
+                        WHERE t."accountId" = $2 AND t.type = 'TRADE_PNL'
+                          AND t."createdAt" >= ((date_trunc('day', (now() AT TIME ZONE 'UTC') + make_interval(secs => $5)) - make_interval(secs => $5)) AT TIME ZONE 'UTC')), 0) AS realized_today,
+             EXISTS (SELECT 1 FROM "Position" p2
+                      WHERE p2."accountId" = $2 AND p2."symbolId" = $3
+                        AND p2.status = 'OPEN' AND p2.side::text = $4) AS has_opposite,
+             sym.category::text AS symbol_category,
+             COALESCE((SELECT jsonb_agg(jsonb_build_object('d', ts."dayOfWeek", 'o', ts."openTime", 'c', ts."closeTime"))
+                         FROM "TradingSession" ts WHERE ts."brokerSymbolId" = bs.id), '[]'::jsonb) AS sessions
+           FROM "Account" a
+           JOIN "Broker" b ON b.id = $1
+           JOIN "Symbol" sym ON sym.id = $3
+           LEFT JOIN "Group" g ON g.id = a."groupId"
+           LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = $3 AND bs."brokerId" = $1
+          WHERE a.id = $2"#,
+    )
+    .bind(broker_id)
+    .bind(account_id)
+    .bind(symbol_id)
+    .bind(opposite)
+    .bind(broker_offset_sec as f64)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(r) = row else { return Ok(None) };
+    Ok(Some(gate_inputs_from_row(&r)?))
+}
+
+/// One row of `get_gate_inputs`'s SELECT, or of the combined read that superseded it
+/// (`get_open_snapshot`) -- which emits the same column aliases for exactly this reason. ONE decode,
+/// so a column added to the gates cannot reach one reader and not the other.
+pub(crate) fn gate_inputs_from_row(r: &sqlx::postgres::PgRow) -> Result<GateInputs, sqlx::Error> {
+    use sqlx::Row;
+    Ok(GateInputs {
+        broker_trading_halted: r.try_get("broker_halted")?,
+        broker_close_only: r.try_get("broker_close_only")?,
+        hedging_allowed: r.try_get("hedging_allowed")?,
+        total_exposure_limit: r.try_get("total_exposure_limit")?,
+        group_trading_halted: r.try_get("group_halted")?,
+        group_close_only: r.try_get("group_close_only")?,
+        group_trading_restriction: r.try_get("group_restriction")?,
+        group_max_lot: r.try_get("group_max_lot")?,
+        group_min_lot: r.try_get("group_min_lot")?,
+        group_lot_step: r.try_get("group_lot_step")?,
+        group_restrict_symbols: r.try_get("group_restrict_symbols")?,
+        group_allowed_symbol_ids: r.try_get("group_allowed")?,
+        group_category: r.try_get("group_category")?,
+        group_force_dealing_mode: r.try_get("group_force_dealing_mode")?,
+        desk_on: r.try_get("desk_on")?,
+        account_status: r.try_get("account_status")?,
+        account_trading_rights: r.try_get("account_rights")?,
+        max_daily_loss: r.try_get("max_daily_loss")?,
+        symbol_trading_mode: r.try_get("symbol_trading_mode")?,
+        margin_call_level: r.try_get("margin_call_level")?,
+        symbol_hedged_margin_pct: r.try_get("symbol_hedged_margin_pct")?,
+        symbol_quote_currency: r.try_get("symbol_quote_currency")?,
+        account_currency: r.try_get("account_currency")?,
+        account_mode: r.try_get("account_mode")?,
+        broker_open_volume: r.try_get("broker_open_volume")?,
+        realized_today: r.try_get("realized_today")?,
+        broker_day_start: r.try_get("broker_day_start")?,
+        has_opposite_open_position: r.try_get("has_opposite")?,
+        symbol_category: r.try_get("symbol_category")?,
+        sessions: {
+            let raw: serde_json::Value = r.try_get("sessions")?;
+            raw.as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| {
+                            Some(crate::session::SessionWindow {
+                                day_of_week: row.get("d")?.as_i64()? as i32,
+                                open_time: row.get("o")?.as_str()?.to_string(),
+                                close_time: row.get("c")?.as_str()?.to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        },
+    })
+}
+
+
+// ---- L2 Step 2 (DEPTH-CUT): the whole read in one round trip ------------------------------------
+
+/// Everything the order path has to read before it can decide, in one answer.
+pub struct OpenSnapshot {
+    /// `GateInputs`, decoded by the same `gate_inputs_from_row` `get_gate_inputs` uses.
+    pub gates: GateInputs,
+    /// The broker's view of the traded symbol (`get_broker_symbol_config`).
+    pub symbol: BrokerSymbolConfig,
+    /// The account's own ask-rule levels for it, READ FRESH -- see `get_ask_levels` on why these are
+    /// deliberately not served from the pricing cache.
+    pub ask_levels: market_data::ask_markup::AskLevels,
+    pub exposure: SymbolExposure,
+    pub max_open_positions: Option<i32>,
+    /// Funds and priced open positions -- what `calc::load_book_state` returned, from the same
+    /// snapshot as everything above it.
+    pub account: crate::calc::AccountState,
+}
+
+/// What the one read found.
+pub enum OpenSnapshotResult {
+    Found(Box<OpenSnapshot>),
+    /// No `"Symbol"` row with that name: there is no `symbolId` to write, so there is no order.
+    UnknownSymbol,
+    /// No such account, or no such broker.
+    AccountNotFound,
+}
+
+/// EVERYTHING THE ORDER PATH READS, IN ONE ROUND TRIP (L2 Step 2).
+///
+/// WHAT IT REPLACES, measured from the server's own statement log: eleven sequential round trips --
+/// `get_broker_symbol_config`, `get_routing_category`, `get_exposure_and_max_positions`,
+/// `get_gate_inputs`, `get_ask_levels`, then BEGIN / SET TRANSACTION / the funds read / the positions
+/// read / the sessions read / ROLLBACK. On a 5 ms link that was ~55 ms of pure waiting per fill.
+///
+/// HOW IT IS NOT A REWRITE. The config half is those five SELECTs' own column lists, merged into one
+/// `MATERIALIZED` CTE -- materialized so the aggregates are evaluated once and not per position row.
+/// The position half is `book::POSITION_COLUMNS` / `book::POSITION_FROM`, the same projection every
+/// other book read uses, LEFT JOINed to that CTE so a flat account still answers with its config. The
+/// rows are decoded by `book::position_from_row` and priced by `book::price_order_path_rows`, and the
+/// gates by `gate_inputs_from_row` -- every one of them the single existing definition.
+///
+/// AND THE SNAPSHOT IS STRONGER, not weaker. The funds and the positions used to be two statements
+/// inside a REPEATABLE READ, READ ONLY transaction, because reading them apart tore once already
+/// (2026-10-01, account 49990004: a close landed between them). One statement is one snapshot by
+/// definition, so the guarantee survives and the three round trips that built it do not.
+///
+/// `routing_category` is not read separately any more either: it is `GateInputs::group_category`,
+/// which is the same `"Group".category` column `get_routing_category` went for.
+pub async fn get_open_snapshot(
+    pool: &PgPool,
+    cache: &std::sync::Arc<market_data::cache::TickCache>,
+    broker_id: &str,
+    account_id: &str,
+    symbol: &str,
+    side: OrderSide,
+    broker_offset_sec: i64,
+) -> Result<OpenSnapshotResult, sqlx::Error> {
+    use sqlx::Row;
+    let opposite = if side == OrderSide::Buy { "SELL" } else { "BUY" };
+    let broker_day = r#"((date_trunc('day', (now() AT TIME ZONE 'UTC') + make_interval(secs => $5)) - make_interval(secs => $5)) AT TIME ZONE 'UTC')"#;
+    let sql = format!(
+        r#"WITH cfg AS MATERIALIZED (
+             SELECT
+               -- get_broker_symbol_config
+               sym.id AS cfg_symbol_id,
+               sym.digits AS cfg_digits,
+               COALESCE(bs."spreadMarkup", 0) AS cfg_spread_markup,
+               COALESCE(bs.enabled, true) AS cfg_enabled,
+               COALESCE(bs."minLot", 0.01) AS cfg_min_lot,
+               COALESCE(bs."maxLot", 100) AS cfg_max_lot,
+               COALESCE(bs."lotStep", 0.01) AS cfg_lot_step,
+               bs."maxExposure" AS cfg_max_exposure,
+               COALESCE(bs."commissionPerLot", 0) AS cfg_commission_per_lot,
+               COALESCE(bs."swapLong", 0) AS cfg_swap_long,
+               COALESCE(bs."swapShort", 0) AS cfg_swap_short,
+               -- get_ask_levels (read fresh: a markup edit must never be stale on a fill)
+               COALESCE(b."pricingEngineEnabled", false) AS lv_pricing_engine,
+               (COALESCE(g.category::text = 'COVERAGE', false) OR COALESCE(b."coverageAccountId" = a.id, false)) AS lv_coverage,
+               bs."spreadMarkup" AS lv_broker,
+               gsc."spreadMarkup" AS lv_group_markup,
+               gsc."targetTotalSpreadPips" AS lv_group_target,
+               acs."spreadMarkup" AS lv_account_markup,
+               acs."targetTotalSpreadPips" AS lv_account_target,
+               -- get_gate_inputs, column for column
+               b."tradingHaltedAt" IS NOT NULL AS broker_halted,
+               b."closeOnlyAt" IS NOT NULL AS broker_close_only,
+               COALESCE(b."hedgingAllowed", true) AS hedging_allowed,
+               b."totalExposureLimit" AS total_exposure_limit,
+               g."tradingHaltedAt" IS NOT NULL AS group_halted,
+               g."closeOnlyAt" IS NOT NULL AS group_close_only,
+               COALESCE(g."tradingRestriction"::text, 'BOTH') AS group_restriction,
+               g."maxLotSize" AS group_max_lot,
+               g."minLotSize" AS group_min_lot,
+               g."lotStep" AS group_lot_step,
+               COALESCE(g."restrictSymbols", false) AS group_restrict_symbols,
+               g.category::text AS group_category,
+               COALESCE(g."forceDealingMode", false) AS group_force_dealing_mode,
+               (b."dealingDeskAutoFillAt" IS NULL) AS desk_on,
+               COALESCE((SELECT array_agg(gs."symbolId") FROM "GroupSymbol" gs WHERE gs."groupId" = a."groupId"), ARRAY[]::text[]) AS group_allowed,
+               a.status::text AS account_status,
+               a."tradingRights"::text AS account_rights,
+               a."maxDailyLoss" AS max_daily_loss,
+               COALESCE(bs."tradingMode"::text, 'BOTH') AS symbol_trading_mode,
+               COALESCE(g."marginCallLevel", 100) AS margin_call_level,
+               COALESCE(bs."hedgedMarginPct", 200) AS symbol_hedged_margin_pct,
+               sym."quoteCurrency" AS symbol_quote_currency,
+               a.currency AS account_currency,
+               a."accountMode"::text AS account_mode,
+               COALESCE((SELECT SUM(p.volume) FROM "Position" p
+                           JOIN "Account" pa ON pa.id = p."accountId"
+                           LEFT JOIN "Group" pg ON pg.id = pa."groupId"
+                          WHERE p."brokerId" = $1 AND p.status = 'OPEN'
+                            AND NOT pa."isInternal"
+                            AND COALESCE(pg.category::text, '') <> 'COVERAGE'
+                            AND (b."coverageAccountId" IS NULL OR p."accountId" <> b."coverageAccountId")), 0) AS broker_open_volume,
+               {broker_day} AS broker_day_start,
+               COALESCE((SELECT SUM(t.amount) FROM "Transaction" t
+                          WHERE t."accountId" = $2 AND t.type = 'TRADE_PNL'
+                            AND t."createdAt" >= {broker_day}), 0) AS realized_today,
+               EXISTS (SELECT 1 FROM "Position" p2
+                        WHERE p2."accountId" = $2 AND p2."symbolId" = sym.id
+                          AND p2.status = 'OPEN' AND p2.side::text = $4) AS has_opposite,
+               sym.category::text AS symbol_category,
+               COALESCE((SELECT jsonb_agg(jsonb_build_object('d', ts."dayOfWeek", 'o', ts."openTime", 'c', ts."closeTime"))
+                           FROM "TradingSession" ts WHERE ts."brokerSymbolId" = bs.id), '[]'::jsonb) AS sessions,
+               -- get_exposure_and_max_positions
+               (SELECT COALESCE(SUM(volume) FILTER (WHERE "symbolId" = sym.id), 0) FROM "Position" WHERE "accountId" = $2 AND status = 'OPEN') AS acct_symbol_volume,
+               (SELECT COUNT(*) FROM "Position" WHERE "accountId" = $2 AND status = 'OPEN') AS acct_open_positions,
+               b."maxOpenPositionsPerAccount" AS max_open_positions,
+               -- calc::load_book_state's funds read
+               a.balance AS funds_balance,
+               a.credit AS funds_credit,
+               a.leverage AS funds_leverage,
+               -- book::load_sessions, for the symbols this account actually holds
+               COALESCE((SELECT jsonb_object_agg(x.name, x.windows) FROM (
+                   SELECT s2.name,
+                          COALESCE(jsonb_agg(jsonb_build_object('d', ts2."dayOfWeek", 'o', ts2."openTime", 'c', ts2."closeTime"))
+                                   FILTER (WHERE ts2."dayOfWeek" IS NOT NULL), '[]'::jsonb) AS windows
+                     FROM "BrokerSymbol" bs2
+                     JOIN "Symbol" s2 ON s2.id = bs2."symbolId"
+                     LEFT JOIN "TradingSession" ts2 ON ts2."brokerSymbolId" = bs2.id
+                    WHERE bs2."brokerId" = $1
+                      AND s2.id IN (SELECT p3."symbolId" FROM "Position" p3 WHERE p3."accountId" = $2 AND p3.status = 'OPEN')
+                    GROUP BY s2.name) x), '{{}}'::jsonb) AS held_sessions
+             FROM "Account" a
+             JOIN "Broker" b ON b.id = $1
+             LEFT JOIN "Symbol" sym ON sym.name = $3
+             LEFT JOIN "Group" g ON g.id = a."groupId"
+             LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = sym.id AND bs."brokerId" = $1
+             LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = sym.id AND gsc."groupId" = a."groupId"
+             LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = sym.id AND acs."accountId" = $2
+            -- L2 optimization pass, hardening found on the way past: the account must belong to the
+            -- broker the request names. This query joins "Broker" by $1 and filtered "Account" by id
+            -- alone, so on its own it would have answered for an account of a DIFFERENT broker. The
+            -- HTTP route checks this first (verify_account_belongs_to_broker), so it was never
+            -- reachable -- but the one read that every gate is judged on should not depend on a
+            -- caller having checked.
+            WHERE a.id = $2 AND a."brokerId" = $1
+           )
+           SELECT cfg.*, pos.*
+             FROM cfg
+             LEFT JOIN (SELECT {columns}, p."openedAt" AS opened_at {from} WHERE p."accountId" = $2 AND p.status = 'OPEN') pos ON true
+            ORDER BY pos.opened_at, pos.id"#,
+        broker_day = broker_day,
+        columns = crate::book::POSITION_COLUMNS,
+        from = crate::book::POSITION_FROM,
+    );
+
+    // see open_position_one_call's note: .persistent(false) was tried here and broke every order
+    let rows = sqlx::query(&sql)
+        .bind(broker_id)
+        .bind(account_id)
+        .bind(symbol)
+        .bind(opposite)
+        .bind(broker_offset_sec as f64)
+        .fetch_all(pool)
+        .await?;
+
+    let Some(first) = rows.first() else { return Ok(OpenSnapshotResult::AccountNotFound) };
+    // a LEFT JOIN on the name, so "no such symbol" is a NULL rather than a missing row -- which keeps
+    // the two answers apart exactly as the separate reads did (UnknownSymbol is a 400, not a rejection)
+    let Some(symbol_id): Option<String> = first.try_get("cfg_symbol_id")? else {
+        return Ok(OpenSnapshotResult::UnknownSymbol);
+    };
+
+    let gates = gate_inputs_from_row(first)?;
+    let symbol_config = BrokerSymbolConfig {
+        symbol_id,
+        digits: first.try_get("cfg_digits")?,
+        spread_markup: first.try_get("cfg_spread_markup")?,
+        enabled: first.try_get("cfg_enabled")?,
+        min_lot: first.try_get("cfg_min_lot")?,
+        max_lot: first.try_get("cfg_max_lot")?,
+        lot_step: first.try_get("cfg_lot_step")?,
+        max_exposure: first.try_get("cfg_max_exposure")?,
+        commission_per_lot: first.try_get("cfg_commission_per_lot")?,
+        swap_long: first.try_get("cfg_swap_long")?,
+        swap_short: first.try_get("cfg_swap_short")?,
+    };
+    let ask_levels = market_data::ask_markup::AskLevels {
+        digits: first.try_get("cfg_digits")?,
+        pricing_engine: first.try_get("lv_pricing_engine")?,
+        coverage: first.try_get("lv_coverage")?,
+        broker: first.try_get("lv_broker")?,
+        group: market_data::ask_markup::Level {
+            markup: first.try_get("lv_group_markup")?,
+            target: first.try_get("lv_group_target")?,
+        },
+        account_symbol: market_data::ask_markup::Level {
+            markup: first.try_get("lv_account_markup")?,
+            target: first.try_get("lv_account_target")?,
+        },
+    };
+    let exposure = SymbolExposure {
+        open_volume: first.try_get("acct_symbol_volume")?,
+        open_position_count: first.try_get("acct_open_positions")?,
+    };
+    let max_open_positions: Option<i32> = first.try_get("max_open_positions")?;
+
+    // the position half: one row per open position, or a single all-NULL row for a flat account
+    let mut raw: Vec<crate::book::RawPosition> = Vec::new();
+    for r in &rows {
+        if r.try_get::<Option<String>, _>("id")?.is_some() {
+            raw.push(crate::book::position_from_row(r)?);
+        }
+    }
+    crate::book::resolve_position_rules(pool, &mut raw).await?;
+    let sessions = held_sessions_from_row(first, broker_id)?;
+    let positions = crate::book::price_order_path_rows(&raw, &sessions, cache, chrono::Utc::now());
+
+    let leverage: i32 = first.try_get("funds_leverage")?;
+    let account = crate::calc::AccountState {
+        effective_balance: first.try_get("funds_balance")?,
+        credit: first.try_get("funds_credit")?,
+        leverage: leverage.max(1) as u32,
+        positions,
+    };
+
+    Ok(OpenSnapshotResult::Found(Box::new(OpenSnapshot {
+        gates,
+        symbol: symbol_config,
+        ask_levels,
+        exposure,
+        max_open_positions,
+        account,
+    })))
+}
+
+/// `book::load_sessions`'s answer, read off the combined row's `held_sessions` map instead of its own
+/// query. Keyed the same way -- (brokerId, symbol name) -- because `book::price_order_path_rows` looks
+/// it up that way.
+fn held_sessions_from_row(r: &sqlx::postgres::PgRow, broker_id: &str) -> Result<crate::book::SymbolSessions, sqlx::Error> {
+    use sqlx::Row;
+    let raw: serde_json::Value = r.try_get("held_sessions")?;
+    let mut out = crate::book::SymbolSessions::new();
+    for (name, windows) in raw.as_object().into_iter().flatten() {
+        let list = windows
+            .as_array()
+            .map(|ws| {
+                ws.iter()
+                    .filter_map(|w| {
+                        Some(crate::session::SessionWindow {
+                            day_of_week: w.get("d")?.as_i64()? as i32,
+                            open_time: w.get("o")?.as_str()?.to_string(),
+                            close_time: w.get("c")?.as_str()?.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.insert((broker_id.to_string(), name.clone()), list);
+    }
+    Ok(out)
+}
+
+// ---- which book the order path writes (L2 Stage 3) ---------------------------------------------------
+//
+// The engine has always written its OWN lowercase `orders` / `positions` / `ledger_entries`, which
+// production never fills: every broker's book lives in Prisma's `"Order"` / `"Position"` / `"Deal"` /
+// `"Transaction"`, which is what margin, P&L, the UI and hedging all read (book.rs's module doc).
+// The L2 cutover moves the order path onto that book.
+//
+// The choice is an explicit parameter rather than a flag read inside each function, so that:
+//   - the legacy mode (`ENGINE_ORDER_MANAGEMENT=1|on|true|yes`) keeps writing the legacy tables and
+//     its behaviour does not change at all until Stage 8 removes it, and
+//   - a test can exercise either book without touching process-wide state.
+// `live` mode selects Prisma; everything else selects Legacy. See `configured()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Book {
+    /// The engine's own lowercase tables. Nothing in production reads them.
+    #[default]
+    Legacy,
+    /// Prisma's `"Order"` / `"Position"` / `"Deal"` / `"Transaction"` -- the real book.
+    Prisma,
+}
+
+/// Set once at start-up by `live` mode (engine/server/src/main.rs), before the HTTP listener binds.
+static PRISMA_BOOK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `live` mode announces that the order path writes the real book. Idempotent; never unset.
+pub fn use_prisma_book() {
+    PRISMA_BOOK.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The book this process's order path writes. Read ONCE per order by the paths in lib.rs /
+/// pending_orders.rs and then passed down, so one order can never write half of each.
+pub fn configured() -> Book {
+    if PRISMA_BOOK.load(std::sync::atomic::Ordering::Relaxed) {
+        Book::Prisma
+    } else {
+        Book::Legacy
+    }
+}
+
+// ---- L2 Stage 3: which book, and the fail-safe default ----------------------------------------------
+
+#[cfg(test)]
+mod book_tests {
+    use super::Book;
+
+    /// The default has to be the LEGACY book, and the flag has to be one-way. Every process that is
+    /// not `live` mode -- the legacy order-only mode, shadow, a test binary, a tool -- must write the
+    /// engine's own tables, because those are the ones nothing reads. Defaulting the other way would
+    /// mean any process that forgot to opt out wrote real client positions.
+    #[test]
+    fn a_process_that_says_nothing_writes_the_legacy_book() {
+        assert_eq!(Book::default(), Book::Legacy);
+        // configured() reads a process-wide flag, so this asserts the UNSET reading. The flag is only
+        // ever set by live mode in engine/server/src/main.rs, after verify_order_path_pool passed.
+        assert_eq!(super::configured(), Book::Legacy, "no process writes the real book until live mode says so");
+    }
+}
+
 pub struct NewOrder {
     pub broker_id: String,
     pub account_id: String,
     pub symbol: String,
+    /// `Symbol.id` -- required by Prisma's `"Order"."symbolId"` (a NOT NULL FK). Resolved by
+    /// `get_broker_symbol_config` (L2 Stage 2). Ignored by the legacy book, which keys by name.
+    pub symbol_id: String,
     pub side: OrderSide,
     pub order_type: OrderType,
     pub volume: Decimal,
@@ -123,43 +699,101 @@ pub struct NewOrder {
     pub tp_price: Option<Decimal>,
 }
 
-/// Inserts a new order row with status NEW. Callers move it through
+/// Inserts a new order row. Callers move it through
 /// `set_status`/`set_rejected`/`set_filled` from there — every write goes
-/// through this module so `orders` never gets a row written outside the
+/// through this module so the order table never gets a row written outside the
 /// legality checks in the `order-management` crate root.
+///
+/// LEGACY: status NEW in the engine's own `orders`.
+///
+/// PRISMA: status PENDING in `"Order"`, which is what the web writes for both a market order waiting
+/// on a decision and a resting LIMIT/STOP (`risk_hook.rs`'s pending scan reads exactly
+/// `status = 'PENDING' AND type IN ('LIMIT','STOP')`). Three columns are deliberately NOT supplied:
+///   - `ticket`, so the sequence DEFAULT assigns the number a trader quotes to support;
+///   - `createdAt` / `requestedAt`, which default to now().
+///
+/// `updatedAt` IS supplied: Prisma declares it `@updatedAt`, which Prisma Client fills in — the column
+/// is NOT NULL with no database default, so a plain SQL insert must set it or fail.
 pub async fn insert_order(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order: &NewOrder,
 ) -> Result<String, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        r#"
+    match book {
+        Book::Legacy => {
+            sqlx::query(
+                r#"
         INSERT INTO orders
             (id, broker_id, account_id, symbol, side, type, volume,
              requested_price, sl_price, tp_price, status)
         VALUES ($1, $2, $3, $4, $5::order_side, $6::order_type, $7, $8, $9, $10, 'NEW')
         "#,
-    )
-    .bind(&id)
-    .bind(&order.broker_id)
-    .bind(&order.account_id)
-    .bind(&order.symbol)
-    .bind(side_to_str(order.side))
-    .bind(type_to_str(order.order_type))
-    .bind(order.volume)
-    .bind(order.requested_price)
-    .bind(order.sl_price)
-    .bind(order.tp_price)
-    .execute(&mut **tx)
-    .await?;
+            )
+            .bind(&id)
+            .bind(&order.broker_id)
+            .bind(&order.account_id)
+            .bind(&order.symbol)
+            .bind(side_to_str(order.side))
+            .bind(type_to_str(order.order_type))
+            .bind(order.volume)
+            .bind(order.requested_price)
+            .bind(order.sl_price)
+            .bind(order.tp_price)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Book::Prisma => {
+            // idempotencyKey is UNIQUE per (accountId, key) and exists so a CLIENT retrying after a
+            // timeout gets its original answer instead of a second order. An engine-originated order
+            // has no client key to carry, so the row's own id -- already a v4 uuid -- is the honest
+            // value: unique, and never colliding with a client's. (In the cutover's own design the
+            // WEB creates the Order row and the engine only fills it; this path exists for the
+            // engine's own /v1/orders routes, which nothing calls today.)
+            //
+            // source API: these orders arrive through the engine's HTTP routes, which is what that
+            // enum value means. Not WEB (its default), which would misattribute them in reports.
+            sqlx::query(
+                r#"INSERT INTO "Order"
+                     (id, "brokerId", "accountId", "symbolId", side, type, volume,
+                      "requestedPrice", "slPrice", "tpPrice", status, "idempotencyKey", source, "updatedAt")
+                   VALUES ($1, $2, $3, $4, $5::"OrderSide", $6::"OrderType", $7, $8, $9, $10,
+                           'PENDING'::"OrderStatus", $11, 'API'::"OrderSource", now())"#,
+            )
+            .bind(&id)
+            .bind(&order.broker_id)
+            .bind(&order.account_id)
+            .bind(&order.symbol_id)
+            .bind(side_to_str(order.side))
+            .bind(type_to_str(order.order_type))
+            .bind(order.volume)
+            .bind(order.requested_price)
+            .bind(order.sl_price)
+            .bind(order.tp_price)
+            .bind(format!("engine:{id}"))
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
     Ok(id)
 }
 
+/// LEGACY only. The engine's `order_status` enum has NEW / VALIDATING / ACCEPTED / ROUTING states
+/// that Prisma's `OrderStatus` simply does not have, and the one that matters -- a resting LIMIT/STOP
+/// waiting for its price -- is `PENDING` on the Prisma book, which `insert_order` already wrote. So on
+/// Prisma a placed pending order needs no status move at all, and making one would be actively wrong:
+/// `ACCEPTED` there is invisible to the pending scans (`risk_hook.rs` and
+/// `get_pending_orders_for_symbol` both match `PENDING`), so the order would rest forever.
 pub async fn set_status(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order_id: &str,
     status: OrderStatus,
 ) -> Result<(), sqlx::Error> {
+    if book == Book::Prisma {
+        debug_assert_eq!(status, OrderStatus::Accepted, "the Prisma book has no intermediate order states");
+        return Ok(());
+    }
     sqlx::query(
         "UPDATE orders SET status = $1::order_status, updated_at = now() WHERE id = $2",
     )
@@ -170,78 +804,493 @@ pub async fn set_status(
     Ok(())
 }
 
+/// Rejects the order. On the Prisma book this is a compare-and-set for the same reason `set_filled`
+/// is: an order that has already been answered must not be answered again, and a reject landing on top
+/// of a fill would tell the trader their open position was refused.
 pub async fn set_rejected(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order_id: &str,
     reason: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = match book {
+        Book::Legacy => {
+            sqlx::query(
+                r#"UPDATE orders SET status = 'REJECTED'::order_status, reject_reason = $1,
+           updated_at = now() WHERE id = $2"#,
+            )
+            .bind(reason)
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await?
+        }
+        Book::Prisma => {
+            sqlx::query(
+                r#"UPDATE "Order" SET status = 'REJECTED'::"OrderStatus", "rejectionReason" = $1,
+                     "executedAt" = now(), "executionMode" = COALESCE("executionMode", 'AUTO'), "updatedAt" = now()
+                   WHERE id = $2 AND status = 'PENDING'::"OrderStatus""#,
+            )
+            .bind(reason)
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await?
+        }
+    };
+    Ok(result.rows_affected() == 1)
+}
+
+/// Marks the order filled. **Returns false when it was not this caller's to fill.**
+///
+/// THE DOUBLE-FILL GUARD (design §5b.3). On the Prisma book this is a compare-and-set on the status:
+/// `WHERE id = $1 AND status = 'PENDING'`. Only one writer can move a PENDING order to FILLED, so a
+/// second filler -- another engine pass, the web's own fill path during a failover, a retried request
+/// -- matches zero rows and must abort its transaction rather than open a second position for one
+/// order. That is the same discipline `lib/order-expiry.ts` already uses on the web side, and the
+/// reason it has to exist here is that `"Position"."originOrderId"` is UNIQUE: a second position for
+/// the same order would fail anyway, but as a constraint violation in the middle of a money
+/// transaction instead of a clean "someone else has this".
+///
+/// `routing` is the position's book type (A_BOOK / B_BOOK), which `lib/dealing.ts` writes in this same
+/// UPDATE; None leaves it alone (Stage 3 has not resolved it yet, Stage 4 passes it).
+///
+/// Prisma's `"Order"` has no filled-volume column -- a fill is whole there -- so `filled_volume` is
+/// legacy-only. `execution::execute_market_order` fills the whole requested volume on the Internal
+/// strategy, so nothing is lost; a partial-fill strategy would need a column first.
+pub async fn set_filled(
+    tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
+    order_id: &str,
+    filled_price: Decimal,
+    filled_volume: Decimal,
+    routing: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let result = match book {
+        Book::Legacy => {
+            sqlx::query(
+                r#"UPDATE orders SET status = 'FILLED'::order_status, filled_price = $1,
+           filled_volume = $2, updated_at = now() WHERE id = $3"#,
+            )
+            .bind(filled_price)
+            .bind(filled_volume)
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await?
+        }
+        Book::Prisma => {
+            sqlx::query(
+                r#"UPDATE "Order" SET status = 'FILLED'::"OrderStatus", "filledPrice" = $1,
+                     "filledAt" = now(), "executedAt" = now(),
+                     "executionMode" = COALESCE("executionMode", 'AUTO'),
+                     routing = COALESCE($2, routing), "updatedAt" = now()
+                   WHERE id = $3 AND status = 'PENDING'::"OrderStatus""#,
+            )
+            .bind(filled_price)
+            .bind(routing)
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await?
+        }
+    };
+    Ok(result.rows_affected() == 1)
+}
+
+
+// ---- L2 Step 2 (DEPTH-CUT): the whole write in one round trip -------------------------------------
+
+/// Everything `vyx_open_position` needs. One struct rather than twenty-two arguments, and it carries
+/// the DECISIONS (is a commission due, what the note says) already made in Rust: the function decides
+/// nothing, so there is no second implementation of anything to drift.
+pub struct OpenPositionCall<'a> {
+    pub broker_id: &'a str,
+    pub account_id: &'a str,
+    pub symbol_id: &'a str,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub volume: Decimal,
+    pub requested_price: Option<Decimal>,
+    pub sl_price: Option<Decimal>,
+    pub tp_price: Option<Decimal>,
+    pub fill_price: Decimal,
+    pub filled_volume: Decimal,
+    /// `"Order".routing` -- the book the fill was routed to, left alone when None (the web may have set
+    /// it already).
+    pub routing: Option<&'a str>,
+    pub book_type: BookType,
+    pub commission_per_lot: Decimal,
+    /// `"Deal".reason`: CLIENT for a client's own market fill, as app/api/trade/orders/route.ts writes
+    /// it.
+    pub deal_reason: &'a str,
+    /// The `"Order"` row's id. ALWAYS supplied: the caller answers its client with this id whether
+    /// the order fills, is refused or is lost to a race, so it cannot be a value the database picks.
+    pub order_id: &'a str,
+    /// true: this call CREATES the order row, in the same statement -- so a failure leaves no trace of
+    /// an order that never opened. false: the row already exists and is PENDING, which is a resting
+    /// LIMIT/STOP being triggered or (design section 5b.2) one the WEB created for the engine to fill.
+    pub create_order: bool,
+    /// PRIORITY 1 (FAILOVER): the CLIENT's own idempotency key, forwarded from the web guard through
+    /// the gateway, written into `"Order".idempotencyKey`.
+    ///
+    /// This is what makes a lost answer recoverable. `"Order"` is UNIQUE on
+    /// `(accountId, idempotencyKey)`, and the insert below is in the same transaction as the position
+    /// and the deal -- so if the web ever fills the same key first, this whole fill raises 23505 and
+    /// rolls back in one piece. The web's existing by-key read then finds whichever one committed.
+    /// Double-filling is refused by the index, not by the two services agreeing on who went first.
+    ///
+    /// `None` for a caller with no client key (the load test, the parallel-run harness, a direct
+    /// engine call): the function falls back to `'engine:' || order_id`, exactly as before.
+    pub idempotency_key: Option<&'a str>,
+}
+
+/// What one call left behind.
+pub struct OpenedPosition {
+    pub order_id: String,
+    pub position_id: String,
+    pub opened_at: DateTime<Utc>,
+    pub deal: OpenDeal,
+    /// Whether a POSITION_OPENED hedge intent was queued (A-book only -- see
+    /// [`enqueue_position_opened`]).
+    pub effect_enqueued: bool,
+}
+
+/// The exact `"Transaction".note` a commission charge carries. Formatted here, in ONE place, because
+/// both the multi-statement path and `vyx_open_position` must write the same bytes and the parity test
+/// compares them column for column.
+pub fn commission_note(volume: Decimal, commission_per_lot: Decimal) -> String {
+    format!("Commission: {} lots @ {}/lot", volume.normalize(), commission_per_lot.normalize())
+}
+
+/// The whole open-position write transaction in ONE round trip (`vyx_open_position`, L2 Step 2).
+///
+/// WHAT IT REPLACES: fourteen sequential round trips -- BEGIN, the `"Order"` insert, the fill UPDATE,
+/// the `"Position"` insert, four for the commission, three for the deal, the hedge intent, COMMIT. On a
+/// 5 ms link that was ~70 ms of pure waiting per fill at p50 and a quarter of a second at p99, for a
+/// decision the engine itself makes in under a microsecond.
+///
+/// WHY IT IS NOT A SECOND IMPLEMENTATION: the function's body is those same twelve statements, in the
+/// same order, with the same text -- see the migration. Nothing is recomputed in SQL: the commission
+/// amount, its note and every id are passed in. The statement is its own transaction, so atomicity is
+/// unchanged (strictly simpler: there is no window between BEGIN and COMMIT for anything to go wrong
+/// in).
+///
+/// `Ok(None)` = the compare-and-set lost, i.e. the order had already been answered. Nothing was
+/// written -- the function raises, which rolls back its own statement, order row included, exactly as
+/// `tx.rollback()` did.
+pub async fn open_position_one_call(
+    pool: &PgPool,
+    call: &OpenPositionCall<'_>,
+) -> Result<Option<OpenedPosition>, sqlx::Error> {
+    let order_id = call.order_id.to_string();
+    let position_id = Uuid::new_v4().to_string();
+    let deal_id = Uuid::new_v4().to_string();
+    let commission = call.commission_per_lot * call.filled_volume;
+    let note = commission_note(call.filled_volume, call.commission_per_lot);
+
+    let row = sqlx::query_as::<_, (String, String, DateTime<Utc>, String, Option<String>, Decimal, bool)>(
+        r#"SELECT order_id, position_id, opened_at, deal_id, group_category_at_open, commission_charged, effect_enqueued
+             FROM vyx_open_position($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                                    $15, $16, $17, $18, $19, $20, $21, $22, $23)"#,
+    )
+    // L2 optimization pass, REVERTED AND KEPT AS A WARNING: `.persistent(false)` here produced
+    // `26000 unnamed prepared statement does not exist` on EVERY order within seconds of deploy.
+    //
+    // The diagnosis of the cost was right -- pgbouncer issues DEALLOCATE ALL between transactions, so
+    // a cached prepared statement re-prepares and costs an extra round trip. The remedy was wrong. In
+    // TRANSACTION pooling mode an unnamed statement's Parse and its Bind/Execute can be routed to
+    // different server connections, so the statement is simply gone by the time Bind runs. Unnamed
+    // statements need session pooling or no pooler at all.
+    //
+    // The real fix is the one flagged as a topology decision: point the engine at Neon's DIRECT
+    // endpoint, where sqlx's own pool is the only pooling and its statement cache actually holds.
+    .bind(&order_id)
+    .bind(&position_id)
+    .bind(&deal_id)
+    .bind(Uuid::new_v4().to_string())
+    .bind(Uuid::new_v4().to_string())
+    .bind(call.broker_id)
+    .bind(call.account_id)
+    .bind(call.symbol_id)
+    .bind(side_to_str(call.side))
+    .bind(type_to_str(call.order_type))
+    .bind(call.volume)
+    .bind(call.requested_price)
+    .bind(call.sl_price)
+    .bind(call.tp_price)
+    .bind(call.fill_price)
+    .bind(call.filled_volume)
+    .bind(call.routing)
+    .bind(call.book_type.as_str())
+    .bind(commission)
+    .bind(&note)
+    .bind(call.deal_reason)
+    .bind(call.create_order)
+    .bind(call.idempotency_key)
+    .fetch_one(pool)
+    .await;
+
+    let (order_id, position_id, opened_at, deal_id, category, _charged, effect) = match row {
+        Ok(r) => r,
+        // the CAS lost: not an error, an answer -- see this function's doc comment
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some(ALREADY_ANSWERED) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(Some(OpenedPosition {
+        order_id,
+        deal: OpenDeal {
+            deal_id,
+            broker_id: call.broker_id.to_string(),
+            account_id: call.account_id.to_string(),
+            group_category_at_open: category,
+        },
+        position_id,
+        opened_at,
+        effect_enqueued: effect,
+    }))
+}
+
+/// `vyx_open_position`'s own SQLSTATE for "this order was already answered". In the 'VYX' class so it
+/// can never collide with a real Postgres condition.
+pub const ALREADY_ANSWERED: &str = "VYX01";
+
+/// A refused market order, in ONE statement: the `"Order"` row is INSERTed already REJECTED (L2 Step
+/// 2). PRISMA ONLY.
+///
+/// The row it leaves is identical to what insert-PENDING-then-UPDATE-REJECTED left: `createdAt`,
+/// `updatedAt` and `executedAt` were all the same transaction's `now()` there too, and `executionMode`
+/// came out 'AUTO' either way (the COALESCE had nothing to fall back on). What changes is that the
+/// order path no longer has to open a transaction and hold a connection across every gate just so a
+/// refusal has a row to land on.
+/// PRIORITY 1 (FAILOVER): a REJECTION carries the client's key as well, and it matters as much as a
+/// fill does.
+///
+/// If the engine refuses an order and the ANSWER is lost, the web guard must not then fill it -- the
+/// engine's verdict was "no", and a fallback that filled would be overriding a risk decision because a
+/// TCP connection died. With the key on the REJECTED row, the guard's by-key lookup finds the
+/// rejection and returns it, so the order is answered exactly once with the answer the engine gave.
+pub async fn insert_rejected_order(
+    pool: &PgPool,
+    order: &NewOrder,
+    order_id: &str,
+    reason: &str,
+    idempotency_key: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        r#"UPDATE orders SET status = 'REJECTED'::order_status, reject_reason = $1,
-           updated_at = now() WHERE id = $2"#,
+        r#"INSERT INTO "Order"
+             (id, "brokerId", "accountId", "symbolId", side, type, volume,
+              "requestedPrice", "slPrice", "tpPrice", status, "idempotencyKey", source,
+              "rejectionReason", "executedAt", "executionMode", "updatedAt")
+           VALUES ($1, $2, $3, $4, $5::"OrderSide", $6::"OrderType", $7, $8, $9, $10,
+                   'REJECTED'::"OrderStatus", $11, 'API'::"OrderSource", $12, now(), 'AUTO', now())"#,
     )
-    .bind(reason)
     .bind(order_id)
-    .execute(&mut **tx)
+    .bind(&order.broker_id)
+    .bind(&order.account_id)
+    .bind(&order.symbol_id)
+    .bind(side_to_str(order.side))
+    .bind(type_to_str(order.order_type))
+    .bind(order.volume)
+    .bind(order.requested_price)
+    .bind(order.sl_price)
+    .bind(order.tp_price)
+    .bind(idempotency_key.map(|k| k.to_string()).unwrap_or_else(|| format!("engine:{order_id}")))
+    .bind(reason)
+    .execute(pool)
     .await?;
     Ok(())
 }
 
-pub async fn set_filled(
-    tx: &mut sqlx::PgTransaction<'_>,
-    order_id: &str,
-    filled_price: Decimal,
-    filled_volume: Decimal,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"UPDATE orders SET status = 'FILLED'::order_status, filled_price = $1,
-           filled_volume = $2, updated_at = now() WHERE id = $3"#,
+// ---- L2 Stage 4: the position insert against the triggers that complete it --------------------------
+
+#[cfg(test)]
+mod position_insert_tests {
+    use super::{prisma_position_insert_columns, BookType, PRISMA_POSITION_INSERT};
+
+    /// §7's top risk, caught at compile-and-test time rather than in production.
+    ///
+    /// The column list is PARSED OUT OF THE SQL that actually runs, so this is not a check against a
+    /// copy that could drift: adding `groupCategoryAtOpen` to the insert -- which would silently stop
+    /// the stamp trigger and open A-book positions unhedged -- fails here.
+    #[test]
+    fn the_position_insert_names_no_trigger_owned_column() {
+        let columns = prisma_position_insert_columns();
+        let bypassed = crate::book::triggers_bypassed_by(&columns);
+        assert!(
+            bypassed.is_empty(),
+            "the position insert names a column a BEFORE INSERT trigger fills: {:?}",
+            bypassed.iter().map(|t| (t.trigger, t.column, t.bypass_consequence)).collect::<Vec<_>>()
+        );
+        // not vacuous: the parse really did find the real column list
+        assert_eq!(columns.len(), 11, "parsed {columns:?}");
+        for required in ["id", "brokerId", "accountId", "symbolId", "originOrderId", "side", "volume", "openPrice", "bookType"] {
+            assert!(columns.contains(&required), "the insert must name {required}: {columns:?}");
+        }
+        // and the two the database owns are absent
+        for owned in ["ticket", "groupCategoryAtOpen"] {
+            assert!(!columns.contains(&owned), "{owned} belongs to a trigger, not to this insert");
+        }
+        // status is not named either: the column DEFAULTs to OPEN
+        assert!(!columns.contains(&"status"));
+        // the trigger columns are not smuggled in through the VALUES list or the RETURNING clause
+        assert!(!PRISMA_POSITION_INSERT.contains("groupCategoryAtOpen"), "the statement must not mention the stamp column at all");
+    }
+
+    /// `lib/group-pricing.ts resolveBookType`, every category it can be given. A_BOOK and COVERAGE are
+    /// market-facing; the rest stay in the broker's own book. Getting this wrong misroutes a hedge.
+    #[test]
+    fn the_book_type_matches_the_webs_rule_for_every_category() {
+        for category in ["A_BOOK", "COVERAGE"] {
+            assert_eq!(BookType::of_category(Some(category)), BookType::ABook, "{category}");
+        }
+        for category in ["B_BOOK", "DEALING", "REVERSAL"] {
+            assert_eq!(BookType::of_category(Some(category)), BookType::BBook, "{category}");
+        }
+        // an account with no group, and anything unrecognised, book B -- the safe side
+        assert_eq!(BookType::of_category(None), BookType::BBook);
+        assert_eq!(BookType::of_category(Some("SOMETHING_NEW")), BookType::BBook);
+        assert_eq!((BookType::ABook.as_str(), BookType::BBook.as_str()), ("A_BOOK", "B_BOOK"));
+    }
+}
+
+// ---- where a position's risk goes (L2 Stage 4) ------------------------------------------------------
+
+/// Prisma's `BookType`. Mirrors `lib/group-pricing.ts resolveBookType`, which is the ONLY thing that
+/// decides this on the web, so the engine must not invent its own rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BookType {
+    /// Market-facing exposure: bridged to a liquidity provider, or the broker's own hedge account.
+    ABook,
+    /// The broker's own book.
+    BBook,
+}
+
+impl BookType {
+    /// `resolveBookType(category)`: A_BOOK bridges to a real LP and COVERAGE is the offsetting leg of
+    /// a booked client position -- both are real market-facing exposure. B_BOOK / DEALING / REVERSAL
+    /// all stay in the broker's own book. An unknown or missing category books B, the safe side.
+    pub fn of_category(category: Option<&str>) -> Self {
+        match category {
+            Some("A_BOOK") | Some("COVERAGE") => Self::ABook,
+            _ => Self::BBook,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ABook => "A_BOOK",
+            Self::BBook => "B_BOOK",
+        }
+    }
+}
+
+/// The account's group's routing category, for `BookType::of_category`.
+///
+/// NOTE this is its own round-trip, once per order. It could ride along on `get_ask_levels` (which
+/// already LEFT JOINs the same `"Group"` row) at no extra cost, and should if the 200 ms fill budget
+/// ever needs it -- but that function's job is the pricing rule, and folding routing into it would
+/// make a pricing change able to break routing. Correctness first; the fold is a measured optimisation.
+///
+/// `None` = the account has no group (`Account.groupId` is nullable), which `of_category` books B.
+pub async fn get_routing_category(pool: &PgPool, account_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        r#"SELECT g.category::text FROM "Account" a LEFT JOIN "Group" g ON g.id = a."groupId" WHERE a.id = $1"#,
     )
-    .bind(filled_price)
-    .bind(filled_volume)
-    .bind(order_id)
-    .execute(&mut **tx)
+    .bind(account_id)
+    .fetch_optional(pool)
     .await?;
-    Ok(())
+    Ok(row.and_then(|(c,)| c))
 }
 
 pub struct NewPosition {
     pub broker_id: String,
     pub account_id: String,
     pub symbol: String,
+    /// `Symbol.id` -- Prisma's `"Position"."symbolId"` is a NOT NULL FK (L2 Stage 2).
+    pub symbol_id: String,
     pub origin_order_id: String,
     pub side: OrderSide,
     pub volume: Decimal,
     pub open_price: Decimal,
     pub sl_price: Option<Decimal>,
     pub tp_price: Option<Decimal>,
+    /// Where this position's risk goes. Legacy-book inserts ignore it.
+    pub book_type: BookType,
 }
 
+/// The `"Position"` insert, as ONE string, so the column list below can be checked against the SQL
+/// that actually runs instead of against a copy of it.
+///
+/// WHAT IS NOT IN IT, and must never be: `ticket` and `groupCategoryAtOpen`. Both are filled by BEFORE
+/// INSERT triggers (`crate::book::POSITION_OPEN_TRIGGERS`), and the second one fires only when the
+/// insert left it NULL -- so naming it would silently open A-book positions unhedged. The unit test
+/// `the_position_insert_names_no_trigger_owned_column` parses this very string and refuses that.
+const PRISMA_POSITION_INSERT: &str = r#"INSERT INTO "Position"
+    (id, "brokerId", "accountId", "symbolId", "originOrderId", side, volume, "openPrice", "slPrice", "tpPrice", "bookType")
+  VALUES ($1, $2, $3, $4, $5, $6::"OrderSide", $7, $8, $9, $10, $11::"BookType")
+  RETURNING "openedAt""#;
+
+/// The columns `PRISMA_POSITION_INSERT` names, in order. Derived from the SQL rather than maintained
+/// beside it: the text between its first pair of brackets, split on commas, unquoted.
+pub fn prisma_position_insert_columns() -> Vec<&'static str> {
+    let open = PRISMA_POSITION_INSERT.find('(').expect("the insert names its columns");
+    let close = PRISMA_POSITION_INSERT[open..].find(')').expect("the column list closes") + open;
+    PRISMA_POSITION_INSERT[open + 1..close]
+        .split(',')
+        .map(|c| c.trim().trim_matches('"'))
+        .collect()
+}
+
+/// Opens the position. Returns its id and, on the Prisma book, the `openedAt` the row ended up with
+/// (the column DEFAULTs to now(), and the IN deal's `executedAt` must be that exact value -- see
+/// `write_open_deal` and lib/deals.ts, which reads it off the position for the same reason).
+///
+/// `status` is not named on the Prisma book either: `"Position".status` DEFAULTs to OPEN.
 pub async fn insert_position(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     position: &NewPosition,
-) -> Result<String, sqlx::Error> {
+) -> Result<(String, Option<chrono::DateTime<Utc>>), sqlx::Error> {
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        r#"
+    match book {
+        Book::Legacy => {
+            sqlx::query(
+                r#"
         INSERT INTO positions
             (id, broker_id, account_id, symbol, origin_order_id, side, volume,
              open_price, sl_price, tp_price, status)
         VALUES ($1, $2, $3, $4, $5, $6::order_side, $7, $8, $9, $10, 'OPEN')
         "#,
-    )
-    .bind(&id)
-    .bind(&position.broker_id)
-    .bind(&position.account_id)
-    .bind(&position.symbol)
-    .bind(&position.origin_order_id)
-    .bind(side_to_str(position.side))
-    .bind(position.volume)
-    .bind(position.open_price)
-    .bind(position.sl_price)
-    .bind(position.tp_price)
-    .execute(&mut **tx)
-    .await?;
-    Ok(id)
+            )
+            .bind(&id)
+            .bind(&position.broker_id)
+            .bind(&position.account_id)
+            .bind(&position.symbol)
+            .bind(&position.origin_order_id)
+            .bind(side_to_str(position.side))
+            .bind(position.volume)
+            .bind(position.open_price)
+            .bind(position.sl_price)
+            .bind(position.tp_price)
+            .execute(&mut **tx)
+            .await?;
+            Ok((id, None))
+        }
+        Book::Prisma => {
+            let (opened_at,): (chrono::DateTime<Utc>,) = sqlx::query_as(PRISMA_POSITION_INSERT)
+                .bind(&id)
+                .bind(&position.broker_id)
+                .bind(&position.account_id)
+                .bind(&position.symbol_id)
+                .bind(&position.origin_order_id)
+                .bind(side_to_str(position.side))
+                .bind(position.volume)
+                .bind(position.open_price)
+                .bind(position.sl_price)
+                .bind(position.tp_price)
+                .bind(position.book_type.as_str())
+                .fetch_one(&mut **tx)
+                .await?;
+            Ok((id, Some(opened_at)))
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -321,34 +1370,250 @@ pub async fn update_position_sl_tp(
 /// exists alongside the ledger row instead of only the ledger row).
 /// No-op if `commission` is zero — a broker with no commission configured
 /// (the default) shouldn't write a $0 ledger entry for every trade.
+/// Charges the open commission.
+///
+/// LEGACY: the position's column plus a `ledger_entries` row. Note what it does NOT do -- **it never
+/// touched the balance**. On the engine's own tables that was invisible, because nothing reads them.
+///
+/// PRISMA: `lib/group-pricing.ts chargeCommission`, step for step, because this one moves real money:
+///   1. the `"Account"` row is locked FOR UPDATE and its balance read -- so two fills on one account
+///      cannot lose each other's charge (the same lock `lib/account-lock.ts` takes);
+///   2. the balance is written;
+///   3. a COMMISSION `"Transaction"` records the amount NEGATED with balanceBefore / balanceAfter, and
+///      `referenceType = 'Position'` / `referenceId` -- which is how `write_open_deal` finds it again,
+///      and how every commission report adds it up;
+///   4. `"Position".commission` is INCREMENTED, not set: the column is cumulative, and increment is
+///      also what makes a retry safe.
+///
+/// The note is the web's own text verbatim. `normalize()` matches decimal.js's `toString`, which drops
+/// trailing zeros, so a 3.00/lot charge reads "@ 3/lot" on both paths rather than "@ 3.00/lot" on one.
 pub async fn record_commission(
     tx: &mut sqlx::PgTransaction<'_>,
-    position_id: &str,
+    book: Book,
+    broker_id: &str,
     account_id: &str,
-    commission: Decimal,
+    position_id: &str,
+    commission_per_lot: Decimal,
+    volume: Decimal,
 ) -> Result<(), sqlx::Error> {
-    if commission.is_zero() {
+    let commission = commission_per_lot * volume;
+    // `lte(0)` on the web: a zero or negative per-lot rate charges nothing at all.
+    if commission <= Decimal::ZERO {
         return Ok(());
     }
 
-    sqlx::query(r#"UPDATE positions SET commission = commission + $1 WHERE id = $2"#)
-        .bind(commission)
+    match book {
+        Book::Legacy => {
+            sqlx::query(r#"UPDATE positions SET commission = commission + $1 WHERE id = $2"#)
+                .bind(commission)
+                .bind(position_id)
+                .execute(&mut **tx)
+                .await?;
+
+            sqlx::query(
+                r#"INSERT INTO ledger_entries (id, account_id, entry_type, amount, related_position_id)
+           VALUES ($1, $2, 'COMMISSION'::ledger_entry_type, $3, $4)"#,
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(account_id)
+            .bind(-commission)
+            .bind(position_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Book::Prisma => {
+            // FOR NO KEY UPDATE, not FOR UPDATE: the same lock lib/account-lock.ts takes, and the same
+            // one authority::lock_owner_in_tx takes for the same reason -- it serialises writers to
+            // the row without blocking the FK references other inserts in this transaction need.
+            // Found by comparing the two paths' statement logs during the L2 latency measurement.
+            let (balance_before,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1 FOR NO KEY UPDATE"#)
+                .bind(account_id)
+                .fetch_one(&mut **tx)
+                .await?;
+            let balance_after = balance_before - commission;
+
+            sqlx::query(r#"UPDATE "Account" SET balance = $1, "updatedAt" = now() WHERE id = $2"#)
+                .bind(balance_after)
+                .bind(account_id)
+                .execute(&mut **tx)
+                .await?;
+
+            sqlx::query(
+                r#"INSERT INTO "Transaction"
+                     (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter",
+                      "referenceType", "referenceId", note, "updatedAt")
+                   VALUES ($1, $2, $3, 'COMMISSION'::"TransactionType", 'COMPLETED'::"TransactionStatus",
+                           $4, $5, $6, 'Position', $7, $8, now())"#,
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(broker_id)
+            .bind(account_id)
+            .bind(-commission)
+            .bind(balance_before)
+            .bind(balance_after)
+            .bind(position_id)
+            .bind(commission_note(volume, commission_per_lot))
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(r#"UPDATE "Position" SET commission = commission + $1 WHERE id = $2"#)
+                .bind(commission)
+                .bind(position_id)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// The IN `"Deal"` for a position just opened in this transaction, plus `"Position".initialVolume`.
+/// Prisma-book only: the legacy tables have no deal model at all.
+///
+/// `lib/deals.ts writeOpenDealInTx`, with two details that matter and are easy to get wrong:
+///
+/// - **the commission is SUMMED back out of the ledger**, not passed in. The Transaction rows are the
+///   record; summing them means the deal can never disagree with the money that actually moved, and a
+///   position charged twice reports both. The sum is NEGATIVE, because `record_commission` writes the
+///   amount negated -- do not flip it, every reader expects a charge.
+/// - **`transactionId` is set only when there is exactly ONE commission row.** The column is UNIQUE,
+///   so pointing two deals at one transaction is impossible; with several rows there is no single one
+///   to name, and the web leaves it null for the same reason.
+///
+/// `executedAt` is the position's own `openedAt`, `source` the opening order's, and `reason` the
+/// caller's (CLIENT for a client fill -- app/api/trade/orders/route.ts:794). `ticket` is not supplied:
+/// `deal_ticket_seq` owns it.
+pub async fn write_open_deal(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    reason: &str,
+) -> Result<OpenDeal, sqlx::Error> {
+    #[allow(clippy::type_complexity)]
+    let (broker_id, account_id, symbol_id, side, volume, open_price, opened_at, origin_order_id, source, category): (
+        String,
+        String,
+        String,
+        String,
+        Decimal,
+        Decimal,
+        chrono::DateTime<Utc>,
+        String,
+        String,
+        Option<String>,
+    ) = sqlx::query_as(
+        r#"SELECT p."brokerId", p."accountId", p."symbolId", p.side::text, p.volume, p."openPrice",
+                  p."openedAt", p."originOrderId", o.source::text, p."groupCategoryAtOpen"::text
+             FROM "Position" p JOIN "Order" o ON o.id = p."originOrderId"
+            WHERE p.id = $1"#,
+    )
+    .bind(position_id)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    let (commission, rows, only_id): (Decimal, i64, Option<String>) = sqlx::query_as(
+        r#"SELECT COALESCE(SUM(amount), 0), count(*), CASE WHEN count(*) = 1 THEN min(id) END
+             FROM "Transaction"
+            WHERE "referenceType" = 'Position' AND "referenceId" = $1 AND type = 'COMMISSION'::"TransactionType""#,
+    )
+    .bind(position_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    debug_assert!(rows >= 0);
+
+    let deal_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"INSERT INTO "Deal"
+             (id, "brokerId", "accountId", "positionId", "orderId", "symbolId", side, entry, reason, source,
+              volume, price, commission, "transactionId", "executedAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7::"OrderSide", 'IN'::"DealEntry", $8::"DealReason", $9::"OrderSource",
+                   $10, $11, $12, $13, $14)"#,
+    )
+    .bind(&deal_id)
+    .bind(&broker_id)
+    .bind(&account_id)
+    .bind(position_id)
+    .bind(&origin_order_id)
+    .bind(&symbol_id)
+    .bind(&side)
+    .bind(reason)
+    .bind(&source)
+    .bind(volume)
+    .bind(open_price)
+    .bind(commission)
+    .bind(&only_id)
+    .bind(opened_at)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(r#"UPDATE "Position" SET "initialVolume" = volume WHERE id = $1"#)
         .bind(position_id)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query(
-        r#"INSERT INTO ledger_entries (id, account_id, entry_type, amount, related_position_id)
-           VALUES ($1, $2, 'COMMISSION'::ledger_entry_type, $3, $4)"#,
+    Ok(OpenDeal { deal_id, broker_id, account_id, group_category_at_open: category })
+}
+
+/// What the IN deal leaves behind for the hedge gate: the deal to key an intent on, and the category
+/// the stamp trigger actually wrote (read back, never assumed -- a missed stamp must not be hedged on
+/// the engine's guess).
+#[derive(Debug, Clone)]
+pub struct OpenDeal {
+    pub deal_id: String,
+    pub broker_id: String,
+    pub account_id: String,
+    pub group_category_at_open: Option<String>,
+}
+
+/// L2 Stage 5 -- the hedge intent, by design OPTION (b).
+///
+/// The engine does NOT write `"HedgeIntent"`. It queues a `"PostCloseEffect"` of kind
+/// `POSITION_OPENED` in the SAME transaction as the fill, and the web's worker
+/// (`lib/post-close.ts positionOpenedSteps`) writes the intent. Three reasons that is the right side
+/// of the line:
+///
+/// - the invariant "an intent exists if and only if its deal committed" stays in ONE place. The effect
+///   row commits with the deal, so a rolled-back fill queues nothing and a committed one always has
+///   its follow-up.
+/// - `lib/hedge.ts hedgeDealInTx` keeps being the only intent writer, so the full routing rule
+///   (`hedgeRouteOf`: the coverage-account check, the bookType/category disagreement case) is applied
+///   by the code that owns it rather than reimplemented here.
+/// - the engine needs no INSERT privilege on `"HedgeIntent"` at all -- see
+///   `authority::ORDER_PATH_PRIVILEGES`, which deliberately omits it.
+///
+/// THE GATE. Queued only when the stamp says `A_BOOK`, which is exactly `hedgeDealInTx`'s own first
+/// test (`isHedgedCategory`). That is the NECESSARY condition; the web still applies the sufficient
+/// one, so being wrong here can only ever queue a row the web then declines -- never skip a hedge the
+/// web would have written. A B-book fill, which is nearly all of them, costs nothing.
+///
+/// `kind` is plain text on `"PostCloseEffect"`, so this needs no migration. `dedupeKey` is unique and
+/// the insert is ON CONFLICT DO NOTHING, so a retried fill queues one row, as the close side does.
+///
+/// DEPLOY ORDER MATTERS: `lib/post-close.ts` THROWS on a kind it does not know, so the web must ship
+/// its branch BEFORE the engine ever writes this kind, or the worker error-loops on the row. (Rolling
+/// back is the reverse: engine first.)
+pub async fn enqueue_position_opened(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    opened: &OpenDeal,
+) -> Result<bool, sqlx::Error> {
+    if opened.group_category_at_open.as_deref() != Some("A_BOOK") {
+        return Ok(false);
+    }
+    let payload = serde_json::json!({ "dealId": opened.deal_id });
+    let result = sqlx::query(
+        r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", "positionId", payload)
+           VALUES ($1, 'POSITION_OPENED', $2, $3, $4, $5, $6::jsonb)
+           ON CONFLICT ("dedupeKey") DO NOTHING"#,
     )
     .bind(Uuid::new_v4().to_string())
-    .bind(account_id)
-    .bind(-commission)
+    .bind(format!("open:{}:{}", position_id, opened.deal_id))
+    .bind(&opened.broker_id)
+    .bind(&opened.account_id)
     .bind(position_id)
+    .bind(payload.to_string())
     .execute(&mut **tx)
     .await?;
-
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
 #[derive(Debug)]
@@ -406,7 +1671,17 @@ pub async fn get_order(pool: &PgPool, order_id: &str) -> Result<Option<OrderRow>
 // (risk::check_symbol_enabled / risk::check_lot_size).
 // ─────────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct BrokerSymbolConfig {
+    /// `Symbol.id`. The engine's own lowercase tables key a position by symbol NAME (`positions.symbol`),
+    /// but Prisma's book keys it by id (`"Position"."symbolId"`, a required FK), so the L2 cutover needs the
+    /// id on every path that opens a position. Resolved here rather than in a second query because this
+    /// function already joins `"Symbol"` by name for the digits.
+    ///
+    /// `Symbol.name` is globally UNIQUE (schema.prisma:1731), so the name -> id lookup is unambiguous and
+    /// needs no broker scoping -- a broker's own view of a symbol is the `"BrokerSymbol"` row LEFT JOINed
+    /// below, which may be absent without changing which `Symbol` this is.
+    pub symbol_id: String,
     pub digits: i32,
     pub spread_markup: Decimal,
     pub enabled: bool,
@@ -430,7 +1705,7 @@ pub struct BrokerSymbolConfig {
 
 #[allow(clippy::type_complexity)]
 type BrokerSymbolConfigRow =
-    (i32, Decimal, bool, Decimal, Decimal, Decimal, Option<Decimal>, Decimal, Decimal, Decimal);
+    (String, i32, Decimal, bool, Decimal, Decimal, Decimal, Option<Decimal>, Decimal, Decimal, Decimal);
 
 /// `Symbol.digits` always resolves if the symbol exists at all; the LEFT
 /// JOIN means an unconfigured `BrokerSymbol` row (broker hasn't set up
@@ -444,7 +1719,7 @@ pub async fn get_broker_symbol_config(
     symbol: &str,
 ) -> Result<Option<BrokerSymbolConfig>, sqlx::Error> {
     let row: Option<BrokerSymbolConfigRow> = sqlx::query_as(
-        r#"SELECT s.digits, COALESCE(bs."spreadMarkup", 0), COALESCE(bs.enabled, true),
+        r#"SELECT s.id, s.digits, COALESCE(bs."spreadMarkup", 0), COALESCE(bs.enabled, true),
                   COALESCE(bs."minLot", 0.01), COALESCE(bs."maxLot", 100), COALESCE(bs."lotStep", 0.01),
                   bs."maxExposure", COALESCE(bs."commissionPerLot", 0),
                   COALESCE(bs."swapLong", 0), COALESCE(bs."swapShort", 0)
@@ -457,8 +1732,9 @@ pub async fn get_broker_symbol_config(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(
-        |(digits, spread_markup, enabled, min_lot, max_lot, lot_step, max_exposure, commission_per_lot, swap_long, swap_short)| {
+        |(symbol_id, digits, spread_markup, enabled, min_lot, max_lot, lot_step, max_exposure, commission_per_lot, swap_long, swap_short)| {
             BrokerSymbolConfig {
+                symbol_id,
                 digits,
                 spread_markup,
                 enabled,
@@ -474,6 +1750,58 @@ pub async fn get_broker_symbol_config(
     ))
 }
 
+/// The account's resolved pricing rule for this symbol, read in one round-trip.
+///
+/// FLIP L2 (2026-11-02): the fill path used to take `BrokerSymbol.spreadMarkup` straight off
+/// `get_broker_symbol_config` above, which is only the BOTTOM of the hierarchy. The rule a trader is
+/// quoted at resolves account → group → broker and can be a target-spread rule rather than a markup
+/// (`market_data::ask_markup::resolve`, mirroring lib/ask-markup.ts), so the fill has to resolve the
+/// same way or it charges a different price from the one on screen.
+///
+/// Reads the levels fresh rather than from `PricingSnapshot`'s cache on purpose: this runs once per
+/// order, not once per tick, so a round-trip is cheap here and a stale markup on a FILL is not an
+/// acceptable trade for it. The column set and the COVERAGE test mirror `PricingSnapshot::levels`
+/// exactly — a COVERAGE group, or being the broker's own coverage account, prices raw.
+///
+/// `None` = no such `Symbol` row, the same benign case `get_broker_symbol_config` returns `None` for.
+pub async fn get_ask_levels(
+    pool: &PgPool,
+    broker_id: &str,
+    account_id: &str,
+    symbol: &str,
+) -> Result<Option<AskLevels>, sqlx::Error> {
+    type Row = (i32, bool, bool, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>);
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT s.digits,
+                  COALESCE(b."pricingEngineEnabled", false),
+                  COALESCE(g.category::text = 'COVERAGE', false) OR COALESCE(b."coverageAccountId" = a.id, false),
+                  bs."spreadMarkup",
+                  gsc."spreadMarkup", gsc."targetTotalSpreadPips",
+                  acs."spreadMarkup", acs."targetTotalSpreadPips"
+             FROM "Symbol" s
+             LEFT JOIN "Broker" b ON b.id = $1
+             LEFT JOIN "Account" a ON a.id = $2
+             LEFT JOIN "Group" g ON g.id = a."groupId"
+             LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = $1
+             LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = s.id AND gsc."groupId" = a."groupId"
+             LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = s.id AND acs."accountId" = $2
+             WHERE s.name = $3"#,
+    )
+    .bind(broker_id)
+    .bind(account_id)
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(digits, pricing_engine, coverage, broker, g_markup, g_target, a_markup, a_target)| AskLevels {
+        pricing_engine,
+        coverage,
+        digits,
+        broker,
+        group: Level { markup: g_markup, target: g_target },
+        account_symbol: Level { markup: a_markup, target: a_target },
+    }))
+}
+
 /// §2.1 step 5's account-wide half: `Broker.maxOpenPositionsPerAccount`.
 /// A broker row not existing (shouldn't happen for an order already tied
 /// to a valid `broker_id`) collapses to the same `None`/no-limit result
@@ -487,6 +1815,7 @@ pub async fn get_broker_max_open_positions(pool: &PgPool, broker_id: &str) -> Re
     Ok(row.and_then(|(v,)| v))
 }
 
+#[derive(Clone)]
 pub struct SymbolExposure {
     pub open_volume: Decimal,
     pub open_position_count: i64,
@@ -519,12 +1848,40 @@ pub async fn get_symbol_exposure(
 /// them, so there's no reason to pay two separate network round trips
 /// for them. The two single-purpose functions above stay as they are
 /// for any other caller that only needs one value.
+/// The two exposure numbers `risk::check_symbol_exposure` and `risk::check_max_open_positions` judge,
+/// plus the broker's cap, in one round trip.
+///
+/// L2 Step 1: a Prisma branch, because the legacy one read `positions` -- a table production never
+/// fills -- so in `live` mode both gates were handed zeros and **passed everything silently**. That is
+/// the Stage 0 finding, and it is the reason this function is the priority of Part A: it is the only
+/// one of the three that `place_market_order` reaches in a mode that is actually enabled.
+///
+/// The Prisma branch also fixes a second thing the legacy query got wrong and could not show: its
+/// exposure subquery had **no `status = 'OPEN'` filter**, so it summed closed positions' volume as
+/// live exposure. (The count beside it did filter, which is what makes it clearly an oversight rather
+/// than a convention.) The web's own `checkSymbolExposure` filters on OPEN, so the Prisma branch does.
 pub async fn get_exposure_and_max_positions(
     pool: &PgPool,
+    book: Book,
     broker_id: &str,
     account_id: &str,
     symbol: &str,
+    symbol_id: &str,
 ) -> Result<(SymbolExposure, Option<i32>), sqlx::Error> {
+    if book == Book::Prisma {
+        let (open_volume, open_position_count, max_open_positions): (Decimal, i64, Option<i32>) = sqlx::query_as(
+            r#"SELECT
+                 (SELECT COALESCE(SUM(volume) FILTER (WHERE "symbolId" = $3), 0) FROM "Position" WHERE "accountId" = $2 AND status = 'OPEN'),
+                 (SELECT COUNT(*) FROM "Position" WHERE "accountId" = $2 AND status = 'OPEN'),
+                 (SELECT "maxOpenPositionsPerAccount" FROM "Broker" WHERE id = $1)"#,
+        )
+        .bind(broker_id)
+        .bind(account_id)
+        .bind(symbol_id)
+        .fetch_one(pool)
+        .await?;
+        return Ok((SymbolExposure { open_volume, open_position_count }, max_open_positions));
+    }
     let (open_volume, open_position_count, max_open_positions): (Decimal, i64, Option<i32>) = sqlx::query_as(
         r#"SELECT
              (SELECT COALESCE(SUM(volume) FILTER (WHERE symbol = $3), 0) FROM positions WHERE account_id = $2),
@@ -568,6 +1925,11 @@ pub struct PendingOrder {
     pub requested_price: Decimal,
     pub sl_price: Option<Decimal>,
     pub tp_price: Option<Decimal>,
+    /// This order's account's pricing levels, read in the same query as the order (see
+    /// `get_pending_orders_for_symbol`). `None` = no `Symbol` row, the benign fallback-to-raw case.
+    /// Carried on the order so the per-tick scan still costs ONE query: the entry test and the fill
+    /// then price off the same resolved rule, which is the whole point -- see pending_orders.rs.
+    pub ask_levels: Option<AskLevels>,
 }
 
 /// Every ACCEPTED LIMIT/STOP order for one symbol — narrowed by symbol
@@ -577,40 +1939,78 @@ pub struct PendingOrder {
 /// symbol's price.
 pub async fn get_pending_orders_for_symbol(
     pool: &PgPool,
+    book: Book,
     symbol: &str,
 ) -> Result<Vec<PendingOrder>, sqlx::Error> {
-    #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, String, String, String, Decimal, Decimal, Option<Decimal>, Option<Decimal>)> =
-        sqlx::query_as(
-            r#"SELECT id, broker_id, account_id, symbol, side::text, type::text,
-                      volume, requested_price, sl_price, tp_price
-               FROM orders
-               WHERE symbol = $1 AND status = 'ACCEPTED'::order_status
-                 AND type IN ('LIMIT'::order_type, 'STOP'::order_type)"#,
-        )
-        .bind(symbol)
-        .fetch_all(pool)
-        .await?;
+    if book == Book::Prisma {
+        return get_prisma_pending_orders_for_symbol(pool, symbol).await;
+    }
+    // The five config LEFT JOINs mirror `get_ask_levels` / `PricingSnapshot::levels` column for
+    // column, and ride along on the scan that was already happening once per tick: a resting order's
+    // entry has to be compared against THIS ACCOUNT's price, so the rule belongs here rather than in
+    // one extra read per order. Read by name (`sqlx::Row`, as book.rs does) because the row is wider
+    // than the 16 columns sqlx's tuple `FromRow` goes up to.
+    let rows = sqlx::query(
+        r#"SELECT o.id, o.broker_id, o.account_id, o.symbol, o.side::text AS side, o.type::text AS otype,
+                  o.volume, o.requested_price, o.sl_price, o.tp_price,
+                  s.digits AS digits,
+                  COALESCE(b."pricingEngineEnabled", false) AS pricing_engine,
+                  (COALESCE(g.category::text = 'COVERAGE', false) OR COALESCE(b."coverageAccountId" = a.id, false)) AS coverage,
+                  bs."spreadMarkup" AS broker_markup,
+                  gsc."spreadMarkup" AS group_markup, gsc."targetTotalSpreadPips" AS group_target,
+                  acs."spreadMarkup" AS account_markup, acs."targetTotalSpreadPips" AS account_target
+             FROM orders o
+             LEFT JOIN "Symbol" s ON s.name = o.symbol
+             LEFT JOIN "Broker" b ON b.id = o.broker_id
+             LEFT JOIN "Account" a ON a.id = o.account_id
+             LEFT JOIN "Group" g ON g.id = a."groupId"
+             LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = o.broker_id
+             LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = s.id AND gsc."groupId" = a."groupId"
+             LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = s.id AND acs."accountId" = o.account_id
+            WHERE o.symbol = $1 AND o.status = 'ACCEPTED'::order_status
+              AND o.type IN ('LIMIT'::order_type, 'STOP'::order_type)"#,
+    )
+    .bind(symbol)
+    .fetch_all(pool)
+    .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, broker_id, account_id, symbol, side, order_type, volume, requested_price, sl_price, tp_price)| {
-                PendingOrder {
-                    id,
-                    broker_id,
-                    account_id,
-                    symbol,
-                    side: side_from_str(&side),
-                    order_type: type_from_str(&order_type),
-                    volume,
-                    requested_price,
-                    sl_price,
-                    tp_price,
-                }
-            },
-        )
-        .collect())
+    rows.iter().map(pending_order_from_row).collect()
+}
+
+/// One scanned row -> a `PendingOrder`. Shared by both books' queries, which alias their columns to
+/// the same names on purpose: the two statements differ in WHERE and in how they reach `"Symbol"`,
+/// never in what a row means.
+fn pending_order_from_row(r: &sqlx::postgres::PgRow) -> Result<PendingOrder, sqlx::Error> {
+    use sqlx::Row;
+    let side: String = r.try_get("side")?;
+    let order_type: String = r.try_get("otype")?;
+    // digits is NULL only when no "Symbol" row joined, which is exactly the no-rule
+    // (fall back to the raw tick) case both fill sites have always allowed for.
+    let digits: Option<i32> = r.try_get("digits")?;
+    let ask_levels = match digits {
+        Some(digits) => Some(AskLevels {
+            pricing_engine: r.try_get("pricing_engine")?,
+            coverage: r.try_get("coverage")?,
+            digits,
+            broker: r.try_get("broker_markup")?,
+            group: Level { markup: r.try_get("group_markup")?, target: r.try_get("group_target")? },
+            account_symbol: Level { markup: r.try_get("account_markup")?, target: r.try_get("account_target")? },
+        }),
+        None => None,
+    };
+    Ok(PendingOrder {
+        id: r.try_get("id")?,
+        broker_id: r.try_get("broker_id")?,
+        account_id: r.try_get("account_id")?,
+        symbol: r.try_get("symbol")?,
+        side: side_from_str(&side),
+        order_type: type_from_str(&order_type),
+        volume: r.try_get("volume")?,
+        requested_price: r.try_get("requested_price")?,
+        sl_price: r.try_get("sl_price")?,
+        tp_price: r.try_get("tp_price")?,
+        ask_levels,
+    })
 }
 
 /// Atomically claims a pending order for routing — `UPDATE ... WHERE
@@ -620,10 +2020,70 @@ pub async fn get_pending_orders_for_symbol(
 /// `rows_affected() == 0` and treats that as "someone else is already
 /// handling this," not an error. Same idempotency pattern as
 /// `close_position_with_ledger_entry`.
+/// The Prisma book's resting LIMIT/STOP orders for one symbol, with the same five pricing LEFT JOINs.
+///
+/// Two differences from the legacy query, both forced by the schema rather than chosen:
+///
+/// - **`status = 'PENDING'`, not ACCEPTED.** That is what the web writes for a resting order
+///   (app/api/trade/orders/route.ts:855) and what the other pending scan already matches
+///   (`market-data/src/risk_hook.rs`). Prisma's `OrderStatus` has no ACCEPTED-then-ROUTING pair.
+/// - **joined on `"symbolId"`, not on the name.** The legacy table stores the symbol as text and the
+///   join was `s.name = o.symbol`; here the FK is the join, which also means a renamed symbol cannot
+///   orphan a resting order.
+///
+/// `requestedPrice IS NOT NULL` guards the same thing `risk_hook.rs` guards: a LIMIT/STOP with no
+/// entry cannot be triggered, and `PendingOrder.requested_price` is not nullable.
+async fn get_prisma_pending_orders_for_symbol(pool: &PgPool, symbol: &str) -> Result<Vec<PendingOrder>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"SELECT o.id, o."brokerId" AS broker_id, o."accountId" AS account_id, s.name AS symbol,
+                  o.side::text AS side, o.type::text AS otype,
+                  o.volume, o."requestedPrice" AS requested_price, o."slPrice" AS sl_price, o."tpPrice" AS tp_price,
+                  s.digits AS digits,
+                  COALESCE(b."pricingEngineEnabled", false) AS pricing_engine,
+                  (COALESCE(g.category::text = 'COVERAGE', false) OR COALESCE(b."coverageAccountId" = a.id, false)) AS coverage,
+                  bs."spreadMarkup" AS broker_markup,
+                  gsc."spreadMarkup" AS group_markup, gsc."targetTotalSpreadPips" AS group_target,
+                  acs."spreadMarkup" AS account_markup, acs."targetTotalSpreadPips" AS account_target
+             FROM "Order" o
+             JOIN "Symbol" s ON s.id = o."symbolId"
+             LEFT JOIN "Broker" b ON b.id = o."brokerId"
+             LEFT JOIN "Account" a ON a.id = o."accountId"
+             LEFT JOIN "Group" g ON g.id = a."groupId"
+             LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = o."brokerId"
+             LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = s.id AND gsc."groupId" = a."groupId"
+             LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = s.id AND acs."accountId" = o."accountId"
+            WHERE s.name = $1 AND o.status = 'PENDING'::"OrderStatus"
+              AND o.type IN ('LIMIT'::"OrderType", 'STOP'::"OrderType")
+              AND o."requestedPrice" IS NOT NULL"#,
+    )
+    .bind(symbol)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(pending_order_from_row).collect()
+}
+
+/// Claims the order for this pass.
+///
+/// LEGACY: ACCEPTED -> ROUTING, so a second scan skips it early.
+///
+/// PRISMA: **nothing to do, and that is deliberate.** Prisma's `OrderStatus` has no intermediate
+/// state to park the order in, and it does not need one: `lib/pending-trigger.ts` -- the WEB's own
+/// trigger for exactly these orders -- claims by going straight PENDING -> FILLED in ONE
+/// status-guarded update (`updateMany({ where: { id, status: "PENDING" } ... })`), which is the same
+/// compare-and-set `set_filled` does here. So the fill IS the claim.
+///
+/// What that costs: two passes for one tick both run the admission checks before one of them loses.
+/// What it buys: one atomic decision per order instead of two, no state a crash between them could
+/// leave the order stuck in, and the same discipline on both sides of the cutover. A reject is equally
+/// safe -- `set_rejected` is guarded on PENDING too, so only one answer lands.
 pub async fn try_claim_order_for_routing(
     tx: &mut sqlx::PgTransaction<'_>,
+    book: Book,
     order_id: &str,
 ) -> Result<bool, sqlx::Error> {
+    if book == Book::Prisma {
+        return Ok(true);
+    }
     let result = sqlx::query(
         r#"UPDATE orders SET status = 'ROUTING'::order_status, updated_at = now()
            WHERE id = $1 AND status = 'ACCEPTED'::order_status"#,
@@ -853,6 +2313,13 @@ pub struct OpenPositionWithMarket {
     /// quote currency -> account currency (fx.rs, Stage 2 F2). 1 for the same currency. A position whose
     /// rate cannot be resolved is given bid/ask None instead (unpriced), never a guessed rate.
     pub fx_rate: Decimal,
+    /// TRUE when `fx::conversion_rate` found no price to value this position's quote currency in the
+    /// account's (L2 Step 1d). `fx_rate` then carries ONE and `bid`/`ask` are None, so the position
+    /// drops out of both the used margin and the equity -- which makes the account look SAFER than it
+    /// is. The web refuses the whole order instead (`lib/margin.ts loadAccountMarginState` returns
+    /// null, and the route answers NO_CONVERSION_RATE), so the pre-trade margin gate reads this flag
+    /// rather than silently pricing an account whose exposure it cannot see.
+    pub rate_missing: bool,
     /// BrokerSymbol.hedgedMarginPct of this position's symbol (calc::used_margin); 200 = no reduction.
     pub hedged_margin_pct: Decimal,
     /// The account's ask rule for this symbol (market_data::ask_markup, 2026-09-26): a SELL closes, triggers and is
@@ -960,6 +2427,7 @@ pub async fn get_open_positions_with_market(
                     sl_price,
                     tp_price,
                     fx_rate: Decimal::ONE, // legacy order-path table: no conversion
+                    rate_missing: false,
                     hedged_margin_pct: Decimal::from(200), // legacy order-path table: no hedged margin
                     ask_rule: None, // legacy order-path table (ENGINE_ORDER_MANAGEMENT off in production): raw ask
                     quote: None,

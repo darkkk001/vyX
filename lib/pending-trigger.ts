@@ -1,3 +1,4 @@
+import { tradingDayStart } from "@/lib/trading-day";
 import "server-only";
 import { plainError } from "@/lib/plain-error";
 import { checkHedgingAllowed } from "@/lib/hedging";
@@ -188,7 +189,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
     (isCoverage ? null : await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (isCoverage ? null : await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (isCoverage ? null : await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
-    (isCoverage ? null : await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
+    (isCoverage ? null : await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss, (await tradingDayStart()).start));
   if (riskError) return fail(riskError, riskCode(riskError));
 
   // Phase 2 batch 2: an A_BOOK group without a connected LP / the system coverage account never fills a trigger

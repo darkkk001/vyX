@@ -1,3 +1,4 @@
+import { tradingDayStart } from "@/lib/trading-day";
 import { NextRequest, NextResponse } from "next/server";
 import { loadAccountAskRules, markedDownBid, markedUpAsk, NO_MARKUP } from "@/lib/ask-markup";
 import { checkHedgingAllowed } from "@/lib/hedging";
@@ -367,7 +368,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, brokerId, order.volume, broker.totalExposureLimit)) ??
-    (await checkMaxDailyLoss(prisma, order.accountId, order.account.maxDailyLoss));
+    (await checkMaxDailyLoss(prisma, order.accountId, order.account.maxDailyLoss, (await tradingDayStart()).start));
   if (riskError) {
     return NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 });
   }

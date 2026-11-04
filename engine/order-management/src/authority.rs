@@ -187,6 +187,21 @@ pub async fn verify_risk_pool(pool: &PgPool) -> Result<String, String> {
     .await
     .map_err(|e| e.to_string())?;
     if columns != 2 {
+        // information_schema.columns lists a column only when the current role holds SOME privilege on
+        // its table, so a role with no privilege on "Broker" sees zero columns and would be told the
+        // migration is missing. It is not: tell it the truth instead, or Stage 7's narrower role sends
+        // someone looking for a migration that is already applied.
+        let (broker_visible,): (bool,) = sqlx::query_as(
+            r#"SELECT to_regclass('"Broker"') IS NOT NULL AND has_table_privilege(current_user, '"Broker"', 'SELECT')"#,
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if !broker_visible {
+            return Err(format!(
+                "role {role} cannot read \"Broker\", so it cannot resolve who owns an account (authority::lock_owner_in_tx joins it on every write)"
+            ));
+        }
         return Err("Broker.riskAuthority / riskAuthorityDemoOnly are missing (the Stage 6 migration is not applied)".into());
     }
     let (beat_ok,): (bool,) = sqlx::query_as(
@@ -202,16 +217,232 @@ pub async fn verify_risk_pool(pool: &PgPool) -> Result<String, String> {
     Ok(role)
 }
 
+// ---- the start-up check of the Prisma-book order path (L2 Stage 2) ------------------------------------------------------
+//
+// WHY THIS IS SEPARATE FROM verify_risk_pool, AND NOT AN EXTENSION OF IT.
+//
+// `verify_risk_pool` above gates the mode that is live in production today. Everything it demands is
+// something the risk path actually writes. If the order path's extra requirements were added to it, then
+// a role granted exactly what risk needs would start refusing risk mode -- and a broker already set to
+// RUST would be left with no owner at all. The requirements are therefore split by what the mode writes,
+// and `live` mode must pass both.
+//
+// CHECK FIRST, GRANT LATER (owner, L2 Stage 2). This runs before the grant exists, on purpose: a role
+// holding half of this list must fail at start-up, loudly and completely, rather than mid-transaction on
+// a trader's fill. So every missing item is collected and reported together -- fixing them one error at
+// a time is exactly the slow partial grant this is meant to prevent.
+
+/// One table privilege the Prisma-book order path needs, and the write that needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TablePrivilege {
+    pub table: &'static str,
+    pub privilege: &'static str,
+    pub why: &'static str,
+}
+
+/// What the engine must be able to write once its order path writes Prisma's book instead of its own
+/// lowercase tables (design §2's delta, Stages 3-5).
+///
+/// Deliberately NOT here:
+/// - `"HedgeIntent"`: the cutover takes design option (b), so the engine queues a `"PostCloseEffect"` and
+///   the WEB writes the intent inside its own transaction. The invariant "an intent exists iff its deal
+///   committed" stays in one place, and the engine never needs this privilege. Already covered by
+///   `verify_risk_pool`'s `"PostCloseEffect"` INSERT.
+/// - `"Account"` UPDATE, `"Transaction"` INSERT, `"AuditLog"` INSERT: `verify_risk_pool` already demands
+///   all three, and `live` mode runs both checks, so repeating them here would only produce two error
+///   messages for one missing grant.
+pub const ORDER_PATH_PRIVILEGES: &[TablePrivilege] = &[
+    TablePrivilege {
+        table: "Order",
+        privilege: "INSERT",
+        why: "Stage 3: the order row is what every later row hangs off (\"Position\".\"originOrderId\" is a NOT NULL FK to it)",
+    },
+    TablePrivilege {
+        table: "Order",
+        privilege: "UPDATE",
+        why: "Stage 3: the order moves NEW -> FILLED, and a compare-and-set on its status is what stops a fill happening twice (design §5b.3)",
+    },
+    TablePrivilege {
+        table: "Position",
+        privilege: "INSERT",
+        why: "Stage 4: opening the position. This is the write that makes an engine fill visible to margin, P&L and the UI at all",
+    },
+    TablePrivilege {
+        table: "Deal",
+        privilege: "INSERT",
+        why: "Stage 4: the IN deal. lib/hedge.ts keys a hedge off a Deal, so without this an A-book fill cannot be hedged",
+    },
+];
+
+/// Sequences the order path's INSERTs consume through a column DEFAULT or a trigger, so the role needs
+/// USAGE even though no engine code names them.
+///
+/// The easiest half of a grant to forget, and the failure is a hard error on the first fill rather than
+/// anything visible at start-up -- which is the whole reason it is checked here.
+pub const ORDER_PATH_SEQUENCES: &[(&str, &str)] = &[
+    (
+        "order_ticket_seq",
+        "\"Order\".ticket DEFAULTs to nextval of it, and \"Position\"'s ticket trigger falls back to it when an origin order is missing",
+    ),
+    ("deal_ticket_seq", "\"Deal\".ticket DEFAULTs to nextval of it"),
+];
+
+/// Can this pool run the order path against Prisma's book? Returns every reason it cannot, at once.
+///
+/// Three kinds of answer, all of them about the database rather than about this process:
+/// 1. the table privileges of [`ORDER_PATH_PRIVILEGES`];
+/// 2. USAGE on the ticket sequences of [`ORDER_PATH_SEQUENCES`];
+/// 3. that both of `crate::book::POSITION_OPEN_TRIGGERS` exist on `"Position"` AND are enabled.
+///
+/// (3) is here because of what it prevents. A `prisma db push` builds a schema from schema.prisma, which
+/// does not describe triggers, so it produces a `"Position"` with neither of them -- and an insert into
+/// that table succeeds. The ticket would come from nowhere and `groupCategoryAtOpen` would stay NULL,
+/// which `book::POSITION_OPEN_TRIGGERS` spells out as an A-book position that opens unhedged with no
+/// error anywhere. A start-up refusal is the only place that failure is still cheap.
+pub async fn verify_order_path_pool(pool: &PgPool) -> Result<String, String> {
+    let mut missing: Vec<String> = Vec::new();
+
+    let (tables, privileges): (Vec<&str>, Vec<&str>) = ORDER_PATH_PRIVILEGES.iter().map(|p| (p.table, p.privilege)).unzip();
+    // format('%I') quotes each identifier in the database rather than in a Rust format string, so the
+    // table names stay data all the way down even though they are compile-time constants here.
+    // NULL = no such table. has_table_privilege RAISES on an unknown relation rather than returning
+    // false, so the to_regclass guard is what turns "the table is not there" into a reportable answer
+    // instead of an opaque driver error.
+    let rows: Vec<(String, String, Option<bool>)> = sqlx::query_as(
+        r#"SELECT t.tbl, t.priv,
+                  CASE WHEN to_regclass(format('%I', t.tbl)) IS NULL THEN NULL
+                       ELSE has_table_privilege(current_user, format('%I', t.tbl), t.priv) END
+             FROM unnest($1::text[], $2::text[]) AS t(tbl, priv)"#,
+    )
+    .bind(&tables)
+    .bind(&privileges)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("could not check the order path's privileges: {e}"))?;
+    for (table, privilege, ok) in rows {
+        if ok == Some(true) {
+            continue;
+        }
+        let why = ORDER_PATH_PRIVILEGES
+            .iter()
+            .find(|p| p.table == table && p.privilege == privilege)
+            .map(|p| p.why)
+            .unwrap_or("");
+        match ok {
+            Some(_) => missing.push(format!("{privilege} on \"{table}\" ({why})")),
+            None => missing.push(format!("table \"{table}\" does not exist ({why})")),
+        }
+    }
+
+    let (names, reasons): (Vec<&str>, Vec<&str>) = ORDER_PATH_SEQUENCES.iter().copied().unzip();
+    let rows: Vec<(String, Option<bool>)> = sqlx::query_as(
+        r#"SELECT t.name, CASE WHEN to_regclass(format('%I', t.name)) IS NULL THEN NULL
+                                ELSE has_sequence_privilege(current_user, format('%I', t.name), 'USAGE') END
+             FROM unnest($1::text[]) AS t(name)"#,
+    )
+    .bind(&names)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("could not check the order path's sequences: {e}"))?;
+    for (name, ok) in rows {
+        let reason = reasons[names.iter().position(|v| *v == name).expect("a sequence this query asked about")];
+        match ok {
+            Some(true) => {}
+            Some(false) => missing.push(format!("USAGE on sequence {name} ({reason})")),
+            None => missing.push(format!("sequence {name} does not exist ({reason})")),
+        }
+    }
+
+    let trigger_names: Vec<&str> = crate::book::POSITION_OPEN_TRIGGERS.iter().map(|t| t.trigger).collect();
+    let rows: Vec<(String, bool, Option<String>)> = sqlx::query_as(
+        r#"SELECT t.name, g.tgname IS NOT NULL, g.tgenabled::text
+             FROM unnest($1::text[]) AS t(name)
+             LEFT JOIN pg_trigger g ON g.tgname = t.name AND g.tgrelid = to_regclass('"Position"') AND NOT g.tgisinternal"#,
+    )
+    .bind(&trigger_names)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("could not check \"Position\"'s triggers: {e}"))?;
+    for (name, present, enabled) in rows {
+        let trigger = crate::book::POSITION_OPEN_TRIGGERS.iter().find(|t| t.trigger == name).expect("a trigger this query asked about");
+        if !present {
+            missing.push(format!(
+                "trigger {name} is MISSING from \"Position\" (it fills {}: {}). A prisma db push recreates the table without it",
+                trigger.column, trigger.bypass_consequence
+            ));
+        // 'O' = fires for ordinary writes, 'A' = fires always. 'D' (disabled) and 'R' (replica only) both
+        // mean this INSERT would not fire it, which is indistinguishable from the trigger being absent.
+        } else if !matches!(enabled.as_deref(), Some("O") | Some("A")) {
+            missing.push(format!(
+                "trigger {name} on \"Position\" is not enabled for ordinary writes (tgenabled = {}); it fills {}: {}",
+                enabled.as_deref().unwrap_or("?"),
+                trigger.column,
+                trigger.bypass_consequence
+            ));
+        }
+    }
+
+    let (role,): (String,) = sqlx::query_as("SELECT current_user::text").fetch_one(pool).await.map_err(|e| e.to_string())?;
+    if !missing.is_empty() {
+        return Err(format!("role {role} cannot run the order path against Prisma's book: {}", missing.join("; ")));
+    }
+    Ok(role)
+}
+
+// ---- which subsystems a mode asks for -----------------------------------------------------------------------------------
+
+/// What `ENGINE_ORDER_MANAGEMENT` asks the server to run. Parsed in ONE place so the server's wiring
+/// and the tests below cannot drift apart, and so the one invariant that matters is checkable:
+/// **the heartbeat lives in the risk half**, so a mode that runs orders without risk writes no
+/// heartbeat and must never be used on a broker set to RUST (it would leave those accounts with no
+/// risk owner at all — see `lib/risk-owner.ts`'s liveness test).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modes {
+    /// The engine owns the risk of RUST-owned accounts: the live pass, the fire lanes, the heartbeat.
+    pub risk: bool,
+    /// Order management: the thresholds guard, the per-tick triggers, the swap roller, the order routes.
+    pub orders: bool,
+    /// Decide everything, act on nothing.
+    pub shadow: bool,
+}
+
+impl Modes {
+    pub fn of(raw: Option<&str>) -> Self {
+        match raw.map(|m| m.trim().to_ascii_lowercase()).unwrap_or_default().as_str() {
+            // L2 Stage 1: both halves at once, which is what the cutover needs. Before this mode
+            // existed, turning orders on turned risk off, so the heartbeat stopped and every
+            // RUST-owned account fell back to the web within staleAfterSecs.
+            "live" => Self { risk: true, orders: true, shadow: false },
+            "risk" => Self { risk: true, orders: false, shadow: false },
+            "1" | "true" | "on" | "yes" => Self { risk: false, orders: true, shadow: false },
+            "shadow" => Self { risk: false, orders: false, shadow: true },
+            _ => Self::default(),
+        }
+    }
+
+    /// Does this mode write to the book? (shadow does not.)
+    pub fn any_live(self) -> bool {
+        self.risk || self.orders
+    }
+
+    /// Orders without risk: live fills with NO heartbeat. Legacy, kept only for back-compat.
+    pub fn orders_without_heartbeat(self) -> bool {
+        self.orders && !self.risk
+    }
+}
+
 // ---- the startup flip marker ------------------------------------------------------------------------------------------
 
 /// Stage 6 (owner answer (e), 2026-10-06): the engine stays in `ENGINE_ORDER_MANAGEMENT=shadow` until the flip. A live mode (`1` / `true` /
-/// `on` / `yes` = the legacy order management, `risk` = Stage 6) on a process without an explicit marker is most likely a mistake (a stray
+/// `on` / `yes` = the legacy order management, `risk` = Stage 6, `live` = both, L2 Stage 1) on a process without an explicit marker is most likely a mistake (a stray
 /// environment variable, a copied service file), so the server logs a WARNING at startup. The marker is `VYX_RISK_FLIP_INTENT=<broker
 /// subdomain>:<YYYY-MM-DD>` (e.g. `futurixglobal:2026-10-12`): who is being flipped and when. It does not authorise anything by itself (the
 /// per-broker flag in the database is the switch); it records that a person meant it. Returns the warning, or None when there is nothing to say.
 pub fn flip_marker_warning(mode: Option<&str>, intent: Option<&str>) -> Option<String> {
     let mode = mode.map(|m| m.trim().to_ascii_lowercase()).unwrap_or_default();
-    if !matches!(mode.as_str(), "1" | "true" | "on" | "yes" | "risk") {
+    // `live` belongs here too: it is the MOST live of the modes (risk and orders at once), so a
+    // process that lands on it by accident is the case this warning exists for.
+    if !Modes::of(Some(&mode)).any_live() {
         return None;
     }
     let intent = intent.map(str::trim).unwrap_or("");
@@ -503,5 +734,114 @@ mod tests {
         assert_eq!(c.owner("b2", "DEMO"), RiskOwner::Rust);
         assert_eq!(c.owner("b3", "DEMO"), RiskOwner::Web, "a broker not listed is WEB");
         assert!(c.engine_owns("b2", "LIVE") && !c.engine_owns("b3", "LIVE"));
+    }
+
+    // ---- L2 Stage 2: what the Prisma-book order path requires ----------------------------------------
+
+    #[test]
+    fn the_order_path_requires_exactly_the_writes_stages_3_to_5_make() {
+        use super::ORDER_PATH_PRIVILEGES;
+        let have: Vec<(&str, &str)> = ORDER_PATH_PRIVILEGES.iter().map(|p| (p.table, p.privilege)).collect();
+        assert_eq!(
+            have,
+            [("Order", "INSERT"), ("Order", "UPDATE"), ("Position", "INSERT"), ("Deal", "INSERT")],
+            "the order path's privilege list changed: re-read it against what Stages 3-5 actually write"
+        );
+        // HedgeIntent is the one a reader expects and must NOT find: design option (b) has the engine
+        // queue a PostCloseEffect and the WEB write the intent, so the engine never writes that table.
+        assert!(
+            !ORDER_PATH_PRIVILEGES.iter().any(|p| p.table == "HedgeIntent"),
+            "the engine must not need HedgeIntent: option (b) keeps the deal/intent invariant in the web"
+        );
+        // every entry says why, because the error message is the whole point of checking before granting
+        for p in ORDER_PATH_PRIVILEGES {
+            assert!(p.why.len() > 20, "{} {} has no usable reason", p.privilege, p.table);
+        }
+    }
+
+    #[test]
+    fn the_ticket_sequences_are_both_required() {
+        use super::ORDER_PATH_SEQUENCES;
+        let names: Vec<&str> = ORDER_PATH_SEQUENCES.iter().map(|(n, _)| *n).collect();
+        // No engine code names either sequence -- they are consumed by a column DEFAULT and by the
+        // ticket trigger's fallback -- which is exactly why a grant forgets them.
+        assert_eq!(names, ["order_ticket_seq", "deal_ticket_seq"]);
+        for (n, why) in ORDER_PATH_SEQUENCES {
+            assert!(why.len() > 20, "{n} has no usable reason");
+        }
+    }
+
+    /// The check asks the database about both triggers by name, so the names it asks about have to be
+    /// the ones the book module describes -- not a second copy that can drift.
+    #[test]
+    fn the_check_asks_about_the_triggers_the_book_module_names() {
+        let names: Vec<&str> = crate::book::POSITION_OPEN_TRIGGERS.iter().map(|t| t.trigger).collect();
+        assert_eq!(names, ["Position_ticket_from_origin_order", "position_stamp_group_category_at_open"]);
+    }
+    // ---- L2 Stage 1: the mode matrix --------------------------------------------------------------
+
+    #[test]
+    fn the_mode_matrix_is_exactly_this() {
+        use super::Modes;
+        let m = |v: &str| Modes::of(Some(v));
+        // live: BOTH halves. This is the mode the L2 cutover runs, and the whole point of Stage 1.
+        assert_eq!(m("live"), Modes { risk: true, orders: true, shadow: false });
+        // risk: what production runs today. Unchanged by the merge -- the regression that would hurt most.
+        assert_eq!(m("risk"), Modes { risk: true, orders: false, shadow: false });
+        // the legacy order-only spellings, all four, unchanged
+        for v in ["1", "true", "on", "yes"] {
+            assert_eq!(m(v), Modes { risk: false, orders: true, shadow: false }, "{v}");
+        }
+        assert_eq!(m("shadow"), Modes { risk: false, orders: false, shadow: true });
+        // anything else runs nothing: an empty var, a typo, a stray value
+        for v in ["", "  ", "off", "0", "RISKY", "yes please"] {
+            assert_eq!(m(v), Modes::default(), "{v}");
+        }
+        assert_eq!(Modes::of(None), Modes::default());
+        // and the parse is case- and whitespace-insensitive, because service files are hand-edited
+        for v in ["LIVE", " live ", "Live", "\tRISK\n"] {
+            assert!(m(v).risk, "{v}");
+        }
+    }
+
+    /// THE invariant Stage 1 exists for. The heartbeat is written inside the risk half
+    /// (server/src/main.rs, the `risk_mode_requested` block). So any mode that runs risk beats, and a
+    /// dead engine hands RUST-owned accounts back to the web within staleAfterSecs
+    /// (lib/risk-owner.ts). If `live` ever stopped including risk, the L2 cutover would silently
+    /// surrender L1: 19 LIVE futurixglobal accounts would fall back to the web the moment the engine
+    /// was switched to it.
+    #[test]
+    fn every_mode_that_fills_orders_either_beats_or_is_the_legacy_one() {
+        use super::Modes;
+        assert!(Modes::of(Some("live")).risk, "live MUST include risk: the heartbeat lives there");
+        assert!(!Modes::of(Some("live")).orders_without_heartbeat(), "live must never fill without a heartbeat");
+        // exactly one mode fills orders without beating, and it is the back-compat one
+        let filling_without_heartbeat: Vec<&str> = ["live", "risk", "1", "true", "on", "yes", "shadow", ""]
+            .into_iter()
+            .filter(|v| Modes::of(Some(v)).orders_without_heartbeat())
+            .collect();
+        assert_eq!(filling_without_heartbeat, ["1", "true", "on", "yes"], "only the legacy spellings may fill with no heartbeat");
+    }
+
+    #[test]
+    fn shadow_never_shares_a_process_with_a_live_half() {
+        use super::Modes;
+        for v in ["live", "risk", "1", "true", "on", "yes"] {
+            assert!(!Modes::of(Some(v)).shadow, "{v} must not also run the shadow");
+        }
+        let sh = Modes::of(Some("shadow"));
+        assert!(!sh.any_live(), "shadow acts on nothing");
+    }
+
+    #[test]
+    fn the_flip_marker_warning_covers_live_too() {
+        // Before Stage 1 this matched on a hard-coded list that did not contain "live", so the most
+        // live mode of all would have started with no marker and no warning.
+        assert!(super::flip_marker_warning(Some("live"), None).is_some(), "live with no marker must warn");
+        assert!(super::flip_marker_warning(Some("live"), Some("futurixglobal:2026-11-02")).is_none(), "a valid marker silences it");
+        assert!(super::flip_marker_warning(Some("live"), Some("nonsense")).is_some(), "a malformed marker still warns");
+        // and the modes that act on nothing still never warn
+        assert!(super::flip_marker_warning(Some("shadow"), None).is_none());
+        assert!(super::flip_marker_warning(None, None).is_none());
     }
 }

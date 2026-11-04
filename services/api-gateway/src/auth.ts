@@ -101,7 +101,12 @@ export async function getTraderSessionByTicket(
 // see docs/api.md §1) — a session minted for one broker is never valid
 // against another, same rule as the existing getAccountSession().
 export async function requireTraderSession(req: AuthedRequest, res: Response, next: NextFunction) {
-  const payload = await getTraderSession(req.headers.cookie);
+  // L2 optimization pass: a short in-process cache in front of the SAME lookup. The store is still
+  // Upstash (the web mints the session there and this only validates it); see session-cache.ts for
+  // exactly what the cache delays -- a revoked token, for up to its TTL -- and what it does not: the
+  // account's own ACTIVE/DEMO state, which every order still reads from Postgres.
+  const { getTraderSessionCached } = await import("./session-cache.js");
+  const payload = await getTraderSessionCached(req.headers.cookie);
   if (!payload) {
     res.status(401).json({ error: "no session" });
     return;

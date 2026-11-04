@@ -1,3 +1,4 @@
+import { tradingDayStart } from "@/lib/trading-day";
 import { NextRequest, NextResponse } from "next/server";
 import { withClientRefusals } from "@/lib/client-reason";
 import { prisma } from "@/lib/prisma";
@@ -195,7 +196,7 @@ async function postInner(request: NextRequest, { params }: { params: Promise<{ i
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
-    (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
+    (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss, (await tradingDayStart()).start));
   if (riskError) {
     return NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 });
   }

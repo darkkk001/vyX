@@ -38,17 +38,52 @@ pub fn ny_close_hour_utc(now: DateTime<Utc>) -> u32 {
     if us_eastern_is_dst(now) { 21 } else { 22 }
 }
 
-fn has_daily_break(category: &str) -> bool {
-    category == "METALS"
+/// lib/risk.ts `dailyBreakHours` (owner 2026-10-23, option A, from two weeks of feed data).
+///
+/// METALS pause one hour from the NY-17:00 anchor. So does SpotCrude. **SpotBrent pauses three**
+/// (17:00 New York to 01:00 London). Everything else has no break.
+///
+/// L2 Step 1b: this used to be `category == "METALS"` with a fixed one-hour window, so the engine
+/// treated SpotBrent and SpotCrude as having no break at all and could not have expressed a three-hour
+/// one. Found by the parity oracle (docs/contracts/trading-session-vectors.json), not by reading.
+pub fn daily_break_hours(category: &str, symbol_name: Option<&str>) -> u32 {
+    match category {
+        "METALS" => 1,
+        "COMMODITIES" => {
+            if symbol_name.unwrap_or("").to_lowercase().starts_with("spotbrent") {
+                3
+            } else {
+                1
+            }
+        }
+        _ => 0,
+    }
 }
 
-/// lib/risk.ts isInDailyBreak: METALS, Monday..Thursday, during the NY-close hour.
-pub fn is_in_daily_break(now: DateTime<Utc>, category: &str) -> bool {
-    if !has_daily_break(category) {
+pub fn has_daily_break(category: &str, symbol_name: Option<&str>) -> bool {
+    daily_break_hours(category, symbol_name) > 0
+}
+
+/// lib/risk.ts `isInDailyBreak` / `dailyBreakStart`.
+///
+/// Whole hours since the anchor, compared against the category's own break length -- which is how a
+/// break that runs past midnight UTC works (Brent in winter: 22:00 -> 01:00). Sunday..Thursday:
+/// SUNDAY COUNTS (owner 2026-10-26), because a break symbol's week opens at the anchor PLUS its break,
+/// and before that rule an XAUUSD order at Sunday 21:30 UTC was accepted against Friday's frozen price.
+pub fn is_in_daily_break(now: DateTime<Utc>, category: &str, symbol_name: Option<&str>) -> bool {
+    let hours = daily_break_hours(category, symbol_name);
+    if hours == 0 {
         return false;
     }
-    let day = now.weekday().num_days_from_sunday();
-    (1..=4).contains(&day) && now.hour() == ny_close_hour_utc(now)
+    // whole hours since today's (or last night's) anchor
+    let into = (now.hour() + 24 - ny_close_hour_utc(now)) % 24;
+    if into >= hours {
+        return false;
+    }
+    // the day the break STARTED, which is not today's once it has crossed midnight UTC
+    let start = now - chrono::Duration::hours(into as i64);
+    let day = start.weekday().num_days_from_sunday();
+    day <= 4
 }
 
 /// lib/risk.ts isDefaultFxSessionClosed = lib/market-week.ts isWeeklyClosed: Friday 17:00 New York -> Sunday 17:00
@@ -68,27 +103,48 @@ fn to_minutes(hhmm: &str) -> Option<u32> {
     Some(h.trim().parse::<u32>().ok()? * 60 + m.trim().parse::<u32>().ok()?)
 }
 
-/// lib/risk.ts checkTradingSession, as a bool: true = MARKET_CLOSED.
-pub fn is_market_closed(sessions: &[SessionWindow], now: DateTime<Utc>, category: &str) -> bool {
+/// lib/risk.ts `checkTradingSession`, as a bool: true = MARKET_CLOSED.
+///
+/// `symbol_name` is needed by the commodity break (`daily_break_hours`), which is why it is not
+/// optional in the way a caller could forget -- pass what the order is actually for.
+pub fn is_market_closed(sessions: &[SessionWindow], now: DateTime<Utc>, category: &str, symbol_name: Option<&str>) -> bool {
     if is_continuously_traded(category) {
         return false;
     }
     if sessions.is_empty() {
-        return is_default_fx_session_closed(now) || is_in_daily_break(now, category);
+        return is_default_fx_session_closed(now) || is_in_daily_break(now, category, symbol_name);
     }
     let day = now.weekday().num_days_from_sunday() as i32;
     let minutes = now.hour() * 60 + now.minute();
-    let open = sessions.iter().any(|s| {
-        if s.day_of_week != day {
-            return false;
-        }
-        // a malformed time is NaN on the web, which makes both comparisons false: never open
-        match (to_minutes(&s.open_time), to_minutes(&s.close_time)) {
-            (Some(o), Some(c)) => minutes >= o && minutes < c,
-            _ => false,
-        }
-    });
-    !open
+    !sessions.iter().any(|s| session_covers(s, day, minutes))
+}
+
+/// lib/risk.ts `sessionCovers`. `dayOfWeek` is the day the window OPENS; `openTime` is inclusive and
+/// `closeTime` exclusive, and the three branches are not interchangeable:
+///
+/// - `close > open`: the ordinary same-day window, e.g. 08:00-17:00. `"24:00"` parses to 1440, which
+///   is greater than any real minute, so an all-day window is just this branch.
+/// - `close < open`: the window CROSSES MIDNIGHT, e.g. Mon 22:00-02:00 = Monday 22:00 to Tuesday
+///   02:00. So it covers two different UTC days, and on the second one the row's own `dayOfWeek` is
+///   yesterday's.
+/// - `close == open`: refused by the sessions editor as ambiguous (empty, or 24 h?), so never open.
+///
+/// L2 Step 1b: the engine implemented ONLY the first branch, and returned early whenever the row's day
+/// was not today -- so every cross-midnight window was treated as closed for its whole length, on both
+/// days. A broker with a Mon 22:00-02:00 session had the engine refuse orders the web accepted for four
+/// hours a day. Found by the parity oracle, not by reading the two side by side.
+fn session_covers(s: &SessionWindow, day: i32, minutes: u32) -> bool {
+    // a malformed time is NaN on the web, which makes every comparison false: never open
+    let (Some(open), Some(close)) = (to_minutes(&s.open_time), to_minutes(&s.close_time)) else {
+        return false;
+    };
+    if close > open {
+        return s.day_of_week == day && minutes >= open && minutes < close;
+    }
+    if close < open {
+        return (s.day_of_week == day && minutes >= open) || ((s.day_of_week + 1) % 7 == day && minutes < close);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -104,8 +160,8 @@ mod tests {
             let at: DateTime<Utc> = c["utc"].as_str().unwrap().parse().unwrap();
             let closed = c["closed"].as_bool().unwrap();
             assert_eq!(is_default_fx_session_closed(at), closed, "{} ({})", c["utc"], c["why"]);
-            assert_eq!(is_market_closed(&[], at, "FOREX"), closed, "FOREX {}", c["utc"]);
-            assert!(!is_market_closed(&[], at, "CRYPTO"), "crypto never closes {}", c["utc"]);
+            assert_eq!(is_market_closed(&[], at, "FOREX", None), closed, "FOREX {}", c["utc"]);
+            assert!(!is_market_closed(&[], at, "CRYPTO", None), "crypto never closes {}", c["utc"]);
         }
     }
 
@@ -137,14 +193,20 @@ mod tests {
 
     #[test]
     fn check_trading_session() {
-        assert!(is_market_closed(&[], at(2026, 8, 4, 22, 30), "METALS"));
-        assert!(is_market_closed(&[], at(2026, 8, 6, 20, 59), "METALS")); // summer Sunday before the 21:00 reopen
-        assert!(!is_market_closed(&[], at(2026, 8, 6, 21, 1), "METALS")); // summer Sunday after it
-        assert!(is_market_closed(&[], at(2026, 11, 6, 21, 59), "METALS")); // winter Sunday before the 22:00 reopen
-        assert!(!is_market_closed(&[], at(2026, 8, 5, 12, 0), "CRYPTO"));
-        assert!(!is_market_closed(&[w(6, "00:00", "23:59")], at(2026, 8, 5, 12, 0), "METALS"));
-        assert!(is_market_closed(&[w(3, "09:00", "17:00")], at(2026, 8, 2, 20, 0), "METALS"));
-        assert!(is_market_closed(&[], at(2026, 8, 5, 12, 0), "INDICES"));
+        assert!(is_market_closed(&[], at(2026, 8, 4, 22, 30), "METALS", Some("XAUUSD")));
+        assert!(is_market_closed(&[], at(2026, 8, 6, 20, 59), "METALS", Some("XAUUSD"))); // summer Sunday before the 21:00 reopen
+        // L2 Step 1b: this used to assert gold was OPEN at summer Sunday 21:01, which was the rule when
+        // the break was Monday..Thursday only. Owner 2026-10-26 made SUNDAY count, so a break symbol's
+        // week opens at the anchor PLUS its break -- gold at 22:00 UTC in summer, not 21:00. The web's
+        // own vectors say closed here (docs/contracts/trading-session-vectors.json,
+        // 2026-07-05T21:30:00Z), so the engine matching them is the fix, not a regression.
+        assert!(is_market_closed(&[], at(2026, 8, 6, 21, 1), "METALS", Some("XAUUSD"))); // summer Sunday, still inside the break
+        assert!(!is_market_closed(&[], at(2026, 8, 6, 22, 0), "METALS", Some("XAUUSD"))); // and open once the break ends
+        assert!(is_market_closed(&[], at(2026, 11, 6, 21, 59), "METALS", Some("XAUUSD"))); // winter Sunday before the 22:00 reopen
+        assert!(!is_market_closed(&[], at(2026, 8, 5, 12, 0), "CRYPTO", None));
+        assert!(!is_market_closed(&[w(6, "00:00", "23:59")], at(2026, 8, 5, 12, 0), "METALS", Some("XAUUSD")));
+        assert!(is_market_closed(&[w(3, "09:00", "17:00")], at(2026, 8, 2, 20, 0), "METALS", Some("XAUUSD")));
+        assert!(is_market_closed(&[], at(2026, 8, 5, 12, 0), "INDICES", None));
     }
 
     #[test]
@@ -159,20 +221,20 @@ mod tests {
         assert_eq!(ny_close_hour_utc(at(2026, 0, 14, 12, 0)), 22);
 
         let wed_summer_break = at(2026, 8, 16, 21, 30);
-        assert!(is_in_daily_break(wed_summer_break, "METALS"));
-        assert!(is_market_closed(&[], wed_summer_break, "METALS"));
-        assert!(!is_market_closed(&[], at(2026, 8, 16, 22, 30), "METALS"));
-        assert!(!is_market_closed(&[], at(2026, 8, 16, 20, 59), "METALS"));
-        assert!(is_market_closed(&[], at(2026, 0, 14, 22, 30), "METALS"));
-        assert!(!is_market_closed(&[], at(2026, 0, 14, 21, 30), "METALS"));
-        assert!(!is_market_closed(&[], wed_summer_break, "FOREX"));
-        assert!(!is_market_closed(&[], wed_summer_break, "CRYPTO"));
-        assert!(!is_market_closed(&[w(3, "00:00", "23:59")], wed_summer_break, "METALS"));
-        assert!(!is_in_daily_break(at(2026, 8, 18, 21, 30), "METALS")); // Friday
+        assert!(is_in_daily_break(wed_summer_break, "METALS", Some("XAUUSD")));
+        assert!(is_market_closed(&[], wed_summer_break, "METALS", Some("XAUUSD")));
+        assert!(!is_market_closed(&[], at(2026, 8, 16, 22, 30), "METALS", Some("XAUUSD")));
+        assert!(!is_market_closed(&[], at(2026, 8, 16, 20, 59), "METALS", Some("XAUUSD")));
+        assert!(is_market_closed(&[], at(2026, 0, 14, 22, 30), "METALS", Some("XAUUSD")));
+        assert!(!is_market_closed(&[], at(2026, 0, 14, 21, 30), "METALS", Some("XAUUSD")));
+        assert!(!is_market_closed(&[], wed_summer_break, "FOREX", None));
+        assert!(!is_market_closed(&[], wed_summer_break, "CRYPTO", None));
+        assert!(!is_market_closed(&[w(3, "00:00", "23:59")], wed_summer_break, "METALS", Some("XAUUSD")));
+        assert!(!is_in_daily_break(at(2026, 8, 18, 21, 30), "METALS", Some("XAUUSD"))); // Friday
     }
 
     #[test]
     fn malformed_session_time_is_never_open() {
-        assert!(is_market_closed(&[w(3, "nine", "17:00")], at(2026, 8, 2, 12, 0), "METALS"));
+        assert!(is_market_closed(&[w(3, "nine", "17:00")], at(2026, 8, 2, 12, 0), "METALS", Some("XAUUSD")));
     }
 }

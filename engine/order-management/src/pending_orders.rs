@@ -17,9 +17,12 @@
 
 use crate::calc::{self, load_account_state};
 use crate::{db, publish_best_effort, reject_order, PlaceOrderError};
+use market_data::ask_markup;
 use protocol::{Fill, OrderSide, OrderType, Tick, TradingEvent};
 use rust_decimal::Decimal;
 
+/// `tick` is THIS ACCOUNT's quote (see the caller), not the raw one: a BUY enters at the account's
+/// ask and a SELL at its bid, which is the price it will actually fill at.
 fn is_triggered(order: &db::PendingOrder, tick: &Tick) -> bool {
     match (order.side, order.order_type) {
         (OrderSide::Buy, OrderType::Limit) => tick.ask <= order.requested_price,
@@ -38,7 +41,9 @@ fn is_triggered(order: &db::PendingOrder, tick: &Tick) -> bool {
 /// are logged and don't stop the rest — same "one bad row doesn't take
 /// down the whole scan" rule as `monitor::run_once`.
 pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::Client, tick: &Tick) {
-    let pending = match db::get_pending_orders_for_symbol(pool, &tick.symbol).await {
+    // L2 Stage 6: one book for the whole pass, read once -- as the market path does per order.
+    let book = db::configured();
+    let pending = match db::get_pending_orders_for_symbol(pool, book, &tick.symbol).await {
         Ok(orders) => orders,
         Err(err) => {
             tracing::error!(?err, symbol = %tick.symbol, "pending-order trigger: failed to list pending orders");
@@ -47,10 +52,18 @@ pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::C
     };
 
     for order in pending {
-        if !is_triggered(&order, tick) {
+        // FLIP L2 (2026-11-02): the entry is compared against THIS ACCOUNT's price, not the raw tick.
+        // It used to be the raw one while the fill carried a markup, so a BUY LIMIT triggered the
+        // moment the RAW ask reached the entry and then filled above it -- the trader got a worse
+        // price than the entry they set. The web path and the engine's own risk hook
+        // (market-data/src/risk_hook.rs `triggered`) have always compared the account's price; this
+        // scan was the odd one out. Resolved from levels the scan already read, so no extra query.
+        let rule = order.ask_levels.as_ref().and_then(ask_markup::resolve);
+        let quoted = crate::pricing::quoted_tick(tick, rule.as_ref());
+        if !is_triggered(&order, &quoted) {
             continue;
         }
-        if let Err(err) = trigger_order(pool, nats, &order, tick).await {
+        if let Err(err) = trigger_order(pool, nats, book, &order, &quoted).await {
             tracing::error!(?err, order_id = %order.id, "pending-order trigger: failed to process triggered order");
         }
     }
@@ -59,6 +72,7 @@ pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::C
 async fn trigger_order(
     pool: &sqlx::PgPool,
     nats: &async_nats::Client,
+    book: db::Book,
     order: &db::PendingOrder,
     tick: &Tick,
 ) -> Result<(), PlaceOrderError> {
@@ -67,12 +81,15 @@ async fn trigger_order(
     // Idempotent claim — see db.rs's try_claim_order_for_routing doc. If
     // this returns false, another concurrent scan already has it (two
     // ticks for the same symbol landing close together); nothing to do.
-    if !db::try_claim_order_for_routing(&mut tx, &order.id).await? {
+    // On the Prisma book there is no separate claim: the FILL is the claim (set_filled's
+    // compare-and-set), exactly as lib/pending-trigger.ts does on the web, so this returns true and
+    // the loser of the race is turned away further down instead of here.
+    if !db::try_claim_order_for_routing(&mut tx, book, &order.id).await? {
         tx.rollback().await?;
         return Ok(());
     }
 
-    let Some(state) = load_account_state(pool, &order.account_id).await? else {
+    let Some(state) = load_account_state(pool, book, &order.account_id).await? else {
         reject_order(tx, nats, &order.id, &order.account_id,"account not found".to_string()).await?;
         return Ok(());
     };
@@ -105,44 +122,70 @@ async fn trigger_order(
         reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
         return Ok(());
     }
+    // Where this fill's risk goes -- resolved before the writes, as in place_market_order.
+    let book_type = match book {
+        db::Book::Prisma => db::BookType::of_category(db::get_routing_category(pool, &order.account_id).await?.as_deref()),
+        db::Book::Legacy => db::BookType::BBook,
+    };
     let max_open_positions = db::get_broker_max_open_positions(pool, &order.broker_id).await?;
     if let Err(reject_reason) = risk::check_max_open_positions(state.positions.len() as i64, max_open_positions) {
         reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
         return Ok(());
     }
 
-    // Broker's own markup on top of the raw tick — see pricing.rs and
-    // lib.rs's place_market_order (same logic, same fallback-to-raw for
-    // a missing Symbol row). Reuses the config fetched above.
-    let quoted_tick = match &symbol_config {
-        Some(cfg) => crate::pricing::apply_spread_markup(tick, cfg.spread_markup, cfg.digits),
-        None => tick.clone(),
-    };
+    // `tick` is ALREADY this account's quote: check_symbol_for_triggers resolved the rule from the
+    // levels the scan read and priced the tick with it, so the entry test and this fill cannot
+    // disagree -- and no second read happens per triggered order.
+    let quoted_tick = tick.clone();
 
     let fill = execution::execute_market_order(&order.id, &order.account_id, order.side, order.volume, &quoted_tick, execution::ExecutionStrategy::Internal);
 
-    db::set_filled(&mut tx, &order.id, fill.price, fill.volume).await?;
+    // The race two ticks for one symbol really produce: both passes got here, and only one may fill.
+    //
+    // WHAT THIS CHECK ACTUALLY BUYS, measured rather than assumed (L2 Stage 6 mutation testing): what
+    // makes a double fill IMPOSSIBLE is `"Position"."originOrderId"` being UNIQUE. With this check
+    // removed the loser carries on, its position insert violates that index, its transaction aborts,
+    // and the database STILL ends with exactly one position -- so this is not what guarantees
+    // correctness. What it buys is that the loser exits CLEANLY: no constraint violation thrown from
+    // the middle of a money transaction, no error logged for a completely normal outcome, and no work
+    // done past the point where the answer was already decided.
+    if !db::set_filled(&mut tx, book, &order.id, fill.price, fill.volume, Some(book_type.as_str())).await? {
+        tx.rollback().await?;
+        return Ok(());
+    }
 
-    let position_id = db::insert_position(
+    let (position_id, _opened_at) = db::insert_position(
         &mut tx,
+        book,
         &db::NewPosition {
             broker_id: order.broker_id.clone(),
             account_id: order.account_id.clone(),
             symbol: order.symbol.clone(),
+            symbol_id: symbol_config.as_ref().map(|c| c.symbol_id.clone()).unwrap_or_default(),
             origin_order_id: order.id.clone(),
             side: order.side,
             volume: fill.volume,
             open_price: fill.price,
             sl_price: order.sl_price,
             tp_price: order.tp_price,
+            book_type,
         },
     )
     .await?;
 
     // Same one-time open commission as place_market_order — see
     // BrokerSymbolConfig's doc comment and db.rs's record_commission.
-    let commission = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot * fill.volume);
-    db::record_commission(&mut tx, &position_id, &order.account_id, commission).await?;
+    let commission_per_lot = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot);
+    db::record_commission(&mut tx, book, &order.broker_id, &order.account_id, &position_id, commission_per_lot, fill.volume).await?;
+
+    // The IN deal, after the commission it sums (see db::write_open_deal). CLIENT: a resting order the
+    // client placed, filled by its own trigger -- the same reason the web gives a client market fill.
+    if book == db::Book::Prisma {
+        let opened = db::write_open_deal(&mut tx, &position_id, "CLIENT").await?;
+        // L2 Stage 5: the hedge, queued for the web rather than written here -- see
+        // db::enqueue_position_opened for why the engine must not be the intent writer.
+        db::enqueue_position_opened(&mut tx, &position_id, &opened).await?;
+    }
 
     tx.commit().await?;
 
@@ -178,11 +221,39 @@ mod tests {
             requested_price,
             sl_price: None,
             tp_price: None,
+            // these unit tests hand is_triggered a tick DIRECTLY, so the rule has already been
+            // applied by the caller; the levels on the order are only read in that caller
+            ask_levels: None,
         }
     }
 
     fn tick(bid: rust_decimal::Decimal, ask: rust_decimal::Decimal) -> Tick {
         Tick { symbol: "EURUSD".into(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() }
+    }
+
+    /// FLIP L2: `check_symbol_for_triggers` prices the tick with the account's rule BEFORE testing the
+    /// entry, so a markup moves the trigger exactly as it moves the fill. Previously the entry was
+    /// tested on the raw tick while the fill carried the markup, so a BUY LIMIT triggered when the RAW
+    /// ask reached the entry and then filled ABOVE it. This asserts the two now agree.
+    #[test]
+    fn the_entry_is_measured_against_the_account_price_the_fill_will_use() {
+        use market_data::ask_markup::AskRule;
+        // 1.5 pips on a 5-digit symbol = 0.00015 of spread, half (0.000075) each side, rounded away
+        // from the client: ask ceil(1.09000 + 0.000075) = 1.09008, bid floor(1.08980 - 0.000075) = 1.08972
+        let rule = AskRule::Markup { markup_pips: dec!(1.5), digits: 5 };
+        let raw = tick(dec!(1.08980), dec!(1.09000));
+        let quoted = crate::pricing::quoted_tick(&raw, Some(&rule));
+        assert_eq!((quoted.bid, quoted.ask), (dec!(1.08972), dec!(1.09008)));
+
+        // a BUY LIMIT at the raw ask: the RAW tick would trigger it, the account's ask has not reached it
+        let buy_limit = order(OrderSide::Buy, OrderType::Limit, dec!(1.09000));
+        assert!(is_triggered(&buy_limit, &raw), "the raw ask reaches the entry");
+        assert!(!is_triggered(&buy_limit, &quoted), "the account's ask does not -- so it must NOT fill");
+
+        // a SELL STOP at the raw bid: symmetrically, the account's marked-down bid HAS fallen through it
+        let sell_stop = order(OrderSide::Sell, OrderType::Stop, dec!(1.08975));
+        assert!(!is_triggered(&sell_stop, &raw));
+        assert!(is_triggered(&sell_stop, &quoted), "the account's bid 1.08972 is below the entry");
     }
 
     #[test]

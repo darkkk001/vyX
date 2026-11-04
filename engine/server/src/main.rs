@@ -37,6 +37,12 @@ use std::sync::Arc;
 
 struct AppState {
     pool: PgPool,
+    // L2 Step 1c (C): the broker server's UTC offset, for the order path's broker-day boundary.
+    broker_offset_tracker: Arc<market_data::broker_offset::BrokerOffsetTracker>,
+    // The account ask rules every book read prices positions with (market_data::pricing). The order
+    // path needs it in scope for the same reason the monitor does -- and in live mode a book read
+    // without it is refused outright (book::require_pricing_cache).
+    pricing: Arc<market_data::pricing::PricingCache>,
     // Where Candle / LivePrice rows are written and read -- Neon, the VPS
     // Postgres, or both during the migration soak (market_data::sink).
     // `pool` above stays the trade-data (Neon) pool for orders/positions.
@@ -275,6 +281,13 @@ struct PlaceMarketOrderBody {
     used_margin: Decimal,
     contract_size: Decimal,
     leverage: u32,
+
+    /// PRIORITY 1 (FAILOVER): the client's own idempotency key, forwarded by the web guard
+    /// through the gateway. Optional, because the engine's own callers (the load test, the
+    /// parallel-run harness) have none -- see PlaceMarketOrderRequest::idempotency_key for why
+    /// it is what makes a lost answer recoverable instead of ambiguous.
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -331,6 +344,11 @@ async fn server_time() -> Json<ServerTimeResponse> {
     Json(ServerTimeResponse { server_utc_ms: Utc::now().timestamp_millis() })
 }
 
+/// The index that makes a double fill impossible: `"Order"` UNIQUE (accountId, idempotencyKey), named
+/// by Prisma's convention. Matched by name rather than by code alone, so that some OTHER unique
+/// violation -- a ticket collision, say, which is a real incident -- keeps reporting as a 500.
+const ORDER_IDEMPOTENCY_CONSTRAINT: &str = "Order_accountId_idempotencyKey_key";
+
 async fn place_market_order(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlaceMarketOrderBody>,
@@ -359,13 +377,53 @@ async fn place_market_order(
         used_margin: body.used_margin,
         contract_size: body.contract_size,
         leverage: body.leverage,
+        idempotency_key: body.idempotency_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
     };
 
-    let outcome = order_management::place_market_order(&state.pool, &state.nats, &state.tick_cache, req)
+    let outcome = order_management::place_market_order(
+        &state.pool,
+        &state.nats,
+        &state.tick_cache,
+        Some(&state.pricing),
+        state.broker_offset_tracker.current(),
+        req,
+    )
         .await
-        .map_err(|err| {
-            tracing::error!(?err, "place_market_order failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        .map_err(|err| match err {
+            // L2 Stage 3: the symbol does not exist, so no order row could be created to reject.
+            // A client error, not an internal one.
+            order_management::PlaceOrderError::UnknownSymbol(symbol) => (StatusCode::BAD_REQUEST, format!("unknown symbol {symbol}")),
+            // L2 Step 2: the account (or its broker) was not there when the order path read it.
+            // verify_account_belongs_to_broker above already said it was, so this is a client error
+            // about an account that has just gone, not an engine fault.
+            order_management::PlaceOrderError::UnknownAccount(account) => (StatusCode::BAD_REQUEST, format!("unknown account {account}")),
+            // L2 Step 3: this account is not in the engine's ingress scope. 403 and not 400, because
+            // nothing about the request is malformed -- the engine simply does not serve this account,
+            // and the caller's correct response is to use the web path.
+            order_management::PlaceOrderError::NotInIngress(account) => {
+                (StatusCode::FORBIDDEN, format!("account {account} is not served by the engine order path"))
+            }
+            // L2 Step 3: on the list, but not a DEMO account. Also 403, and the message names which of
+            // the two conditions failed so an operator fixes the right thing.
+            order_management::PlaceOrderError::IngressDemoOnly(account) => {
+                (StatusCode::FORBIDDEN, format!("account {account} is not a DEMO account; the engine order path is scoped to DEMO accounts"))
+            }
+            // FAILOVER: this key has already been answered -- by the web, or by an earlier attempt
+            // whose answer was lost. The unique index on ("Order".accountId, idempotencyKey) refused
+            // the whole fill, which is exactly the designed behaviour, so it is not an engine fault
+            // and must not be reported as one: 409 tells the caller to go and read the existing order
+            // rather than to suspect the engine. 500 here would trip the guard's breaker and bench a
+            // healthy engine for fifteen seconds over a duplicate it is meant to absorb.
+            order_management::PlaceOrderError::Db(sqlx::Error::Database(ref dbe))
+                if dbe.code().as_deref() == Some("23505") && dbe.constraint() == Some(ORDER_IDEMPOTENCY_CONSTRAINT) =>
+            {
+                tracing::info!(constraint = ORDER_IDEMPOTENCY_CONSTRAINT, "order refused: this idempotency key was already answered");
+                (StatusCode::CONFLICT, "this order was already answered".to_string())
+            }
+            err => {
+                tracing::error!(?err, "place_market_order failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
         })?;
 
     Ok(Json(outcome.into()))
@@ -435,9 +493,12 @@ async fn place_pending_order(
 
     let outcome = order_management::place_pending_order(&state.pool, &state.nats, &state.tick_cache, req)
         .await
-        .map_err(|err| {
-            tracing::error!(?err, "place_pending_order failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        .map_err(|err| match err {
+            order_management::PlaceOrderError::UnknownSymbol(symbol) => (StatusCode::BAD_REQUEST, format!("unknown symbol {symbol}")),
+            err => {
+                tracing::error!(?err, "place_pending_order failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
         })?;
 
     Ok(Json(outcome.into()))
@@ -1590,18 +1651,94 @@ async fn main() {
             tracing::warn!(%intent, "flip marker present: a live mode is intended for this process");
         }
     }
-    let risk_mode_requested = std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("risk")).unwrap_or(false);
-    let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
-        .unwrap_or(false);
+    // L2 Stage 1 (docs: C:\vyx\handoff\l2-cutover-design.md section 0): ONE variable, four modes, and the two live
+    // halves are no longer mutually exclusive.
+    //
+    //   live    both halves: the engine owns the risk of RUST-owned accounts AND runs order management
+    //   risk    risk only -- what production runs today; order routes stay refused, the web fills
+    //   1/on/   order management only -- kept for back-compat. It writes the engine's OWN lowercase
+    //   true/     tables (empty in production) and deliberately writes NO heartbeat: beating without a
+    //   yes       risk pass would tell the web the engine is alive while nothing watches RUST-owned
+    //             accounts, leaving them with no risk owner at all. See the heartbeat block below.
+    //   shadow  decides everything, acts on nothing
+    //
+    // Before this, `on` and `risk` were two arms of one if/else, so turning order management on turned
+    // risk OFF: the heartbeat stopped, and within staleAfterSecs every RUST-owned account fell back to
+    // the web (lib/risk-owner.ts). Correct and fail-safe, but it made the L2 cutover impossible to do
+    // without surrendering L1 on the way in.
+    let mode = std::env::var("ENGINE_ORDER_MANAGEMENT").unwrap_or_default().trim().to_ascii_lowercase();
+    // L2 Step 1c (C): constructed BEFORE the order block, which needs its value for the
+    // daily-loss gate's broker-day boundary (db::GateInputs::broker_day_start).
+    // this crate ingests comes from the same MT5 terminal today.
+    let broker_offset_tracker = Arc::new(market_data::broker_offset::BrokerOffsetTracker::new());
+
+    let modes = order_management::authority::Modes::of(Some(&mode));
+    let live_mode = modes.risk && modes.orders;
+    let risk_mode_requested = modes.risk;
+    let order_management_on = modes.orders;
     // Left at its default (empty) when the subsystem is off, so the order routes keep failing
     // closed: with no monitor running they must refuse, never fill against an unwatched book.
     let thresholds_guard = Arc::new(std::sync::RwLock::new(ThresholdsGuardState::default()));
-    if order_management_on {
-        tracing::warn!(
-            monitor_interval_secs,
-            "order management ENABLED: margin monitor, per-tick triggers, thresholds guard and swap roller running against the engine's own tables"
-        );
+    if order_management_on { 'orders: {
+        if live_mode {
+            tracing::warn!(monitor_interval_secs, "order management ENABLED (live mode): thresholds guard, per-tick triggers and swap roller running; the risk block below owns the pass, the outbox and the heartbeat");
+        } else {
+            tracing::warn!(
+                monitor_interval_secs,
+                "order management ENABLED: margin monitor, per-tick triggers, thresholds guard and swap roller running against the engine's own tables. NO heartbeat is written in this mode: do not set a broker to RUST while it is on"
+            );
+        }
+        // L2 Stage 2: in `live` mode the order path is on its way onto Prisma's book (Stages 3-5), so prove the
+        // pool can actually write it BEFORE anything starts -- including that "Position"'s two BEFORE INSERT
+        // triggers are there and enabled, because an insert into a trigger-less copy of that table succeeds and
+        // opens an A-book position unhedged with no error (order_management::book::POSITION_OPEN_TRIGGERS).
+        // Checked here while no grant exists yet, on purpose (owner, Stage 2): a half-granted role must fail at
+        // start-up rather than mid-fill.
+        //
+        // Refusing leaves the ORDER half off and the risk half below running, which is exactly today's
+        // production shape: the engine owns the risk of RUST-owned accounts and the web owns every fill. The
+        // thresholds guard stays empty, so the engine's own order routes keep refusing too (fail closed).
+        if live_mode {
+            // L2 Step 3 (INGRESS SCOPING, owner 2026-11-03): the cutover's first live exposure is ONE
+            // designated DEMO account, so live mode REFUSES TO START THE ORDER HALF without an
+            // explicit list of the accounts it may fill for.
+            //
+            // THIS IS THE FAIL-CLOSED DECISION. `order_management::ingress` treats "no list installed"
+            // as unrestricted, because the DB tests and parity harnesses place orders for their own
+            // fixtures -- and this block is what makes that safe: no production process can reach that
+            // state, because an empty or missing variable stops the order half here instead. An empty
+            // list means NOBODY, which is why it is refused rather than installed.
+            //
+            // Refusing leaves the risk half below running, exactly as a failed privilege check does:
+            // the engine keeps the risk of RUST-owned accounts and the web keeps every fill.
+            let ingress = order_management::ingress::parse_list(&std::env::var("ENGINE_INGRESS_ACCOUNT_IDS").unwrap_or_default());
+            if ingress.is_empty() {
+                tracing::error!(
+                    "ORDER PATH REFUSED: live mode requires ENGINE_INGRESS_ACCOUNT_IDS -- the accounts the engine may fill for.                      Empty or unset means nobody, so the order half stays off and the web keeps every fill (L2 Step 3)"
+                );
+                break 'orders;
+            }
+            // Installed BEFORE the privilege check and long before the listener binds, for the same
+            // reason `use_prisma_book()` is: no order can be taken before the rule governing it is in
+            // place.
+            order_management::ingress::restrict_to(ingress.clone());
+            tracing::warn!(
+                accounts = ingress.len(),
+                "live mode: the order path is SCOPED -- every account not on ENGINE_INGRESS_ACCOUNT_IDS is refused 403"
+            );
+            match order_management::authority::verify_order_path_pool(&pool).await {
+                Ok(role) => {
+                    tracing::info!(%role, "live mode: the pool can write Prisma's book and \"Position\"'s open triggers are enabled");
+                    // L2 Stage 3: and only now, after the check passed, does the order path write it.
+                    // Set before the HTTP listener binds, so no order can be taken on the wrong book.
+                    order_management::db::use_prisma_book();
+                }
+                Err(why) => {
+                    tracing::error!(%why, "ORDER PATH REFUSED: live mode starts the risk half only, so the engine keeps the risk of RUST-owned accounts and the web keeps every fill (the grant is L2 Stage 7)");
+                    break 'orders;
+                }
+            }
+        }
         // Stage 6: every live mode acts only on the accounts the database says the engine owns (all brokers are WEB by default)
         order_management::authority::enforce();
         let monitor_guard = order_management::monitor::new_run_guard();
@@ -1609,30 +1746,75 @@ async fn main() {
         order_management::book::require_pricing_cache();
         pricing_used = true;
         let prices = order_management::book::PriceSource::Ticks(tick_cache.clone());
-        order_management::monitor::spawn(
-            pool.clone(),
-            nats.clone(),
-            std::time::Duration::from_secs(monitor_interval_secs),
-            monitor_guard.clone(),
-            prices.clone(),
-            Some(pricing.clone()),
-        );
-        spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard, prices, pricing.clone())
-            .await
-            .expect("failed to subscribe tick-driven triggers to price.tick.*");
+        // Both this and risk mode's spawn_risk_passes drive the same monitor::run_pass. In `live` only
+        // the risk one runs: it adds the run guard, the idle gate and authority::enforce, and an
+        // ungated second poller would defeat that gate (the ~880 queries/minute that stopped Neon ever
+        // idling -- see the comment above this block).
+        if !risk_mode_requested {
+            order_management::monitor::spawn(
+                pool.clone(),
+                nats.clone(),
+                std::time::Duration::from_secs(monitor_interval_secs),
+                monitor_guard.clone(),
+                prices.clone(),
+                Some(pricing.clone()),
+            );
+        }
+        // L2 Stage 6: NOT in live mode, and this is a deliberate refusal rather than an omission.
+        //
+        // This subscription does two things, and live mode already has a better owner for both:
+        //
+        // (a) the margin / stop-out pass. The risk block below runs it through spawn_risk_passes, with
+        //     the run guard, the idle gate and authority::enforce -- the same reason Stage 1 skips
+        //     monitor::spawn here.
+        //
+        // (b) the resting-order scan. THIS is the one that matters. `pending_orders::trigger_order`
+        //     applies THREE admission checks (free margin, symbol exposure, max open positions). The
+        //     web's own trigger for the same orders, `lib/pending-trigger.ts
+        //     triggerPendingOrderInner`, applies about twenty: account status, per-account trading
+        //     rights, broker trading-halted / close-only, symbol trading mode, trading SESSION, lot
+        //     step and the group's own lot rules, live-price freshness, group trading restriction /
+        //     halted / close-only / allowed-symbol, hedging-allowed, broker total exposure, max daily
+        //     loss, and the A-book-without-an-LP refusal. Running the native scan on the real book
+        //     would fill resting orders the web would have refused -- a suspended account's, a halted
+        //     broker's, one outside trading hours, one over the daily loss limit.
+        //
+        //     Nothing is lost by refusing: the engine ALREADY triggers these orders, and has since
+        //     Stage 6 of the risk cutover. market-data/src/risk_hook.rs detects the cross and calls
+        //     GET /api/internal/pending-trigger?symbols=X, and the web fills it as the RUST actor
+        //     (re-checking ownership in its own transaction), with every one of those gates applied.
+        //     The native path exists, is tested, and waits for that gate list to be ported or
+        //     delegated. Until then this is the fail-safe choice, not a gap.
+        if !risk_mode_requested {
+            spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard, prices, pricing.clone())
+                .await
+                .expect("failed to subscribe tick-driven triggers to price.tick.*");
+        } else {
+            tracing::warn!(
+                "live mode: the engine's NATIVE resting-order scan is NOT running. Resting LIMIT/STOP orders keep \
+                 going through risk_hook -> GET /api/internal/pending-trigger -> lib/pending-trigger.ts, which applies \
+                 ~20 admission gates the native path does not (account status, trading rights, sessions, group lot \
+                 rules, daily loss, broker exposure, A-book-without-an-LP). L2 Stage 6 built and tested the native \
+                 writes; enabling it needs that gate list first."
+            );
+        }
 
         // Rust cutover Stage 3: the monitor's closes queue the web's post-close follow-up (mirror, coverage,
         // stop-out / margin-call notices, the dealing queue) as "PostCloseEffect" rows; this hands them to the
         // web's /api/internal/post-close. Without the two env vars the rows still queue, and the web's
         // margin-monitor cron runs them after 2 minutes (a backstop, far slower: set both).
-        match order_management::outbox::DispatcherConfig::from_env() {
-            Some(cfg) => {
-                tracing::info!(url = %cfg.url, sweep_secs = cfg.sweep_interval.as_secs(), "post-close outbox dispatcher running");
-                order_management::outbox::spawn(pool.clone(), cfg);
+        // In `live` the risk block below spawns this, and REQUIRES it; two dispatchers would sweep the
+        // same PostCloseEffect rows. Only order-only mode spawns its own, optional, copy.
+        if !risk_mode_requested {
+            match order_management::outbox::DispatcherConfig::from_env() {
+                Some(cfg) => {
+                    tracing::info!(url = %cfg.url, sweep_secs = cfg.sweep_interval.as_secs(), "post-close outbox dispatcher running");
+                    order_management::outbox::spawn(pool.clone(), cfg);
+                }
+                None => tracing::warn!(
+                    "post-close outbox dispatcher NOT running (VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET unset): engine closes queue their follow-up for the web cron backstop only"
+                ),
             }
-            None => tracing::warn!(
-                "post-close outbox dispatcher NOT running (VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET unset): engine closes queue their follow-up for the web cron backstop only"
-            ),
         }
 
         // Risk item 2's startup/live-order guard -- synchronous initial load BEFORE the HTTP
@@ -1651,8 +1833,27 @@ async fn main() {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
-        order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
-    } else if risk_mode_requested { 'risk: {
+        // L2 Step 1b item 6: NOT in live mode, and the reason is the opposite of what it looks like.
+        //
+        // This roller reads and writes the engine's own lowercase `positions` (db.rs
+        // get_positions_due_for_swap, claim_position_for_swap, the `UPDATE positions SET swap` charge),
+        // so on the Prisma book it finds nothing and does nothing. That is HARMLESS, because swaps on
+        // the real book are already owned elsewhere: lib/swap-rollover.ts reads `"Position"` and writes
+        // `"Position"."lastSwapAt"`, on the Vercel cron at /api/internal/swap-rollover.
+        //
+        // So the risk is not "no swap gets applied" -- it is that someone ports this roller's READ to
+        // the Prisma book without its WRITES and it starts charging swaps into a table nothing reads,
+        // while the web's cron charges them again on the real one. Not starting it in live mode makes
+        // that impossible, and the warning says where swaps actually come from.
+        if !risk_mode_requested {
+            order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
+        } else {
+            tracing::warn!(
+                "live mode: the engine's swap roller is NOT running. Swaps on Prisma's book are owned by                  lib/swap-rollover.ts on the web's cron (/api/internal/swap-rollover); this roller only ever                  read the engine's own legacy tables. Porting it is its own stage -- read AND writes together."
+            );
+        }
+    } }
+    if risk_mode_requested { 'risk: {
         // Rust cutover Stage 6 (docs/STAGE6-PLAN.md): the engine is AUTHORITATIVE for the risk (SL / TP, margin call,
         // stop-out, resting-order triggers) of the accounts `Broker.riskAuthority` hands it (RUST; demo-only until the flag
         // says otherwise), and ONLY those: authority::enforce makes every live pass, fire and write check the database's
@@ -1771,8 +1972,13 @@ async fn main() {
                 break 'risk;
             }
         }
-        tracing::warn!(monitor_interval_secs, authority_reload_secs = safety_secs, "RISK MODE ACTIVE: the engine is authoritative for the risk of RUST-owned accounts (per Broker.riskAuthority and its demo-only scope); the web skips them. No broker is RUST until the owner flips one.");
-    } } else if std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("shadow")).unwrap_or(false) { 'shadow: {
+        if live_mode {
+            tracing::warn!(monitor_interval_secs, authority_reload_secs = safety_secs, "LIVE MODE ACTIVE: the engine is authoritative for the risk of RUST-owned accounts AND runs order management; one heartbeat covers both, so a dead engine hands the risk back to the web exactly as in risk mode.");
+        } else {
+            tracing::warn!(monitor_interval_secs, authority_reload_secs = safety_secs, "RISK MODE ACTIVE: the engine is authoritative for the risk of RUST-owned accounts (per Broker.riskAuthority and its demo-only scope); the web skips them. No broker is RUST until the owner flips one.");
+        }
+    } }
+    if modes.shadow { 'shadow: {
         // Rust cutover Stage 5 (docs/RUST-CUTOVER-PLAN.md §5): the monitor evaluates every account exactly as at
         // cutover but ACTS ON NOTHING (monitor::Mode::Shadow): no close, no follow-up row, no margin-call edge, no
         // NATS event, no dispatcher; the thresholds guard stays empty, so the order routes keep refusing. The web
@@ -1879,8 +2085,6 @@ async fn main() {
     let gap_fill_tracker = Arc::new(GapFillTracker::new());
     // See market_data::broker_offset::BrokerOffsetTracker's own doc
     // comment -- one shared value, not per-symbol, since every symbol
-    // this crate ingests comes from the same MT5 terminal today.
-    let broker_offset_tracker = Arc::new(market_data::broker_offset::BrokerOffsetTracker::new());
     // SL / TP execution trigger: the web app's minute cron was the only thing evaluating open
     // positions once the feed moved here (see market_data::risk_hook) -- with VYX_RISK_HOOK_URL /
     // VYX_RISK_HOOK_SECRET set, the tick that touches a level fires the evaluation at once, and
@@ -2049,6 +2253,8 @@ async fn main() {
 
     let state = Arc::new(AppState {
         pool,
+        broker_offset_tracker: broker_offset_tracker.clone(),
+        pricing: pricing.clone(),
         market_pools,
         nats,
         price_feed_secret,

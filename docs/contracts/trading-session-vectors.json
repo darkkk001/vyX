@@ -1,0 +1,2579 @@
+{
+  "generatedBy": "scripts/contracts/gen-trading-session-vectors.ts",
+  "note": "the WEB's own lib/risk.ts checkTradingSession and helpers; engine/order-management/tests/trading_session_parity.rs asserts the engine's port against it",
+  "helpers": {
+    "usEasternIsDst": [
+      {
+        "utc": "2026-03-08T06:59:00Z",
+        "value": false
+      },
+      {
+        "utc": "2026-03-08T07:00:00Z",
+        "value": true
+      },
+      {
+        "utc": "2026-07-01T12:00:00Z",
+        "value": true
+      },
+      {
+        "utc": "2026-11-01T05:59:00Z",
+        "value": true
+      },
+      {
+        "utc": "2026-11-01T06:00:00Z",
+        "value": false
+      },
+      {
+        "utc": "2026-12-15T12:00:00Z",
+        "value": false
+      }
+    ],
+    "nyCloseHourUtc": [
+      {
+        "utc": "2026-07-01T12:00:00Z",
+        "value": 21
+      },
+      {
+        "utc": "2026-11-15T12:00:00Z",
+        "value": 22
+      }
+    ],
+    "dailyBreakHours": [
+      {
+        "category": "METALS",
+        "symbol": "XAUUSD",
+        "hours": 1,
+        "hasBreak": true
+      },
+      {
+        "category": "METALS",
+        "symbol": null,
+        "hours": 1,
+        "hasBreak": true
+      },
+      {
+        "category": "COMMODITIES",
+        "symbol": "SpotBrent",
+        "hours": 3,
+        "hasBreak": true
+      },
+      {
+        "category": "COMMODITIES",
+        "symbol": "spotbrent-cash",
+        "hours": 3,
+        "hasBreak": true
+      },
+      {
+        "category": "COMMODITIES",
+        "symbol": "SpotCrude",
+        "hours": 1,
+        "hasBreak": true
+      },
+      {
+        "category": "COMMODITIES",
+        "symbol": null,
+        "hours": 1,
+        "hasBreak": true
+      },
+      {
+        "category": "FOREX",
+        "symbol": "EURUSD",
+        "hours": 0,
+        "hasBreak": false
+      },
+      {
+        "category": "CRYPTO",
+        "symbol": "BTCUSD",
+        "hours": 0,
+        "hasBreak": false
+      },
+      {
+        "category": "INDICES",
+        "symbol": "US30",
+        "hours": 0,
+        "hasBreak": false
+      },
+      {
+        "category": "STOCKS",
+        "symbol": "AAPL",
+        "hours": 0,
+        "hasBreak": false
+      }
+    ],
+    "isInDailyBreak": [
+      {
+        "utc": "2026-06-29T21:30:00Z",
+        "category": "METALS",
+        "symbol": "XAUUSD",
+        "inBreak": true
+      },
+      {
+        "utc": "2026-07-05T21:30:00Z",
+        "category": "METALS",
+        "symbol": "XAUUSD",
+        "inBreak": true
+      },
+      {
+        "utc": "2026-07-03T21:30:00Z",
+        "category": "METALS",
+        "symbol": "XAUUSD",
+        "inBreak": false
+      },
+      {
+        "utc": "2026-06-29T23:30:00Z",
+        "category": "COMMODITIES",
+        "symbol": "SpotBrent",
+        "inBreak": true
+      },
+      {
+        "utc": "2026-06-29T23:30:00Z",
+        "category": "COMMODITIES",
+        "symbol": "SpotCrude",
+        "inBreak": false
+      }
+    ],
+    "isDefaultFxSessionClosed": [
+      {
+        "utc": "2026-07-03T20:59:00Z",
+        "closed": false
+      },
+      {
+        "utc": "2026-07-03T21:00:00Z",
+        "closed": true
+      },
+      {
+        "utc": "2026-07-04T12:00:00Z",
+        "closed": true
+      },
+      {
+        "utc": "2026-07-05T20:59:00Z",
+        "closed": true
+      },
+      {
+        "utc": "2026-07-05T21:00:00Z",
+        "closed": false
+      },
+      {
+        "utc": "2026-07-01T12:00:00Z",
+        "closed": false
+      },
+      {
+        "utc": "2026-11-06T21:59:00Z",
+        "closed": false
+      },
+      {
+        "utc": "2026-11-06T22:00:00Z",
+        "closed": true
+      },
+      {
+        "utc": "2026-11-07T12:00:00Z",
+        "closed": true
+      },
+      {
+        "utc": "2026-11-08T21:59:00Z",
+        "closed": true
+      },
+      {
+        "utc": "2026-11-08T22:00:00Z",
+        "closed": false
+      },
+      {
+        "utc": "2026-03-08T07:00:00Z",
+        "closed": true
+      },
+      {
+        "utc": "2026-11-01T06:00:00Z",
+        "closed": true
+      }
+    ]
+  },
+  "cases": [
+    {
+      "utc": "2026-07-04T12:00:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [],
+      "why": "crypto is never closed",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-04T12:00:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "09:00"
+        }
+      ],
+      "why": "crypto ignores configured sessions too",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-05T12:00:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [],
+      "why": "crypto is never closed",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-05T12:00:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "09:00"
+        }
+      ],
+      "why": "crypto ignores configured sessions too",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T21:30:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [],
+      "why": "crypto is never closed",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T21:30:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "09:00"
+        }
+      ],
+      "why": "crypto ignores configured sessions too",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-07T12:00:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [],
+      "why": "crypto is never closed",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-07T12:00:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "09:00"
+        }
+      ],
+      "why": "crypto ignores configured sessions too",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-06T20:00:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [],
+      "why": "crypto is never closed",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-06T20:00:00Z",
+      "category": "CRYPTO",
+      "symbol": "BTCUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "09:00"
+        }
+      ],
+      "why": "crypto ignores configured sessions too",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T20:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "summer Friday one minute before the 21:00Z close",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T20:59:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "summer Friday one minute before the 21:00Z close (indices: weekly rule, no break)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T21:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "summer Friday at the close",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "summer Friday at the close (indices: weekly rule, no break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-04T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "Saturday",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-04T12:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "Saturday (indices: weekly rule, no break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T20:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "summer Sunday one minute before the 21:00Z reopen",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T20:59:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "summer Sunday one minute before the 21:00Z reopen (indices: weekly rule, no break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "summer Sunday at the reopen",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-05T21:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "summer Sunday at the reopen (indices: weekly rule, no break)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "a summer Wednesday midday",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T12:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "a summer Wednesday midday (indices: weekly rule, no break)",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-06T21:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "winter Friday one minute before the 22:00Z close",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-06T21:59:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "winter Friday one minute before the 22:00Z close (indices: weekly rule, no break)",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-06T22:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "winter Friday at the close",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-06T22:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "winter Friday at the close (indices: weekly rule, no break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-07T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "winter Saturday",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-07T12:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "winter Saturday (indices: weekly rule, no break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-08T21:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "winter Sunday one minute before the 22:00Z reopen",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-08T21:59:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "winter Sunday one minute before the 22:00Z reopen (indices: weekly rule, no break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-08T22:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "winter Sunday at the reopen",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-08T22:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "winter Sunday at the reopen (indices: weekly rule, no break)",
+      "closed": false
+    },
+    {
+      "utc": "2026-03-08T07:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "the instant US DST begins (a Sunday)",
+      "closed": true
+    },
+    {
+      "utc": "2026-03-08T07:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "the instant US DST begins (a Sunday) (indices: weekly rule, no break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-01T06:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [],
+      "why": "the instant US DST ends (a Sunday)",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-01T06:00:00Z",
+      "category": "INDICES",
+      "symbol": "US30",
+      "sessions": [],
+      "why": "the instant US DST ends (a Sunday) (indices: weekly rule, no break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T20:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Monday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Monday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Monday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T21:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Monday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Monday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Monday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Monday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Monday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Monday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Monday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Monday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Monday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Monday, one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Monday, one hour in (a 1 h break has ended)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Monday, one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T23:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Monday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Monday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Monday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T20:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Tuesday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Tuesday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Tuesday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T21:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Tuesday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Tuesday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Tuesday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Tuesday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Tuesday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Tuesday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T21:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Tuesday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Tuesday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Tuesday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T22:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Tuesday, one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Tuesday, one hour in (a 1 h break has ended)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Tuesday, one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T23:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Tuesday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Tuesday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Tuesday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T20:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Wednesday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Wednesday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Wednesday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T21:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Wednesday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Wednesday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Wednesday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Wednesday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Wednesday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Wednesday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T21:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Wednesday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Wednesday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Wednesday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T22:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Wednesday, one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Wednesday, one hour in (a 1 h break has ended)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Wednesday, one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T23:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Wednesday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-01T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Wednesday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-01T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Wednesday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-02T20:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Thursday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-02T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Thursday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-02T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Thursday, one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-02T21:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Thursday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Thursday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Thursday, at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Thursday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Thursday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Thursday, half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T21:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Thursday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Thursday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Thursday, one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T22:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Thursday, one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-02T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Thursday, one hour in (a 1 h break has ended)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Thursday, one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-02T23:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Thursday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-02T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Thursday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-02T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Thursday, two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T20:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Friday (the weekly close takes over), one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Friday (the weekly close takes over), one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Friday (the weekly close takes over), one minute before the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-03T21:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Friday (the weekly close takes over), at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Friday (the weekly close takes over), at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Friday (the weekly close takes over), at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Friday (the weekly close takes over), half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Friday (the weekly close takes over), half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Friday (the weekly close takes over), half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Friday (the weekly close takes over), one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Friday (the weekly close takes over), one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Friday (the weekly close takes over), one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T22:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Friday (the weekly close takes over), one hour in (a 1 h break has ended)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Friday (the weekly close takes over), one hour in (a 1 h break has ended)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Friday (the weekly close takes over), one hour in (a 1 h break has ended)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T23:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Friday (the weekly close takes over), two and a half hours in (still inside Brent's 3 h)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Friday (the weekly close takes over), two and a half hours in (still inside Brent's 3 h)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-03T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Friday (the weekly close takes over), two and a half hours in (still inside Brent's 3 h)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T20:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Sunday (the break applies: the week opens at the anchor PLUS the break), one minute before the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Sunday (the break applies: the week opens at the anchor PLUS the break), one minute before the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T20:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Sunday (the break applies: the week opens at the anchor PLUS the break), one minute before the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Sunday (the break applies: the week opens at the anchor PLUS the break), at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Sunday (the break applies: the week opens at the anchor PLUS the break), at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Sunday (the break applies: the week opens at the anchor PLUS the break), at the anchor",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Sunday (the break applies: the week opens at the anchor PLUS the break), half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Sunday (the break applies: the week opens at the anchor PLUS the break), half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Sunday (the break applies: the week opens at the anchor PLUS the break), half an hour in",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:59:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Sunday (the break applies: the week opens at the anchor PLUS the break), one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Sunday (the break applies: the week opens at the anchor PLUS the break), one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T21:59:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Sunday (the break applies: the week opens at the anchor PLUS the break), one minute before a 1 h break ends",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T22:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Sunday (the break applies: the week opens at the anchor PLUS the break), one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-05T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Sunday (the break applies: the week opens at the anchor PLUS the break), one hour in (a 1 h break has ended)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T22:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Sunday (the break applies: the week opens at the anchor PLUS the break), one hour in (a 1 h break has ended)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-05T23:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "metals, Sunday (the break applies: the week opens at the anchor PLUS the break), two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-07-05T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "SpotBrent (3 h), Sunday (the break applies: the week opens at the anchor PLUS the break), two and a half hours in (still inside Brent's 3 h)",
+      "closed": true
+    },
+    {
+      "utc": "2026-07-05T23:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotCrude",
+      "sessions": [],
+      "why": "SpotCrude (1 h), Sunday (the break applies: the week opens at the anchor PLUS the break), two and a half hours in (still inside Brent's 3 h)",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-03T22:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "winter: SpotBrent inside the break, before midnight",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-03T22:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "winter: metals inside the break, before midnight (1 h break: long over)",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-04T00:30:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "winter: SpotBrent inside the break, after midnight",
+      "closed": true
+    },
+    {
+      "utc": "2026-11-04T00:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "winter: metals inside the break, after midnight (1 h break: long over)",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-04T01:00:00Z",
+      "category": "COMMODITIES",
+      "symbol": "SpotBrent",
+      "sessions": [],
+      "why": "winter: SpotBrent exactly 3 h after the anchor",
+      "closed": false
+    },
+    {
+      "utc": "2026-11-04T01:00:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [],
+      "why": "winter: metals exactly 3 h after the anchor (1 h break: long over)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T07:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 07:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T08:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 08:00",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T11:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 11:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 12:00",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T12:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 12:30",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T16:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 16:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T17:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 17:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 21:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 22:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T23:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 23:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T01:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Tue 01:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T02:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Tue 02:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon 08:00-17:00, same day @ Mon 21:30 (metals: configuration beats the break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T07:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 07:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T08:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 08:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T11:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 11:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 12:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T12:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 12:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T16:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 16:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T17:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 17:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 21:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 22:00",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T23:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 23:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T01:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Tue 01:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T02:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Tue 02:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "22:00",
+          "closeTime": "02:00"
+        }
+      ],
+      "why": "Mon 22:00-02:00, crosses midnight @ Mon 21:30 (metals: configuration beats the break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T07:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 07:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T08:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 08:00",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T11:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 11:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 12:00",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T12:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 12:30",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T16:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 16:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T17:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 17:00",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 21:30",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 22:00",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T23:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 23:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-30T01:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Tue 01:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T02:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Tue 02:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "00:00",
+          "closeTime": "24:00"
+        }
+      ],
+      "why": "Mon all day (close 24:00) @ Mon 21:30 (metals: configuration beats the break)",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T07:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 07:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T08:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 08:00",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T11:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 11:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 12:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T12:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 12:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T16:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 16:59",
+      "closed": false
+    },
+    {
+      "utc": "2026-06-29T17:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 17:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 21:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 22:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T23:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 23:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T01:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Tue 01:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T02:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Tue 02:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "08:00",
+          "closeTime": "12:00"
+        },
+        {
+          "dayOfWeek": 1,
+          "openTime": "13:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "Mon two windows with a lunch gap @ Mon 21:30 (metals: configuration beats the break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T07:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 07:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T08:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 08:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T11:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 11:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 12:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T12:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 12:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T16:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 16:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T17:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 17:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 21:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 22:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T23:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 23:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T01:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Tue 01:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T02:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Tue 02:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 1,
+          "openTime": "bad",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "a malformed row: never open @ Mon 21:30 (metals: configuration beats the break)",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T07:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 07:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T08:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 08:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T11:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 11:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T12:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 12:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T12:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 12:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T16:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 16:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T17:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 17:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 21:30",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T22:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 22:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T23:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 23:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T01:59:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Tue 01:59",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-30T02:00:00Z",
+      "category": "FOREX",
+      "symbol": "EURUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Tue 02:00",
+      "closed": true
+    },
+    {
+      "utc": "2026-06-29T21:30:00Z",
+      "category": "METALS",
+      "symbol": "XAUUSD",
+      "sessions": [
+        {
+          "dayOfWeek": 2,
+          "openTime": "08:00",
+          "closeTime": "17:00"
+        }
+      ],
+      "why": "configured for TUESDAY only @ Mon 21:30 (metals: configuration beats the break)",
+      "closed": true
+    }
+  ]
+}

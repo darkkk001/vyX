@@ -1,3 +1,4 @@
+import { tradingDayStart } from "@/lib/trading-day";
 import { NextRequest, NextResponse } from "next/server";
 import { displayCurrency } from "@/lib/demo-policy";
 import { accountClosePrice, askRuleWire, loadAskRules, NO_MARKUP } from "@/lib/ask-markup";
@@ -357,7 +358,7 @@ export async function POST(request: NextRequest) {
     (await checkMaxOpenPositions(prisma, accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, accountId, symbolId, volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, brokerId, volume, broker.totalExposureLimit)) ??
-    (await checkMaxDailyLoss(prisma, accountId, account.maxDailyLoss));
+    (await checkMaxDailyLoss(prisma, accountId, account.maxDailyLoss, (await tradingDayStart()).start));
   if (riskError) {
     return NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 });
   }

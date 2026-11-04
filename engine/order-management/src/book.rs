@@ -29,6 +29,151 @@ pub fn fixed2(d: Decimal) -> String {
     format!("{:.2}", d.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero))
 }
 
+// ---- what the Prisma book fills in by itself (L2 Stage 2) -------------------------------------------------------------
+//
+// Prisma's `"Position"` has two BEFORE INSERT triggers. They exist precisely so that EVERY opener -- the
+// web's order route, an admin's manual entry, and from Stage 4 the engine -- stamps the same two columns
+// the same way, with no opener able to forget. The engine must therefore let them run rather than
+// computing either column itself.
+
+/// One of those triggers, and what bypassing it costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionOpenTrigger {
+    /// `pg_trigger.tgname`, as `authority::verify_order_path_pool` looks it up at start-up.
+    pub trigger: &'static str,
+    /// The column it fills.
+    pub column: &'static str,
+    /// Whether it fills the column ONLY when the INSERT left it NULL. When true, naming the column in an
+    /// INSERT -- even to give it a reasonable-looking default -- turns the trigger off for that row, and
+    /// Postgres reports nothing: the row inserts, and the damage is in what the column now says.
+    pub only_when_null: bool,
+    /// What a bypass actually causes. Not decoration: this is the text the guard reports.
+    pub bypass_consequence: &'static str,
+}
+
+/// Both triggers on `"Position"`, in the order `pg_trigger` returns them by name.
+///
+/// Kept as data rather than prose so three things can be checked instead of believed:
+/// `authority::verify_order_path_pool` asserts the database still has exactly these triggers (a
+/// `prisma db push` recreates a schema WITHOUT its triggers -- that is not hypothetical, it happened on
+/// the scratch database on 2026-10-31), the unit tests below assert the guard knows about them, and a
+/// `*_db.rs` test asserts they still do what this says.
+pub const POSITION_OPEN_TRIGGERS: &[PositionOpenTrigger] = &[
+    PositionOpenTrigger {
+        trigger: "Position_ticket_from_origin_order",
+        column: "ticket",
+        // Unconditional (`SELECT o."ticket" INTO NEW."ticket"`, migration 20260911200000_numeric_ticket),
+        // so a supplied ticket is overwritten rather than honoured. Harmless to the data, but a caller
+        // that supplies one is wrong about who owns the number, so the guard still names it.
+        only_when_null: false,
+        bypass_consequence: "a supplied ticket is silently overwritten by the opening order's; the trigger, not the caller, owns the number a trader quotes to support",
+    },
+    PositionOpenTrigger {
+        trigger: "position_stamp_group_category_at_open",
+        column: "groupCategoryAtOpen",
+        // `IF NEW."groupCategoryAtOpen" IS NULL THEN ... END IF` (migration
+        // 20261006090000_book_pnl_group_min_volume). Conditional, and therefore the dangerous one.
+        only_when_null: true,
+        // Traced through the real call chain: lib/hedge.ts hedgeDealInTx routes on
+        // lib/hedge-route.ts hedgeRouteOf, where groupCategoryAtOpen = A_BOOK is the ONLY thing that
+        // returns LIQUIDITY_PROVIDER. A NULL stamp on an A-book account whose bookType is A_BOOK falls to
+        // `bookType != "B_BOOK" -> NONE`: QoreBridge never sees the position AND the hedge account
+        // refuses it. The position is simply unhedged, and nothing anywhere errors.
+        bypass_consequence: "an A-book position opens UNHEDGED and silently: no HedgeIntent for QoreBridge (lib/hedge.ts keys on A_BOOK) and hedgeRouteOf returns NONE, so the hedge account will not take it either",
+    },
+];
+
+/// The triggers a `"Position"` INSERT naming these columns would turn off for the row it inserts.
+///
+/// Stage 4's insert passes its own column list through this, so the column list is checked against the
+/// triggers rather than reviewed by eye. Only the conditional triggers can actually be bypassed; an
+/// unconditional one is listed by [`POSITION_OPEN_TRIGGERS`] for the caller's sake but never returned
+/// here, because naming its column changes no data.
+pub fn triggers_bypassed_by(columns: &[&str]) -> Vec<&'static PositionOpenTrigger> {
+    POSITION_OPEN_TRIGGERS
+        .iter()
+        .filter(|t| t.only_when_null && columns.contains(&t.column))
+        .collect()
+}
+
+// ---- L2 Stage 2: the Position open-trigger contract --------------------------------------------------------------------
+
+#[cfg(test)]
+mod position_open_trigger_tests {
+    use super::{triggers_bypassed_by, POSITION_OPEN_TRIGGERS};
+
+    /// The column list Stage 4's INSERT is expected to name: everything a position needs EXCEPT the two
+    /// the database fills in. Written out here so that if Stage 4's list ever grows one of those two
+    /// columns, this test is the thing that notices.
+    const STAGE_4_COLUMNS: &[&str] = &[
+        "id",
+        "brokerId",
+        "accountId",
+        "symbolId",
+        "originOrderId",
+        "side",
+        "volume",
+        "initialVolume",
+        "openPrice",
+        "slPrice",
+        "tpPrice",
+        "status",
+        "bookType",
+        "openedAt",
+    ];
+
+    #[test]
+    fn the_engines_insert_leaves_both_trigger_columns_alone() {
+        assert!(
+            triggers_bypassed_by(STAGE_4_COLUMNS).is_empty(),
+            "the order path's INSERT names a column one of \"Position\"'s BEFORE INSERT triggers fills: {:?}",
+            triggers_bypassed_by(STAGE_4_COLUMNS).iter().map(|t| t.trigger).collect::<Vec<_>>()
+        );
+        // and it is not vacuous: these are real column names, not a list that happens to be empty
+        assert!(STAGE_4_COLUMNS.contains(&"symbolId"), "the list must be the real INSERT's columns");
+    }
+
+    /// THE Stage 2 invariant, and §7's top risk. `groupCategoryAtOpen` is filled only when the INSERT
+    /// left it NULL, so naming it -- with any value at all, including a plausible "B_BOOK" default --
+    /// turns the stamp off for that row. Nothing errors; an A-book position simply opens unhedged.
+    #[test]
+    fn naming_group_category_at_open_is_caught_as_a_bypass() {
+        let with_stamp = ["id", "accountId", "symbolId", "groupCategoryAtOpen"];
+        let caught = triggers_bypassed_by(&with_stamp);
+        assert_eq!(caught.len(), 1, "supplying groupCategoryAtOpen must be caught as a bypass");
+        assert_eq!(caught[0].trigger, "position_stamp_group_category_at_open");
+        assert!(
+            caught[0].bypass_consequence.contains("UNHEDGED"),
+            "the guard must say what a bypass costs, not just that one happened"
+        );
+    }
+
+    #[test]
+    fn the_ticket_trigger_is_unconditional_so_naming_its_column_changes_no_data() {
+        // Different failure, deliberately not reported as a bypass: the trigger overwrites a supplied
+        // ticket instead of deferring to it, so the row is still correct.
+        let ticket = POSITION_OPEN_TRIGGERS.iter().find(|t| t.column == "ticket").expect("the ticket trigger");
+        assert!(!ticket.only_when_null);
+        assert!(triggers_bypassed_by(&["id", "ticket"]).is_empty());
+    }
+
+    #[test]
+    fn both_triggers_are_described_and_each_once() {
+        assert_eq!(POSITION_OPEN_TRIGGERS.len(), 2, "\"Position\" has exactly two BEFORE INSERT triggers");
+        for t in POSITION_OPEN_TRIGGERS {
+            assert!(!t.trigger.is_empty() && !t.column.is_empty() && !t.bypass_consequence.is_empty());
+            assert_eq!(
+                POSITION_OPEN_TRIGGERS.iter().filter(|o| o.column == t.column).count(),
+                1,
+                "{} is claimed by two triggers",
+                t.column
+            );
+        }
+        // exactly one of them is the conditional, bypassable kind
+        assert_eq!(POSITION_OPEN_TRIGGERS.iter().filter(|t| t.only_when_null).count(), 1);
+    }
+}
+
 fn side_from_prisma(s: &str) -> protocol::OrderSide {
     match s {
         "SELL" => protocol::OrderSide::Sell,
@@ -191,6 +336,24 @@ pub fn fx_rate_max_age() -> chrono::Duration {
 /// A conversion quote from the ticks, or None when there is none or it is older than fx_rate_max_age.
 fn fx_quote_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now: chrono::DateTime<chrono::Utc>) -> Option<(Decimal, Decimal)> {
     cache.latest(symbol).filter(|(t, received)| now - tick_time(t, *received) < fx_rate_max_age()).map(|(t, _)| (t.bid, t.ask))
+}
+
+/// A conversion rate `from` -> `to` from the engine's IN-MEMORY ticks alone -- no database (L2 Step
+/// 1d, the pre-trade margin gate on the order path). Same feed the web reads as `"LivePrice"`, same
+/// symbol set and same age rule `price_rows` uses above, so an account's open legs and the leg about
+/// to open are converted by one rule. None = the pair is not quoted in this process, which the order
+/// path refuses with NO_CONVERSION_RATE rather than sizing JPY as if it were USD.
+pub fn fx_rate_from_ticks(
+    cache: &market_data::cache::TickCache,
+    from: &str,
+    to: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Decimal> {
+    let quotes: std::collections::HashMap<String, crate::fx::Quote> = crate::fx::conversion_symbols_for(from, to)
+        .into_iter()
+        .filter_map(|s| fx_quote_from_ticks(cache, &s, now).map(|q| (s, q)))
+        .collect();
+    crate::fx::conversion_rate(from, to, |s| quotes.get(s).copied())
 }
 
 /// The tick time the web uses for freshness (engine price_row: tick_ms, else the receive time).
@@ -385,6 +548,55 @@ async fn load_sessions(conn: &mut sqlx::PgConnection, broker_ids: &[String], nam
     Ok(sessions)
 }
 
+// ---- L2 Step 2 (DEPTH-CUT): the order path composes its ONE book read from these ---------------
+//
+// Exposed rather than copied. The order path's fill used to pay ELEVEN sequential round trips just to
+// read: five config queries, then BEGIN / SET TRANSACTION / funds / positions / sessions / ROLLBACK.
+// They are now one statement (db::get_open_snapshot), and that statement is composed from the same
+// projection, decoded by the same decoder and priced by the same function as every other book read --
+// so there is no second definition of "what an open position is" to drift from this one.
+//
+// A SINGLE STATEMENT IS A SINGLE SNAPSHOT, which is strictly stronger than what it replaced: the
+// funds and the positions came from a REPEATABLE READ transaction (the 2026-10-01 torn read), and one
+// statement gives that guarantee without the three round trips that set it up and tore it down.
+
+/// The SELECT list of a position read (`RAW_COLUMNS`).
+pub const POSITION_COLUMNS: &str = RAW_COLUMNS;
+
+/// Its FROM clause (`RAW_FROM`).
+pub const POSITION_FROM: &str = RAW_FROM;
+
+/// Trading-session windows by (brokerId, symbol name) -- what `price_order_path_rows` judges "this
+/// position's market is closed" on.
+pub type SymbolSessions = Sessions;
+
+/// `raw_from_row`, for one row of the order path's combined read.
+pub fn position_from_row(r: &sqlx::postgres::PgRow) -> Result<RawPosition, sqlx::Error> {
+    raw_from_row(r)
+}
+
+/// Each row's account ask rule, from the pricing cache in scope -- ZERO statements once that cache is
+/// loaded, which is how production runs (`market_data::pricing`, kept current out of band). Without a
+/// cache in scope (tests, harnesses) it loads the configuration of exactly these rows, as before.
+pub async fn resolve_position_rules(pool: &PgPool, rows: &mut [RawPosition]) -> Result<(), sqlx::Error> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut conn = pool.acquire().await?;
+    resolve_rules(&mut conn, rows).await
+}
+
+/// `price_rows` for the ORDER PATH: priced from the engine's own ticks, with the sessions handed in
+/// rather than read, no pin and no live-fire hint (those belong to the risk monitor). No database.
+pub fn price_order_path_rows(
+    rows: &[RawPosition],
+    sessions: &SymbolSessions,
+    cache: &std::sync::Arc<market_data::cache::TickCache>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<OpenPositionWithMarket> {
+    price_rows(rows, sessions, &PriceSource::Ticks(cache.clone()), None, now, &DbPrices::default())
+}
+
 /// The FX conversion symbols these rows may need (quote -> account currency, fx.rs), deduplicated.
 fn fx_symbols_of<'a>(rows: impl IntoIterator<Item = &'a RawPosition>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -458,7 +670,7 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
             };
             let closed = sessions
                 .get(&(broker_id.clone(), r.symbol.clone()))
-                .is_some_and(|windows| crate::session::is_market_closed(windows, now, &r.category));
+                .is_some_and(|windows| crate::session::is_market_closed(windows, now, &r.category, Some(&r.symbol)));
             let rate = crate::fx::conversion_rate(&r.quote_ccy, &r.account_ccy, |s| fx_quotes.get(s).copied());
             if rate.is_none() {
                 tracing::error!(position_id = %r.id, symbol = %r.symbol, quote_ccy = %r.quote_ccy, account_ccy = %r.account_ccy, "no conversion rate: position treated as unpriced");
@@ -476,6 +688,7 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
                 sl_price: r.sl_price,
                 tp_price: r.tp_price,
                 fx_rate: rate.unwrap_or(Decimal::ONE),
+                rate_missing: rate.is_none(),
                 hedged_margin_pct: r.hedged_margin_pct,
                 ask_rule: r.ask_rule,
                 quote: if usable { quote } else { None },

@@ -1,0 +1,68 @@
+{
+  "generatedBy": "scripts/contracts/gen-open-chain-vector.ts",
+  "note": "the WEB's openPositionFromOrder chain, normalised; engine/order-management/tests/order_book_prisma_db.rs asserts the engine's chain against it",
+  "case": {
+    "name": "a-book client market buy, 0.01 lots, 3.00/lot commission",
+    "category": "A_BOOK",
+    "side": "BUY",
+    "volume": "0.01",
+    "fillPrice": "4299.13",
+    "commissionPerLot": "3.00",
+    "openingBalance": "100000",
+    "digits": 2,
+    "contractSize": "1"
+  },
+  "order": {
+    "status": "FILLED",
+    "filledPrice": "4299.13",
+    "routing": "A_BOOK",
+    "executionMode": "AUTO",
+    "hasFilledAt": true,
+    "hasExecutedAt": true,
+    "rejectionReason": null
+  },
+  "position": {
+    "status": "OPEN",
+    "side": "BUY",
+    "volume": "0.01",
+    "initialVolume": "0.01",
+    "openPrice": "4299.13",
+    "bookType": "A_BOOK",
+    "groupCategoryAtOpen": "A_BOOK",
+    "ticketEqualsOrderTicket": true,
+    "commission": "0.03",
+    "swap": "0",
+    "realizedPnl": null
+  },
+  "commissionTransactions": [
+    {
+      "type": "COMMISSION",
+      "status": "COMPLETED",
+      "amount": "-0.03",
+      "balanceBefore": "100000",
+      "balanceAfter": "99999.97",
+      "referenceType": "Position",
+      "note": "Commission: 0.01 lots @ 3/lot"
+    }
+  ],
+  "deals": [
+    {
+      "entry": "IN",
+      "reason": "CLIENT",
+      "side": "BUY",
+      "source": "API",
+      "volume": "0.01",
+      "price": "4299.13",
+      "commission": "-0.03",
+      "profit": "0",
+      "swap": "0",
+      "namesOneCommissionTransaction": true,
+      "executedAtEqualsPositionOpenedAt": true,
+      "orderIdEqualsOriginOrder": true
+    }
+  ],
+  "account": {
+    "balanceAfter": "99999.97"
+  },
+  "hedgeIntents": 1
+}

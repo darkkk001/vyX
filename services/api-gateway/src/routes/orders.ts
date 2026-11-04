@@ -21,7 +21,7 @@ import { Router } from "express";
 import type { AuthedRequest } from "../auth.js";
 import { requireTraderSession } from "../auth.js";
 import { rateLimitOrders } from "../rate-limit.js";
-import { getAccount, getLedgerSum, getOpenPositionsSummary, getSymbolContractSize, writeAuditLog } from "../db.js";
+import { getAccount, getAccountAndContractSize, getSymbolContractSize, writeAuditLog } from "../db.js";
 import { parseUpstreamJson } from "../http.js";
 import { recordOrderAckLatency } from "../ws.js";
 import { placeMarketOrderSchema, placePendingOrderSchema, validateBody } from "../validation.js";
@@ -38,6 +38,85 @@ const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? "";
 function tradingCoreHeaders(): Record<string, string> {
   return { "content-type": "application/json", "x-internal-secret": INTERNAL_SERVICE_SECRET };
 }
+// ---- L2 Step 3: WHICH ACCOUNTS MAY REACH THE ENGINE (owner 2026-11-03) ----
+//
+// The cutover's first live exposure is ONE designated DEMO account. Everything else keeps filling on
+// the web and must be UNABLE to reach the engine, not merely unlikely to.
+//
+// FAIL CLOSED: an unset or empty variable allows NOBODY. That is the opposite of the usual
+// "unconfigured = unrestricted" default, and it is the point -- a deploy that forgets the variable
+// turns the engine ingress OFF, it does not open it to every account.
+//
+// TWO conditions, both required, because they fail differently:
+//   1. the account is on the list -- the deliberate, per-account opt-in;
+//   2. the account is `accountMode = DEMO` as the DATABASE says -- so a LIVE account id typed into the
+//      list by mistake is still refused. The list is a human artefact; this check is not.
+//
+// The engine repeats both itself (order_management::ingress): its own /v1/orders/market is reachable
+// by anything holding the internal secret, so this gateway must not be the only thing standing there.
+const ENGINE_INGRESS_ACCOUNT_IDS = (process.env.ENGINE_INGRESS_ACCOUNT_IDS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+type IngressVerdict = { ok: true } | { ok: false; why: string };
+
+export function engineIngressVerdict(
+  accountId: string,
+  accountMode: string,
+  allowList: string[] = ENGINE_INGRESS_ACCOUNT_IDS
+): IngressVerdict {
+  if (allowList.length === 0) return { ok: false, why: "the engine order path is not enabled here" };
+  if (!allowList.includes(accountId)) return { ok: false, why: "this account is not served by the engine order path" };
+  if (accountMode !== "DEMO") return { ok: false, why: "the engine order path serves DEMO accounts only" };
+  return { ok: true };
+}
+
+
+// PRIORITY 1 (FAILOVER): "is the engine able to fill an order right now?", answerable from Vercel.
+//
+// The web guard has to decide whether to forward an order BEFORE it forwards it, and until now it had
+// no way to ask. The obvious candidate was the heartbeat row the engine writes ("RiskEngineHeartbeat",
+// which lib/risk-owner.ts already reads), and it is the WRONG SIGNAL for this -- measured, not
+// supposed. The engine's idle gate deliberately skips that timer when the book cannot move:
+//
+//   idle gate: skipping until the book can move timer="risk heartbeat" reason="book closed (no fresh
+//   tick on any symbol the book holds)"
+//
+// So on a closed market, or during any feed-quiet stretch longer than staleAfterSecs, the heartbeat
+// goes stale while the engine is perfectly healthy and answering. Gating the order path on it would
+// turn the ingress off every weekend and flap it on every quiet patch mid-session. The heartbeat
+// answers "can the book move", which is a different question from "is the order path up".
+//
+// This endpoint answers the actual question, from the one place that can: the gateway shares a
+// loopback with the engine, so its probe is sub-millisecond and needs no database at all.
+//
+// WHAT IT DOES NOT TELL YOU, on purpose. It says the engine process is up and answering, nothing more.
+// It does NOT promise the engine will accept the next order -- an unloaded thresholds guard still
+// answers 503 per order, and the account scoping still applies -- because a health endpoint that tried
+// to pre-judge a specific order would have to take that order's inputs, and would then be an order
+// route with extra steps. The guard treats this as "worth trying", and the real verdict stays with the
+// order itself.
+//
+// Unauthenticated, like the gateway's own /health, and deliberately uninformative: one boolean. The
+// engine's commit header is not forwarded.
+router.get("/engine-health", async (_req, res) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1_000);
+  try {
+    const upstream = await fetch(`${TRADING_CORE_URL}/health`, { signal: controller.signal });
+    if (!upstream.ok) {
+      res.status(503).json({ ok: false });
+      return;
+    }
+    res.json({ ok: true });
+  } catch {
+    // unreachable or slower than a loopback call has any business being
+    res.status(503).json({ ok: false });
+  } finally {
+    clearTimeout(timer);
+  }
+});
 
 type PlaceMarketOrderBody = z.infer<typeof placeMarketOrderSchema>;
 
@@ -47,32 +126,64 @@ router.post(
   rateLimitOrders(30, 60),
   validateBody(placeMarketOrderSchema),
   async (req: AuthedRequest, res) => {
+    // L2 Step 5: per-stage timing. The gateway added ~80 ms on top of a 24 ms engine call, and the
+    // first guess (connections being reaped) measured as no change at all -- so this says where
+    // rather than asking the next person to reason about it.
+    const t0 = Date.now();
+    let tMark = t0;
+    const stage: string[] = [];
+    const mark = (name: string) => {
+      const now = Date.now();
+      stage.push(`${name}=${now - tMark}ms`);
+      tMark = now;
+    };
+
     const body = req.body as PlaceMarketOrderBody;
 
     const session = req.session!;
     const brokerId = req.headers["x-broker-id"] as string;
 
-    const account = await getAccount(session.accountId, brokerId);
-    if (!account) {
+    // L2 optimization pass: the account and the symbol's contract size in ONE round trip
+    const loaded = await getAccountAndContractSize(session.accountId, brokerId, body.symbol);
+    mark("accountAndSymbol");
+    if (!loaded) {
       res.status(404).json({ error: "account not found" });
       return;
     }
+    const account = loaded.account;
     if (account.status !== "ACTIVE") {
       res.status(403).json({ error: "account is not active" });
       return;
     }
 
-    const contractSize = await getSymbolContractSize(body.symbol);
+    // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
+    // engine simply does not serve this account, and the caller's correct answer is the web path.
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    if (!ingress.ok) {
+      res.status(403).json({ error: ingress.why });
+      return;
+    }
+
+    const contractSize = loaded.contractSize;
     if (!contractSize) {
       res.status(400).json({ error: `unknown symbol: ${body.symbol}` });
       return;
     }
 
-    const { usedMargin, floatingPnl } = await getOpenPositionsSummary(session.accountId, account.leverage);
-    const ledgerSum = await getLedgerSum(session.accountId);
-    const effectiveBalance = account.balance.plus(ledgerSum);
-    const equity = effectiveBalance.plus(account.credit).plus(floatingPnl);
-
+    // L2 Step 5 (latency): equity and used margin are NOT computed here any more, and the two Neon
+    // reads that produced them are gone.
+    //
+    // This file's header says every risk-check input is fetched here so a client cannot fake its own
+    // margin. That was right for the design it was written in -- the engine trusted these numbers.
+    // L2 Step 1d inverted it: `place_market_order` now reads the account's funds and open positions
+    // from the real book itself, in one snapshot (db::get_open_snapshot), and IGNORES these fields on
+    // the Prisma book entirely. Measured, not assumed: engine-direct fills sent equity "0" and
+    // used_margin "0" and produced correct fills with correct margin decisions.
+    //
+    // So computing them cost two Neon round trips per order and changed nothing. They stay in the
+    // payload as ZEROS rather than being removed, because the frozen LEGACY order mode still reads
+    // them -- and zero makes that path fail CLOSED (no equity, so `check_free_margin` refuses) rather
+    // than open, if anyone ever re-enables it.
     const payload = {
       broker_id: brokerId,
       account_id: session.accountId,
@@ -81,10 +192,14 @@ router.post(
       volume: body.volume,
       sl_price: body.sl_price,
       tp_price: body.tp_price,
-      equity: equity.toString(),
-      used_margin: usedMargin.toString(),
+      equity: "0",
+      used_margin: "0",
       contract_size: contractSize.toString(),
       leverage: account.leverage,
+      // PRIORITY 1 (FAILOVER): carried, not interpreted. The engine writes it into
+      // `"Order".idempotencyKey`, where `"Order"`'s UNIQUE (accountId, idempotencyKey) makes a second
+      // fill of the same key impossible and the web's existing by-key read can find this one.
+      idempotency_key: body.idempotencyKey,
     };
 
     // Phase 0 money-risk patch item 3 (docs/ROADMAP.md) -- this Gateway's
@@ -99,10 +214,15 @@ router.post(
       body: JSON.stringify(payload),
     });
     recordOrderAckLatency(Date.now() - upstreamStartedAt);
+    mark("engine");
 
     const data = await parseUpstreamJson(upstream);
     if (upstream.ok) {
-      await writeAuditLog({
+      // L2 Step 5 (latency): NOT awaited. The audit row is a record, not part of the answer -- it was
+      // already best effort (its failure was caught and logged, never surfaced), so awaiting it only
+      // made every order wait on a Neon write that nothing reads back. Same reasoning as the engine's
+      // OrderFilled publish.
+      void writeAuditLog({
         brokerId,
         action: "GATEWAY_ORDER_PLACED",
         entityType: "Order",
@@ -110,7 +230,9 @@ router.post(
         newValue: { accountId: session.accountId, symbol: body.symbol, side: body.side, volume: body.volume, result: data },
       }).catch((err) => console.error("audit log write failed", err));
     }
+    mark("parse");
     res.status(upstream.status).json(data);
+    console.log(`[order-timing] total=${Date.now() - t0}ms ${stage.join(" ")}`);
   }
 );
 
@@ -140,6 +262,14 @@ router.post(
     }
     if (account.status !== "ACTIVE") {
       res.status(403).json({ error: "account is not active" });
+      return;
+    }
+
+    // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
+    // engine simply does not serve this account, and the caller's correct answer is the web path.
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    if (!ingress.ok) {
+      res.status(403).json({ error: ingress.why });
       return;
     }
 
@@ -197,6 +327,14 @@ router.post("/:id/cancel", requireTraderSession, rateLimitOrders(30, 60), async 
   }
   if (account.status !== "ACTIVE") {
     res.status(403).json({ error: "account is not active" });
+    return;
+  }
+
+  // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
+  // engine simply does not serve this account, and the caller's correct answer is the web path.
+  const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+  if (!ingress.ok) {
+    res.status(403).json({ error: ingress.why });
     return;
   }
 

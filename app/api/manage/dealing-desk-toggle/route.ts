@@ -1,3 +1,4 @@
+import { tradingDayStart } from "@/lib/trading-day";
 import { NextRequest, NextResponse } from "next/server";
 import { accountClosePrice, loadAccountAskRules, NO_MARKUP } from "@/lib/ask-markup";
 import { checkHedgingAllowed } from "@/lib/hedging";
@@ -240,7 +241,7 @@ async function flushDealingQueueToMarket(
       (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
       (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
       (await checkBrokerExposure(prisma, brokerId, order.volume, broker.totalExposureLimit)) ??
-      (await checkMaxDailyLoss(prisma, order.accountId, order.account.maxDailyLoss));
+      (await checkMaxDailyLoss(prisma, order.accountId, order.account.maxDailyLoss, (await tradingDayStart()).start));
     if (riskError) {
       results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: riskError, ...riskCode(riskError) });
       continue;

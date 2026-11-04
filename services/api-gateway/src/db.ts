@@ -16,7 +16,22 @@ import { Pool } from "pg";
 import { Decimal } from "decimal.js";
 import { randomUUID } from "node:crypto";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// L2 Step 5 (latency): every option but the URL used to be a node-postgres default, and two of those
+// defaults were costing an order more than everything else this file does.
+//
+// idleTimeoutMillis defaults to 10_000: a connection unused for ten seconds is closed. Orders are
+// sparse, so in production almost every order opened a NEW connection to Neon -- TCP, TLS, startup --
+// before it could read anything. That is the same mistake the engine's pool had (min_connections 0),
+// and it measured the same way: a p50 that sat far above the work being done.
+//
+// min keeps a floor open so the handshake is paid once, at boot, instead of per order; keepAlive stops
+// an idle-but-wanted connection being dropped by anything in between.
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  min: 2,
+  idleTimeoutMillis: 0, // never reap: these connections are wanted for the life of the process
+  keepAlive: true,
+});
 
 /** Read-only parameterized query on the main database (client-ask.ts loads ask rules with it). */
 export async function query(sql: string, params: unknown[]): Promise<{ rows: Record<string, unknown>[] }> {
@@ -38,6 +53,10 @@ export interface AccountRow {
   credit: Decimal;
   leverage: number;
   status: string;
+  // L2 Step 3 ingress scoping: the engine order path serves DEMO accounts only for now, and this is
+  // the column that decides it -- read here so the check is on the DATABASE's answer, never on a list
+  // someone maintains by hand.
+  accountMode: string;
 }
 
 // Prisma's default (no @@map in schema.prisma) table/column names are
@@ -45,7 +64,7 @@ export interface AccountRow {
 // double-quoting throughout this file.
 export async function getAccount(accountId: string, brokerId: string): Promise<AccountRow | null> {
   const { rows } = await pool.query(
-    `SELECT balance, credit, leverage, status FROM "Account" WHERE id = $1 AND "brokerId" = $2`,
+    `SELECT balance, credit, leverage, status, "accountMode" FROM "Account" WHERE id = $1 AND "brokerId" = $2`,
     [accountId, brokerId]
   );
   if (rows.length === 0) return null;
@@ -55,6 +74,39 @@ export async function getAccount(accountId: string, brokerId: string): Promise<A
     credit: new Decimal(row.credit),
     leverage: row.leverage,
     status: row.status,
+    accountMode: row.accountMode,
+  };
+}
+
+/**
+ * The account AND the traded symbol's contract size, in ONE round trip (L2 optimization pass).
+ *
+ * These were two sequential awaits -- `getAccount` then `getSymbolContractSize` -- which measured 6 ms
+ * + 6 ms to Neon in front of every order. Same two answers, same meaning, one trip: a missing account
+ * is still no row (404), and a missing symbol is still a null contract size (400).
+ */
+export async function getAccountAndContractSize(
+  accountId: string,
+  brokerId: string,
+  symbol: string
+): Promise<{ account: AccountRow; contractSize: Decimal | null } | null> {
+  const { rows } = await pool.query(
+    `SELECT a.balance, a.credit, a.leverage, a.status, a."accountMode",
+            (SELECT s."contractSize" FROM "Symbol" s WHERE s.name = $3) AS contract_size
+       FROM "Account" a WHERE a.id = $1 AND a."brokerId" = $2`,
+    [accountId, brokerId, symbol]
+  );
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    account: {
+      balance: new Decimal(row.balance),
+      credit: new Decimal(row.credit),
+      leverage: row.leverage,
+      status: row.status,
+      accountMode: row.accountMode,
+    },
+    contractSize: row.contract_size == null ? null : new Decimal(row.contract_size),
   };
 }
 
