@@ -1630,6 +1630,11 @@ model Transaction {
   account           Account           @relation(fields: [accountId], references: [id])
   type              TransactionType
   status            TransactionStatus @default(PENDING)
+  /// The client's own idempotency key for a CLOSE, when it sent one (migration
+  /// 20261104190000). Null on every transaction that is not a keyed close -- Postgres treats
+  /// NULLs as distinct, so the unique below constrains only real keys. Lets a caller resolve a
+  /// lost answer ("did my close land?") the way "Order".idempotencyKey does for an open.
+  idempotencyKey    String?
   amount            Decimal           @db.Decimal(18, 4) // signed: negative = debit
   balanceBefore     Decimal           @db.Decimal(18, 4)
   balanceAfter      Decimal           @db.Decimal(18, 4)
@@ -1718,6 +1723,8 @@ model Transaction {
   @@index([brokerId])
   @@index([accountId])
   @@index([paymentMethodId])
+
+  @@unique([accountId, idempotencyKey])
 }
 
 // Client cabinet Funds UI (VYX-FUNDS-V0). Not an enum on Transaction
