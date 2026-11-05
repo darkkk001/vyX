@@ -23,7 +23,6 @@ export async function generateMetadata(): Promise<Metadata> {
   const brokerId = headerList.get("x-broker-id");
   if (!brokerId) return {};
   const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
-  const logoUrl = headerList.get("x-broker-logo-url") || null;
   // QoreTrader demo: its own favicon, and never indexed (the X-Robots-Tag header in middleware.ts says the same)
   if (isDemoTenant(headerList.get("x-broker-slug"))) {
     return {
@@ -34,7 +33,10 @@ export async function generateMetadata(): Promise<Metadata> {
   }
   return {
     ...(broker ? { title: broker.name } : {}),
-    ...(logoUrl ? { icons: { icon: logoUrl } } : {}),
+    // every tenant, from its brand config (lib/broker-brand.tsx)
+    icons: { icon: "/favicon.ico", apple: "/apple-touch-icon.png" },
+    manifest: "/manifest.webmanifest",
+    appleWebApp: { capable: true, title: broker?.name, statusBarStyle: "black-translucent" },
   };
 }
 

@@ -2,12 +2,13 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { publishRoomChanged } from "@/lib/room/events";
+import { sendKycDecisionEmail } from "@/lib/email/client-notices";
 import type { KycDecisionAction } from "@/lib/kyc-decision";
 
-// The client hears a KYC decision: a notification row on their account, then the room event so an open bell picks it
-// up. Runs after the decision committed and never fails the caller. Notify only: no KYC state is read or changed here.
-// A client-level decision goes on the client's primary account (LIVE first, then oldest): the inbox is per account, so
-// a client with no account yet gets no row and sees the decision on the dashboard's verification card instead.
+// The client hears a KYC decision: a notification row, the room event so an open bell picks it up, and an e-mail. Runs
+// after the decision committed and never fails the caller. Notify only: no KYC state is read or changed here.
+// A client-level decision goes on the client's primary account (LIVE first, then oldest); a client with no account yet
+// gets a row on the client itself.
 export async function notifyKycDecision(args: {
   brokerId: string;
   accountId?: string;
@@ -25,19 +26,25 @@ export async function notifyKycDecision(args: {
           select: { id: true },
         }))?.id
       : undefined);
-    if (!accountId) return;
     const approved = args.action === "APPROVE";
     const title = approved ? "Your KYC was approved" : "Your KYC was rejected";
     await createNotification(prisma, {
       brokerId: args.brokerId,
       accountId,
+      clientId: accountId ? undefined : args.clientId,
       type: approved ? "KYC_APPROVED" : "KYC_REJECTED",
       title,
       body: !approved && args.rejectionReason ? `${title}: ${args.rejectionReason}` : title,
       entityType: args.entityType,
       entityId: args.entityId,
     });
-    await publishRoomChanged(args.brokerId, [accountId], "kyc");
+    if (accountId) await publishRoomChanged(args.brokerId, [accountId], "kyc");
+    const to = args.clientId
+      ? (await prisma.client.findUnique({ where: { id: args.clientId }, select: { email: true } }))?.email
+      : accountId
+        ? (await prisma.account.findUnique({ where: { id: accountId }, select: { email: true, client: { select: { email: true } } } }).then((a) => a?.client?.email ?? a?.email))
+        : null;
+    if (to) await sendKycDecisionEmail({ brokerId: args.brokerId, to, approved, rejectionReason: args.rejectionReason });
   } catch (err) {
     console.error("[kyc-events] client notification failed", err);
   }

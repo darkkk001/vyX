@@ -127,5 +127,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261105120000_amount_sltp",
   "20261105200000_fk_symbol_restrict_reconcile",
   "20261105210000_client_idle_minutes",
-  "20261105220000_require_withdrawal_2fa"
+  "20261105220000_require_withdrawal_2fa",
+  "20261106100000_notification_client"
 ];

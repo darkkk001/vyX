@@ -3,13 +3,13 @@ import { Prisma, PrismaClient } from "@prisma/client";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
-// In-app only -- no email/SMS infra exists anywhere in this app.
+// The in-app row. Client e-mails are lib/email/client-notices.ts.
 // Broker-scoped, shared read state (see Notification's own schema
 // comment). Called from the four points that create the underlying
 // thing being notified about, not exposed as its own POST endpoint.
 export async function createNotification(
   db: Db,
-  params: { brokerId: string; type: string; title: string; body: string; entityType?: string; entityId?: string; accountId?: string }
+  params: { brokerId: string; type: string; title: string; body: string; entityType?: string; entityId?: string; accountId?: string; clientId?: string }
 ): Promise<void> {
   await db.notification.create({
     data: {
@@ -23,6 +23,7 @@ export async function createNotification(
       // scoped notification (e.g. "MARGIN_CALL"), left undefined/null for
       // every existing broker-staff-facing type, unchanged.
       accountId: params.accountId,
+      clientId: params.clientId,
     },
   });
 }

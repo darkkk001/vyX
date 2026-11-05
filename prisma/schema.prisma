@@ -1516,6 +1516,7 @@ model Client {
   @@index([brokerId])
   payoutMethods ClientPayoutMethod[]
   supportTickets SupportTicket[]
+  notifications Notification[]
 }
 
 // One KYC submission per CLIENT (the person), not per account -- real
@@ -2666,6 +2667,10 @@ model Notification {
   // serve as history); this is queued for Phase 2's stated email step.
   accountId  String?
   account    Account?           @relation(fields: [accountId], references: [id])
+  // Set for a client-facing row with no account to hang on (a KYC decision before the first account). A row is staff-facing
+  // only when both accountId and clientId are null.
+  clientId   String?
+  client     Client?            @relation(fields: [clientId], references: [id])
   type       String // "NEW_LEAD" | "KYC_SUBMITTED" | "FUNDS_REQUEST" | "DEALING_ORDER_PENDING" | "PRICE_ALERT_TRIGGERED"
   title      String
   body       String
@@ -2682,6 +2687,7 @@ model Notification {
   @@index([brokerId])
   @@index([brokerId, readAt])
   @@index([accountId])
+  @@index([clientId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────

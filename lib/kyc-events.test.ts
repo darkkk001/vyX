@@ -53,9 +53,9 @@ describe("notifyKycDecision", () => {
     expect((await rows())[0]).toMatchObject({ accountId: "a-demo", type: "KYC_REJECTED", body: "Your KYC was rejected: Document expired" });
   });
 
-  it("writes nothing for a client with no account", async () => {
+  it("a client with no account gets no account row and no room event (lib/kyc-flow.test.ts covers its client row)", async () => {
     await notifyKycDecision({ brokerId: broker, clientId: "cl-none", entityType: "ClientKycRecord", entityId: "k3", action: "APPROVE", rejectionReason: "" });
-    expect(await rows()).toHaveLength(0);
+    expect((await rows()).filter((r) => r.accountId !== null)).toHaveLength(0);
     expect(published).toEqual([]);
   });
 

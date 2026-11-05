@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { getClientSession } from "@/lib/client-auth";
 import { createNotification } from "@/lib/notifications";
 import { KYC_DOCUMENT_TYPES, validateKycFile } from "@/lib/kyc-upload";
+import { publishRoomChangedForClient } from "@/lib/room/events";
 
 const ANNUAL_INCOME_RANGES = new Set<string>(Object.values(AnnualIncomeRange));
 const SOURCES_OF_FUNDS = new Set<string>(Object.values(SourceOfFunds));
@@ -188,6 +189,8 @@ export async function POST(request: NextRequest) {
   });
   // web5 (issues.md 314): the broker's KYC queue updates at once (best-effort, never fails the submission)
   await publishTradingEvent("KycSubmitted", { broker_id: session.brokerId, kyc_id: record.id, queue: "CLIENT_PORTAL" }).catch(() => {});
+
+  await publishRoomChangedForClient(session.brokerId, session.clientId, "kyc"); // another open tab shows it at once
 
   return NextResponse.json({ status: record.status, documentType: record.documentType }, { status: 201 });
 }
