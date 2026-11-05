@@ -182,6 +182,20 @@
       },
       {
         "input": {
+          "tradingMode": "CLOSE_ONLY",
+          "side": "BUY"
+        },
+        "reject": "this symbol is close-only right now: new positions cannot be opened, existing ones can still be closed"
+      },
+      {
+        "input": {
+          "tradingMode": "CLOSE_ONLY",
+          "side": "SELL"
+        },
+        "reject": "this symbol is close-only right now: new positions cannot be opened, existing ones can still be closed"
+      },
+      {
+        "input": {
           "tradingMode": "SELL_ONLY",
           "side": "SELL"
         },

@@ -84,9 +84,14 @@ pub fn symbol_trading_mode(trading_mode: &str, side: OrderSide) -> Option<String
     match trading_mode {
         "BUY_ONLY" if side != OrderSide::Buy => Some("this symbol is buy-only right now".to_string()),
         "SELL_ONLY" if side != OrderSide::Sell => Some("this symbol is sell-only right now".to_string()),
+        // CLOSE_ONLY (2026-11-05): every open is refused, closes are not gated here
+        "CLOSE_ONLY" => Some(SYMBOL_CLOSE_ONLY_MESSAGE.to_string()),
         _ => None,
     }
 }
+
+/// The web's exact text (lib/risk.ts checkSymbolTradingMode).
+pub const SYMBOL_CLOSE_ONLY_MESSAGE: &str = "this symbol is close-only right now: new positions cannot be opened, existing ones can still be closed";
 
 /// `lib/risk.ts checkGroupTradingRestriction`. The same rule one level up; both can block alone.
 pub fn group_trading_restriction(restriction: &str, side: OrderSide) -> Option<String> {

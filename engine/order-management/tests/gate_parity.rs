@@ -197,7 +197,7 @@ fn every_ported_gate_agrees_with_the_web_on_every_case() {
         }
     }
     assert!(mismatches.is_empty(), "{} of {checked} cases disagree:\n{}", mismatches.len(), mismatches.join("\n"));
-    assert_eq!(checked, 159, "the case count changed: re-read the vector");
+    assert_eq!(checked, 161, "the case count changed: re-read the vector");
     // and the file is not one-sided: a suite of only-passing cases would prove nothing
     assert!(rejects >= 30, "only {rejects} reject cases -- the vector must exercise both verdicts");
 }
@@ -241,6 +241,9 @@ fn a_breached_limit_always_refuses() {
     assert!(gates::account_status_for_open("SUSPENDED").is_some());
     assert!(gates::account_trading_rights_for_open("ACTIVE", "READ_ONLY").is_some());
     assert!(gates::symbol_trading_mode("BUY_ONLY", OrderSide::Sell).is_some());
+    assert!(gates::symbol_trading_mode("CLOSE_ONLY", OrderSide::Buy).is_some());
+    assert!(gates::symbol_trading_mode("CLOSE_ONLY", OrderSide::Sell).is_some());
+    assert_eq!(gates::symbol_trading_mode("CLOSE_ONLY", OrderSide::Buy).as_deref(), Some(gates::SYMBOL_CLOSE_ONLY_MESSAGE));
     assert!(gates::group_trading_restriction("SELL_ONLY", OrderSide::Buy).is_some());
     assert!(gates::price_freshness(Some(10_000)).is_some());
     assert!(gates::price_freshness(None).is_some());

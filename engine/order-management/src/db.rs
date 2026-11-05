@@ -1742,6 +1742,20 @@ type BrokerSymbolConfigRow =
 /// same min/max/step/commission/swap defaults `BrokerSymbol`'s own schema
 /// uses — a missing admin config shouldn't block trading, it just means
 /// the broker hasn't customized anything for this symbol yet.
+/// BrokerSymbol.tradingMode of a broker's symbol ("BOTH" when there is no row or no column value).
+pub async fn get_symbol_trading_mode(pool: &PgPool, broker_id: &str, symbol: &str) -> Result<String, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        r#"SELECT COALESCE(bs."tradingMode"::text, 'BOTH') FROM "Symbol" s
+           LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = $1
+           WHERE s.name = $2"#,
+    )
+    .bind(broker_id)
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0).unwrap_or_else(|| "BOTH".to_string()))
+}
+
 pub async fn get_broker_symbol_config(
     pool: &PgPool,
     broker_id: &str,

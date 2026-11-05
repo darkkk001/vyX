@@ -94,6 +94,14 @@ async fn trigger_order(
         return Ok(());
     };
 
+    // Symbol trading mode (BUY_ONLY / SELL_ONLY / CLOSE_ONLY) at fill time, as the web's pending trigger
+    // (lib/pending-trigger.ts checkSymbolTradingMode): the same gate, the same reason, a rejection
+    let trading_mode = db::get_symbol_trading_mode(pool, &order.broker_id, &order.symbol).await?;
+    if let Some(reason) = crate::gates::symbol_trading_mode(&trading_mode, order.side) {
+        reject_order(tx, nats, &order.id, &order.account_id, reason).await?;
+        return Ok(());
+    }
+
     let Some(contract_size) = db::get_symbol_contract_size(pool, &order.symbol).await? else {
         reject_order(tx, nats, &order.id, &order.account_id,"unknown symbol".to_string()).await?;
         return Ok(());
