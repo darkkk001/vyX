@@ -26,6 +26,18 @@ export function periodStart(p: Period, now = new Date()): Date | null {
   return null;
 }
 
+/** The window just before the period, the same length; null for all time, which has nothing before it. */
+export function previousWindow(p: Period, now = new Date()): { from: Date; to: Date } | null {
+  const from = periodStart(p, now);
+  return from ? { from: new Date(from.getTime() - (now.getTime() - from.getTime())), to: from } : null;
+}
+
+/** Change against the previous period in %, 1 dp; null when there is no previous figure to compare with. */
+export function deltaPct(current: number | null, previous: number | null): number | null {
+  if (current == null || previous == null || previous === 0) return null;
+  return Number((((current - previous) / Math.abs(previous)) * 100).toFixed(1));
+}
+
 const SESSIONS = ["Asia", "London", "New York", "Rollover"] as const;
 export function sessionOf(d: Date): (typeof SESSIONS)[number] {
   const h = d.getUTCHours();
@@ -42,14 +54,14 @@ const f2 = (n: number) => (Math.round(n * 100) / 100).toFixed(2);
 
 export type AnalyticsTrade = {
   id: string; accountId: string; accountNumber: string; symbol: string; side: "BUY" | "SELL"; lots: number;
-  openedAt: Date; closedAt: Date; openPrice: number; closePrice: number; sl: number | null; net: number; r: number | null; riskPct: number | null;
+  openedAt: Date; closedAt: Date; openPrice: number; closePrice: number; sl: number | null; net: number; pnl: number; cost: number; r: number | null; riskPct: number | null;
 };
 
-export async function loadTrades(accounts: { id: string; accountNumber: string }[], from: Date | null): Promise<Omit<AnalyticsTrade, "riskPct">[]> {
+export async function loadTrades(accounts: { id: string; accountNumber: string }[], from: Date | null, to?: Date): Promise<Omit<AnalyticsTrade, "riskPct">[]> {
   if (accounts.length === 0) return [];
   const numberById = new Map(accounts.map((a) => [a.id, a.accountNumber]));
   const rows = await prisma.position.findMany({
-    where: { accountId: { in: accounts.map((a) => a.id) }, status: "CLOSED", deletedAt: null, ...(from ? { closedAt: { gte: from } } : {}) },
+    where: { accountId: { in: accounts.map((a) => a.id) }, status: "CLOSED", deletedAt: null, ...(from || to ? { closedAt: { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) } } : {}) },
     select: { id: true, accountId: true, side: true, volume: true, initialVolume: true, openPrice: true, closePrice: true, slPrice: true, realizedPnl: true, swap: true, commission: true, openedAt: true, closedAt: true, symbol: { select: { name: true } } },
     orderBy: { closedAt: "asc" },
     take: 20_000,
@@ -65,9 +77,46 @@ export async function loadTrades(accounts: { id: string; accountNumber: string }
       lots: (p.initialVolume ?? p.volume).toNumber(), openedAt: p.openedAt, closedAt: p.closedAt ?? p.openedAt,
       openPrice: open, closePrice: close, sl,
       net: (p.realizedPnl ?? new Prisma.Decimal(0)).add(p.swap).sub(p.commission).toNumber(),
+      pnl: (p.realizedPnl ?? new Prisma.Decimal(0)).toNumber(),
+      cost: p.commission.sub(p.swap).toNumber(),
       r: sl != null && dist > 0 ? move / dist : null,
     };
   });
+}
+
+/** The tile figures of a set of trades; a tile without a figure (profit factor with no losses) is null. */
+function tileNumbers(trades: { net: number; lots: number }[]) {
+  const wins = trades.filter((t) => t.net > 0), losses = trades.filter((t) => t.net < 0);
+  const grossWin = wins.reduce((s, t) => s + t.net, 0), grossLoss = losses.reduce((s, t) => s + t.net, 0);
+  return {
+    net: grossWin + grossLoss,
+    winRate: trades.length ? (wins.length / trades.length) * 100 : null,
+    profitFactor: grossLoss < 0 ? grossWin / Math.abs(grossLoss) : null,
+    trades: trades.length,
+    lots: trades.reduce((s, t) => s + t.lots, 0),
+    avgWin: wins.length ? grossWin / wins.length : null,
+    avgLoss: losses.length ? grossLoss / losses.length : null,
+  };
+}
+
+/** One entry per UTC day of the period (from the first trade for all time): the chart tabs' net, trades and volume. */
+function dailySeries(trades: { closedAt: Date; net: number; lots: number }[], from: Date | null, now: Date) {
+  const start = from ?? trades[0]?.closedAt;
+  if (!start) return [];
+  const byDay = new Map<string, { net: number; trades: number; lots: number }>();
+  for (const t of trades) {
+    const k = t.closedAt.toISOString().slice(0, 10);
+    const d = byDay.get(k) ?? { net: 0, trades: 0, lots: 0 };
+    d.net += t.net; d.trades += 1; d.lots += t.lots;
+    byDay.set(k, d);
+  }
+  const out: { day: string; net: string; trades: number; lots: string }[] = [];
+  for (let t = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()); t <= now.getTime(); t += 86400e3) {
+    const day = new Date(t).toISOString().slice(0, 10);
+    const d = byDay.get(day);
+    out.push({ day, net: f2(d?.net ?? 0), trades: d?.trades ?? 0, lots: (d?.lots ?? 0).toFixed(2) });
+  }
+  return out;
 }
 
 /** The value of a step series at time t (the last point at or before t), or null before its first point. */
@@ -80,8 +129,10 @@ function valueAt(points: { t: number; v: number }[], t: number): number | null {
 export async function roomAnalytics(brokerId: string, accounts: { id: string; accountNumber: string; plan: string }[], period: Period, now = new Date()) {
   const from = periodStart(period, now);
   const curveFrom = from ?? new Date(now.getTime() - 365 * 86400e3);
-  const [raw, curves] = await Promise.all([
+  const before = previousWindow(period, now);
+  const [raw, previous, curves] = await Promise.all([
     loadTrades(accounts, from),
+    before ? loadTrades(accounts, before.from, before.to) : Promise.resolve([]),
     Promise.all(accounts.map(async (a) => {
       const [curve, start] = await Promise.all([accountEquityCurve(a.id, brokerId, curveFrom, now), equityAt(a.id, curveFrom)]);
       return { id: a.id, start, ...curve };
@@ -167,6 +218,8 @@ export async function roomAnalytics(brokerId: string, accounts: { id: string; ac
 
   const pick = (t: AnalyticsTrade) => ({ id: t.id, closedAt: t.closedAt.toISOString(), symbol: t.symbol, side: t.side, lots: t.lots.toFixed(2), r: t.r == null ? null : t.r.toFixed(1), net: f2(t.net) });
   const byNet = [...trades].sort((a, b) => b.net - a.net);
+  const nowTiles = tileNumbers(trades), prevTiles = tileNumbers(previous);
+  const delta = (k: keyof typeof nowTiles) => (previous.length ? deltaPct(nowTiles[k], prevTiles[k]) : null);
   return {
     period,
     from: from?.toISOString() ?? null,
@@ -179,6 +232,15 @@ export async function roomAnalytics(brokerId: string, accounts: { id: string; ac
       avgWin: wins.length ? f2(grossWin / wins.length) : "0.00",
       avgLoss: losses.length ? f2(grossLoss / losses.length) : "0.00",
     },
+    deltas: { net: delta("net"), winRate: delta("winRate"), profitFactor: delta("profitFactor"), trades: delta("trades"), lots: delta("lots"), avgWin: delta("avgWin"), avgLoss: delta("avgLoss") },
+    // Net P/L = profit + loss - trading cost. Cost = commission and swap; the spread is already inside the trade's P/L
+    // and is not recorded per trade, so it is not listed apart.
+    breakdown: {
+      profit: f2(trades.reduce((s, t) => s + Math.max(0, t.pnl), 0)),
+      loss: f2(trades.reduce((s, t) => s + Math.min(0, t.pnl), 0)),
+      cost: f2(trades.reduce((s, t) => s + t.cost, 0)),
+    },
+    daily: dailySeries(trades, from, now),
     curve,
     curveLow: low ? { equity: f2(low.v), day: new Date(low.t).toISOString().slice(0, 10) } : null,
     curveHigh: high ? { equity: f2(high.v), day: new Date(high.t).toISOString().slice(0, 10) } : null,

@@ -2,11 +2,12 @@
 
 import RoomHeader from "@/components/room/RoomHeader";
 import StatusChip from "@/components/room/StatusChip";
+import TierPanel from "@/components/room/TierPanel";
 import { useRoom } from "@/components/room/RoomData";
 import { money, pnlClass, dayShort, dayTime, greeting } from "@/components/room/format";
 
 // Artboard "Dashboard": greeting, equity strip of the picked account, account cards, recent transactions,
-// verification card, trade-on card.
+// verification card, trade-on card, then the My tier section.
 const KYC_STATUS: Record<string, string> = { APPROVED: "Approved", PENDING: "Pending", REJECTED: "Rejected", NONE: "Not verified" };
 const Check = ({ ok }: { ok: boolean }) => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={ok ? "var(--r-ok)" : "var(--r-muted)"} strokeWidth="1.8" aria-hidden="true">
@@ -128,6 +129,8 @@ export default function RoomDashboard() {
             </div>
           </div>
         </div>
+
+        <TierPanel />
       </div>
     </>
   );

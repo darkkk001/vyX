@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { useRoom, useRoomEvent } from "@/components/room/RoomData";
 import { money, pnlClass } from "@/components/room/format";
@@ -11,6 +11,9 @@ type Bar = { name: string; net: string };
 type TradeRow = { id: string; closedAt: string; symbol: string; side: "BUY" | "SELL"; lots: string; r: string | null; net: string };
 type Data = {
   tiles: { net: string; winRate: string; profitFactor: string | null; trades: number; lots: string; avgWin: string; avgLoss: string };
+  deltas: Record<"net" | "winRate" | "profitFactor" | "trades" | "lots" | "avgWin" | "avgLoss", number | null>;
+  breakdown: { profit: string; loss: string; cost: string; unrealised: string };
+  daily: { day: string; net: string; trades: number; lots: string }[];
   curve: { day: string; equity: string }[];
   curveLow: { equity: string; day: string } | null;
   curveHigh: { equity: string; day: string } | null;
@@ -72,6 +75,36 @@ function Curve({ points }: { points: { day: string; equity: string }[] }) {
   );
 }
 
+const TABS = ["Net P/L", "Closed trades", "Volume", "Equity"] as const;
+type Tab = (typeof TABS)[number];
+
+// one bar per day in the chart slot; net bars go both ways from the zero line, counts only up
+function DayBars({ values, signed, label }: { values: number[]; signed: boolean; label: string }) {
+  if (values.every((v) => v === 0)) return <div className="r-empty" style={{ height: 220, display: "flex", alignItems: "center" }}>No closed trades in this period.</div>;
+  const posMax = Math.max(0, ...values), negMax = Math.max(0, ...values.map((v) => -v));
+  const total = posMax + negMax || 1;
+  const zero = 10 + (200 * posMax) / total;
+  const slot = 1000 / values.length;
+  const w = Math.max(1, Math.min(26, slot * 0.7));
+  return (
+    <svg width="100%" height="220" viewBox="0 0 1000 220" preserveAspectRatio="none" role="img" aria-label={label}>
+      <line x1="0" y1={zero} x2="1000" y2={zero} stroke="var(--r-btn)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+      {values.map((v, i) => {
+        if (v === 0) return null;
+        const h = Math.max(2, (Math.abs(v) / total) * 200);
+        return <rect key={i} x={slot * i + (slot - w) / 2} y={v > 0 ? zero - h : zero} width={w} height={h} fill={!signed ? "var(--r-accent)" : v > 0 ? "var(--r-profit)" : "var(--r-loss)"} />;
+      })}
+    </svg>
+  );
+}
+
+// arrow + % against the previous period; judged = a rise is good and a fall bad, otherwise it is only a change
+function Delta({ pct, judged = true }: { pct: number | null | undefined; judged?: boolean }) {
+  if (pct == null) return null;
+  const color = !judged || pct === 0 ? "var(--r-muted)" : pct > 0 ? "var(--r-profit)" : "var(--r-loss)";
+  return <span className="mono" style={{ fontSize: 11, color, whiteSpace: "nowrap" }}>{pct > 0 ? "▲ " : pct < 0 ? "▼ " : ""}{Math.abs(pct).toFixed(1)}%</span>;
+}
+
 function Trades({ rows }: { rows: TradeRow[] }) {
   if (rows.length === 0) return <div className="r-empty" style={{ padding: "8px 0" }}>None in this period.</div>;
   return (
@@ -80,11 +113,11 @@ function Trades({ rows }: { rows: TradeRow[] }) {
         <tbody>
           {rows.map((t, i) => (
             <tr key={t.id}>
-              {[shortDay(t.closedAt), t.symbol].map((v, j) => <td key={j} style={{ padding: "9px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", color: j === 0 ? "var(--r-text-2)" : undefined }}>{v}</td>)}
-              <td className={t.side === "BUY" ? "profit" : "loss"} style={{ padding: "9px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", fontWeight: 600 }}>{t.side}</td>
-              <td style={{ padding: "9px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", textAlign: "right" }}>{t.lots}</td>
-              <td style={{ padding: "9px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", textAlign: "right", color: t.r == null ? "var(--r-pending)" : "var(--r-text-2)" }}>{t.r == null ? "NO SL" : `${t.r}R`}</td>
-              <td className={pnlClass(t.net)} style={{ padding: "9px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", textAlign: "right" }}>{money(t.net)}</td>
+              {[shortDay(t.closedAt), t.symbol].map((v, j) => <td key={j} style={{ padding: "8px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", color: j === 0 ? "var(--r-text-2)" : undefined }}>{v}</td>)}
+              <td className={t.side === "BUY" ? "profit" : "loss"} style={{ padding: "8px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", fontWeight: 600 }}>{t.side}</td>
+              <td style={{ padding: "8px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", textAlign: "right" }}>{t.lots}</td>
+              <td style={{ padding: "8px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", textAlign: "right", color: t.r == null ? "var(--r-pending)" : "var(--r-text-2)" }}>{t.r == null ? "NO SL" : `${t.r}R`}</td>
+              <td className={pnlClass(t.net)} style={{ padding: "8px 6px", borderBottom: i < rows.length - 1 ? "1px solid var(--r-row)" : "none", textAlign: "right" }}>{money(t.net)}</td>
             </tr>
           ))}
         </tbody>
@@ -98,6 +131,7 @@ export default function RoomAnalytics() {
   const [account, setAccount] = useState("all");
   const [period, setPeriod] = useState("90d");
   const [d, setD] = useState<Data | null>(null);
+  const [tab, setTab] = useState<Tab>("Net P/L");
   const [tick, setTick] = useState(0);
   useRoomEvent(() => setTick((t) => t + 1));
   useEffect(() => {
@@ -125,35 +159,60 @@ export default function RoomAnalytics() {
     </>
   );
   const t = d?.tiles;
-  const tiles: [string, string, string][] = t ? [
-    [`Net P/L · ${ccy}`, money(t.net), pnlClass(t.net)],
-    ["Win rate", `${t.winRate}%`, ""],
-    ["Profit factor", t.profitFactor ?? "0.00", ""],
-    ["Trades", String(t.trades), ""],
-    ["Volume · lots", t.lots, ""],
-    ["Avg win / avg loss", `${money(t.avgWin)} / ${money(t.avgLoss)}`, ""],
+  const dl = d?.deltas;
+  const tiles: [string, string, string, ReactNode][] = t ? [
+    [`Net P/L · ${ccy}`, money(t.net), pnlClass(t.net), <Delta key="d" pct={dl?.net} />],
+    ["Win rate", `${t.winRate}%`, "", <Delta key="d" pct={dl?.winRate} />],
+    ["Profit factor", t.profitFactor ?? "0.00", "", <Delta key="d" pct={dl?.profitFactor} />],
+    ["Trades", String(t.trades), "", <Delta key="d" pct={dl?.trades} judged={false} />],
+    ["Volume · lots", t.lots, "", <Delta key="d" pct={dl?.lots} judged={false} />],
+    ["Avg win / avg loss", `${money(t.avgWin)} / ${money(t.avgLoss)}`, "", <span key="d" style={{ display: "inline-flex", gap: 8 }}><Delta pct={dl?.avgWin} /><Delta pct={dl?.avgLoss} /></span>],
   ] : [];
+  const days = d?.daily ?? [];
+  const who = account === "all" ? "all accounts" : room?.accounts.find((a) => a.id === account)?.accountNumber;
+  const range = tab === "Equity" ? d?.curve : days;
+  const b = d?.breakdown;
   const r = d?.risk;
   return (
     <>
       <RoomHeader title="Analytics" right={right} picker={false} />
       <div className="r-body" style={{ gap: 22 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
-          {tiles.map(([label, v, cls], i) => (
+          {tiles.map(([label, v, cls, delta], i) => (
             <div key={label} className="r-card r-tile">
               <div className="r-label" style={{ letterSpacing: 1.2 }}>{label}</div>
               <div className={`r-tile-v ${cls}`} style={{ fontSize: i === 5 ? 16 : 21, marginTop: i === 5 ? 12 : 8 }}>{v}</div>
+              <div style={{ marginTop: 6, minHeight: 15 }} title="Against the previous period">{delta}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="r-card r-tile" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14 }}>
+          {([["Profit", b?.profit, "profit"], ["Loss", b?.loss, "loss"], ["Trading cost", b?.cost, ""], ["Unrealised P/L", b?.unrealised, pnlClass(b?.unrealised ?? "0")]] as const).map(([k, v, cls]) => (
+            <div key={k} title={k === "Trading cost" ? "Commission and swap" : undefined}>
+              <div className="r-label" style={{ letterSpacing: 1.2 }}>{k}</div>
+              <div className={`mono ${v && Number(v) !== 0 ? cls : ""}`} style={{ fontSize: 14.5, fontWeight: 600, marginTop: 6 }}>{money(v ?? "0")}</div>
             </div>
           ))}
         </div>
 
         <div className="r-card" style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12, gap: 12, flexWrap: "wrap" }}>
-            <div className="r-label">Equity curve · {account === "all" ? "all accounts" : room?.accounts.find((a) => a.id === account)?.accountNumber} · {PERIOD_LABEL[period]}</div>
-            {d && d.curve.length ? <div className="mono" style={{ fontSize: 11.5, color: "var(--r-muted)" }}>{monDay(d.curve[0].day)} TO {monDay(d.curve[d.curve.length - 1].day)}</div> : null}
+            <div role="tablist" aria-label="Chart" style={{ display: "inline-flex", flexWrap: "wrap", background: "var(--r-card-2)", border: "1px solid var(--r-input)", borderRadius: 7, padding: 3 }}>
+              {TABS.map((x) => (
+                <button key={x} type="button" role="tab" aria-selected={tab === x} onClick={() => setTab(x)}
+                  style={{ background: tab === x ? "var(--r-accent)" : "none", color: tab === x ? "var(--r-on-accent)" : "var(--r-text-2)", border: "none", borderRadius: 5, fontSize: 12.5, fontWeight: tab === x ? 600 : 500, padding: "7px 18px", cursor: "pointer" }}>{x}</button>
+              ))}
+            </div>
+            <div className="r-label">{who} · {PERIOD_LABEL[period]}</div>
+            {range && range.length ? <div className="mono" style={{ fontSize: 11.5, color: "var(--r-muted)" }}>{monDay(range[0].day)} TO {monDay(range[range.length - 1].day)}</div> : null}
           </div>
-          {d ? <Curve points={d.curve} /> : <div style={{ height: 220 }} />}
-          {d && d.curve.length > 1 ? (
+          {!d ? <div style={{ height: 220 }} />
+            : tab === "Equity" ? <Curve points={d.curve} />
+            : tab === "Net P/L" ? <DayBars signed values={days.map((x) => Number(x.net))} label={`Net profit and loss per day, total ${money(t?.net ?? "0")}`} />
+            : tab === "Closed trades" ? <DayBars signed={false} values={days.map((x) => x.trades)} label={`Closed trades per day, total ${t?.trades ?? 0}`} />
+            : <DayBars signed={false} values={days.map((x) => Number(x.lots))} label={`Volume per day, total ${t?.lots ?? "0"} lots`} />}
+          {d && tab === "Equity" && d.curve.length > 1 ? (
             <div className="mono" style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--r-muted)", marginTop: 8, gap: 10 }}>
               <span>{money(d.curve[0].equity)}</span>
               {d.curveLow ? <span>Low {money(d.curveLow.equity)} · {shortDay(d.curveLow.day)}</span> : null}

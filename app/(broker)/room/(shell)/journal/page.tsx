@@ -113,7 +113,7 @@ export default function RoomJournal() {
               <tbody>
                 {(list?.rows ?? []).map((r) => {
                   const on = r.id === openId;
-                  const cell = { padding: "11px 8px", borderBottom: "1px solid var(--r-row)", whiteSpace: "nowrap" } as const;
+                  const cell = { padding: "10px 8px", borderBottom: "1px solid var(--r-row)", whiteSpace: "nowrap" } as const;
                   return (
                     <tr key={r.id} onClick={() => setOpenId(r.id)} style={{ background: on ? "var(--r-gold-soft)" : undefined, cursor: "pointer" }}>
                       <td style={{ ...cell, color: "var(--r-text-2)" }}><button type="button" onClick={() => setOpenId(r.id)} style={{ background: "none", border: "none", padding: 0, color: "inherit", font: "inherit", cursor: "pointer" }} aria-label={`Open ${r.symbol} closed ${stamp(r.closedAt)}`}>{stamp(r.closedAt)}</button></td>

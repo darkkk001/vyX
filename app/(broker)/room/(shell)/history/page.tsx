@@ -12,9 +12,9 @@ type Page<T> = { rows: T[]; total: number; page: number; pageSize: number };
 
 const sel = { background: "var(--r-card)", border: "1px solid var(--r-input)", borderRadius: 6, color: "var(--r-text)", fontSize: 12.5, padding: "8px 10px" } as const;
 const TH = ({ children, right }: { children: string; right?: boolean }) => (
-  <th style={{ padding: "12px 10px", fontSize: 10.5, borderBottom: "1px solid var(--r-border)", textAlign: right ? "right" : "left" }}>{children}</th>
+  <th style={{ padding: "12px 10px 8px", fontSize: 10.5, borderBottom: "1px solid var(--r-border)", textAlign: right ? "right" : "left" }}>{children}</th>
 );
-const td = { padding: "12px 10px" } as const;
+const td = { padding: "11px 10px" } as const;
 
 export default function RoomHistory() {
   const { data } = useRoom();

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 import { roomAnalytics, loadTrades, periodStart, tradeAccounts, type Period } from "@/lib/room/analytics";
+import { accountFigures } from "@/lib/room/figures";
 import { toCsv } from "@/lib/csv";
 
 // GET ?account=all|<id>&period=30d|90d|ytd|all[&format=csv]: the Analytics screen (lib/room/analytics.ts), over the same
@@ -16,7 +17,7 @@ export async function GET(request: NextRequest) {
   const period = (PERIODS.find((p) => p === q.get("period")) ?? "90d") as Period;
   const own = await prisma.account.findMany({
     where: { clientId: session.clientId, brokerId: session.brokerId },
-    select: { id: true, accountNumber: true, accountMode: true, currency: true, group: { select: { displayName: true } } },
+    select: { id: true, accountNumber: true, accountMode: true, currency: true, leverage: true, balance: true, credit: true, brokerId: true, group: { select: { displayName: true } } },
     orderBy: { createdAt: "asc" },
   });
   const picked = tradeAccounts(own, q.get("account"));
@@ -36,6 +37,7 @@ export async function GET(request: NextRequest) {
     return new NextResponse(body, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="analytics-${period}-${new Date().toISOString().slice(0, 10)}.csv"`, "Cache-Control": "no-store" } });
   }
 
-  const data = await roomAnalytics(session.brokerId, accounts, period);
-  return NextResponse.json({ ...data, currency: picked[0]?.currency ?? own[0]?.currency ?? "USD" });
+  const [data, figures] = await Promise.all([roomAnalytics(session.brokerId, accounts, period), Promise.all(picked.map((a) => accountFigures(a)))]);
+  const unrealised = figures.reduce((s, f) => s + Number(f.floating), 0).toFixed(2);
+  return NextResponse.json({ ...data, breakdown: { ...data.breakdown, unrealised }, currency: picked[0]?.currency ?? own[0]?.currency ?? "USD" });
 }

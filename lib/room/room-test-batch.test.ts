@@ -122,3 +122,60 @@ describe("Sidebar brand", () => {
     expect(src("components/room/Onboarding.tsx")).not.toContain("showName");
   });
 });
+
+describe("Analytics: previous period, breakdown and the chart series", () => {
+  it("the previous window is the same length just before; all time has none", async () => {
+    const { previousWindow } = await import("@/lib/room/analytics");
+    const now = new Date("2026-11-05T12:00:00Z");
+    const w = previousWindow("30d", now)!;
+    expect(w.to.toISOString()).toBe("2026-10-06T12:00:00.000Z");
+    expect(w.from.toISOString()).toBe("2026-09-06T12:00:00.000Z");
+    expect(previousWindow("all", now)).toBeNull();
+  });
+  it("delta is against the size of the previous figure, and absent with nothing to compare", async () => {
+    const { deltaPct } = await import("@/lib/room/analytics");
+    expect(deltaPct(150, 100)).toBe(50);
+    expect(deltaPct(-50, -100)).toBe(50);
+    expect(deltaPct(50, -100)).toBe(150);
+    expect(deltaPct(10, 0)).toBeNull();
+    expect(deltaPct(null, 10)).toBeNull();
+  });
+  it("net reconciles with the breakdown, the daily series adds up, and the previous period drives the deltas", async () => {
+    if (!dbReachable) return;
+    const acc = await account("LIVE");
+    const closed = async (ms: number, pnl: number, swap: number, commission: number) => {
+      const o = await prisma.order.create({ data: { brokerId, accountId: acc.id, symbolId, side: "BUY", type: "MARKET", volume: D(1), status: "FILLED", idempotencyKey: `room-${++seq}-${s}` } });
+      await prisma.position.create({ data: { brokerId, accountId: acc.id, symbolId, originOrderId: o.id, side: "BUY", volume: D(2), openPrice: D(100), status: "CLOSED", openedAt: new Date(ms - 60_000), closedAt: new Date(ms), closePrice: D(101), realizedPnl: D(pnl), swap: D(swap), commission: D(commission) } });
+    };
+    const now = Date.now();
+    await closed(now - 86400e3, 100, -3, 7);
+    await closed(now - 2 * 86400e3, -40, 1, 2);
+    await closed(now - 40 * 86400e3, 20, 0, 0); // in the 30 days before this period
+    const { a } = await screens(`account=${acc.id}&period=30d`);
+    expect(a.breakdown).toMatchObject({ profit: "100.00", loss: "-40.00", cost: "11.00", unrealised: "0.00" });
+    expect(Number(a.tiles.net)).toBeCloseTo(100 - 40 - 11, 2);
+    expect(a.deltas.net).toBe(145);
+    expect(a.deltas.trades).toBe(100);
+    expect(a.daily.reduce((n: number, x: { net: string }) => n + Number(x.net), 0)).toBeCloseTo(49, 2);
+    expect(a.daily.reduce((n: number, x: { trades: number }) => n + x.trades, 0)).toBe(2);
+    expect(a.daily.reduce((n: number, x: { lots: string }) => n + Number(x.lots), 0)).toBe(4);
+    const all = (await screens(`account=${acc.id}&period=all`)).a;
+    expect(Object.values(all.deltas).every((v) => v === null)).toBe(true);
+    expect(all.daily.reduce((n: number, x: { trades: number }) => n + x.trades, 0)).toBe(3);
+  });
+});
+
+describe("Sidebar and header", () => {
+  const src = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
+  it("My Tier is on the Dashboard with no tab; an old link lands there", () => {
+    expect(src("components/room/RoomSidebar.tsx")).not.toContain("/room/tier");
+    expect(src("app/(broker)/room/(shell)/page.tsx")).toContain("<TierPanel />");
+    expect(src("app/(broker)/room/(shell)/tier/page.tsx")).toContain('redirect("/room#tier")');
+  });
+  it("Refer & earn sits in the foot, outside the partner-only group; the theme switch writes the cookie RoomFrame reads", () => {
+    const side = src("components/room/RoomSidebar.tsx");
+    expect(side.indexOf('className="r-refer"')).toBeGreaterThan(side.indexOf('className="r-side-foot"'));
+    expect(src("components/room/ThemeToggle.tsx")).toContain("room_theme=");
+    expect(src("components/room/RoomFrame.tsx")).toContain('get("room_theme")');
+  });
+});
