@@ -31,6 +31,23 @@ afterAll(async () => {
 });
 
 describe("LP / routing audit rows", () => {
+  it("bo 1.0.101: the broker renames its LP; LP_NAME_CHANGED audits old and new; empty, too long and duplicate names are refused", async () => {
+    const fx = await fixture();
+    const { PATCH } = await import("@/app/api/manage/liquidity-providers/[id]/route");
+    const call = (body: unknown) => PATCH(req(`/api/manage/liquidity-providers/${fx.lpId}`, "PATCH", body), { params: Promise.resolve({ id: fx.lpId }) });
+    const old = (await prisma.liquidityProvider.findUniqueOrThrow({ where: { id: fx.lpId } })).name;
+    const ok = await call({ name: "  Prime Desk  " });
+    expect([ok.status, (await ok.json()).name]).toEqual([200, "Prime Desk"]);
+    const rows = await prisma.auditLog.findMany({ where: { brokerId: fx.brokerId, action: "LP_NAME_CHANGED" } });
+    expect(rows.map((r) => [r.entityId, r.oldValue, r.newValue])).toEqual([[fx.lpId, { name: old }, { name: "Prime Desk" }]]);
+    expect((await call({ name: "   " })).status).toBe(400);
+    expect((await call({ name: "x".repeat(81) })).status).toBe(400);
+    await prisma.liquidityProvider.create({ data: { brokerId: fx.brokerId, name: "Second Desk" } });
+    expect((await call({ name: "second desk" })).status).toBe(409);
+    await call({ name: "Prime Desk" });
+    expect(await prisma.auditLog.count({ where: { brokerId: fx.brokerId, action: "LP_NAME_CHANGED" } })).toBe(1);
+  });
+
   it("an LP notes edit writes LP_NOTES_CHANGED with old and new; an unchanged value writes nothing", async () => {
     const fx = await fixture();
     const { PATCH } = await import("@/app/api/manage/liquidity-providers/[id]/route");

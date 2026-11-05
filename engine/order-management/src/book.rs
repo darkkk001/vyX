@@ -369,7 +369,7 @@ async fn load_sessions(conn: &mut sqlx::PgConnection, broker_ids: &[String], nam
         r#"SELECT bs."brokerId", s.name, ts."dayOfWeek", ts."openTime", ts."closeTime"
            FROM "BrokerSymbol" bs
            JOIN "Symbol" s ON s.id = bs."symbolId"
-           LEFT JOIN "TradingSession" ts ON ts."brokerSymbolId" = bs.id
+           LEFT JOIN "TradingSession" ts ON ts."brokerSymbolId" = bs.id AND ts.kind = 'TRADE'
            WHERE bs."brokerId" = ANY($1) AND s.name = ANY($2)"#,
     )
     .bind(broker_ids)
