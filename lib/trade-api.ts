@@ -48,6 +48,9 @@ export type ApiPosition = {
   openPrice: string;
   slPrice: string | null;
   tpPrice: string | null;
+  // amount SL / TP in the account currency (lib/amount-sltp.ts); absent on a server that predates amounts
+  slAmount?: string | null;
+  tpAmount?: string | null;
   closePrice: string | null;
   realizedPnl: string | null;
   swap: string;
@@ -175,6 +178,8 @@ export type ApiOrder = {
   requestedPrice: string | null;
   slPrice: string | null;
   tpPrice: string | null;
+  slAmount?: string | null;
+  tpAmount?: string | null;
   status: string;
   filledPrice: string | null;
   rejectionReason: string | null;
@@ -307,6 +312,9 @@ export const tradeApi = {
     price: number;
     slPrice?: number | null;
     tpPrice?: number | null;
+    // amount SL / TP in the account currency, as a decimal string; a leg is a price OR an amount, never both
+    slAmount?: string | null;
+    tpAmount?: string | null;
     // Optional -- see lib/risk.ts's checkSlippage. Omitted = "unlimited" (MT5 market execution, owner
     // decision 2026-09-24): the server fills at its own price, no slippage rejection.
     maxSlippagePips?: number | "unlimited";
@@ -339,7 +347,7 @@ export const tradeApi = {
   // Broker feedback item 13 -- a pending order's own SL/TP, draggable on
   // the chart the same way a position's is, validated server-side
   // against the order's entry price (not a live tick).
-  editOrderSlTp: (id: string, body: { slPrice?: number | null; tpPrice?: number | null }) =>
+  editOrderSlTp: (id: string, body: { slPrice?: number | null; tpPrice?: number | null; slAmount?: string | null; tpAmount?: string | null }) =>
     call<ApiOrder>(`/api/trade/orders/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   fillOrder: (id: string, price: number) =>
     call(`/api/trade/orders/${id}/fill`, { method: "POST", body: JSON.stringify({ price }) }),
@@ -350,7 +358,7 @@ export const tradeApi = {
     call(`/api/trade/orders/${id}/requote-response`, { method: "POST", body: JSON.stringify({ accept }) }),
   editPositionSlTp: (
     id: string,
-    body: { currentPrice: number; slPrice?: number | null; tpPrice?: number | null }
+    body: { currentPrice: number; slPrice?: number | null; tpPrice?: number | null; slAmount?: string | null; tpAmount?: string | null }
   ) => call(`/api/trade/positions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   // `source: "stm_bulk"` is informational only (see
   // app/api/trade/positions/[id]/close/route.ts) -- flags this close for

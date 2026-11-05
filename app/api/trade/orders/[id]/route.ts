@@ -12,6 +12,8 @@ import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { getLivePriceRow } from "@/lib/live-price";
 import { toClientShape } from "@/lib/client-execution";
+import { AMOUNT_NO_RATE_TEXT, amountRefusalBody, legWrite, parseAmountLegs, setsAnAmount } from "@/lib/amount-sltp";
+import { loadAmountContext } from "@/lib/position-modify";
 
 // Edit a resting PENDING order's own entry price and/or its SL/TP -- the
 // chart's draggable entry-price line (LIMIT/STOP only) and, since broker
@@ -38,11 +40,14 @@ async function patchInner(
   const body = await request.json().catch(() => null);
   const currentPrice = body?.currentPrice != null ? String(body.currentPrice) : null;
   const requestedPrice = body?.requestedPrice != null ? String(body.requestedPrice) : undefined;
-  const slPrice = body?.slPrice !== undefined ? (body.slPrice == null ? null : String(body.slPrice)) : undefined;
-  const tpPrice = body?.tpPrice !== undefined ? (body.tpPrice == null ? null : String(body.tpPrice)) : undefined;
+  // amount SL / TP (lib/amount-sltp.ts): a leg is a price OR an amount; setting one unit clears the other
+  const amountLegs = parseAmountLegs(body);
+  if (!amountLegs.ok) return NextResponse.json(amountRefusalBody(amountLegs.code, amountLegs.error), { status: 400 });
+  const { price: slPrice, amount: slAmount } = legWrite(body?.slPrice !== undefined ? (body.slPrice == null ? null : String(body.slPrice)) : undefined, amountLegs.slAmount);
+  const { price: tpPrice, amount: tpAmount } = legWrite(body?.tpPrice !== undefined ? (body.tpPrice == null ? null : String(body.tpPrice)) : undefined, amountLegs.tpAmount);
 
-  if (requestedPrice === undefined && slPrice === undefined && tpPrice === undefined) {
-    return NextResponse.json({ error: "at least one of requestedPrice, slPrice, or tpPrice is required" }, { status: 400 });
+  if (requestedPrice === undefined && slPrice === undefined && tpPrice === undefined && slAmount === undefined && tpAmount === undefined) {
+    return NextResponse.json({ error: "at least one of requestedPrice, slPrice, tpPrice, slAmount, or tpAmount is required" }, { status: 400 });
   }
   if (requestedPrice !== undefined && !currentPrice) {
     return NextResponse.json({ error: "currentPrice is required when moving the entry price" }, { status: 400 });
@@ -51,7 +56,7 @@ async function patchInner(
   const order = await prisma.order.findUnique({
     where: { id },
     include: {
-      symbol: { select: { name: true, category: true } },
+      symbol: { select: { name: true, category: true, quoteCurrency: true } },
       account: { select: { accountNumber: true, fullName: true, status: true, tradingRights: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
     },
   });
@@ -65,6 +70,12 @@ async function patchInner(
   // cannot be changed (a queued close can: closing stays allowed on a close-only account)
   const rightsRefused = tradingRightsRefusal(order.account, order.closesPositionId ? "modify" : "open");
   if (rightsRefused) return rightsRefused;
+  // an amount being SET: the RUST-authority refusal and a known conversion rate (the reached check does not apply: the order has not filled)
+  if (setsAnAmount(amountLegs)) {
+    const ctx = await loadAmountContext(order.accountId, order.symbol.quoteCurrency);
+    if (ctx.refused) return NextResponse.json(ctx.refused.body, { status: ctx.refused.status });
+    if (!ctx.fxRate) return NextResponse.json(amountRefusalBody("NO_CONVERSION_RATE", AMOUNT_NO_RATE_TEXT), { status: 400 });
+  }
   if (requestedPrice !== undefined && order.type === "MARKET") {
     return NextResponse.json({ error: "MARKET orders have no entry price to edit" }, { status: 400 });
   }
@@ -143,6 +154,8 @@ async function patchInner(
   if (requestedPrice !== undefined) data.requestedPrice = requestedPrice;
   if (slPrice !== undefined) data.slPrice = slPrice;
   if (tpPrice !== undefined) data.tpPrice = tpPrice;
+  if (slAmount !== undefined) data.slAmount = slAmount;
+  if (tpAmount !== undefined) data.tpAmount = tpAmount;
 
   // Broker feedback items 14+15 -- this route had no audit trail at all
   // before: only whichever of entry/SL/TP actually changed goes into
@@ -162,6 +175,14 @@ async function patchInner(
   if (tpPrice !== undefined) {
     oldFields.tpPrice = order.tpPrice?.toString() ?? null;
     newFields.tpPrice = tpPrice;
+  }
+  if (slAmount !== undefined) {
+    oldFields.slAmount = order.slAmount?.toString() ?? null;
+    newFields.slAmount = slAmount?.toString() ?? null;
+  }
+  if (tpAmount !== undefined) {
+    oldFields.tpAmount = order.tpAmount?.toString() ?? null;
+    newFields.tpAmount = tpAmount?.toString() ?? null;
   }
   const auditBase = orderAuditFields(order, order.symbol.name, order.account.accountNumber);
 
@@ -198,6 +219,10 @@ async function patchInner(
       newSlPrice: newFields.slPrice ?? undefined,
       oldTpPrice: oldFields.tpPrice ?? undefined,
       newTpPrice: newFields.tpPrice ?? undefined,
+      oldSlAmount: oldFields.slAmount ?? undefined,
+      newSlAmount: newFields.slAmount ?? undefined,
+      oldTpAmount: oldFields.tpAmount ?? undefined,
+      newTpAmount: newFields.tpAmount ?? undefined,
     },
     orderId: id,
   });

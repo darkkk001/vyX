@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { AMOUNT_NO_RATE_TEXT, AMOUNT_NOT_AVAILABLE_TEXT, amountRefusalBody, amountRefusedForAuthority, parseAmountLegs, setsAnAmount } from "@/lib/amount-sltp";
 import { toClientShape } from "@/lib/client-execution";
 import { canonicalSymbolName } from "@/lib/synthetic-symbols";
 import { isDemoTenant } from "@/lib/demo-policy";
@@ -123,8 +124,10 @@ export async function POST(request: NextRequest) {
   // own scoping, or its risk thresholds are not loaded), in which case this route carries on and
   // fills as usual. A timeout or a 5xx is AMBIGUOUS and answers 502 instead, because filling again
   // here could open a second position for one order (design section 5b.3).
-  if (engineFillsFor(session.accountId)) {
-    const viaEngine = await fillThroughEngine(await request.clone().json().catch(() => null), session);
+  // An order carrying an amount SL / TP never takes the engine ingress: that fill forwards symbol, side and volume only and would drop the amount.
+  const ingressBody = engineFillsFor(session.accountId) ? await request.clone().json().catch(() => null) : null;
+  if (ingressBody && !(ingressBody.slAmount != null && ingressBody.slAmount !== "") && !(ingressBody.tpAmount != null && ingressBody.tpAmount !== "")) {
+    const viaEngine = await fillThroughEngine(ingressBody, session);
     if (viaEngine) {
       viaEngine.headers.set("Server-Timing", `app;dur=${Date.now() - startedAt}`);
       return withClientRefusals(await clientSafe(viaEngine));
@@ -172,6 +175,11 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
   const price = body?.price != null ? String(body.price) : null;
   const slPrice = body?.slPrice != null ? String(body.slPrice) : null;
   const tpPrice = body?.tpPrice != null ? String(body.tpPrice) : null;
+  // amount SL / TP in the account currency (owner 2026-11-04, lib/amount-sltp.ts): a leg is a price OR an amount
+  const amountLegs = parseAmountLegs(body);
+  if (!amountLegs.ok) return NextResponse.json(amountRefusalBody(amountLegs.code, amountLegs.error), { status: 400 });
+  const slAmount = amountLegs.slAmount ?? null;
+  const tpAmount = amountLegs.tpAmount ?? null;
   // Optional -- see lib/risk.ts's checkSlippage. WebTrader and the native terminal send "unlimited" unless the
   // trader set a cap; nothing sent = the broker's defaultMaxSlippagePips if set, else unlimited.
   const maxSlippagePips = body?.maxSlippagePips != null ? String(body.maxSlippagePips) : null;
@@ -284,6 +292,10 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
     throw err;
   }
   const [broker, account] = brokerAccount.v;
+  // amount SL / TP: until the engine watches amounts, an account whose risk the Rust engine owns takes none (an amount stored there would be watched by nothing)
+  if (setsAnAmount(amountLegs) && amountRefusedForAuthority(broker, account.accountMode)) {
+    return NextResponse.json(amountRefusalBody("AMOUNT_SLTP_NOT_AVAILABLE", AMOUNT_NOT_AVAILABLE_TEXT), { status: 400 });
+  }
   // QoreTrader demo tenant (DEMO_BROKER_SUBDOMAIN): instant execution on the B-book only, at the deterministic server price;
   // nothing it does reaches the engine, the gateway, a dealer, a mirror or the coverage account.
   const isDemo = isDemoTenant(broker.subdomain);
@@ -399,6 +411,18 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
   if (validationError) {
     return NextResponse.json({ error: validationError }, { status: 400 });
   }
+  // amount SL / TP: the account's conversion rate must be known (an amount is account money), and an SL amount inside the spread cost of
+  // opening would close the position at once, so it is refused here (the amount counterpart of validateSlTp's wrong-side check)
+  if (slAmount || tpAmount) {
+    const rate = marginState?.rateFor(brokerSymbol.symbol.quoteCurrency) ?? null;
+    if (!rate) return NextResponse.json(amountRefusalBody("NO_CONVERSION_RATE", AMOUNT_NO_RATE_TEXT), { status: 400 });
+    if (type === "MARKET" && livePrice && slAmount) {
+      const spreadCost = livePrice.ask.sub(livePrice.bid).mul(brokerSymbol.symbol.contractSize).mul(volume).mul(rate);
+      if (slAmount.lte(spreadCost)) {
+        return NextResponse.json(amountRefusalBody("AMOUNT_INSIDE_SPREAD", `SL amount ${slAmount.toFixed(2)} ${account.currency} is inside the spread cost (${spreadCost.toFixed(2)} ${account.currency}): it would close at once`), { status: 400 });
+      }
+    }
+  }
 
   // MARKET orders fill immediately, so the client-supplied price must be
   // backed by a real, fresh tick — not the client's own random-walk
@@ -501,7 +525,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       const o = existing
         ? await tx.order.update({ where: { id: existing.id }, data })
         : await tx.order.create({
-            data: { brokerId: session.brokerId, accountId: session.accountId, symbolId: brokerSymbol.symbolId, side, type, volume, requestedPrice: price, slPrice, tpPrice, idempotencyKey, source: orderSource, ...capture, ...data },
+            data: { brokerId: session.brokerId, accountId: session.accountId, symbolId: brokerSymbol.symbolId, side, type, volume, requestedPrice: price, slPrice, tpPrice, slAmount, tpAmount, idempotencyKey, source: orderSource, ...capture, ...data },
           });
       await tx.auditLog.create({ data: { brokerId: session.brokerId, action: "ORDER_SLIPPAGE_REQUOTED", entityType: "Order", entityId: o.id, newValue: detail } });
       return o;
@@ -554,6 +578,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
           requestedPrice: price,
           slPrice,
           tpPrice,
+          slAmount,
+          tpAmount,
           idempotencyKey,
           status: "PENDING",
           // the dealer queue clock (lib/order-expiry.ts): written once, here, when the order joins the queue
@@ -579,6 +605,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             requestedPrice: price,
             slPrice,
             tpPrice,
+            slAmount,
+            tpAmount,
             status: "PENDING",
             queuedForDealing: true,
           },
@@ -738,7 +766,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
         await recordDealerActivity(prisma, {
           ...dealerActivityBase,
           action: "ORDER_PLACED",
-          values: { requestedPrice: price, slPrice, tpPrice, queuedForDealing: true },
+          values: { requestedPrice: price, slPrice, tpPrice, slAmount, tpAmount, queuedForDealing: true },
           orderId: order.id,
           skipNotification: true, // DEALING_ORDER_PENDING notification already fired above
         });
@@ -787,6 +815,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             requestedPrice: price,
             slPrice,
             tpPrice,
+            slAmount,
+            tpAmount,
             idempotencyKey,
             status: "FILLED",
             filledPrice: fillPrice,
@@ -808,6 +838,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             openPrice: fillPrice,
             slPrice,
             tpPrice,
+            slAmount,
+            tpAmount,
             bookType,
           },
         });
@@ -823,7 +855,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             action: "ORDER_FILLED",
             entityType: "Position",
             entityId: position.id,
-            oldValue: { ...orderAuditFields(order, symbolName, account.accountNumber), requestedPrice: price, slPrice, tpPrice, status: "PENDING" },
+            oldValue: { ...orderAuditFields(order, symbolName, account.accountNumber), requestedPrice: price, slPrice, tpPrice, slAmount, tpAmount, status: "PENDING" },
             newValue: { status: "FILLED", filledPrice: fillPrice.toString() },
           },
         });
@@ -884,6 +916,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
         requestedPrice: price,
         slPrice,
         tpPrice,
+        slAmount,
+        tpAmount,
         idempotencyKey,
         status: "PENDING",
         source: orderSource,
@@ -906,6 +940,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
           requestedPrice: price,
           slPrice,
           tpPrice,
+          slAmount,
+          tpAmount,
           status: "PENDING",
         },
       },
@@ -919,7 +955,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       await recordDealerActivity(prisma, {
         ...dealerActivityBase,
         action: "ORDER_PLACED",
-        values: { requestedPrice: price, triggerPrice: price, slPrice, tpPrice, orderType: type },
+        values: { requestedPrice: price, triggerPrice: price, slPrice, tpPrice, slAmount, tpAmount, orderType: type },
         orderId: order.id,
       });
     });

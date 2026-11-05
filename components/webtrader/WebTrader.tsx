@@ -38,6 +38,7 @@ import KLineChartPanel, {
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
+import { SLTP_UNITS, amountRefusalText, formatAmount, legForModify, legForOrder, pipSizeOf, plainPositive, type SlTpUnit } from "./sltp-units";
 import ChartCell from "./ChartCell";
 import SettingsDialog from "./SettingsDialog";
 import KeyboardShortcutsDialog from "./KeyboardShortcutsDialog";
@@ -413,6 +414,9 @@ export default function WebTrader({
   const [riskPct, setRiskPct] = useState("");
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
+  // the unit both legs of the ticket are typed in (Price / Pips / Amount) and the server's amount refusal shown under them
+  const [slTpUnit, setSlTpUnit] = useState<SlTpUnit>("price");
+  const [ticketSltpError, setTicketSltpError] = useState<string | null>(null);
   const [pendingMarketSide, setPendingMarketSide] = useState<"BUY" | "SELL" | null>(null);
   const [balanceHidden, setBalanceHidden] = useState(false);
 
@@ -815,7 +819,7 @@ export default function WebTrader({
     symbolLabel: string; pnl: number; pnlPct: number; entryLabel: string; currentLabel: string; rrLabel: string; rrTitle: string;
   }>(null);
 
-  const [sltpEdit, setSltpEdit] = useState<null | { posId: string | null; netSymbol: string | null; sl: string; tp: string }>(null);
+  const [sltpEdit, setSltpEdit] = useState<null | { posId: string | null; netSymbol: string | null; sl: string; tp: string; unit: SlTpUnit; error: string | null }>(null);
 
   const [quickOrder, setQuickOrder] = useState<null | { symbol: string }>(null);
   const [quickOrderVolume, setQuickOrderVolume] = useState("0.01");
@@ -2637,7 +2641,22 @@ export default function WebTrader({
   const ticketRate = rateFor(activeSymbol);
   const ticketMoneyPerUnit = ticketRate == null ? null : m.def.contractSize * volume * ticketRate;
   const ticketPointValue = pointValue(ticketMoneyPerUnit, m.def.digits);
-  const ticketRiskReward = riskReward(orderMode === "pending" && pendingPrice !== "" ? parseFloat(pendingPrice) : m.bid, ticketSl, ticketTp, ticketMoneyPerUnit);
+  const ticketRefPrice = orderMode === "pending" && pendingPrice !== "" ? parseFloat(pendingPrice) : m.bid;
+  // the risk / reward strip in the unit typed: a price is a distance from the order price, pips the same in pips, an amount is the money itself
+  const ticketRiskReward = (() => {
+    if (slTpUnit === "amount") {
+      const risk = plainPositive(slInput) ?? 0;
+      const reward = plainPositive(tpInput) ?? 0;
+      return { risk, reward, ratio: risk > 0 && reward > 0 ? reward / risk : 0 };
+    }
+    if (slTpUnit === "pips") {
+      const pip = pipSizeOf(m.def.digits);
+      const sl = plainPositive(slInput);
+      const tp = plainPositive(tpInput);
+      return riskReward(ticketRefPrice, sl == null ? NaN : ticketRefPrice - sl * pip, tp == null ? NaN : ticketRefPrice + tp * pip, ticketMoneyPerUnit);
+    }
+    return riskReward(ticketRefPrice, ticketSl, ticketTp, ticketMoneyPerUnit);
+  })();
   const accountCcy = (account?.currency ?? "USD").toUpperCase();
   const pendingKind: "limit" | "stop" = pendingType.endsWith("limit") ? "limit" : "stop";
   const ema2050On = activeIndicators.some((a) => a.key === "EMA" && a.calcParams.join(",") === "20,50");
@@ -2657,23 +2676,47 @@ export default function WebTrader({
   // this rework.
   const priceStaleForTicket = dealingPendingNowMs - m.lastTickAt > 10_000;
   const staleTicketTitle = priceStaleForTicket ? "Prices are stale, reconnecting" : undefined;
-  const buyDisabled = priceStaleForTicket || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl >= m.bid) || (!isNaN(ticketTp) && ticketTp <= m.bid);
-  const sellDisabled = priceStaleForTicket || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl <= m.bid) || (!isNaN(ticketTp) && ticketTp >= m.bid);
+  // pips and amount are not prices: only the price unit is judged against the bid here (a pips level is on the right side by construction)
+  const ticketPriceUnit = slTpUnit === "price";
+  const buyDisabled = priceStaleForTicket || activeSymbolMarketClosed || (ticketPriceUnit && ((!isNaN(ticketSl) && ticketSl >= m.bid) || (!isNaN(ticketTp) && ticketTp <= m.bid)));
+  const sellDisabled = priceStaleForTicket || activeSymbolMarketClosed || (ticketPriceUnit && ((!isNaN(ticketSl) && ticketSl <= m.bid) || (!isNaN(ticketTp) && ticketTp >= m.bid)));
+
+  // both legs of the ticket as the wire carries them, from the unit the trader typed in (null = a message was shown)
+  function ticketLegs(side: "BUY" | "SELL", ref: number): { slPrice: number | null; tpPrice: number | null; slAmount?: string; tpAmount?: string } | null {
+    const sl = legForOrder({ unit: slTpUnit, raw: slInput, kind: "sl", side, ref, digits: m.def.digits });
+    const tp = legForOrder({ unit: slTpUnit, raw: tpInput, kind: "tp", side, ref, digits: m.def.digits });
+    if (!sl.ok) { setTicketSltpError(sl.error); return null; }
+    if (!tp.ok) { setTicketSltpError(tp.error); return null; }
+    setTicketSltpError(null);
+    return {
+      slPrice: sl.wire.price ?? null, tpPrice: tp.wire.price ?? null,
+      ...(sl.wire.amount != null ? { slAmount: sl.wire.amount } : {}), ...(tp.wire.amount != null ? { tpAmount: tp.wire.amount } : {}),
+    };
+  }
+  // the server's amount refusal goes under the SL / TP rows, in its own words; anything else keeps the toast
+  function showAmountRefusal(err: unknown): boolean {
+    const text = amountRefusalText(err);
+    if (!text) return false;
+    playSound("error", chartSettingsRef.current);
+    setTicketSltpError(text);
+    return true;
+  }
 
   async function placeOrder(side: "BUY" | "SELL") {
     if (!m.live) { pushToast("No live feed for this symbol"); return; }
-    const sl = slInput === "" ? null : parseFloat(slInput);
-    const tp = tpInput === "" ? null : parseFloat(tpInput);
     // 2026-09-05 P0 fix: a BUY opens at the marked-up ask (matching what
     // the server will actually fill at); a SELL opens at raw bid,
     // unmarked, same convention as lib/group-pricing.ts's applySpreadMarkup.
     const refPrice = side === "BUY" ? effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid) : m.bid;
-    const error = isValidSlTpForSide(side, sl, tp, refPrice);
+    const legs = ticketLegs(side, refPrice);
+    if (!legs) return;
+    const error = isValidSlTpForSide(side, legs.slPrice, legs.tpPrice, refPrice);
     if (error) { pushToast(error); return; }
     try {
       const result = await tradeApi.placeOrder({
         symbol: activeSymbol, side, type: "MARKET", volume, price: refPrice,
-        slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID(),
+        slPrice: legs.slPrice, tpPrice: legs.tpPrice, ...(legs.slAmount ? { slAmount: legs.slAmount } : {}), ...(legs.tpAmount ? { tpAmount: legs.tpAmount } : {}),
+        idempotencyKey: crypto.randomUUID(),
       });
       if (result.position) {
         // refreshOrders() isn't called on this path (no pending order was
@@ -2702,6 +2745,7 @@ export default function WebTrader({
         await refreshOrders();
       }
     } catch (err) {
+      if (showAmountRefusal(err)) return;
       handleOrderError(err, () => placeOrder(side));
     }
   }
@@ -2719,16 +2763,18 @@ export default function WebTrader({
     setPendingType(pt);
     const side = pt.startsWith("buy") ? "BUY" : "SELL";
     const type = pt.endsWith("limit") ? "LIMIT" : "STOP";
-    const sl = slInput === "" ? null : parseFloat(slInput);
-    const tp = tpInput === "" ? null : parseFloat(tpInput);
+    const legs = ticketLegs(side, price); // a pending order's pips are from its entry price
+    if (!legs) return;
     try {
       await tradeApi.placeOrder({
-        symbol: activeSymbol, side, type, volume, price, slPrice: sl, tpPrice: tp,
+        symbol: activeSymbol, side, type, volume, price, slPrice: legs.slPrice, tpPrice: legs.tpPrice,
+        ...(legs.slAmount ? { slAmount: legs.slAmount } : {}), ...(legs.tpAmount ? { tpAmount: legs.tpAmount } : {}),
         idempotencyKey: crypto.randomUUID(),
       });
       pushToast(`Pending ${pt.replace("_", " ")} placed for ${activeSymbol}`);
       await refreshOrders();
     } catch (err) {
+      if (showAmountRefusal(err)) return;
       handleOrderError(err);
     }
   }
@@ -2976,12 +3022,34 @@ export default function WebTrader({
   }
 
   function openSltpEditForNet(symbolName: string) {
-    setSltpEdit({ posId: null, netSymbol: symbolName, sl: "", tp: "" });
+    setSltpEdit({ posId: null, netSymbol: symbolName, sl: "", tp: "", unit: "price", error: null });
+  }
+  // One position's SL / TP in a modal: Price (prefilled, as the table's inline edit), Pips or Amount (prefilled with the leg's amount).
+  function openSltpEditForPosition(id: string) {
+    const p = positions.find((x) => x.id === id);
+    if (!p) return;
+    const unit: SlTpUnit = (p.slAmount || p.tpAmount) && !p.slPrice && !p.tpPrice ? "amount" : "price";
+    setSltpEdit({ posId: id, netSymbol: null, sl: unit === "amount" ? (p.slAmount ?? "") : (p.slPrice ?? ""), tp: unit === "amount" ? (p.tpAmount ?? "") : (p.tpPrice ?? ""), unit, error: null });
+  }
+  function changeSltpUnit(unit: SlTpUnit) {
+    setSltpEdit((cur) => {
+      if (!cur || cur.unit === unit) return cur;
+      const p = cur.posId ? positions.find((x) => x.id === cur.posId) : undefined;
+      const prefill = (kind: "sl" | "tp") => (!p ? "" : unit === "price" ? (kind === "sl" ? p.slPrice : p.tpPrice) ?? "" : unit === "amount" ? (kind === "sl" ? p.slAmount : p.tpAmount) ?? "" : "");
+      return { ...cur, unit, sl: prefill("sl"), tp: prefill("tp"), error: null };
+    });
   }
   async function saveSltpEdit() {
     if (!sltpEdit) return;
-    const sl = sltpEdit.sl === "" ? null : parseFloat(sltpEdit.sl);
-    const tp = sltpEdit.tp === "" ? null : parseFloat(sltpEdit.tp);
+    const unit = sltpEdit.unit;
+    // an amount refusal stays in the modal under the fields, in the server's own words; every other answer keeps its toast
+    const keepOpenOnAmountRefusal = (err: unknown): boolean => {
+      const text = amountRefusalText(err);
+      if (!text) return false;
+      playSound("error", chartSettingsRef.current);
+      setSltpEdit((cur) => (cur ? { ...cur, error: text } : cur));
+      return true;
+    };
     if (sltpEdit.netSymbol) {
       const symPositions = positions.filter((p) => p.symbol.name === sltpEdit.netSymbol);
       const mm = market[sltpEdit.netSymbol];
@@ -2991,16 +3059,24 @@ export default function WebTrader({
       let updated = 0, skipped = 0;
       try {
         for (const p of symPositions) {
-          const testSl = sl ?? (p.slPrice ? parseFloat(p.slPrice) : null);
-          const testTp = tp ?? (p.tpPrice ? parseFloat(p.tpPrice) : null);
           const ref = closeRefFor(p.side, p.symbol.name, mm);
+          const slLeg = legForModify({ unit, raw: sltpEdit.sl, kind: "sl", side: p.side, ref, digits: p.symbol.digits, existingAmount: p.slAmount ?? null, keepWhenEmpty: true });
+          const tpLeg = legForModify({ unit, raw: sltpEdit.tp, kind: "tp", side: p.side, ref, digits: p.symbol.digits, existingAmount: p.tpAmount ?? null, keepWhenEmpty: true });
+          if (!slLeg.ok || !tpLeg.ok) { const bad = !slLeg.ok ? slLeg.error : !tpLeg.ok ? tpLeg.error : ""; setSltpEdit((cur) => (cur ? { ...cur, error: bad } : cur)); return; }
+          const testSl = slLeg.wire.price ?? (p.slPrice ? parseFloat(p.slPrice) : null);
+          const testTp = tpLeg.wire.price ?? (p.tpPrice ? parseFloat(p.tpPrice) : null);
           const error = isValidSlTpForSide(p.side, testSl, testTp, ref);
           if (error) { skipped++; continue; }
-          await tradeApi.editPositionSlTp(p.id, { currentPrice: ref, slPrice: sl ?? undefined, tpPrice: tp ?? undefined });
+          await tradeApi.editPositionSlTp(p.id, {
+            currentPrice: ref,
+            ...(slLeg.wire.price != null ? { slPrice: slLeg.wire.price } : {}), ...(tpLeg.wire.price != null ? { tpPrice: tpLeg.wire.price } : {}),
+            ...(slLeg.wire.amount !== undefined ? { slAmount: slLeg.wire.amount } : {}), ...(tpLeg.wire.amount !== undefined ? { tpAmount: tpLeg.wire.amount } : {}),
+          });
           updated++;
         }
         pushToast(skipped > 0 ? `${sltpEdit.netSymbol}, updated ${updated}, skipped ${skipped}` : `${sltpEdit.netSymbol}, updated SL/TP on ${updated} positions`);
       } catch (err) {
+        if (keepOpenOnAmountRefusal(err)) return;
         if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
           const info = err.body as { nextOpenAt?: string } | null;
           pushToast(formatMarketClosedMessage(sltpEdit.netSymbol, info?.nextOpenAt));
@@ -3015,12 +3091,23 @@ export default function WebTrader({
       if (p) {
         const mm = market[p.symbol.name];
         const ref = closeRefFor(p.side, p.symbol.name, mm);
-        const error = isValidSlTpForSide(p.side, sl, tp, ref);
-        if (error) { pushToast(error); return; }
+        const slLeg = legForModify({ unit, raw: sltpEdit.sl, kind: "sl", side: p.side, ref, digits: p.symbol.digits, existingAmount: p.slAmount ?? null });
+        const tpLeg = legForModify({ unit, raw: sltpEdit.tp, kind: "tp", side: p.side, ref, digits: p.symbol.digits, existingAmount: p.tpAmount ?? null });
+        if (!slLeg.ok || !tpLeg.ok) { const bad = !slLeg.ok ? slLeg.error : !tpLeg.ok ? tpLeg.error : ""; setSltpEdit((cur) => (cur ? { ...cur, error: bad } : cur)); return; }
+        // the price legs are judged on the client exactly as before; an amount leg is the server's to judge
+        const testSl = slLeg.wire.price !== undefined ? slLeg.wire.price : p.slPrice ? parseFloat(p.slPrice) : null;
+        const testTp = tpLeg.wire.price !== undefined ? tpLeg.wire.price : p.tpPrice ? parseFloat(p.tpPrice) : null;
+        const error = isValidSlTpForSide(p.side, testSl, testTp, ref);
+        if (error) { setSltpEdit((cur) => (cur ? { ...cur, error } : cur)); return; }
         try {
-          await tradeApi.editPositionSlTp(p.id, { currentPrice: ref, slPrice: sl, tpPrice: tp });
+          await tradeApi.editPositionSlTp(p.id, {
+            currentPrice: ref,
+            ...(slLeg.wire.price !== undefined ? { slPrice: slLeg.wire.price } : {}), ...(tpLeg.wire.price !== undefined ? { tpPrice: tpLeg.wire.price } : {}),
+            ...(slLeg.wire.amount !== undefined ? { slAmount: slLeg.wire.amount } : {}), ...(tpLeg.wire.amount !== undefined ? { tpAmount: tpLeg.wire.amount } : {}),
+          });
           pushToast(`${p.symbol.name} position updated`);
         } catch (err) {
+          if (keepOpenOnAmountRefusal(err)) return;
           if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
             const info = err.body as { nextOpenAt?: string } | null;
             pushToast(formatMarketClosedMessage(p.symbol.name, info?.nextOpenAt));
@@ -3795,8 +3882,8 @@ export default function WebTrader({
     entry.count += 1;
     entry.volSum += vol;
     entry.priceWeightedSum += vol * parseFloat(p.openPrice);
-    entry.slValues.add(p.slPrice ?? "");
-    entry.tpValues.add(p.tpPrice ?? "");
+    entry.slValues.add(p.slPrice ?? (p.slAmount ? `$${p.slAmount}` : ""));
+    entry.tpValues.add(p.tpPrice ?? (p.tpAmount ? `$${p.tpAmount}` : ""));
     netAccum.set(p.symbol.name, entry);
   });
   for (const [symbolName, e] of netAccum) {
@@ -3805,8 +3892,9 @@ export default function WebTrader({
     netBySymbol.set(symbolName, {
       buyLots: e.buyLots, sellLots: e.sellLots, pnl: e.pnl, count: e.count, digits: e.digits,
       avgPrice: e.volSum > 0 ? e.priceWeightedSum / e.volSum : 0,
-      slLabel: sl ? fmt(parseFloat(sl), e.digits) : "",
-      tpLabel: tp ? fmt(parseFloat(tp), e.digits) : "",
+      // "$12.5" = every position shares that amount leg (money, in the account currency), anything else is a price
+      slLabel: sl.startsWith("$") ? formatAmount(sl.slice(1)) : sl ? fmt(parseFloat(sl), e.digits) : "",
+      tpLabel: tp.startsWith("$") ? formatAmount(tp.slice(1)) : tp ? fmt(parseFloat(tp), e.digits) : "",
     });
   }
 
@@ -4760,18 +4848,22 @@ export default function WebTrader({
                           <span className="pos-cell mono">{formatVolume(p.volume)}</span>
                           <span className="pos-cell mono">{fmt(parseFloat(p.openPrice), p.symbol.digits)}</span>
                           <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(p.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(p.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                          <span className="pos-cell sltp-pill" onClick={() => !isSlEditing && setInlineEditing({ id: p.id, field: "sl", value: p.slPrice ?? "" })}>
+                          <span className="pos-cell sltp-pill" onClick={() => { if (p.slAmount && !p.slPrice) openSltpEditForPosition(p.id); else if (!isSlEditing) setInlineEditing({ id: p.id, field: "sl", value: p.slPrice ?? "" }); }}>
                             {isSlEditing ? (
                               <input autoFocus className="inline-edit-input mono" defaultValue={p.slPrice ? fmt(parseFloat(p.slPrice), p.symbol.digits) : ""}
                                 onBlur={(e) => { commitInlineEdit(p.id, "sl", e.target.value); setInlineEditing(null); }}
                                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setInlineEditing(null); }} />
+                            ) : p.slAmount && !p.slPrice ? (
+                              <span className="mono sltp-amount sl" title={`Closes at a loss of ${formatAmount(p.slAmount)} ${accountCcy}`}>{formatAmount(p.slAmount)}<span className="nt-ccy">{accountCcy}</span></span>
                             ) : <span className="mono">{p.slPrice ? fmt(parseFloat(p.slPrice), p.symbol.digits) : ""}</span>}
                           </span>
-                          <span className="pos-cell sltp-pill" onClick={() => !isTpEditing && setInlineEditing({ id: p.id, field: "tp", value: p.tpPrice ?? "" })}>
+                          <span className="pos-cell sltp-pill" onClick={() => { if (p.tpAmount && !p.tpPrice) openSltpEditForPosition(p.id); else if (!isTpEditing) setInlineEditing({ id: p.id, field: "tp", value: p.tpPrice ?? "" }); }}>
                             {isTpEditing ? (
                               <input autoFocus className="inline-edit-input mono" defaultValue={p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : ""}
                                 onBlur={(e) => { commitInlineEdit(p.id, "tp", e.target.value); setInlineEditing(null); }}
                                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setInlineEditing(null); }} />
+                            ) : p.tpAmount && !p.tpPrice ? (
+                              <span className="mono sltp-amount tp" title={`Closes at a profit of ${formatAmount(p.tpAmount)} ${accountCcy}`}>{formatAmount(p.tpAmount)}<span className="nt-ccy">{accountCcy}</span></span>
                             ) : <span className="mono">{p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : ""}</span>}
                           </span>
                           <span className="pos-cell pos-comment" onClick={() => editComment(p.id)}>{comments[p.id] || ""}</span>
@@ -4779,6 +4871,9 @@ export default function WebTrader({
                           <span className="pos-cell pos-commission mono">{formatSigned(viewAmount("commission", p.commission, "client"))}</span>
                           <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(pnl)]}`}>{formatSigned(pnl)}</span>
                           <span className="pos-cell pos-actions">
+                            <button className="icon-btn" title="Stop loss and take profit" onClick={() => openSltpEditForPosition(p.id)}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="17" x2="20" y2="17" /><circle cx="9" cy="7" r="2.2" fill="var(--bg-1)" /><circle cx="15" cy="17" r="2.2" fill="var(--bg-1)" /></svg>
+                            </button>
                             <button className="icon-btn" title="Trailing stop" onClick={() => openTrailingStop(p.id)}>
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h4l3 8 4-16 3 8h4" /></svg>
                             </button>
@@ -4886,8 +4981,8 @@ export default function WebTrader({
                                 ? (o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "")
                                 : (o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "")}
                             </span>
-                            <span className="pos-cell mono">{o.slPrice ? fmt(parseFloat(o.slPrice), o.symbol.digits) : ""}</span>
-                            <span className="pos-cell mono">{o.tpPrice ? fmt(parseFloat(o.tpPrice), o.symbol.digits) : ""}</span>
+                            <span className="pos-cell mono">{o.slPrice ? fmt(parseFloat(o.slPrice), o.symbol.digits) : o.slAmount ? <span className="sltp-amount sl" title={`Closes at a loss of ${formatAmount(o.slAmount)} ${accountCcy}`}>{formatAmount(o.slAmount)}<span className="nt-ccy">{accountCcy}</span></span> : ""}</span>
+                            <span className="pos-cell mono">{o.tpPrice ? fmt(parseFloat(o.tpPrice), o.symbol.digits) : o.tpAmount ? <span className="sltp-amount tp" title={`Closes at a profit of ${formatAmount(o.tpAmount)} ${accountCcy}`}>{formatAmount(o.tpAmount)}<span className="nt-ccy">{accountCcy}</span></span> : ""}</span>
                             <span className="pos-cell" style={{ fontSize: 11 }}>
                               {isDealingPending ? (
                                 <span className="pending-approval-badge" title="Awaiting dealer review. You can still trade this or any other symbol while you wait.">
@@ -5194,23 +5289,44 @@ export default function WebTrader({
                 ))}
               </div>
               <div className="nt-row">
+                <span className="nt-row-label">SL / TP in</span>
+                <span className="stm-seg" role="radiogroup" aria-label="Stop loss and take profit unit">
+                  {SLTP_UNITS.map((u) => (
+                    <button
+                      key={u.key}
+                      type="button"
+                      role="radio"
+                      aria-checked={slTpUnit === u.key}
+                      className={slTpUnit === u.key ? "active" : ""}
+                      title={u.key === "amount" ? `Closes when the profit or loss reaches the amount, in ${accountCcy}` : u.key === "pips" ? "Distance from the order price, in pips" : "A price level"}
+                      onClick={() => { if (slTpUnit === u.key) return; setSlTpUnit(u.key); setSlInput(""); setTpInput(""); setRiskPct(""); setTicketSltpError(null); }}
+                    >
+                      {u.label}
+                    </button>
+                  ))}
+                </span>
+              </div>
+              <div className="nt-row">
                 <span className="nt-row-label">Stop loss</span>
                 <span className="nt-input-wrap">
-                  <input className="nt-input mono" aria-label="Stop loss" placeholder="SL" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
-                  {slInput ? <button type="button" className="nt-clear" aria-label="Clear the stop loss" onClick={() => setSlInput("")}>✕</button> : null}
+                  <input className={`nt-input mono${ticketSltpError ? " invalid" : ""}`} aria-label="Stop loss" placeholder={slTpUnit === "price" ? "SL" : slTpUnit === "pips" ? "pips" : accountCcy} value={slInput} onChange={(e) => { setSlInput(e.target.value); setTicketSltpError(null); if (riskPct && slTpUnit === "price") updateRiskVolume(riskPct, e.target.value); }} />
+                  {slInput ? <button type="button" className="nt-clear" aria-label="Clear the stop loss" onClick={() => { setSlInput(""); setTicketSltpError(null); }}>✕</button> : null}
                 </span>
               </div>
               <div className="nt-row">
                 <span className="nt-row-label">Take profit</span>
                 <span className="nt-input-wrap">
-                  <input className="nt-input mono" aria-label="Take profit" placeholder="TP" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
-                  {tpInput ? <button type="button" className="nt-clear" aria-label="Clear the take profit" onClick={() => setTpInput("")}>✕</button> : null}
+                  <input className={`nt-input mono${ticketSltpError ? " invalid" : ""}`} aria-label="Take profit" placeholder={slTpUnit === "price" ? "TP" : slTpUnit === "pips" ? "pips" : accountCcy} value={tpInput} onChange={(e) => { setTpInput(e.target.value); setTicketSltpError(null); }} />
+                  {tpInput ? <button type="button" className="nt-clear" aria-label="Clear the take profit" onClick={() => { setTpInput(""); setTicketSltpError(null); }}>✕</button> : null}
                 </span>
               </div>
-              <div className="nt-row">
-                <span className="nt-row-label">Risk %</span>
-                <input className="nt-input mono" aria-label="Risk percent" placeholder="0.00" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
-              </div>
+              {ticketSltpError ? <div className="nt-sltp-error" role="alert">{ticketSltpError}</div> : null}
+              {slTpUnit === "price" ? (
+                <div className="nt-row">
+                  <span className="nt-row-label">Risk %</span>
+                  <input className="nt-input mono" aria-label="Risk percent" placeholder="0.00" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
+                </div>
+              ) : null}
               <div className="nt-row"><span className="nt-row-label">Leverage</span><span className="nt-row-value mono nt-strong">1:{account?.leverage ?? 100}</span></div>
               <div className="nt-row">
                 <span className="nt-row-label">Margin needed</span>
@@ -5574,10 +5690,19 @@ export default function WebTrader({
                 <span>{sltpEdit.netSymbol ?? positions.find((p) => p.id === sltpEdit.posId)?.symbol.name}</span>
                 <span className="sltp-edit-side">{sltpEdit.netSymbol ? `All ${positions.filter((p) => p.symbol.name === sltpEdit.netSymbol).length} positions` : `${positions.find((p) => p.id === sltpEdit.posId)?.side} ${positions.find((p) => p.id === sltpEdit.posId)?.volume}`}</span>
               </div>
-              <div className="field-group">
-                <div className="field"><span className="field-label">Stop loss</span><span className="input-with-clear"><input className="mono" placeholder="" value={sltpEdit.sl} onChange={(e) => setSltpEdit({ ...sltpEdit, sl: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, sl: "" })}>✕</button></span></div>
-                <div className="field"><span className="field-label">Take profit</span><span className="input-with-clear"><input className="mono" placeholder="" value={sltpEdit.tp} onChange={(e) => setSltpEdit({ ...sltpEdit, tp: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, tp: "" })}>✕</button></span></div>
+              <div className="sltp-edit-unit">
+                <span className="stm-seg" role="radiogroup" aria-label="Stop loss and take profit unit">
+                  {SLTP_UNITS.map((u) => (
+                    <button key={u.key} type="button" role="radio" aria-checked={sltpEdit.unit === u.key} className={sltpEdit.unit === u.key ? "active" : ""} onClick={() => changeSltpUnit(u.key)}>{u.label}</button>
+                  ))}
+                </span>
+                <span className="sltp-edit-unit-hint">{sltpEdit.unit === "amount" ? `Closes at the profit or loss, in ${accountCcy}` : sltpEdit.unit === "pips" ? "Distance from the current price" : ""}</span>
               </div>
+              <div className="field-group">
+                <div className="field"><span className="field-label">Stop loss</span><span className="input-with-clear"><input className="mono" placeholder={sltpEdit.unit === "pips" ? "pips" : sltpEdit.unit === "amount" ? accountCcy : ""} value={sltpEdit.sl} onChange={(e) => setSltpEdit({ ...sltpEdit, sl: e.target.value, error: null })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, sl: "", error: null })}>✕</button></span></div>
+                <div className="field"><span className="field-label">Take profit</span><span className="input-with-clear"><input className="mono" placeholder={sltpEdit.unit === "pips" ? "pips" : sltpEdit.unit === "amount" ? accountCcy : ""} value={sltpEdit.tp} onChange={(e) => setSltpEdit({ ...sltpEdit, tp: e.target.value, error: null })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, tp: "", error: null })}>✕</button></span></div>
+              </div>
+              {sltpEdit.error ? <div className="sltp-edit-error" role="alert">{sltpEdit.error}</div> : null}
               <button className="modal-btn primary" style={{ width: "100%", justifyContent: "center" }} onClick={saveSltpEdit}>Update position</button>
             </div>
           </div>

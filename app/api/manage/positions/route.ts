@@ -12,7 +12,7 @@ import { loadRateResolver } from "@/lib/fx";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
-import { parseStaffOrder, staffOrderContext, staffActivityText } from "@/lib/staff-order";
+import { parseStaffOrder, staffAmountRefusal, staffOrderContext, staffActivityText } from "@/lib/staff-order";
 import * as mirror from "@/lib/mirror";
 import { writeOpenDealInTx } from "@/lib/deals";
 
@@ -187,6 +187,8 @@ export async function GET(request: NextRequest) {
       floatingPnl: floatingPnl ? floatingPnl.toFixed(2) : null,
       slPrice: p.slPrice ? p.slPrice.toFixed(p.symbol.digits) : null,
       tpPrice: p.tpPrice ? p.tpPrice.toFixed(p.symbol.digits) : null,
+      slAmount: p.slAmount ? p.slAmount.toFixed(2) : null,
+      tpAmount: p.tpAmount ? p.tpAmount.toFixed(2) : null,
       // Order-origin tracking replaces this idempotencyKey-prefix guess
       // with the real field now that one exists -- ADMIN is the exact
       // source value lib/position-actions.ts/this route's own manual-
@@ -234,8 +236,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Staff market orders fill at the live price. Use Manual position for a custom price.", code: "PRICE_NOT_ALLOWED" }, { status: 400 });
   }
   const input = parseStaffOrder(body);
-  if ("error" in input) return NextResponse.json({ error: input.error }, { status: 400 });
-  const { symbolId, side, volume, slPrice, tpPrice, note } = input;
+  if ("error" in input) return NextResponse.json({ error: input.error, ...(input.amountCode ? { amountCode: input.amountCode } : {}) }, { status: 400 });
+  const { symbolId, side, volume, slPrice, tpPrice, slAmount, tpAmount, note } = input;
   const ctx = await staffOrderContext(brokerId, accountId, input, { market: true });
   if (ctx.response) return ctx.response;
   const { account, brokerSymbol, broker } = ctx;
@@ -273,6 +275,8 @@ export async function POST(request: NextRequest) {
   if (slTpError) {
     return NextResponse.json({ error: slTpError }, { status: 400 });
   }
+  const amountRefusal = await staffAmountRefusal(account, brokerSymbol, input, price);
+  if (amountRefusal) return NextResponse.json(amountRefusal, { status: 400 });
 
   const result = await prisma.$transaction(async (tx) => {
     const order = await tx.order.create({
@@ -286,6 +290,8 @@ export async function POST(request: NextRequest) {
         requestedPrice: fillPrice,
         slPrice,
         tpPrice,
+        slAmount,
+        tpAmount,
         idempotencyKey: `manual_${randomUUID()}`,
         status: "FILLED",
         // Order-origin tracking -- an admin manually opening a position
@@ -308,6 +314,8 @@ export async function POST(request: NextRequest) {
         openPrice: fillPrice,
         slPrice,
         tpPrice,
+        slAmount,
+        tpAmount,
         bookType: resolveBookType(account.group.category),
       },
     });

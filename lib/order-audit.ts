@@ -57,11 +57,13 @@ export function describeOrderAuditEvent(action: string, oldValue: Prisma.JsonVal
       if (after.requestedPrice) parts.push(`@ ${after.requestedPrice}`);
       if (after.slPrice) parts.push(`SL ${after.slPrice}`);
       if (after.tpPrice) parts.push(`TP ${after.tpPrice}`);
+      if (after.slAmount) parts.push(`SL amount ${after.slAmount}`);
+      if (after.tpAmount) parts.push(`TP amount ${after.tpAmount}`);
       return parts.join(" ");
     }
     case "ORDER_MODIFIED": {
       const changes: string[] = [];
-      for (const key of ["requestedPrice", "slPrice", "tpPrice"]) {
+      for (const key of ["requestedPrice", "slPrice", "tpPrice", "slAmount", "tpAmount"]) {
         if (key in after) changes.push(`${key} ${before[key] ?? "not set"} → ${after[key] ?? "not set"}`);
       }
       return `Order modified: ${desc}${changes.length ? ", " + changes.join(", ") : ""}`;
