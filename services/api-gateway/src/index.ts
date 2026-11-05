@@ -13,12 +13,17 @@ import positionsRouter from "./routes/positions.js";
 import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, askRegistry, gatewayStats, onlineAccountIds, orderAckStats } from "./ws.js";
 import { BOOK_SEQ_SUBJECT, newBookSeqState, stampBookEvent } from "./book-seq.js";
 import { internalSecretOk, rotationInProgress } from "./internal-secret.js";
+import { corsMiddleware, parseAllowedOrigins } from "./cors.js";
+import { edgeRateLimit, parseEdgeLimit } from "./edge-rate-limit.js";
 
 if (rotationInProgress()) {
   console.warn("secret rotation in progress: INTERNAL_SERVICE_SECRET_PREVIOUS is still accepted; unset it and restart once every caller has switched");
 }
 
 const app = express();
+// First, so it replaces the automatic OPTIONS answer and a refusal further down stays readable (cors.ts).
+app.use(corsMiddleware(parseAllowedOrigins(process.env.GATEWAY_CORS_ORIGINS)));
+app.use(edgeRateLimit(parseEdgeLimit(process.env.GATEWAY_EDGE_RATE_LIMIT_PER_MIN)));
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
