@@ -221,7 +221,7 @@ pub fn measure(account: &WatchedAccount, cache: &TickCache) -> (Decimal, Decimal
                 bid: if usable { tick.as_ref().map(|t| t.bid) } else { None },
                 ask: if usable { tick.as_ref().map(|t| t.ask) } else { None },
                 sl_price: None,
-                tp_price: None,
+                tp_price: None, sl_amount: None, tp_amount: None,
                 fx_rate: rate.unwrap_or(Decimal::ONE),
                 rate_missing: rate.is_none(),
                 hedged_margin_pct: p.hedged_margin_pct,

@@ -228,7 +228,7 @@ mod tests {
     }
 
     fn tick(bid: rust_decimal::Decimal, ask: rust_decimal::Decimal) -> Tick {
-        Tick { symbol: "EURUSD".into(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() }
+        Tick { symbol: "EURUSD".into(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None }
     }
 
     /// FLIP L2: `check_symbol_for_triggers` prices the tick with the account's rule BEFORE testing the

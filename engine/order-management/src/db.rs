@@ -2339,6 +2339,11 @@ pub struct OpenPositionWithMarket {
     pub ask: Option<Decimal>,
     pub sl_price: Option<Decimal>,
     pub tp_price: Option<Decimal>,
+    /// Amount SL / TP in the ACCOUNT currency (Position.slAmount / tpAmount, 2026-11-05): the position closes when its gross
+    /// floating P/L falls to -sl_amount or reaches +tp_amount (monitor::amount_trigger). None = unset, or the columns do not
+    /// exist yet (book::amount_columns).
+    pub sl_amount: Option<Decimal>,
+    pub tp_amount: Option<Decimal>,
     /// quote currency -> account currency (fx.rs, Stage 2 F2). 1 for the same currency. A position whose
     /// rate cannot be resolved is given bid/ask None instead (unpriced), never a guessed rate.
     pub fx_rate: Decimal,
@@ -2454,7 +2459,7 @@ pub async fn get_open_positions_with_market(
                     bid,
                     ask,
                     sl_price,
-                    tp_price,
+                    tp_price, sl_amount: None, tp_amount: None,
                     fx_rate: Decimal::ONE, // legacy order-path table: no conversion
                     rate_missing: false,
                     hedged_margin_pct: Decimal::from(200), // legacy order-path table: no hedged margin

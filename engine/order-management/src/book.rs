@@ -442,6 +442,10 @@ pub struct RawPosition {
     contract_size: Decimal,
     sl_price: Option<Decimal>,
     tp_price: Option<Decimal>,
+    /// Position.slAmount / tpAmount (account currency, Decimal(18,2)); None when unset OR when the columns are not in the
+    /// database yet (see `amount_columns`)
+    sl_amount: Option<Decimal>,
+    tp_amount: Option<Decimal>,
     category: String,
     /// the POSITION's broker (sessions)
     broker_id: String,
@@ -460,6 +464,45 @@ const RAW_COLUMNS: &str = r#"p.id, p."accountId" AS account_id, s.id AS symbol_i
     s."contractSize" AS contract_size, p."slPrice" AS sl_price, p."tpPrice" AS tp_price, s.category::text AS category, p."brokerId" AS broker_id,
     s."quoteCurrency" AS quote_ccy, a.currency AS account_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct, s.digits,
     a."brokerId" AS account_broker_id, a."groupId" AS account_group_id"#;
+
+/// Amount SL / TP columns (web migration 20261105120000_amount_sltp). The engine must run before AND after that migration, so
+/// the monitor's reads add `p."slAmount"` / `p."tpAmount"` only when both columns exist, else NULLs: a missing column can never
+/// fail a risk read. Present is cached for good; absent is re-checked every 30 s (so a migration applied while the engine
+/// runs is picked up without a restart); a failed check counts as absent and is not cached.
+static AMOUNT_COLUMNS: std::sync::Mutex<(Option<bool>, Option<std::time::Instant>)> = std::sync::Mutex::new((None, None));
+
+const AMOUNT_SELECT_PRESENT: &str = r#", p."slAmount" AS sl_amount, p."tpAmount" AS tp_amount"#;
+const AMOUNT_SELECT_ABSENT: &str = ", NULL::numeric AS sl_amount, NULL::numeric AS tp_amount";
+
+pub async fn amount_columns(conn: &mut sqlx::PgConnection) -> &'static str {
+    let cached = *AMOUNT_COLUMNS.lock().unwrap_or_else(|e| e.into_inner());
+    match cached {
+        (Some(true), _) => return AMOUNT_SELECT_PRESENT,
+        (Some(false), Some(at)) if at.elapsed() < std::time::Duration::from_secs(30) => return AMOUNT_SELECT_ABSENT,
+        _ => {}
+    }
+    let found: Result<(i64,), _> = sqlx::query_as(
+        r#"SELECT count(*) FROM information_schema.columns
+           WHERE table_schema = current_schema() AND table_name = 'Position' AND column_name IN ('slAmount', 'tpAmount')"#,
+    )
+    .fetch_one(&mut *conn)
+    .await;
+    match found {
+        Ok((2,)) => {
+            *AMOUNT_COLUMNS.lock().unwrap_or_else(|e| e.into_inner()) = (Some(true), None);
+            tracing::info!("Position.slAmount / tpAmount present: the amount SL / TP monitor is on");
+            AMOUNT_SELECT_PRESENT
+        }
+        Ok(_) => {
+            *AMOUNT_COLUMNS.lock().unwrap_or_else(|e| e.into_inner()) = (Some(false), Some(std::time::Instant::now()));
+            AMOUNT_SELECT_ABSENT
+        }
+        Err(err) => {
+            tracing::warn!(?err, "amount column check failed: reading without amounts this time");
+            AMOUNT_SELECT_ABSENT
+        }
+    }
+}
 
 /// FROM ... of a RawPosition read: the position, its symbol, its account, its BrokerSymbol (hedged margin %). No price,
 /// no pricing table.
@@ -482,6 +525,9 @@ fn raw_from_row(r: &sqlx::postgres::PgRow) -> Result<RawPosition, sqlx::Error> {
         contract_size: r.try_get("contract_size")?,
         sl_price: r.try_get("sl_price")?,
         tp_price: r.try_get("tp_price")?,
+        // absent from the order path's projection (RAW_COLUMNS) and from a database without the amount migration: None
+        sl_amount: r.try_get("sl_amount").unwrap_or(None),
+        tp_amount: r.try_get("tp_amount").unwrap_or(None),
         category: r.try_get("category")?,
         broker_id: r.try_get("broker_id")?,
         quote_ccy: r.try_get("quote_ccy")?,
@@ -687,6 +733,8 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
                 ask: if usable { ask } else { None },
                 sl_price: r.sl_price,
                 tp_price: r.tp_price,
+                sl_amount: r.sl_amount,
+                tp_amount: r.tp_amount,
                 fx_rate: rate.unwrap_or(Decimal::ONE),
                 rate_missing: rate.is_none(),
                 hedged_margin_pct: r.hedged_margin_pct,
@@ -715,8 +763,9 @@ pub async fn open_positions_with_market_on(
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
     let pin = current_pin();
     let source = current_price_source()?;
+    let amounts = amount_columns(conn).await;
     let sql = format!(
-        "SELECT {RAW_COLUMNS} {RAW_FROM} WHERE p.\"accountId\" = $1 AND {open} ORDER BY p.\"openedAt\", p.id",
+        "SELECT {RAW_COLUMNS}{amounts} {RAW_FROM} WHERE p.\"accountId\" = $1 AND {open} ORDER BY p.\"openedAt\", p.id",
         // pinned (Stage 5 snapshot): what was open at the pin's moment, including a position closed since; plus the
         // positions the margin trigger measured open at it, by identity (Pin::measured; none for an SL / TP snapshot)
         open = if pin.is_some() {
@@ -819,8 +868,9 @@ pub async fn load_pass_book(pool: &PgPool, extra_accounts: &[String]) -> Result<
 async fn load_pass_book_on(conn: &mut sqlx::PgConnection, extra_accounts: &[String], source: &PriceSource) -> Result<PassBook, sqlx::Error> {
     use sqlx::Row;
     let d = margin::MarginThresholds::default();
+    let amounts = amount_columns(conn).await;
     let sql = format!(
-        r#"SELECT {RAW_COLUMNS}, a.balance, a.credit, a.leverage, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
+        r#"SELECT {RAW_COLUMNS}{amounts}, a.balance, a.credit, a.leverage, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
                   COALESCE(b."negativeBalanceProtection", false) AS nbp
            {RAW_FROM}
            LEFT JOIN "Group" g ON g.id = a."groupId"

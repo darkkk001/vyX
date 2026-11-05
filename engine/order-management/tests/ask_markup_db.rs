@@ -311,7 +311,7 @@ async fn the_fill_path_resolves_the_same_rule_as_the_quoting_path_for_every_shap
                 rtt_ms: None,
                 tick_ms: None,
                 broker_offset_sec: None,
-                bars: Vec::new(),
+                bars: Vec::new(), tick_count: None,
             };
             let quoted = order_management::pricing::quoted_tick(&raw, fill_rule.as_ref());
             assert_eq!((quoted.bid, quoted.ask), (want_bid, want_ask), "{label}: account bid / ask");
@@ -367,7 +367,7 @@ async fn the_pending_scan_carries_each_orders_resolved_rule() {
                 rtt_ms: None,
                 tick_ms: None,
                 broker_offset_sec: None,
-                bars: Vec::new(),
+                bars: Vec::new(), tick_count: None,
             };
             let quoted = order_management::pricing::quoted_tick(&raw, rule.as_ref());
             assert_eq!((quoted.bid, quoted.ask), (want_bid, want_ask), "{label}: the scan's own levels must resolve to the same quote as the fill path");

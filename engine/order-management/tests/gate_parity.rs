@@ -137,7 +137,7 @@ fn verdict(gate: &str, i: &serde_json::Value) -> Option<String> {
                         bid: Some(price),
                         ask: Some(price),
                         sl_price: None,
-                        tp_price: None,
+                        tp_price: None, sl_amount: None, tp_amount: None,
                         fx_rate: rate.unwrap_or(Decimal::ONE),
                         rate_missing: rate.is_none(),
                         hedged_margin_pct: dec(&p["hedgedMarginPct"]),

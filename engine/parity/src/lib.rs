@@ -302,7 +302,7 @@ fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
                 bid: px.map(|x| x.bid),
                 ask: px.map(|x| x.ask),
                 sl_price: p.sl_price,
-                tp_price: p.tp_price,
+                tp_price: p.tp_price, sl_amount: None, tp_amount: None,
                 fx_rate: Decimal::ONE, // Stage 0 pure-calc mode predates conversion (the gate is run-db.sh)
                 rate_missing: false,
                 hedged_margin_pct: sym.hedged_margin_pct.unwrap_or_else(order_management::calc::default_hedged_margin_pct),

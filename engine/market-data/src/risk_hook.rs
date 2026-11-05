@@ -155,6 +155,10 @@ struct Level {
     is_buy: bool,
     sl: Option<Decimal>,
     tp: Option<Decimal>,
+    /// The position carries an amount SL / TP (Position.slAmount / tpAmount, 2026-11-05). It has no price level to touch, so
+    /// every tick of its symbol fires an engine-owned account's evaluation (rate-limited like any fire), where the monitor
+    /// compares the gross floating P/L with the amounts. False when the columns do not exist yet.
+    has_amount: bool,
     /// The position's account ask rule (crate::ask_markup, 2026-09-26): a SELL's levels are checked against the
     /// account's ask, the price it closes at. None = the raw ask.
     ask_rule: Option<AskRule>,
@@ -317,15 +321,27 @@ impl RiskHook {
     async fn load(&self, pool: &PgPool) -> Result<(HashMap<String, Vec<Level>>, HashMap<String, Vec<PendingLevel>>), sqlx::Error> {
         use sqlx::Row;
         let mut conn = pool.acquire().await?;
-        let level_rows = sqlx::query(
+        // the amount columns exist only after web migration 20261105120000_amount_sltp: never fail the reload without them
+        let (amount_cols,): (i64,) = sqlx::query_as(
+            r#"SELECT count(*) FROM information_schema.columns
+               WHERE table_schema = current_schema() AND table_name = 'Position' AND column_name IN ('slAmount', 'tpAmount')"#,
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap_or((0,));
+        let (amount_select, amount_where) = if amount_cols == 2 {
+            (r#"(p."slAmount" IS NOT NULL OR p."tpAmount" IS NOT NULL) AS has_amount"#, r#" OR p."slAmount" IS NOT NULL OR p."tpAmount" IS NOT NULL"#)
+        } else {
+            ("false AS has_amount", "")
+        };
+        let level_sql = format!(
             r#"SELECT s.name, s.id AS symbol_id, s.digits, p.id AS position_id, p."accountId" AS account_id, p.side::text AS side,
-                      p."slPrice" AS sl, p."tpPrice" AS tp, a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode
+                      p."slPrice" AS sl, p."tpPrice" AS tp, {amount_select}, a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode
                FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
                     JOIN "Broker" sb ON sb.id = a."brokerId" AND NOT sb."isDemoSandbox"
-               WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL)"#,
-        )
-        .fetch_all(&mut *conn)
-        .await?;
+               WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL{amount_where})"#
+        );
+        let level_rows = sqlx::query(&level_sql).fetch_all(&mut *conn).await?;
         // resting LIMIT / STOP orders (the web's own "Order" table: PENDING, not the engine's orders table), with the
         // order's account ask rule for a BUY entry
         let pending_rows = sqlx::query(
@@ -364,6 +380,7 @@ impl RiskHook {
                 is_buy: side == "BUY",
                 sl: r.try_get("sl")?,
                 tp: r.try_get("tp")?,
+                has_amount: r.try_get("has_amount")?,
                 ask_rule,
             });
         }
@@ -510,7 +527,8 @@ impl RiskHook {
                     let cp = ask_markup::close_price(side, t.bid, t.ask, rule).get();
                     let sl_hit = l.sl.map_or(false, |sl| if l.is_buy { cp <= sl } else { cp >= sl });
                     let tp_hit = l.tp.map_or(false, |tp| if l.is_buy { cp >= tp } else { cp <= tp });
-                    if sl_hit || tp_hit {
+                    // an amount leg has no price level: every tick of its symbol evaluates the account (the monitor decides)
+                    if sl_hit || tp_hit || l.has_amount {
                         add(&mut sl_tp, &l.account_id, t, FireSource::SlTp);
                         touched.entry((l.account_id.clone(), t.symbol.clone())).or_default().insert(l.position_id.clone());
                     }
@@ -855,11 +873,11 @@ mod tests {
         use crate::ask_markup::AskRule;
         let h = hook("http://127.0.0.1:1/x".into());
         // SELL SL at 4299.20: raw ask 4299.13 has not reached it, the account ask ceil(4299.13 + 0.075) = 4299.21 has
-        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.20)), tp: None, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.20)), tp: None, has_amount: false, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
         let t: Tick = serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "4298.96", "ask": "4299.13" })).unwrap();
         assert_eq!(h.touched(std::slice::from_ref(&t)), vec!["XAUUSD".to_string()]);
         // the same level on the raw ask (no rule) is not touched
-        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.20)), tp: None, ask_rule: None }]);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.20)), tp: None, has_amount: false, ask_rule: None }]);
         assert!(h.touched(std::slice::from_ref(&t)).is_empty());
     }
 
@@ -1201,7 +1219,7 @@ mod tests {
     }
 
     fn lvl(position: &str, account: &str, is_buy: bool, sl: Option<Decimal>, tp: Option<Decimal>, ask_rule: Option<AskRule>) -> Level {
-        Level { position_id: position.into(), account_id: account.into(), broker_id: String::new(), mode: String::new(), is_buy, sl, tp, ask_rule }
+        Level { position_id: position.into(), account_id: account.into(), broker_id: String::new(), mode: String::new(), is_buy, sl, tp, has_amount: false, ask_rule }
     }
 
     #[test]
@@ -1275,7 +1293,7 @@ mod tests {
     }
 
     fn lvl_of(position: &str, account: &str, broker: &str, mode: &str, sl: Decimal) -> Level {
-        Level { position_id: position.into(), account_id: account.into(), broker_id: broker.into(), mode: mode.into(), is_buy: false, sl: Some(sl), tp: None, ask_rule: None }
+        Level { position_id: position.into(), account_id: account.into(), broker_id: broker.into(), mode: mode.into(), is_buy: false, sl: Some(sl), tp: None, has_amount: false, ask_rule: None }
     }
 
     fn pending_of(account: &str, broker: &str, mode: &str) -> PendingLevel {
@@ -1319,6 +1337,25 @@ mod tests {
         assert_eq!(line, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
         let handed = shadow.try_recv().expect("a snapshot");
         assert_eq!(handed.iter().map(|t| t.account_id.as_str()).collect::<Vec<_>>(), vec!["a-web"], "engine-owned touches are not the shadow's");
+    }
+
+    /// An engine-owned position with an amount SL / TP has no price level to touch: every tick of its symbol fires its account
+    /// (the monitor compares the P/L with the amounts). A web-owned one does not change the web's behaviour.
+    #[tokio::test]
+    async fn an_engine_owned_amount_position_fires_on_every_tick_of_its_symbol() {
+        let (url, mut rx) = mock_route(200).await;
+        let (h, mut live) = live_hook(url);
+        let mut amount = lvl_of("p-amt", "a-amt", "bA", "LIVE", dec!(1));
+        amount.sl = None;
+        amount.has_amount = true;
+        let mut web_amount = lvl_of("p-web", "a-web", "bR", "LIVE", dec!(1));
+        web_amount.sl = None;
+        web_amount.has_amount = true;
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![amount, web_amount]);
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        assert_eq!(live.try_recv().expect("fire").account_id, "a-amt");
+        assert!(live.try_recv().is_err(), "only the engine-owned account");
+        assert!(tokio::time::timeout(Duration::from_millis(400), rx.recv()).await.is_err(), "the web path is unchanged: no price level touched, no call");
     }
 
     /// When EVERY touched account of the symbol is the engine's, the web is not called at all.

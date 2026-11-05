@@ -590,7 +590,7 @@ async fn place_market_order_runs_the_whole_chain_on_prismas_book() {
             rtt_ms: None,
             tick_ms: None,
             broker_offset_sec: None,
-            bars: Vec::new(),
+            bars: Vec::new(), tick_count: None,
         },
         chrono::Utc::now(),
     );
@@ -1168,7 +1168,7 @@ async fn two_concurrent_scans_of_one_resting_order_fill_it_once() {
         rtt_ms: None,
         tick_ms: None,
         broker_offset_sec: None,
-        bars: Vec::new(),
+        bars: Vec::new(), tick_count: None,
     };
     // both scans, at once, on the same pool -- the shape two ticks arriving together produce
     let (a, b) = (
@@ -1257,7 +1257,7 @@ async fn a_resting_order_the_price_has_not_reached_is_left_alone() {
             rtt_ms: None,
             tick_ms: None,
             broker_offset_sec: None,
-            bars: Vec::new(),
+            bars: Vec::new(), tick_count: None,
         },
     )
     .await;
@@ -1317,7 +1317,7 @@ async fn every_wired_gate_refuses_through_the_real_order_path() {
             rtt_ms: None,
             tick_ms: None,
             broker_offset_sec: None,
-            bars: Vec::new(),
+            bars: Vec::new(), tick_count: None,
         },
         chrono::Utc::now(),
     );
@@ -1585,7 +1585,7 @@ async fn the_pre_trade_margin_gate_refuses_through_the_real_order_path() {
             rtt_ms: None,
             tick_ms: None,
             broker_offset_sec: None,
-            bars: Vec::new(),
+            bars: Vec::new(), tick_count: None,
         },
         chrono::Utc::now(),
     );
@@ -1702,7 +1702,7 @@ async fn the_pre_trade_margin_gate_refuses_through_the_real_order_path() {
             rtt_ms: None,
             tick_ms: None,
             broker_offset_sec: None,
-            bars: Vec::new(),
+            bars: Vec::new(), tick_count: None,
         },
         chrono::Utc::now(),
     );
@@ -1750,7 +1750,7 @@ async fn the_session_gate_refuses_a_closed_market_through_the_real_order_path() 
         rtt_ms: None,
         tick_ms: None,
         broker_offset_sec: None,
-        bars: Vec::new(),
+        bars: Vec::new(), tick_count: None,
     };
     cache.set(&tick, chrono::Utc::now());
 
@@ -1847,7 +1847,7 @@ async fn a_tick_the_web_would_call_stale_is_refused_even_though_the_engine_still
         rtt_ms: None,
         tick_ms: None,
         broker_offset_sec: None,
-        bars: Vec::new(),
+        bars: Vec::new(), tick_count: None,
     };
 
     let place = || async {

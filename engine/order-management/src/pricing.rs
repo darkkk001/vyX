@@ -44,7 +44,7 @@ pub fn quoted_tick(raw: &Tick, rule: Option<&AskRule>) -> Tick {
         rtt_ms: raw.rtt_ms,
         tick_ms: raw.tick_ms,
         broker_offset_sec: raw.broker_offset_sec,
-        bars: raw.bars.clone(),
+        bars: raw.bars.clone(), tick_count: raw.tick_count,
     }
 }
 
@@ -55,7 +55,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn tick() -> Tick {
-        Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() }
+        Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None }
     }
 
     #[test]
@@ -84,7 +84,7 @@ mod tests {
     fn three_digit_symbol_uses_a_larger_pip() {
         // USDJPY-style: digits=3, pip = 0.01, so 1.5 pips = 0.015 of spread, 0.0075 per side,
         // each rounded AWAY from the client at 3 digits.
-        let jpy = Tick { symbol: "USDJPY".into(), bid: dec!(150.000), ask: dec!(150.020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() };
+        let jpy = Tick { symbol: "USDJPY".into(), bid: dec!(150.000), ask: dec!(150.020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None };
         let quoted = quoted_tick(&jpy, Some(&AskRule::Markup { markup_pips: dec!(1.5), digits: 3 }));
         assert_eq!((quoted.bid, quoted.ask), (dec!(149.992), dec!(150.028)));
     }

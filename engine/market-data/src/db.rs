@@ -141,17 +141,19 @@ async fn upsert_candles_open_insert_only(
     let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
     let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
     let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
+    let tick_volumes: Vec<i64> = updates.iter().map(|u| u.tick_volume.max(0)).collect();
 
     sqlx::query(
         r#"
-        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
-        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, now()
-        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
-            AS t(symbol, timeframe, bucket_start, open, high, low, close)
+        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "tickVolume", "updatedAt")
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, tick_volume, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::bigint[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close, tick_volume)
         ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
             high = GREATEST("Candle".high, EXCLUDED.high),
             low = LEAST("Candle".low, EXCLUDED.low),
             close = EXCLUDED.close,
+            "tickVolume" = "Candle"."tickVolume" + EXCLUDED."tickVolume",   -- a seeded flush adds its sampled ticks
             "updatedAt" = now()
         "#,
     )
@@ -162,6 +164,7 @@ async fn upsert_candles_open_insert_only(
     .bind(&highs)
     .bind(&lows)
     .bind(&closes)
+    .bind(&tick_volumes)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -187,18 +190,20 @@ async fn upsert_candles_open_replacing(
     let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
     let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
     let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
+    let tick_volumes: Vec<i64> = updates.iter().map(|u| u.tick_volume.max(0)).collect();
 
     sqlx::query(
         r#"
-        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
-        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, now()
-        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
-            AS t(symbol, timeframe, bucket_start, open, high, low, close)
+        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "tickVolume", "updatedAt")
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, tick_volume, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::bigint[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close, tick_volume)
         ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
             open = EXCLUDED.open,
             high = GREATEST("Candle".high, EXCLUDED.high),
             low = LEAST("Candle".low, EXCLUDED.low),
             close = EXCLUDED.close,
+            "tickVolume" = "Candle"."tickVolume" + EXCLUDED."tickVolume",   -- a live sample adds its FIX ticks
             "updatedAt" = now()
         "#,
     )
@@ -209,6 +214,7 @@ async fn upsert_candles_open_replacing(
     .bind(&highs)
     .bind(&lows)
     .bind(&closes)
+    .bind(&tick_volumes)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -240,9 +246,14 @@ async fn upsert_candles_open_replacing(
 /// last for a given historical bucket wins," which for real historical
 /// buckets is always the backfill (broker bars beat our aggregates, per
 /// this fix's own name for the rule).
+///
+/// Tick volume (`v` from the history backfill) NEVER overwrites a FIX count: with `before_fix` false the volume is
+/// written only where the stored tickVolume is 0. `before_fix` true (bars older than HISTORY_OVERWRITE_BEFORE, which
+/// predate FIX) takes the larger of stored and sent. Either way a non-zero count is never lowered.
 pub async fn upsert_candles_authoritative_batch(
     tx: &mut sqlx::PgTransaction<'_>,
     updates: &[CandleUpdate],
+    before_fix: bool,
 ) -> Result<(), sqlx::Error> {
     if updates.is_empty() {
         return Ok(());
@@ -254,18 +265,21 @@ pub async fn upsert_candles_authoritative_batch(
     let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
     let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
     let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
+    let tick_volumes: Vec<i64> = updates.iter().map(|u| u.tick_volume.max(0)).collect();
 
     sqlx::query(
         r#"
-        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
-        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, now()
-        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
-            AS t(symbol, timeframe, bucket_start, open, high, low, close)
+        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "tickVolume", "updatedAt")
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, tick_volume, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::bigint[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close, tick_volume)
         ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
             open = EXCLUDED.open,
             high = EXCLUDED.high,
             low = EXCLUDED.low,
             close = EXCLUDED.close,
+            "tickVolume" = CASE WHEN "Candle"."tickVolume" = 0 OR $9 THEN GREATEST("Candle"."tickVolume", EXCLUDED."tickVolume")
+                                ELSE "Candle"."tickVolume" END,
             "updatedAt" = now()
         "#,
     )
@@ -276,6 +290,8 @@ pub async fn upsert_candles_authoritative_batch(
     .bind(&highs)
     .bind(&lows)
     .bind(&closes)
+    .bind(&tick_volumes)
+    .bind(before_fix)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -301,13 +317,14 @@ pub async fn insert_candles_if_missing_batch(
     let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
     let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
     let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
+    let tick_volumes: Vec<i64> = updates.iter().map(|u| u.tick_volume.max(0)).collect();
 
     let result = sqlx::query(
         r#"
-        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
-        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, now()
-        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
-            AS t(symbol, timeframe, bucket_start, open, high, low, close)
+        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "tickVolume", "updatedAt")
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, tick_volume, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::bigint[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close, tick_volume)
         ON CONFLICT (symbol, timeframe, "bucketStart") DO NOTHING
         "#,
     )
@@ -318,6 +335,7 @@ pub async fn insert_candles_if_missing_batch(
     .bind(&highs)
     .bind(&lows)
     .bind(&closes)
+    .bind(&tick_volumes)
     .execute(&mut **tx)
     .await?;
     Ok(result.rows_affected())
@@ -367,6 +385,8 @@ pub struct StoredCandle {
     pub high: Decimal,
     pub low: Decimal,
     pub close: Decimal,
+    /// Native release 2026-11-04: the bar's tick volume (0 = none recorded).
+    pub tick_volume: i64,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -382,9 +402,9 @@ pub async fn fetch_candles(
     limit: i64,
     before: Option<DateTime<Utc>>,
 ) -> Result<Vec<StoredCandle>, sqlx::Error> {
-    type Row = (String, String, DateTime<Utc>, Decimal, Decimal, Decimal, Decimal, DateTime<Utc>);
+    type Row = (String, String, DateTime<Utc>, Decimal, Decimal, Decimal, Decimal, i64, DateTime<Utc>);
     let mut rows: Vec<Row> = sqlx::query_as(
-        r#"SELECT symbol, timeframe::text, "bucketStart", open, high, low, close, "updatedAt"
+        r#"SELECT symbol, timeframe::text, "bucketStart", open, high, low, close, "tickVolume", "updatedAt"
            FROM "Candle"
            WHERE symbol = $1 AND timeframe = $2::"CandleTimeframe" AND ($3::timestamptz IS NULL OR "bucketStart" < $3)
            ORDER BY "bucketStart" DESC
@@ -399,7 +419,7 @@ pub async fn fetch_candles(
     rows.reverse();
     Ok(rows
         .into_iter()
-        .map(|(symbol, timeframe, bucket_start, open, high, low, close, updated_at)| StoredCandle { symbol, timeframe, bucket_start, open, high, low, close, updated_at })
+        .map(|(symbol, timeframe, bucket_start, open, high, low, close, tick_volume, updated_at)| StoredCandle { symbol, timeframe, bucket_start, open, high, low, close, tick_volume, updated_at })
         .collect())
 }
 
@@ -588,16 +608,16 @@ mod tests {
             high: Decimal::from(v + 1),
             low: Decimal::from(v - 1),
             close: Decimal::from(v),
-            open_authoritative: true,
+            open_authoritative: true, tick_volume: 0,
         };
         let mut tx = pool.begin().await.unwrap();
-        upsert_candles_authoritative_batch(&mut tx, &[mk(t0, 100)]).await.unwrap();
+        upsert_candles_authoritative_batch(&mut tx, &[mk(t0, 100)], false).await.unwrap();
         let inserted = insert_candles_if_missing_batch(&mut tx, &[mk(t0, 500), mk(t1, 500)]).await.unwrap();
         assert_eq!(inserted, 1, "only the missing bucket is created");
         let rows: Vec<(chrono::DateTime<chrono::Utc>, Decimal)> =
             sqlx::query_as(r#"SELECT "bucketStart", open FROM "Candle" WHERE symbol = $1 ORDER BY "bucketStart""#).bind(&symbol).fetch_all(&mut *tx).await.unwrap();
         assert_eq!(rows, vec![(t0, Decimal::from(100)), (t1, Decimal::from(500))]);
-        upsert_candles_authoritative_batch(&mut tx, &[mk(t0, 700)]).await.unwrap();
+        upsert_candles_authoritative_batch(&mut tx, &[mk(t0, 700)], false).await.unwrap();
         let open: Decimal = sqlx::query_scalar(r#"SELECT open FROM "Candle" WHERE symbol = $1 AND "bucketStart" = $2"#).bind(&symbol).bind(t0).fetch_one(&mut *tx).await.unwrap();
         assert_eq!(open, Decimal::from(700), "the authoritative batch still replaces");
         let _ = tx.rollback().await;
@@ -634,6 +654,7 @@ mod tests {
                 low: Decimal::ONE,
                 close: Decimal::ONE,
                 open_authoritative: false,
+                tick_volume: 0,
             })
             .collect();
 
@@ -648,7 +669,7 @@ mod tests {
         result.expect("upsert_candles_batch (authoritative) should succeed");
         assert_eq!(n, 1, "an all-authoritative batch must issue exactly one query, got {n}");
 
-        let (n, result) = count_sqlx_queries(upsert_candles_authoritative_batch(&mut tx, &candle_updates)).await;
+        let (n, result) = count_sqlx_queries(upsert_candles_authoritative_batch(&mut tx, &candle_updates, false)).await;
         result.expect("upsert_candles_authoritative_batch should succeed");
         assert_eq!(n, 1, "upsert_candles_authoritative_batch must issue exactly one query for 50 rows, got {n}");
 

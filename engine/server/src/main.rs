@@ -871,6 +871,9 @@ struct HistoryBar {
     high: Decimal,
     low: Decimal,
     close: Decimal,
+    /// Native release 2026-11-04: MqlRates.tick_volume (EA v1.45+); absent = keep the stored value.
+    #[serde(default)]
+    tick_volume: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1051,6 +1054,7 @@ async fn ingest_history_inner(state: Arc<AppState>, headers: HeaderMap, body: Hi
             // Written via upsert_candles_authoritative_batch below, which
             // replaces every field regardless of this flag.
             open_authoritative: true,
+            tick_volume: bar.tick_volume.filter(|v| *v > 0).unwrap_or(0),
         };
         gap_fills.extend(state.gap_fill.fill_gaps_and_record(&update));
         authoritative.push(update);
@@ -1074,6 +1078,9 @@ async fn ingest_history_inner(state: Arc<AppState>, headers: HeaderMap, body: Hi
             None
         }
     };
+    // tick volume: with a cutoff the authoritative bars all predate FIX (the backfill's volume may raise a stored count);
+    // without one, history writes volume only where the stored count is 0 (never over a FIX count)
+    let before_fix = cutoff.is_some();
     let (authoritative, gap_only) = market_data::history_guard::partition_by_cutoff(authoritative, cutoff);
     // gap-fill flats at/after the cutoff must not touch an existing row either
     let (gap_fills, late_gap_fills) = market_data::history_guard::partition_by_cutoff(gap_fills, cutoff);
@@ -1094,7 +1101,7 @@ async fn ingest_history_inner(state: Arc<AppState>, headers: HeaderMap, body: Hi
             tracing::warn!(?err, symbol = %body.symbol, sink = sink.as_str(), "ingest_history: gap-fill batch upsert failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
         })?;
-        market_data::db::upsert_candles_authoritative_batch(&mut tx, &authoritative).await.map_err(|err| {
+        market_data::db::upsert_candles_authoritative_batch(&mut tx, &authoritative, before_fix).await.map_err(|err| {
             tracing::warn!(?err, symbol = %body.symbol, sink = sink.as_str(), "ingest_history: authoritative batch upsert failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
         })?;
@@ -1213,6 +1220,9 @@ struct CandleRow {
     high: String,
     low: String,
     close: String,
+    /// Native release 2026-11-04 (terminal Volume pane): the bar's tick volume (0 = none recorded).
+    #[serde(rename = "tickVolume")]
+    tick_volume: i64,
     #[serde(rename = "updatedAt")]
     updated_at: String,
 }
@@ -1246,6 +1256,7 @@ async fn internal_candles(
                     high: decimal_json(c.high),
                     low: decimal_json(c.low),
                     close: decimal_json(c.close),
+                    tick_volume: c.tick_volume,
                     updated_at: iso_ms(c.updated_at),
                 })
                 .collect(),

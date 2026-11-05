@@ -127,6 +127,11 @@ pub struct Tick {
     // candle from ticks can seed that candle's open from the broker too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bars: Vec<BrokerBar>,
+    /// Tick volume (2026-11-05): the number of price changes of this symbol since the producer's previous post (the cTrader
+    /// FIX bridge coalesces posts at 50 ms). The engine SUMS it into the forming bars' tick_volume. Missing, 0 or negative
+    /// counts as 1, so an older producer stays correct (just undercounted). Signed so a bad value cannot fail the whole tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_count: Option<i64>,
 }
 
 /// One timeframe's forming bar on the broker's own chart -- see
@@ -145,6 +150,10 @@ pub struct BrokerBar {
     pub o: Decimal,
     pub h: Decimal,
     pub l: Decimal,
+    /// Native release 2026-11-04 (terminal Volume pane): the bar's MT5 tick volume
+    /// (MqlRates.tick_volume) so far. Optional: an EA before v1.45 omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

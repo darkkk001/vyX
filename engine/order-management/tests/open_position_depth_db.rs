@@ -142,7 +142,7 @@ fn tick(symbol: &str) -> protocol::Tick {
         rtt_ms: None,
         tick_ms: None,
         broker_offset_sec: None,
-        bars: Vec::new(),
+        bars: Vec::new(), tick_count: None,
     }
 }
 
@@ -391,7 +391,7 @@ async fn a_closed_market_position_is_unpriced_in_the_one_read() {
     let cache = std::sync::Arc::new(market_data::cache::TickCache::new());
     cache.set(&tick(&fx.symbol_name), chrono::Utc::now());
     cache.set(
-        &protocol::Tick { symbol: other_name.clone(), bid: dec!(1.1000), ask: dec!(1.1002), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() },
+        &protocol::Tick { symbol: other_name.clone(), bid: dec!(1.1000), ask: dec!(1.1002), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None },
         chrono::Utc::now(),
     );
     let pricing = market_data::pricing::PricingCache::new();

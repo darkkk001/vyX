@@ -355,7 +355,7 @@ pub mod history_guard {
         }
 
         fn bar(t: DateTime<Utc>) -> CandleUpdate {
-            CandleUpdate { symbol: "XAUUSD".into(), timeframe: Timeframe::D1, bucket_start: t, open: Decimal::ONE, high: Decimal::ONE, low: Decimal::ONE, close: Decimal::ONE, open_authoritative: true }
+            CandleUpdate { symbol: "XAUUSD".into(), timeframe: Timeframe::D1, bucket_start: t, open: Decimal::ONE, high: Decimal::ONE, low: Decimal::ONE, close: Decimal::ONE, open_authoritative: true, tick_volume: 0 }
         }
 
         #[test]
@@ -401,6 +401,11 @@ pub struct CandleUpdate {
     /// created the row -- a 50ms-late sampled tick, or a gap-sweep flat fill
     /// racing the first real tick -- fix the open for the bar's whole life.
     pub open_authoritative: bool,
+    /// Native release 2026-11-04 (terminal Volume pane): tick volume. For a seeded
+    /// update (`open_authoritative` false) it is a DELTA the upsert adds (one per
+    /// sampled flush; 0 for a gap fill); for a broker bar it is the broker's own
+    /// running tick volume for the bar (a TOTAL; the upsert keeps the larger).
+    pub tick_volume: i64,
 }
 
 /// Given a tick and "now", produces the candle upsert for every timeframe.
@@ -439,6 +444,7 @@ pub fn candle_updates_for_tick_ohlc(
             low,
             close: tick.bid,
             open_authoritative: false,
+            tick_volume: 1,
         })
         .collect()
 }
@@ -497,6 +503,8 @@ pub fn apply_broker_bars(updates: &mut [CandleUpdate], bars: &[BrokerBar], broke
         }
         update.open = bar.o;
         update.open_authoritative = true;
+        // `bar.v` (the MT5 demo's tick volume) is deliberately NOT used here: live volume is the FIX tick count the
+        // sample carries (a delta), never another venue's running total. The demo's volume enters only through history.
         if bar.h > update.high {
             update.high = bar.h;
         }
@@ -542,15 +550,34 @@ mod tests {
     // overlays the sampled update only where its open time IS the bucket this
     // engine computed for the same tick.
     fn bars_tick(bid: rust_decimal::Decimal, bars: Vec<BrokerBar>) -> Tick {
-        Tick { symbol: "XAUUSD".into(), bid, ask: bid + rust_decimal_macros::dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: Some(10_800), bars }
+        Tick { symbol: "XAUUSD".into(), bid, ask: bid + rust_decimal_macros::dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: Some(10_800), bars, tick_count: None }
     }
 
     fn bar(tf: &str, t: DateTime<Utc>, o: &str, h: &str, l: &str) -> BrokerBar {
-        BrokerBar { tf: tf.into(), t: t.timestamp_millis(), o: o.parse().unwrap(), h: h.parse().unwrap(), l: l.parse().unwrap() }
+        BrokerBar { tf: tf.into(), t: t.timestamp_millis(), o: o.parse().unwrap(), h: h.parse().unwrap(), l: l.parse().unwrap(), v: None }
     }
 
     fn by_tf(updates: &[CandleUpdate], tf: Timeframe) -> &CandleUpdate {
         updates.iter().find(|u| u.timeframe == tf).unwrap()
+    }
+
+    /// A seeded update carries one sampled tick (a delta); a matched broker bar's `v` does NOT replace it (no mixing venues).
+    #[test]
+    fn tick_volume_is_a_delta_and_a_broker_bars_v_does_not_replace_it() {
+        use rust_decimal_macros::dec;
+        let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap() + chrono::Duration::milliseconds(40);
+        let m1 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap();
+        let mut with_v = bar("M1", m1, "2402.0", "2402.5", "2401.8"); with_v.v = Some(512);
+        let tick = bars_tick(dec!(2402.5), vec![with_v]);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
+        assert!(updates.iter().all(|u| u.tick_volume == 1), "every seeded update is one sampled flush");
+        apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
+        assert_eq!(by_tf(&updates, Timeframe::M1).tick_volume, 1, "the broker's v is ignored for live volume");
+        assert_eq!(by_tf(&updates, Timeframe::M5).tick_volume, 1, "an unmatched timeframe stays a delta");
+        let old = bars_tick(dec!(2402.5), vec![bar("M1", m1, "2402.0", "2402.5", "2401.8")]);
+        let mut updates = candle_updates_for_tick_ohlc(&old, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
+        apply_broker_bars(&mut updates, &old.bars, 0, Utc::now());
+        assert_eq!(by_tf(&updates, Timeframe::M1).tick_volume, 1, "no v (older EA): still the delta");
     }
 
     #[test]
@@ -750,7 +777,7 @@ mod tests {
     fn candle_updates_for_tick_covers_every_timeframe() {
         use rust_decimal_macros::dec;
 
-        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() };
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None };
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let updates = candle_updates_for_tick(&tick, now, 0);
 
@@ -768,7 +795,7 @@ mod tests {
     fn candle_updates_for_tick_bucket_starts_match_bucket_start_directly() {
         use rust_decimal_macros::dec;
 
-        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() };
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None };
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let updates = candle_updates_for_tick(&tick, now, 0);
 

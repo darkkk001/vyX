@@ -82,7 +82,7 @@ fn raw_tick(bid: Decimal, ask: Decimal) -> Tick {
         rtt_ms: None,
         tick_ms: None,
         broker_offset_sec: None,
-        bars: Vec::new(),
+        bars: Vec::new(), tick_count: None,
     }
 }
 
