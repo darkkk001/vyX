@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { getClientSession, revokeAllClientSessions } from "@/lib/client-auth";
+import { getClientSession } from "@/lib/client-auth";
+import { replaceClientPassword } from "@/lib/client-password";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 // Client Portal counterpart to app/api/trade/change-password -- same
@@ -47,22 +48,15 @@ export async function POST(request: NextRequest) {
   }
 
   const newPasswordHash = await bcrypt.hash(newPassword, 10);
-  await prisma.$transaction([
-    prisma.client.update({ where: { id: client.id }, data: { passwordHash: newPasswordHash } }),
-    prisma.auditLog.create({
-      data: {
-        brokerId: client.brokerId,
-        actorAdminId: null,
-        action: "CLIENT_PASSWORD_CHANGED",
-        entityType: "Client",
-        entityId: client.id,
-        newValue: { changedBy: "client", email: client.email },
-      },
-    }),
-  ]);
   // Evict every other session on a credential change (pentest 2026-09-18
   // #2); the session that made the change stays signed in.
-  await revokeAllClientSessions(client.id, session.sessionId);
+  await replaceClientPassword({
+    clientId: client.id,
+    passwordHash: newPasswordHash,
+    keepSessionId: session.sessionId,
+    action: "CLIENT_PASSWORD_CHANGED",
+    audit: { changedBy: "client", email: client.email },
+  });
 
   return NextResponse.json({ ok: true });
 }

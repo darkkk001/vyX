@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { consumePasswordResetToken, hashPassword, revokeAllClientSessions } from "@/lib/client-auth";
+import { consumePasswordResetToken, hashPassword } from "@/lib/client-auth";
+import { replaceClientPassword } from "@/lib/client-password";
 
 // Consumes the token POST /api/portal/forgot-password minted (single-use,
 // 1h TTL) and sets a new password. Does NOT log the client in -- same as
@@ -26,11 +27,15 @@ export async function POST(request: NextRequest) {
   const passwordHash = await hashPassword(password);
   // the link reached this person's inbox, so the e-mail is proven too (a CRM invitation arrives unverified)
   const current = await prisma.client.findUnique({ where: { id: clientId }, select: { emailVerifiedAt: true } });
-  await prisma.client.update({ where: { id: clientId }, data: { passwordHash, ...(current && !current.emailVerifiedAt ? { emailVerifiedAt: new Date() } : {}) } });
-  // A reset is the takeover remediation: every existing session dies with
-  // the old credential (pentest 2026-09-18 #2). Nothing to keep -- this
-  // flow never logs the client in.
-  await revokeAllClientSessions(clientId);
+  // A reset is the takeover remediation: the old credential dies everywhere, trading accounts included, with every
+  // existing session (pentest 2026-09-18 #2, review 2026-11-05). Nothing to keep -- this flow never logs the client in.
+  await replaceClientPassword({
+    clientId,
+    passwordHash,
+    clientData: current && !current.emailVerifiedAt ? { emailVerifiedAt: new Date() } : {},
+    action: "CLIENT_PASSWORD_RESET",
+    audit: { via: "reset-link" },
+  });
 
   return NextResponse.json({ ok: true });
 }
