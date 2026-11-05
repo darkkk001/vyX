@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import RoomBrand from "./RoomBrand";
 import { useRoom } from "./RoomData";
@@ -9,6 +9,7 @@ import { initials } from "./format";
 // Trader's Room sidebar, as on every artboard: OVERVIEW / FUNDS / PERFORMANCE / PARTNER / MORE, KYC state and the
 // client at the foot. PARTNER shows only for a client the broker has flagged as an IB; Refer & earn shows for everyone.
 // Groups collapse and the whole bar folds to an icon rail; both are kept in cookies the shell layout reads.
+// On a phone the bar is an off-canvas drawer, opened by the top bar's menu button.
 const I = (d: ReactNode) => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">{d}</svg>
 );
@@ -51,6 +52,18 @@ export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: rail
   const kyc = KYC_LINE[data?.kyc.status ?? "NONE"] ?? KYC_LINE.NONE;
   const [rail, setRail] = useState(railAtLoad);
   const [closed, setClosed] = useState(closedGroups);
+  const [drawer, setDrawer] = useState(false);
+  useEffect(() => {
+    const toggle = () => setDrawer((d) => !d);
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setDrawer(false); };
+    window.addEventListener("room:nav", toggle);
+    document.addEventListener("keydown", esc);
+    return () => { window.removeEventListener("room:nav", toggle); document.removeEventListener("keydown", esc); };
+  }, []);
+  useEffect(() => {
+    document.body.style.overflow = drawer ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [drawer]);
   function toggleGroup(title: string) {
     const next = closed.includes(title) ? closed.filter((t) => t !== title) : [...closed, title];
     setClosed(next);
@@ -61,7 +74,9 @@ export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: rail
     setRail(!rail);
   }
   return (
-    <aside className={`r-side${rail ? " is-rail" : ""}`}>
+    <>
+    {drawer ? <div className="r-drawer-back" onClick={() => setDrawer(false)} /> : null}
+    <aside className={`r-side${rail ? " is-rail" : ""}${drawer ? " is-open" : ""}`}>
       <a className="r-brand" href="/room"><RoomBrand name={brokerName} logoUrl={logoUrl} showName /></a>
       {GROUPS.filter((g) => !g.partner || isPartner).map((g) => (
         <div key={g.title} className="r-nav-sec">
@@ -100,5 +115,6 @@ export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: rail
         </button>
       </div>
     </aside>
+    </>
   );
 }
