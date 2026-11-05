@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
       await advanceLead(session.brokerId, client.id, "DEMO");
       return NextResponse.json({ status: "created", accountNumber: account.accountNumber }, { status: 201 });
     } catch (error) {
-      if (error instanceof AccountStructureError) return NextResponse.json({ error: "This plan is not available for demo." }, { status: 400 });
+      if (error instanceof AccountStructureError) return NextResponse.json(error.code === "LEVERAGE_ABOVE_GROUP_MAX" ? { error: error.message, code: error.code } : { error: "This plan is not available for demo." }, { status: 400 });
       throw error;
     }
   }

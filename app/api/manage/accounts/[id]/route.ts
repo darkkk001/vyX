@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, RoutingCategory, GroupModeRestriction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
+import { LEVERAGE_RULE, parseLeverage, checkLeverageWithinGroup } from "@/lib/leverage";
 import { publishAccountUpdated } from "@/lib/account-events";
 import { revokeAllAccountSessions } from "@/lib/account-auth";
 import { checkAccountStructure } from "@/lib/account-structure";
@@ -146,6 +146,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (leverage == null) {
       return NextResponse.json({ error: `leverage must be ${LEVERAGE_RULE}` }, { status: 400 });
     }
+    // B1 (owner 2026-11-06): never above the maximum of the group the account will be in after this request
+    const groupMax = group ? group.leverage : (await prisma.group.findUnique({ where: { id: account.groupId }, select: { leverage: true } }))?.leverage;
+    const aboveMax = checkLeverageWithinGroup(leverage, groupMax);
+    if (aboveMax) return NextResponse.json(aboveMax, { status: 400 });
   }
 
   let status: "ACTIVE" | "SUSPENDED" | "CLOSED" | undefined;

@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { assertAccountStructure, AccountStructureError } from "@/lib/account-structure";
+import { checkLeverageWithinGroup } from "@/lib/leverage";
 import { INITIAL_BALANCE_NOTE } from "@/lib/initial-balance";
 import { attachReferredAccount } from "@/lib/room/partner";
 
@@ -83,13 +84,17 @@ export async function provisionAccount(params: ProvisionAccountParams) {
   }
   const group = await prisma.group.findUnique({
     where: { id: params.groupId },
-    select: { id: true, category: true, modeRestriction: true },
+    select: { id: true, category: true, modeRestriction: true, leverage: true },
   });
   assertAccountStructure({
     accountMode: params.accountMode,
     group,
     allowCoverage: params.allowCoverage === true,
   });
+  // B1 (owner 2026-11-06): every creation path (staff, portal, Room, live-account approval, hedge account) holds the
+  // account within its group's maximum leverage. The callers already turn an AccountStructureError into a 400.
+  const aboveMax = checkLeverageWithinGroup(params.leverage, group?.leverage);
+  if (aboveMax) throw new AccountStructureError({ code: aboveMax.code, message: aboveMax.error });
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const accountNumber = await allocateAccountNumber();

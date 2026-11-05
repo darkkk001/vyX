@@ -5,6 +5,7 @@ import { marginLevelAfterLeverage } from "@/lib/group-leverage-apply";
 import { accountFigures } from "@/lib/room/figures";
 import { groupCeiling } from "@/lib/room/plans";
 import { tierLeverageCeiling } from "@/lib/room/tier";
+import { checkLeverageWithinGroup } from "@/lib/leverage";
 
 // A client's own leverage change from the Trader's Room. Margin is notional / leverage and is recomputed live, so a
 // new leverage moves the margin of every open position at once (lib/group-leverage-apply.ts). A change that would put
@@ -12,7 +13,7 @@ import { tierLeverageCeiling } from "@/lib/room/tier";
 // Broker.leverageChangeReview on = the request waits for staff (LeverageChangeRequest); off = applied now.
 
 export class LeverageChangeError extends Error {
-  constructor(message: string, readonly status = 400) { super(message); }
+  constructor(message: string, readonly status = 400, readonly code?: string) { super(message); }
 }
 
 export type LeverageCheck = { from: number; to: number; ceiling: number; marginLevel: number | null; marginLevelAfter: number | null; stopOutLevel: number };
@@ -28,6 +29,9 @@ export async function checkLeverageChange(accountId: string, to: number): Promis
   const tierCeiling = a.clientId ? await tierLeverageCeiling(a.brokerId, a.clientId) : null;
   const ceiling = Math.max(planCeiling, tierCeiling ?? 0);
   if (to === a.leverage) throw new LeverageChangeError(`The account is already on 1:${to}.`);
+  // B1: a plan or tier ceiling never lifts an account above its group's maximum
+  const aboveMax = checkLeverageWithinGroup(to, a.group?.leverage);
+  if (aboveMax) throw new LeverageChangeError(aboveMax.error, 400, aboveMax.code);
   if (to > ceiling) throw new LeverageChangeError(`Your plan${tierCeiling && tierCeiling > planCeiling ? " and tier allow" : " allows"} up to 1:${ceiling}.`);
   const figures = await accountFigures(a);
   // no price / fx right now: the stop-out check cannot be made, so a change with open positions waits
@@ -46,7 +50,7 @@ export async function checkLeverageChange(accountId: string, to: number): Promis
 /** Applies a checked change; false when the account's leverage moved meanwhile (nothing written). */
 export async function applyLeverageChange(p: { brokerId: string; accountId: string; clientId: string; from: number; to: number; actorAdminId: string | null; requestId?: string; marginLevelBefore: number | null; marginLevelAfter: number | null }): Promise<boolean> {
   const done = await prisma.$transaction(async (tx) => {
-    const res = await tx.account.updateMany({ where: { id: p.accountId, brokerId: p.brokerId, leverage: p.from }, data: { leverage: p.to } });
+    const res = await tx.account.updateMany({ where: { id: p.accountId, brokerId: p.brokerId, leverage: p.from, group: { is: { leverage: { gte: p.to } } } }, data: { leverage: p.to } });
     if (res.count === 0) return false;
     await tx.auditLog.create({
       data: {

@@ -56,7 +56,8 @@ export async function roomPlans(brokerId: string, mode: "LIVE" | "DEMO"): Promis
     .sort((a, b) => Number(a.minDeposit ?? 0) - Number(b.minDeposit ?? 0));
 }
 
-/** The highest leverage a client may pick on this group: its plan ceiling, else the group's own leverage. */
+/** The highest leverage a client may pick on this group: its plan ceiling, else the group's own leverage; never above the
+ *  group's leverage (B1, owner 2026-11-06: an account's leverage never exceeds its group's). */
 export function groupCeiling(g: { leverage: number; planMaxLeverage: number | null }): number {
-  return g.planMaxLeverage && g.planMaxLeverage > 0 ? g.planMaxLeverage : g.leverage;
+  return g.planMaxLeverage && g.planMaxLeverage > 0 ? Math.min(g.planMaxLeverage, g.leverage) : g.leverage;
 }

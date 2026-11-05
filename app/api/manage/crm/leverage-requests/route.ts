@@ -52,7 +52,10 @@ export async function PATCH(request: NextRequest) {
   }
   let check;
   try { check = await checkLeverageChange(req.accountId, req.toLeverage); }
-  catch (e) { return NextResponse.json({ error: e instanceof LeverageChangeError ? e.message : "Cannot check right now." }, { status: 409 }); }
+  catch (e) {
+    if (e instanceof LeverageChangeError && e.code) return NextResponse.json({ error: e.message, code: e.code }, { status: e.status }); // B1: LEVERAGE_ABOVE_GROUP_MAX
+    return NextResponse.json({ error: e instanceof LeverageChangeError ? e.message : "Cannot check right now." }, { status: 409 });
+  }
   const claim = await prisma.leverageChangeRequest.updateMany({ where: { id: req.id, status: "PENDING" }, data: { status: "APPROVED", reviewedByAdminId: s.adminId, reviewedAt: new Date() } });
   if (claim.count === 0) return NextResponse.json({ error: "Already reviewed." }, { status: 409 });
   const ok = await applyLeverageChange({ brokerId: s.brokerId!, accountId: req.accountId, clientId: req.clientId, from: check.from, to: req.toLeverage, actorAdminId: s.adminId, requestId: req.id, marginLevelBefore: check.marginLevel, marginLevelAfter: check.marginLevelAfter });

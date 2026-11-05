@@ -30,10 +30,12 @@ export function marginLevelAfterLeverage(marginLevel: number | null, oldLeverage
 }
 
 export async function previewGroupLeverage(brokerId: string, groupId: string): Promise<LeverageApplyPreview | null> {
-  const group = await prisma.group.findFirst({ where: { id: groupId, brokerId }, select: { id: true, name: true, leverage: true, marginCallLevel: true, stopOutLevel: true } });
+  const group = await prisma.group.findFirst({ where: { id: groupId, brokerId }, select: { id: true, name: true, leverage: true, flexibleLeverage: true, marginCallLevel: true, stopOutLevel: true } });
   if (!group) return null;
   const accounts = await prisma.account.findMany({
-    where: { brokerId, groupId, leverage: { not: group.leverage } },
+    // a flexible-leverage group lets traders pick a LOWER leverage themselves: applying never raises those back up, it only
+    // clamps the accounts above the group's maximum (B1, owner 2026-11-06)
+    where: { brokerId, groupId, leverage: group.flexibleLeverage ? { gt: group.leverage } : { not: group.leverage } },
     select: { id: true, accountNumber: true, fullName: true, leverage: true },
     orderBy: { accountNumber: "asc" },
   });

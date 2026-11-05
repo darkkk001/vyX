@@ -165,7 +165,7 @@ export async function createGuestAccount(db: PrismaClient = prisma): Promise<Gue
             accountMode: "DEMO",
             accountTypeId: null,
             currency: broker.defaultAccountCurrency || "USD",
-            leverage: group.leverage || broker.defaultAccountLeverage || 100,
+            leverage: Math.min(group.leverage || broker.defaultAccountLeverage || 100, group.leverage || Number.MAX_SAFE_INTEGER), // B1: never above the group's
             groupId: group.id,
             clientId: null,
             balance: new Prisma.Decimal(GUEST_START_BALANCE),

@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
   try {
     check = await checkLeverageChange(account.id, to);
   } catch (e) {
-    if (e instanceof LeverageChangeError) return NextResponse.json({ error: e.message }, { status: e.status });
+    if (e instanceof LeverageChangeError) return NextResponse.json({ error: e.message, ...(e.code ? { code: e.code } : {}) }, { status: e.status });
     throw e;
   }
 
