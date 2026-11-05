@@ -389,6 +389,13 @@ model Broker {
   // broker moves its demo accounts only; its live accounts move only when this is set to false on purpose.
   riskAuthority              RiskAuthority   @default(WEB)
   riskAuthorityDemoOnly      Boolean         @default(true)
+  // Leverage rules (owner 2026-11-06): closed trades an account needs before it may change its own leverage
+  // (groups with flexibleLeverage on). Range 0-1000, checked by the settings route.
+  flexibleLeverageMinTrades  Int             @default(10)
+  // HMR plugin (high-margin-requirement windows) on/off for this broker. Off = no effect anywhere.
+  hmrEnabled                 Boolean         @default(false)
+  hmrWindows                 HmrWindow[]
+  hmrCorrelations            HmrCorrelation[]
   // Phase 1 trust pack -- when true, any AdminUser for this broker
   // (MANAGER/BROKER_ADMIN/SUPPORT) without twoFactorEnabled is forced
   // through 2FA setup on next login before reaching the manage shell
@@ -1181,6 +1188,8 @@ model Group {
   planMaxLeverage    Int?
   planSpreadFrom     String?
   planCommissionPerLot Decimal?           @db.Decimal(10, 2)
+  // Trader may change their own leverage (up to this group's leverage) once they have enough closed trades.
+  flexibleLeverage   Boolean              @default(false)
   leverage           Int                  @default(100)
   marginCallLevel    Decimal              @default(100) @db.Decimal(6, 2)
   stopOutLevel       Decimal              @default(50) @db.Decimal(6, 2)
@@ -2167,6 +2176,8 @@ model Position {
   /// Amount SL / TP in the account currency (native release 2026-11-04): closes when floating P/L <= -slAmount or >= +tpAmount
   slAmount               Decimal?         @db.Decimal(18, 2)
   tpAmount               Decimal?         @db.Decimal(18, 2)
+  /// Leverage this position was margined with when it opened (min of account, group and any HMR window). NULL = use the account's leverage.
+  openLeverage           Int?
   status                 PositionStatus   @default(OPEN)
   closePrice             Decimal?         @db.Decimal(18, 5)
   realizedPnl            Decimal?         @db.Decimal(18, 4)
@@ -3287,4 +3298,32 @@ model CrmTask {
 
   @@index([entityType, entityId])
   @@index([brokerId, doneAt, dueAt])
+}
+
+// HMR plugin (owner 2026-11-06): a broker-set window in which new positions on the symbols correlated to a currency open
+// with a capped leverage. UTC instants; the position keeps its margin leverage (Position.openLeverage) until it closes.
+model HmrWindow {
+  id        String   @id @default(cuid())
+  brokerId  String
+  broker    Broker   @relation(fields: [brokerId], references: [id])
+  currency  String
+  startsAt  DateTime @db.Timestamptz(3)
+  endsAt    DateTime @db.Timestamptz(3)
+  leverage  Int
+  enabled   Boolean  @default(true)
+  createdBy String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([brokerId, startsAt, endsAt])
+}
+
+model HmrCorrelation {
+  id       String   @id @default(cuid())
+  brokerId String
+  broker   Broker   @relation(fields: [brokerId], references: [id])
+  currency String
+  symbols  String[]
+
+  @@unique([brokerId, currency])
 }
