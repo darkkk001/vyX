@@ -17,6 +17,7 @@ import MinVersionPanel from "./MinVersionPanel";
 import PricingEngineSwitch from "./PricingEngineSwitch";
 import BridgeLicenses from "./BridgeLicenses";
 import OrderRateLimit from "./OrderRateLimit";
+import LpTimeouts from "./LpTimeouts";
 import StaffTwoFactorPolicy from "./StaffTwoFactorPolicy";
 
 export type BrokerRow = {
@@ -845,6 +846,14 @@ export default function BrokersManager() {
 
             <ModalSection label="Liquidity bridge licenses">
               <BridgeLicenses key={detailTarget.id} brokerSlug={detailTarget.subdomain} />
+            </ModalSection>
+
+            <ModalSection label="LP timeouts and retries">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                Per LP connection: how long the bridge waits for an order acknowledgement, how long an order may live, how many
+                times it is sent, and how long a reconcile may take. Empty = the bridge&apos;s default, shown greyed. The broker never sees these.
+              </p>
+              <LpTimeouts key={detailTarget.id} brokerSlug={detailTarget.subdomain} />
             </ModalSection>
 
             <ModalSection label="Pricing engine">
