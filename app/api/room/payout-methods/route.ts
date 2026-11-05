@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 import { payoutMethods } from "@/lib/room/funds";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { verifyTotp } from "@/lib/totp";
 
 // Saved payout methods (own name only). POST {type, bank?, account?, swift?, address?} adds one; DELETE ?id= removes
 // one (kept as history: removedAt). A bank account is always in the client's own name (the holder is the client's
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const type = TYPES.find((t) => t === body?.type);
   if (!type) return NextResponse.json({ error: "Pick a method." }, { status: 400 });
-  const client = await prisma.client.findUniqueOrThrow({ where: { id: session.clientId }, select: { fullName: true } });
+  const client = await prisma.client.findUniqueOrThrow({ where: { id: session.clientId }, select: { fullName: true, twoFactorEnabled: true, twoFactorSecret: true } });
   const count = await prisma.clientPayoutMethod.count({ where: { clientId: session.clientId, removedAt: null } });
   if (count >= 10) return NextResponse.json({ error: "Remove a method first (10 at most)." }, { status: 409 });
 
@@ -47,6 +48,12 @@ export async function POST(request: NextRequest) {
     const address = String(body?.address ?? "").trim();
     if (!WALLET[type].test(address)) return NextResponse.json({ error: "That wallet address is not valid for this network." }, { status: 400 });
     details = { address };
+  }
+  // 2FA on: a new place for money to go needs the code too, or a stolen session could line up its own address
+  if (client.twoFactorEnabled && client.twoFactorSecret) {
+    const code = typeof body?.code === "string" ? body.code.replace(/\s+/g, "") : "";
+    if (!code) return NextResponse.json({ error: "Enter the code from your authenticator app.", code: "TWO_FACTOR_REQUIRED" }, { status: 401 });
+    if (!verifyTotp(client.twoFactorSecret, code)) return NextResponse.json({ error: "Wrong code.", code: "TWO_FACTOR_INVALID" }, { status: 401 });
   }
   const created = await prisma.clientPayoutMethod.create({ data: { brokerId: session.brokerId, clientId: session.clientId, type, holderName: client.fullName, details } });
   await prisma.auditLog.create({ data: { brokerId: session.brokerId, clientId: session.clientId, action: "PAYOUT_METHOD_ADDED", entityType: "ClientPayoutMethod", entityId: created.id, newValue: { type, ...details, source: "CLIENT" } } });

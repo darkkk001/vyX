@@ -11,7 +11,7 @@ import { CLIENT_IDLE_MAX_MINUTES, CLIENT_IDLE_MIN_MINUTES, parseIdleMinutes } fr
 // payment methods' receiving details. PATCH -> any of those parts.
 async function snapshot(brokerId: string) {
   const [b, groups, rates, methods] = await Promise.all([
-    prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { crmEnabled: true, leverageChangeReview: true, tierConfig: true, androidAppUrl: true, iosAppUrl: true, clientIdleMinutes: true, humanCheckEnabled: true } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { crmEnabled: true, leverageChangeReview: true, tierConfig: true, androidAppUrl: true, iosAppUrl: true, clientIdleMinutes: true, humanCheckEnabled: true, requireWithdrawal2fa: true } }),
     prisma.group.findMany({ where: { brokerId, isClientSelectable: true }, select: { id: true, name: true, displayName: true, leverage: true, planMinDeposit: true, planMaxLeverage: true, planSpreadFrom: true, planCommissionPerLot: true }, orderBy: { displayName: "asc" } }),
     prisma.ibPlanRate.findMany({ where: { brokerId }, select: { groupId: true, ratePerLot: true } }),
     prisma.paymentMethod.findMany({ where: { brokerId }, select: { id: true, type: true, enabled: true, processingTime: true, bankDetails: true, walletAddress: true }, orderBy: { createdAt: "asc" } }),
@@ -22,6 +22,7 @@ async function snapshot(brokerId: string) {
     leverageChangeReview: b.leverageChangeReview,
     clientIdleMinutes: b.clientIdleMinutes,
     humanCheckEnabled: b.humanCheckEnabled,
+    requireWithdrawal2fa: b.requireWithdrawal2fa,
     tiers: tiersOf(b.tierConfig),
     androidAppUrl: b.androidAppUrl,
     iosAppUrl: b.iosAppUrl,
@@ -58,6 +59,7 @@ export async function PATCH(request: NextRequest) {
     if (v === null) return NextResponse.json({ error: `Idle limit is ${CLIENT_IDLE_MIN_MINUTES} to ${CLIENT_IDLE_MAX_MINUTES} minutes.` }, { status: 400 });
     brokerData.clientIdleMinutes = v;
   }
+  if ("requireWithdrawal2fa" in b) brokerData.requireWithdrawal2fa = b.requireWithdrawal2fa === true;
   if ("humanCheckEnabled" in b) {
     if (b.humanCheckEnabled === true && !humanCheckConfigured()) return NextResponse.json({ error: "The human check is not set up on this platform yet." }, { status: 400 });
     brokerData.humanCheckEnabled = b.humanCheckEnabled === true;
