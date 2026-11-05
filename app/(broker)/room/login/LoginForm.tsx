@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import HumanCheck from "@/components/room/HumanCheck";
 
 // Same credential check as the portal (POST /api/portal/login: email + password, verified e-mail, rate limit).
 export default function LoginForm({ notice }: { notice: { ok: boolean; text: string } | null }) {
@@ -11,6 +12,16 @@ export default function LoginForm({ notice }: { notice: { ok: boolean; text: str
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // the server asks for the check after repeated failures, and hands over the key with that answer
+  const [humanKey, setHumanKey] = useState("");
+  const [humanToken, setHumanToken] = useState("");
+  const [humanRound, setHumanRound] = useState(0);
+  const [waiting, setWaiting] = useState(false);
+  const form = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    if (waiting && humanToken) { setWaiting(false); form.current?.requestSubmit(); }
+  }, [waiting, humanToken]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -21,16 +32,18 @@ export default function LoginForm({ notice }: { notice: { ok: boolean; text: str
       const res = await fetch("/api/portal/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, remember, ...(needCode ? { code } : {}) }),
+        body: JSON.stringify({ email, password, remember, ...(needCode ? { code } : {}), ...(humanToken ? { turnstileToken: humanToken } : {}) }),
       });
+      if (humanToken) { setHumanToken(""); setHumanRound((r) => r + 1); }
       if (res.ok) {
         window.location.assign("/room");
         return;
       }
       const body = await res.json().catch(() => null);
+      if (body?.code === "HUMAN_CHECK_REQUIRED") { setHumanKey(body.siteKey); setWaiting(true); setError("Checking your browser…"); return; }
       if (body?.code === "TWO_FACTOR_REQUIRED") { setNeedCode(true); setError(""); return; }
       if (body?.code === "TWO_FACTOR_INVALID") { setError("Wrong code. Try the next one."); return; }
-      setError(res.status === 401 ? "Wrong email or password." : res.status === 429 ? "Too many attempts. Try again in a minute." : res.status === 403 ? "Verify your email first. Check your inbox." : body?.error ?? "Sign-in failed.");
+      setError(res.status === 401 ? "Wrong email or password." : res.status === 429 ? "Too many attempts. Try again in a few minutes." : res.status === 403 ? "Verify your email first. Check your inbox." : body?.error ?? "Sign-in failed.");
     } catch {
       setError("No connection. Try again.");
     } finally {
@@ -39,7 +52,7 @@ export default function LoginForm({ notice }: { notice: { ok: boolean; text: str
   }
 
   return (
-    <form className="r-auth-box" onSubmit={submit}>
+    <form ref={form} className="r-auth-box" onSubmit={submit}>
       <div>
         <h1>Sign in</h1>
         <div style={{ fontSize: 13, color: "var(--r-muted)", marginTop: 6 }}>Use the email registered with your broker.</div>
@@ -66,6 +79,7 @@ export default function LoginForm({ notice }: { notice: { ok: boolean; text: str
         <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ width: 15, height: 15, accentColor: "var(--r-accent)" }} />
         Keep me signed in on this device
       </label>
+      {humanKey ? <HumanCheck siteKey={humanKey} round={humanRound} onToken={setHumanToken} /> : null}
       {error ? <div className="r-error" role="alert">{error}</div> : null}
       <button className="r-btn" type="submit" disabled={busy} style={{ padding: "12px 0", fontSize: 14 }}>{busy ? "Signing in…" : "Sign in"}</button>
       <div style={{ borderTop: "1px solid var(--r-line)", paddingTop: 18, fontSize: 13, color: "var(--r-text-2)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>

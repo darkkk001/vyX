@@ -125,5 +125,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261104150000_symbols_tab_fields",
   "20261104190000_close_idempotency",
   "20261105120000_amount_sltp",
-  "20261105200000_fk_symbol_restrict_reconcile"
+  "20261105200000_fk_symbol_restrict_reconcile",
+  "20261105210000_client_idle_minutes"
 ];

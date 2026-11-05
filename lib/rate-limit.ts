@@ -35,6 +35,10 @@ export async function isLockedOut(key: string, limit: number): Promise<boolean> 
   return Number(count ?? 0) >= limit;
 }
 
+export async function failureCount(key: string): Promise<number> {
+  return Number((await getRedis().get(`${LOCKOUT_KEY_PREFIX}${key}`)) ?? 0);
+}
+
 export async function recordFailure(key: string, windowSeconds: number): Promise<number> {
   const redis = getRedis();
   const redisKey = `${LOCKOUT_KEY_PREFIX}${key}`;

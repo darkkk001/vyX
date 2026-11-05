@@ -7,7 +7,7 @@ import ServerClock from "./ServerClock";
 
 // Trader's Room sign-in (artboard "Login"): split brand panel + form, "Powered by QoreTrader" footer. Served at
 // /login for a broker with the CRM module.
-export default async function RoomLoginView({ broker, verify }: { broker: RoomBroker; verify?: string }) {
+export default async function RoomLoginView({ broker, verify, signedOut = false }: { broker: RoomBroker; verify?: string; signedOut?: boolean }) {
   // what a client depends on: the way in and the prices (readInfraSummary never throws; no report shows no line)
   const checks = await Promise.all([readInfraSummary("caddy"), readInfraSummary("qorebridge-feed")]);
   const status = roomServiceStatus(checks.map((c) => c.state));
@@ -46,7 +46,7 @@ export default async function RoomLoginView({ broker, verify }: { broker: RoomBr
         <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>Powered by QoreTrader</div>
       </section>
       <section className="r-auth-form">
-        <LoginForm notice={verify === "success" ? { ok: true, text: "Email confirmed. Sign in to continue." } : verify === "invalid" ? { ok: false, text: "That link has expired. Open an account again with the same email for a new one." } : null} />
+        <LoginForm notice={signedOut ? { ok: true, text: "You were signed out. Sign in to continue." } : verify === "success" ? { ok: true, text: "Email confirmed. Sign in to continue." } : verify === "invalid" ? { ok: false, text: "That link has expired. Open an account again with the same email for a new one." } : null} />
       </section>
     </div>
   );

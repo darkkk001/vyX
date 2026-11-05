@@ -3,13 +3,15 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { crmStaff } from "@/lib/crm/core";
 import { tiersOf } from "@/lib/room/tier";
+import { humanCheckConfigured } from "@/lib/turnstile";
+import { CLIENT_IDLE_MAX_MINUTES, CLIENT_IDLE_MIN_MINUTES, parseIdleMinutes } from "@/lib/client-auth";
 
 // The broker's Trader's Room settings (BROKER_ADMIN; anyone in the CRM may read). GET -> module state (read-only; the
 // Super Admin switches it), leverage review, tiers, app links, plan cards per client-selectable group with the IB rate,
 // payment methods' receiving details. PATCH -> any of those parts.
 async function snapshot(brokerId: string) {
   const [b, groups, rates, methods] = await Promise.all([
-    prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { crmEnabled: true, leverageChangeReview: true, tierConfig: true, androidAppUrl: true, iosAppUrl: true } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { crmEnabled: true, leverageChangeReview: true, tierConfig: true, androidAppUrl: true, iosAppUrl: true, clientIdleMinutes: true, humanCheckEnabled: true } }),
     prisma.group.findMany({ where: { brokerId, isClientSelectable: true }, select: { id: true, name: true, displayName: true, leverage: true, planMinDeposit: true, planMaxLeverage: true, planSpreadFrom: true, planCommissionPerLot: true }, orderBy: { displayName: "asc" } }),
     prisma.ibPlanRate.findMany({ where: { brokerId }, select: { groupId: true, ratePerLot: true } }),
     prisma.paymentMethod.findMany({ where: { brokerId }, select: { id: true, type: true, enabled: true, processingTime: true, bankDetails: true, walletAddress: true }, orderBy: { createdAt: "asc" } }),
@@ -18,6 +20,8 @@ async function snapshot(brokerId: string) {
   return {
     crmEnabled: b.crmEnabled,
     leverageChangeReview: b.leverageChangeReview,
+    clientIdleMinutes: b.clientIdleMinutes,
+    humanCheckEnabled: b.humanCheckEnabled,
     tiers: tiersOf(b.tierConfig),
     androidAppUrl: b.androidAppUrl,
     iosAppUrl: b.iosAppUrl,
@@ -49,6 +53,15 @@ export async function PATCH(request: NextRequest) {
   const before = await snapshot(staff.brokerId);
   const brokerData: Prisma.BrokerUpdateInput = {};
   if ("leverageChangeReview" in b) brokerData.leverageChangeReview = b.leverageChangeReview === true;
+  if ("clientIdleMinutes" in b) {
+    const v = parseIdleMinutes(b.clientIdleMinutes);
+    if (v === null) return NextResponse.json({ error: `Idle limit is ${CLIENT_IDLE_MIN_MINUTES} to ${CLIENT_IDLE_MAX_MINUTES} minutes.` }, { status: 400 });
+    brokerData.clientIdleMinutes = v;
+  }
+  if ("humanCheckEnabled" in b) {
+    if (b.humanCheckEnabled === true && !humanCheckConfigured()) return NextResponse.json({ error: "The human check is not set up on this platform yet." }, { status: 400 });
+    brokerData.humanCheckEnabled = b.humanCheckEnabled === true;
+  }
   for (const k of ["androidAppUrl", "iosAppUrl"] as const) {
     if (k in b) { const v = url(b[k]); if (v === undefined) return NextResponse.json({ error: `${k} must be an https link.` }, { status: 400 }); brokerData[k] = v; }
   }

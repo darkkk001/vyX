@@ -551,6 +551,10 @@ model Broker {
   // CRM module (owner brief 2026-11-03): one switch per broker. On = the Trader's Room (/room) answers on the broker's
   // host and the backoffice shows its CRM tab; off = the platform is unchanged (/room is a 404).
   crmEnabled           Boolean @default(false)
+  // Trader's Room idle limit in minutes (5 to 240), read when a client signs in. The absolute limit is lib/client-auth.ts.
+  clientIdleMinutes    Int     @default(30)
+  // Cloudflare Turnstile on the Trader's Room sign-in and sign-up (lib/turnstile.ts). Needs the platform's keys.
+  humanCheckEnabled    Boolean @default(false)
   // On = a client's leverage change from the Trader's Room waits for staff approval; off = applied at once.
   leverageChangeReview Boolean @default(false)
   // My Tier config: {"tiers":[{"name","minLots","benefits":[...]}]}; null = the defaults (Silver 0, Gold 150, Platinum 500)

@@ -34,6 +34,8 @@ type Ctx = {
 
 const RoomCtx = createContext<Ctx | null>(null);
 const PICK_KEY = "room-account";
+const SIGNED_OUT = "/login?signedOut=1";
+const ACTIVITY_EVERY_MS = 60_000;
 
 export function RoomDataProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<RoomOverview | null>(null);
@@ -47,7 +49,7 @@ export function RoomDataProvider({ children }: { children: ReactNode }) {
     try {
       const res = await fetch("/api/room/overview", { cache: "no-store" });
       if (res.status === 401) {
-        window.location.assign("/login");
+        window.location.assign(SIGNED_OUT);
         return;
       }
       if (!res.ok) {
@@ -70,6 +72,19 @@ export function RoomDataProvider({ children }: { children: ReactNode }) {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [refresh]);
+
+  // real input holds off the idle limit; the reads below do not (app/api/room/activity)
+  useEffect(() => {
+    let last = Date.now();
+    const seen = () => {
+      if (Date.now() - last < ACTIVITY_EVERY_MS) return;
+      last = Date.now();
+      void fetch("/api/room/activity", { method: "POST", cache: "no-store" }).then((r) => { if (r.status === 401) window.location.assign(SIGNED_OUT); }).catch(() => {});
+    };
+    const events = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
+    for (const e of events) window.addEventListener(e, seen, { passive: true });
+    return () => { for (const e of events) window.removeEventListener(e, seen); };
+  }, []);
 
   const holding = (data?.accounts ?? []).some((a) => a.figures.openPositions > 0);
   useEffect(() => {

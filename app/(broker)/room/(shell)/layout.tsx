@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { redirect, notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { roomBroker } from "@/lib/room/context";
-import { getClientSession } from "@/lib/client-auth";
+import { CLIENT_SESSION_COOKIE_NAME, getClientSession } from "@/lib/client-auth";
 import { prisma } from "@/lib/prisma";
 import { RoomDataProvider } from "@/components/room/RoomData";
 import RoomSidebar from "@/components/room/RoomSidebar";
@@ -12,13 +12,14 @@ import { partnerAccountOf } from "@/lib/room/partner";
 export default async function RoomShellLayout({ children }: { children: ReactNode }) {
   const broker = await roomBroker();
   if (!broker) notFound();
+  const jar = await cookies();
   const session = await getClientSession();
-  if (!session) redirect("/login");
+  // a cookie with no live session behind it: the session ended, say so on the sign-in page
+  if (!session) redirect(jar.has(CLIENT_SESSION_COOKIE_NAME) ? "/login?signedOut=1" : "/login");
   const client = await prisma.client.findUnique({ where: { id: session.clientId }, select: { id: true, status: true } });
   if (!client || client.status !== "ACTIVE") redirect("/login");
   const isPartner = (await partnerAccountOf(prisma, client.id)) !== null;
   // read here, not in the browser, so the sidebar draws its saved state with no flash
-  const jar = await cookies();
   const rail = jar.get("room_rail")?.value === "1";
   const closedGroups = decodeURIComponent(jar.get("room_nav_closed")?.value ?? "").split(",").filter(Boolean);
   return (

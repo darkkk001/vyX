@@ -140,13 +140,14 @@ describe("POST /api/portal/register: re-signup", () => {
     expect(audits[0].newValue).toMatchObject({ via: "register" });
   });
 
-  it("a verified address still gets the 409 'try logging in'", async () => {
+  it("a verified address gets the same answer as a new one, and nothing is created", async () => {
     if (!dbReachable) return;
     const broker = await makeBroker("vf");
     const email = addr("vf");
     await prisma.client.create({ data: { brokerId: broker.id, email, passwordHash: "x", fullName: "Done Verified", status: "ACTIVE", emailVerifiedAt: new Date() } });
     const r = await register(broker.id, { email, password: "password123", fullName: "Done Verified", formToken: await tokenAged() });
-    expect(r.status).toBe(409);
-    expect(r.body.error).toMatch(/try logging in/);
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ email });
+    expect(await prisma.client.count({ where: { brokerId: broker.id, email } })).toBe(1);
   });
 });

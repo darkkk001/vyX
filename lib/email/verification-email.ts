@@ -86,3 +86,28 @@ export function maskEmail(email: string): string {
   if (at <= 0) return "***";
   return `${email[0]}***${email.slice(at)}`;
 }
+
+// Someone tried to sign up with an address that already has an account: tell the owner of the inbox, so the sign-up form
+// can answer the same as for a new address.
+export async function sendAccountExistsEmail(args: { brokerId: string; email: string; fallbackOrigin: () => string }) {
+  const broker = await prisma.broker.findUnique({
+    where: { id: args.brokerId },
+    select: { name: true, subdomain: true, customDomain: true, logoUrl: true, primaryColor: true, supportEmail: true, emailEnabled: true, emailFromAddress: true, emailFromName: true },
+  });
+  const brokerName = broker?.name ?? "your broker";
+  const origin = broker ? brokerPublicOrigin(broker) : args.fallbackOrigin();
+  const { html, text } = renderBrokerEmail(
+    { name: brokerName, logoUrl: broker?.logoUrl ?? null, primaryColor: broker?.primaryColor ?? null, supportEmail: broker?.supportEmail ?? null },
+    {
+      preheader: `You already have a ${brokerName} account.`,
+      heading: "You already have an account",
+      bodyLines: [`Someone tried to register with this email at ${brokerName}. It already has an account, so nothing was changed. If this was you, sign in below. If you forgot your password, use "Forgot password?" on the sign-in page.`],
+      cta: { label: "Sign In", url: `${origin}/login` },
+      extraNote: "If this was not you, you can ignore this email.",
+    }
+  );
+  await sendBrokerEmail(
+    { name: brokerName, emailEnabled: broker?.emailEnabled ?? false, emailFromAddress: broker?.emailFromAddress ?? null, emailFromName: broker?.emailFromName ?? null },
+    { to: args.email, subject: `Your ${brokerName} account`, html, text }
+  );
+}

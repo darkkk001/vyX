@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { useRoom } from "./RoomData";
 import NotificationBell from "./NotificationBell";
 import ThemeToggle from "./ThemeToggle";
+import UserMenu from "./UserMenu";
 import { money } from "./format";
 
 // The page header on every Trader's Room screen: title, the account picker, its balance. `right` replaces the picker
@@ -38,6 +39,7 @@ export default function RoomHeader({ title, right, picker = true, bell = false }
         ) : null}
         <ThemeToggle />
         {bell ? <NotificationBell /> : null}
+        <UserMenu />
       </div>
     </header>
   );

@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import HumanCheck from "@/components/room/HumanCheck";
 
 // POST /api/portal/register with the anti-bot fields: the hidden "website" honeypot and the signed form token.
-export default function RegisterForm({ formToken, referral }: { formToken: string; referral: string }) {
+export default function RegisterForm({ formToken, referral, humanKey }: { formToken: string; referral: string; humanKey: string | null }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -12,18 +13,22 @@ export default function RegisterForm({ formToken, referral }: { formToken: strin
   const [error, setError] = useState("");
   const [sentTo, setSentTo] = useState("");
   const [devLink, setDevLink] = useState("");
+  const [humanToken, setHumanToken] = useState("");
+  const [humanRound, setHumanRound] = useState(0);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
     if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) { setError("Use at least 8 characters with a letter and a number."); return; }
+    if (humanKey && !humanToken) { setError("Checking your browser. Press Create account again in a moment."); return; }
     setBusy(true);
     setError("");
     try {
-      const res = await fetch("/api/portal/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password, fullName, website, formToken, ...(referral ? { ref: referral } : {}) }) });
+      const res = await fetch("/api/portal/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password, fullName, website, formToken, ...(humanToken ? { turnstileToken: humanToken } : {}), ...(referral ? { ref: referral } : {}) }) });
       const body = await res.json().catch(() => null);
       if (res.ok) { setSentTo(body?.email ?? email); setDevLink(body?.devVerifyUrl ?? ""); return; }
-      setError(res.status === 409 ? "This email is already registered. Sign in instead." : res.status === 429 ? "Too many sign-ups. Try again later." : body?.code === "TOO_FAST" ? "Check your details and press Create account again." : body?.code === "FORM_EXPIRED" ? "This page has expired. Reload it and try again." : body?.error ?? "Could not create the account.");
+      if (humanToken) { setHumanToken(""); setHumanRound((r) => r + 1); } // a token works once
+      setError(body?.code === "HUMAN_CHECK_REQUIRED" ? "Press Create account again." : res.status === 429 ? "Too many sign-ups. Try again later." : body?.code === "TOO_FAST" ? "Check your details and press Create account again." : body?.code === "FORM_EXPIRED" ? "This page has expired. Reload it and try again." : body?.error ?? "Could not create the account.");
     } catch {
       setError("No connection. Try again.");
     } finally {
@@ -44,6 +49,7 @@ export default function RegisterForm({ formToken, referral }: { formToken: strin
 
   return (
     <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      {humanKey ? <HumanCheck siteKey={humanKey} round={humanRound} onToken={setHumanToken} /> : null}
       <div>
         <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Open an account</h1>
         <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>Start with your name and email. You can trade on a demo account right after you confirm your email.</div>

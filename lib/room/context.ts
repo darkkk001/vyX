@@ -36,7 +36,7 @@ export type RoomSession = ClientSessionPayload & { broker: RoomBroker };
 export async function roomApiSession(): Promise<{ session: RoomSession } | { response: NextResponse }> {
   const broker = await roomBroker();
   if (!broker) return { response: NextResponse.json({ error: "not found" }, { status: 404 }) };
-  const session = await getClientSession();
+  const session = await getClientSession({ activity: false }); // the room's own reads never keep a session alive
   if (!session) return { response: NextResponse.json({ error: "Signed out. Sign in again." }, { status: 401 }) };
   return { session: { ...session, broker } };
 }

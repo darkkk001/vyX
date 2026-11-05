@@ -16,8 +16,19 @@ import { cookieScopeDomain } from "@/lib/cookie-domain";
 // the Client Portal design doc's own §4/§7/§8 for why. This file does
 // NOT replace or touch account-auth.ts's own session at all.
 export const CLIENT_SESSION_COOKIE_NAME = "vyx_client_session";
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days, same convention as account-auth.ts
-const REMEMBER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+// Two limits (owner 2026-11-05). Idle: no real activity for the broker's clientIdleMinutes ends the session. Absolute:
+// activity or not, a session ends this long after sign-in. "Remember me" only decides whether the cookie outlives the
+// browser; it does not lengthen either limit.
+export const CLIENT_ABSOLUTE_SECONDS = 60 * 60 * 12;
+export const CLIENT_IDLE_DEFAULT_MINUTES = 30;
+export const CLIENT_IDLE_MIN_MINUTES = 5;
+export const CLIENT_IDLE_MAX_MINUTES = 240;
+
+/** A broker's idle setting as typed: whole minutes in range, else null. */
+export function parseIdleMinutes(v: unknown): number | null {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+  return typeof n === "number" && Number.isInteger(n) && n >= CLIENT_IDLE_MIN_MINUTES && n <= CLIENT_IDLE_MAX_MINUTES ? n : null;
+}
 
 export type ClientSessionPayload = {
   clientId: string;
@@ -27,10 +38,17 @@ export type ClientSessionPayload = {
   // back). Present on every session minted since revoke-all shipped; a
   // session from before simply isn't in the index and ages out on its TTL.
   sessionId?: string;
+  // Set at sign-in; a session from before these limits gets them the first time it is read.
+  absoluteExpiresAt?: number; // ms since the epoch
+  idleSeconds?: number;
 };
 
 function sessionKey(token: string) {
   return `client_session:${token}`;
+}
+// Exists while the session is not idle: real activity re-arms it, the background reads of an open tab do not.
+function sessionIdleKey(token: string) {
+  return `client_session_idle:${token}`;
 }
 function sessionIdKey(sessionId: string) {
   return `client_session_id:${sessionId}`;
@@ -89,6 +107,11 @@ export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 10);
 }
 
+async function brokerIdleSeconds(brokerId: string): Promise<number> {
+  const b = await prisma.broker.findUnique({ where: { id: brokerId }, select: { clientIdleMinutes: true } });
+  return (b?.clientIdleMinutes ?? CLIENT_IDLE_DEFAULT_MINUTES) * 60;
+}
+
 export async function createClientSession(
   payload: Omit<ClientSessionPayload, "sessionId">,
   remember: boolean = true,
@@ -96,13 +119,15 @@ export async function createClientSession(
 ): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
   const sessionId = crypto.randomBytes(16).toString("hex");
-  const ttlSeconds = remember ? REMEMBER_TTL_SECONDS : SESSION_TTL_SECONDS;
+  const ttlSeconds = CLIENT_ABSOLUTE_SECONDS;
+  const idleSeconds = await brokerIdleSeconds(payload.brokerId);
   const redis = getRedis();
-  await redis.set(sessionKey(token), JSON.stringify({ ...payload, sessionId } satisfies ClientSessionPayload), "EX", ttlSeconds);
+  await redis.set(sessionKey(token), JSON.stringify({ ...payload, sessionId, absoluteExpiresAt: Date.now() + ttlSeconds * 1000, idleSeconds } satisfies ClientSessionPayload), "EX", ttlSeconds);
   // Indexed under the client so revokeAllClientSessions can find it when
   // the credential changes (pentest 2026-09-18 finding #2).
   const metadata: ClientSessionMeta = { userAgent: meta?.userAgent?.slice(0, 300) ?? null, ip: meta?.ip ?? null, createdAt: new Date().toISOString() };
   await Promise.all([
+    redis.set(sessionIdleKey(token), "1", "EX", idleSeconds),
     redis.set(sessionIdKey(sessionId), token, "EX", ttlSeconds),
     redis.set(sessionMetaKey(sessionId), JSON.stringify(metadata), "EX", ttlSeconds),
     redis.sadd(sessionIndexKey(payload.clientId), sessionId),
@@ -133,7 +158,7 @@ export async function revokeClientSessionById(clientId: string, sessionId: strin
   if (!(await redis.sismember(sessionIndexKey(clientId), sessionId))) return false;
   const token = await redis.get(sessionIdKey(sessionId));
   await Promise.all([
-    token ? redis.del(sessionKey(token)) : Promise.resolve(0),
+    token ? redis.del(sessionKey(token), sessionIdleKey(token)) : Promise.resolve(0),
     redis.del(sessionIdKey(sessionId)),
     redis.del(sessionMetaKey(sessionId)),
     redis.srem(sessionIndexKey(clientId), sessionId),
@@ -142,17 +167,44 @@ export async function revokeClientSessionById(clientId: string, sessionId: strin
 }
 
 export async function verifyClientSessionToken(token: string): Promise<ClientSessionPayload | null> {
-  const raw = await getRedis().get(sessionKey(token));
+  const redis = getRedis();
+  const [raw, idle] = await redis.mget(sessionKey(token), sessionIdleKey(token));
   if (!raw) return null;
+  let session: ClientSessionPayload;
   try {
-    return JSON.parse(raw) as ClientSessionPayload;
+    session = JSON.parse(raw) as ClientSessionPayload;
   } catch {
     return null;
   }
+  // signed in before these limits: both clocks start now, nobody is thrown out by the release itself
+  if (!session.absoluteExpiresAt) {
+    session = { ...session, absoluteExpiresAt: Date.now() + CLIENT_ABSOLUTE_SECONDS * 1000, idleSeconds: await brokerIdleSeconds(session.brokerId) };
+    await Promise.all([
+      redis.set(sessionKey(token), JSON.stringify(session), "EX", CLIENT_ABSOLUTE_SECONDS),
+      redis.set(sessionIdleKey(token), "1", "EX", session.idleSeconds!),
+    ]);
+    return session;
+  }
+  if (Date.now() >= session.absoluteExpiresAt || !idle) {
+    await revokeClientSession(token);
+    return null;
+  }
+  return session;
 }
 
+/** Ends a session completely: the credential and its entry in the Active sessions list. */
 export async function revokeClientSession(token: string): Promise<void> {
-  await getRedis().del(sessionKey(token));
+  const redis = getRedis();
+  const raw = await redis.get(sessionKey(token));
+  await redis.del(sessionKey(token), sessionIdleKey(token));
+  let session: ClientSessionPayload | null = null;
+  try { session = raw ? (JSON.parse(raw) as ClientSessionPayload) : null; } catch { /* nothing more to clean */ }
+  if (!session?.sessionId) return;
+  await Promise.all([
+    redis.del(sessionIdKey(session.sessionId)),
+    redis.del(sessionMetaKey(session.sessionId)),
+    redis.srem(sessionIndexKey(session.clientId), session.sessionId),
+  ]);
 }
 
 // Revokes EVERY session a client has -- called after every passwordHash
@@ -168,7 +220,7 @@ export async function revokeAllClientSessions(clientId: string, exceptSessionId?
     if (exceptSessionId && sessionId === exceptSessionId) continue;
     const token = await redis.get(sessionIdKey(sessionId));
     await Promise.all([
-      token ? redis.del(sessionKey(token)) : Promise.resolve(0),
+      token ? redis.del(sessionKey(token), sessionIdleKey(token)) : Promise.resolve(0),
       redis.del(sessionIdKey(sessionId)),
       redis.del(sessionMetaKey(sessionId)),
       redis.srem(sessionIndexKey(clientId), sessionId),
@@ -182,7 +234,9 @@ export async function revokeAllClientSessions(clientId: string, exceptSessionId?
 // any, cross-checked against the broker resolved by middleware.ts for
 // this request -- same rule getAccountSession() already applies, a
 // session minted under one broker is never valid against another's.
-export async function getClientSession(): Promise<ClientSessionPayload | null> {
+// A read counts as activity unless the caller says it is a background read: the Trader's Room API is read every second
+// by an open tab, so roomApiSession passes activity: false and the room reports real input itself (/api/room/activity).
+export async function getClientSession(opts: { activity?: boolean } = {}): Promise<ClientSessionPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(CLIENT_SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
@@ -194,8 +248,12 @@ export async function getClientSession(): Promise<ClientSessionPayload | null> {
   const requestBrokerId = headerList.get("x-broker-id");
   if (!requestBrokerId || requestBrokerId !== session.brokerId) return null;
 
+  if (opts.activity !== false && session.idleSeconds) await getRedis().set(sessionIdleKey(token), "1", "EX", session.idleSeconds);
   return session;
 }
+
+// Compared against when there is no usable client, so an unknown address costs the same time as a wrong password.
+let decoyHash: Promise<string> | null = null;
 
 // Constant-shape failure regardless of which check fails (no account,
 // wrong broker, unverified email, wrong password) -- same reasoning as
@@ -208,7 +266,10 @@ export async function authenticateClient(brokerId: string, email: string, passwo
   if (!email || !password) return null;
 
   const client = await prisma.client.findUnique({ where: { brokerId_email: { brokerId, email } } });
-  if (!client || client.status !== "ACTIVE") return null;
+  if (!client || client.status !== "ACTIVE") {
+    await bcrypt.compare(password, await (decoyHash ??= bcrypt.hash(crypto.randomBytes(16).toString("hex"), 10)));
+    return null;
+  }
 
   const passwordMatches = await bcrypt.compare(password, client.passwordHash);
   if (!passwordMatches) return null;
@@ -228,6 +289,6 @@ export async function clientSessionCookieOptions(remember: boolean = true) {
     sameSite: "lax" as const,
     path: "/",
     domain,
-    ...(remember ? { maxAge: REMEMBER_TTL_SECONDS } : {}),
+    ...(remember ? { maxAge: CLIENT_ABSOLUTE_SECONDS } : {}),
   };
 }
