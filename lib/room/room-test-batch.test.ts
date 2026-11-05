@@ -179,3 +179,32 @@ describe("Sidebar and header", () => {
     expect(src("components/room/RoomFrame.tsx")).toContain('get("room_theme")');
   });
 });
+
+describe("My tier", () => {
+  it("since is never before the client existed, however long the unbroken run", async () => {
+    const { tierSince, reviewDates } = await import("@/lib/room/tier");
+    const now = new Date("2026-11-05T12:00:00Z");
+    const reviews = reviewDates(now, 12);
+    const silver = reviews.map(() => ({ name: "Silver" }));
+    expect(tierSince(reviews, silver, new Date("2026-10-20T09:00:00Z")).toISOString()).toBe("2026-10-20T09:00:00.000Z");
+    expect(tierSince(reviews, silver, new Date("2020-01-01T00:00:00Z")).toISOString()).toBe("2025-11-01T00:00:00.000Z");
+    const moved = reviews.map((_, i) => ({ name: i < 3 ? "Gold" : "Silver" }));
+    expect(tierSince(reviews, moved, new Date("2020-01-01T00:00:00Z")).toISOString()).toBe("2026-09-01T00:00:00.000Z");
+  });
+  it("a client with demo only: joined date, and the room is told there is no live account", async () => {
+    if (!dbReachable) return;
+    const c = await prisma.client.create({ data: { brokerId, email: `tier-${s}@x.local`, passwordHash: "x", fullName: "T" } });
+    const { clientTier } = await import("@/lib/room/tier");
+    const r = await clientTier(brokerId, c.id);
+    expect(r.hasLiveAccount).toBe(false);
+    expect(new Date(r.since).getTime()).toBe(c.createdAt.getTime());
+  });
+  it("one strip under the greeting, nothing of the tier left at the foot of the Dashboard", () => {
+    const page = fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/(shell)/page.tsx"), "utf8");
+    expect(page.match(/<TierPanel \/>/g)).toHaveLength(1);
+    expect(page.indexOf("<TierPanel />")).toBeLessThan(page.indexOf('"r-grid-tiles"'));
+  });
+  it("a plan card never stretches past 340 px", () => {
+    expect(fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/(shell)/accounts/page.tsx"), "utf8")).toContain("repeat(auto-fill, minmax(240px, 340px))");
+  });
+});
