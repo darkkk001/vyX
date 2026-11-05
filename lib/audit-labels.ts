@@ -48,6 +48,13 @@ const LABELS: Record<string, string> = {
   POSITION_ACTION_REJECTED: "Rejected position action",
   ACCOUNT_GROUP_CHANGED: "Changed account group",
   LEVERAGE_CHANGE: "Changed leverage",
+  LEVERAGE_CHANGED_BY_CLIENT: "Client changed own leverage",
+  HMR_ENABLED: "HMR plugin enabled",
+  HMR_DISABLED: "HMR plugin disabled",
+  HMR_WINDOW_CREATED: "HMR window added",
+  HMR_WINDOW_UPDATED: "HMR window changed",
+  HMR_WINDOW_DELETED: "HMR window deleted",
+  HMR_CORRELATION_UPDATED: "HMR symbol list changed",
   ACCOUNT_STATUS_CHANGED: "Changed account status",
   ACCOUNT_MAX_DAILY_LOSS_CHANGED: "Changed max daily loss",
   // 2026-09-28: per-account trading rights (lib/account-trading-rights.ts)

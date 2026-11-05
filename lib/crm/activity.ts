@@ -16,6 +16,7 @@ export function auditLabel(action: string, newValue: Prisma.JsonValue | null, ac
     case "WITHDRAWAL_REQUESTED": return `Withdrawal of ${money(v.amount)} requested${on}.`;
     case "FUNDS_REQUEST_APPROVED": return `Funds request approved${on}.`;
     case "FUNDS_REQUEST_REJECTED": return `Funds request rejected${on}.`;
+    case "LEVERAGE_CHANGED_BY_CLIENT": return `Leverage set to 1:${v.leverage} by the client${on}.`;
     case "LEVERAGE_CHANGE": return `Leverage set to 1:${v.leverage}${on}.`;
     case "LEVERAGE_CHANGE_REQUESTED": return `Leverage 1:${v.leverage} requested${on}.`;
     case "ACCOUNT_CREATED": return `Account ${v.accountNumber ?? ""} opened (${String(v.accountMode ?? "").toLowerCase()}).`;
