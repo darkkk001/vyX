@@ -10,10 +10,11 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 // row yet renders disabled with zero fees/limits rather than being
 // absent from the list, so a broker admin can see and turn on every
 // option without first knowing this row-per-type model exists.
-const ALL_TYPES: PaymentMethodType[] = ["USDT_TRC20", "USDT_BEP20", "BTC", "ETH", "BANK_TRANSFER"];
+const ALL_TYPES: PaymentMethodType[] = ["USDT_BEP20", "USDT_TRC20", "BNB", "BINANCE_PAY", "BTC", "ETH", "BANK_TRANSFER", "EASYPAISA", "JAZZCASH", "NETELLER"];
 
 const DEFAULTS = {
   enabled: false,
+  listed: false,
   minAmount: "0",
   maxAmount: null as string | null,
   feePercent: "0",
@@ -49,6 +50,7 @@ export async function GET() {
         id: row?.id ?? null,
         type,
         enabled: row ? row.enabled : DEFAULTS.enabled,
+        listed: row ? row.listed : DEFAULTS.listed,
         minAmount: row ? row.minAmount.toString() : DEFAULTS.minAmount,
         maxAmount: row ? (row.maxAmount ? row.maxAmount.toString() : null) : DEFAULTS.maxAmount,
         feePercent: row ? row.feePercent.toString() : DEFAULTS.feePercent,
@@ -63,6 +65,7 @@ export async function GET() {
 interface PatchBody {
   type: PaymentMethodType;
   enabled: boolean;
+  listed?: boolean;
   minAmount: string;
   maxAmount: string | null;
   feePercent: string;
@@ -121,7 +124,8 @@ async function patchHandler(request: NextRequest) {
   const instructions = typeof body.instructions === "string" ? body.instructions.trim().slice(0, 1000) || null : null;
   const walletAddress = typeof body.walletAddress === "string" ? body.walletAddress.trim().slice(0, 200) || null : null;
 
-  const data = { enabled, minAmount, maxAmount, feePercent, feeFixed, instructions, walletAddress };
+  // a caller that does not know this switch (an older backoffice) leaves it as it is
+  const data = { enabled, minAmount, maxAmount, feePercent, feeFixed, instructions, walletAddress, ...(typeof body.listed === "boolean" ? { listed: body.listed } : {}) };
 
   // audited (audit 2026-09-24, money): a changed deposit wallet address, fee or limit is exactly what a dispute or an
   // account takeover investigation needs on record -- old and new value of every field, in the same transaction

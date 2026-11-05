@@ -1,6 +1,7 @@
 import "server-only";
 import crypto from "node:crypto";
 import { Prisma, type PaymentMethodType } from "@prisma/client";
+import QRCode from "qrcode";
 import { prisma } from "@/lib/prisma";
 import { loadAccountMarginState } from "@/lib/margin";
 import { maskAddress } from "@/lib/room/transactions";
@@ -9,29 +10,44 @@ import { maskAddress } from "@/lib/room/transactions";
 // references and saved payout methods. Approval stays with the broker (lib/funds-approval.ts); nothing here moves money.
 
 export const METHOD_LABEL: Record<PaymentMethodType, string> = {
-  BANK_TRANSFER: "Bank transfer",
-  USDT_TRC20: "USDT · TRC-20",
-  USDT_BEP20: "USDT · BEP-20",
+  USDT_BEP20: "Tether (USDT BEP20)",
+  USDT_TRC20: "Tether (USDT TRC20)",
+  BNB: "BNB",
+  BINANCE_PAY: "BinancePay",
   BTC: "Bitcoin",
   ETH: "Ethereum",
+  BANK_TRANSFER: "Local Bank Transfer",
+  EASYPAISA: "Easypaisa",
+  JAZZCASH: "JazzCash",
+  NETELLER: "Neteller",
+};
+const METHOD_ORDER = Object.keys(METHOD_LABEL);
+
+// What a wrong transfer costs, so it does not depend on a broker remembering to type it
+const NETWORK_WARNING: Partial<Record<PaymentMethodType, string>> = {
+  USDT_BEP20: "Send USDT on BNB Smart Chain (BEP20) only. Other networks or tokens will be lost.",
 };
 
 export type RoomMethod = {
   id: string;
   type: PaymentMethodType;
   label: string;
+  available: boolean; // false = listed by the broker but switched off: shown greyed, cannot be picked
   min: string;
   max: string | null;
   feeLine: string | null;
   processing: string | null;
   bank: { beneficiary: string; bank: string; iban: string; swift: string } | null;
   wallet: string | null;
+  qr: string | null; // the plain address, so a wallet app's scanner fills its recipient field
+  warning: string | null;
   instructions: string | null;
 };
 
 export async function roomMethods(brokerId: string): Promise<RoomMethod[]> {
-  const rows = await prisma.paymentMethod.findMany({ where: { brokerId, enabled: true }, orderBy: { createdAt: "asc" } });
-  return rows.map((m) => {
+  const rows = await prisma.paymentMethod.findMany({ where: { brokerId, OR: [{ enabled: true }, { listed: true }] } });
+  rows.sort((a, b) => METHOD_ORDER.indexOf(a.type) - METHOD_ORDER.indexOf(b.type));
+  return Promise.all(rows.map(async (m) => {
     const b = (m.bankDetails ?? null) as Record<string, unknown> | null;
     const str = (k: string) => (b && typeof b[k] === "string" ? (b[k] as string) : "");
     const fee = [m.feePercent.gt(0) ? `${m.feePercent.toString()}%` : "", m.feeFixed.gt(0) ? m.feeFixed.toFixed(2) : ""].filter(Boolean).join(" + ");
@@ -39,15 +55,19 @@ export async function roomMethods(brokerId: string): Promise<RoomMethod[]> {
       id: m.id,
       type: m.type,
       label: METHOD_LABEL[m.type] ?? m.type,
+      available: m.enabled,
       min: m.minAmount.toFixed(2),
       max: m.maxAmount?.toFixed(2) ?? null,
       feeLine: fee || null,
       processing: m.processingTime,
-      bank: m.type === "BANK_TRANSFER" && b ? { beneficiary: str("beneficiary"), bank: str("bank"), iban: str("iban"), swift: str("swift") } : null,
-      wallet: m.type !== "BANK_TRANSFER" ? m.walletAddress : null,
-      instructions: m.instructions,
+      // receiving details only for a method that is open
+      bank: m.enabled && m.type === "BANK_TRANSFER" && b ? { beneficiary: str("beneficiary"), bank: str("bank"), iban: str("iban"), swift: str("swift") } : null,
+      wallet: m.enabled && m.type !== "BANK_TRANSFER" ? m.walletAddress : null,
+      qr: m.enabled && m.type !== "BANK_TRANSFER" && m.walletAddress ? await QRCode.toDataURL(m.walletAddress, { margin: 1, width: 220 }) : null,
+      warning: m.enabled ? NETWORK_WARNING[m.type] ?? null : null,
+      instructions: m.enabled ? m.instructions : null,
     };
-  });
+  }));
 }
 
 /** DEP-<account>-<4 chars>: what the client writes on the transfer so the broker can match it. */

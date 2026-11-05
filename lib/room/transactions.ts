@@ -31,7 +31,7 @@ const TYPE_GROUPS: Record<RoomTxType, TransactionType[]> = {
 export const ROOM_TX_TYPES = Object.keys(TYPE_GROUPS) as RoomTxType[];
 
 const STATUS: Record<TransactionStatus, RoomTxRow["status"]> = { COMPLETED: "Completed", PENDING: "Pending", REJECTED: "Rejected", CANCELLED: "Cancelled" };
-const METHOD: Record<string, string> = { BANK_TRANSFER: "Bank transfer", USDT_TRC20: "USDT · TRC-20", USDT_BEP20: "USDT · BEP-20", BTC: "Bitcoin", ETH: "Ethereum" };
+const METHOD: Record<string, string> = { BANK_TRANSFER: "Local Bank Transfer", USDT_TRC20: "Tether (USDT TRC20)", USDT_BEP20: "Tether (USDT BEP20)", BTC: "Bitcoin", ETH: "Ethereum", BNB: "BNB", BINANCE_PAY: "BinancePay", EASYPAISA: "Easypaisa", JAZZCASH: "JazzCash", NETELLER: "Neteller" };
 
 export function maskAddress(s: string | null | undefined): string {
   if (!s) return "";

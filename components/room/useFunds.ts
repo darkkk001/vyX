@@ -5,8 +5,8 @@ import { useRoomEvent, type RoomTx } from "./RoomData";
 
 // GET /api/room/funds?account= for the Deposit / Withdraw / Transfer screens.
 export type FundsMethod = {
-  id: string; type: string; label: string; min: string; max: string | null; feeLine: string | null; processing: string | null;
-  bank: { beneficiary: string; bank: string; iban: string; swift: string } | null; wallet: string | null; instructions: string | null;
+  id: string; type: string; label: string; available: boolean; min: string; max: string | null; feeLine: string | null; processing: string | null;
+  bank: { beneficiary: string; bank: string; iban: string; swift: string } | null; wallet: string | null; qr: string | null; warning: string | null; instructions: string | null;
 };
 export type PayoutMethod = { id: string; type: string; title: string; sub: string; verified: boolean };
 export type Funds = {

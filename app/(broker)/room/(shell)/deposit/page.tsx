@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { useRoom } from "@/components/room/RoomData";
 import { useFunds, amountOk, cleanAmount, readDataUrl } from "@/components/room/useFunds";
+import MethodGrid from "@/components/room/MethodGrid";
 
 // Artboard "Deposit": broker-configured methods, the broker's own receiving details with a payment reference,
 // receipt upload, request to the broker.
@@ -21,7 +22,9 @@ export default function RoomDeposit() {
   const account = selected?.mode === "LIVE" ? selected : live[0] ?? null;
   const { funds, reload } = useFunds(account?.id);
   const [methodId, setMethodId] = useState("");
-  const method = funds?.methods.find((m) => m.id === methodId) ?? funds?.methods[0] ?? null;
+  const open = funds?.methods.filter((m) => m.available) ?? [];
+  const method = open.find((m) => m.id === methodId) ?? open[0] ?? null;
+  const [addressCopied, setAddressCopied] = useState(false);
   const [amount, setAmount] = useState("");
   const [receipt, setReceipt] = useState<{ name: string; size: number; data: string } | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -66,20 +69,13 @@ export default function RoomDeposit() {
       <RoomHeader title="Deposit" />
       <div className="r-body" style={{ gap: 18 }}>
         {data && live.length === 0 ? <div className="r-card r-pad r-note">Open a live account first. Demo accounts are not funded. <a href="/room/accounts#open">Open an account</a></div> : null}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="r-label" style={{ padding: "2px 2px 4px" }}>Payment method</div>
+          <MethodGrid methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={funds?.account.currency ?? ""} onSelect={(id) => { setMethodId(id); setMsg(null); }} />
+        </div>
         <div className="r-row">
           <div style={{ flex: "1 1 260px", minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-            <div className="r-label" style={{ padding: "2px 2px 4px" }}>Payment method</div>
-            {(funds?.methods ?? []).map((m) => {
-              const sel = method?.id === m.id;
-              return (
-                <button key={m.id} type="button" aria-pressed={sel} onClick={() => { setMethodId(m.id); setMsg(null); }}
-                  style={{ textAlign: "left", background: sel ? "var(--r-gold-tint)" : "var(--r-card)", border: sel ? "1.5px solid var(--r-accent)" : "1px solid var(--r-border)", borderRadius: 10, padding: 16, cursor: "pointer", color: "var(--r-text)", display: "flex", flexDirection: "column", gap: 5 }}>
-                  <span style={{ fontSize: 14, fontWeight: 600 }}>{m.label}</span>
-                  <span style={{ fontSize: 11.5, color: "var(--r-text-2)" }}>{[`Min ${Number(m.min).toLocaleString("en-US")} ${funds?.account.currency ?? ""}`, m.processing].filter(Boolean).join(" · ")}</span>
-                </button>
-              );
-            })}
-            {funds && funds.methods.length === 0 ? <div className="r-note">Your broker has no deposit methods open right now.</div> : null}
+            {funds && open.length === 0 ? <div className="r-note">Your broker has no deposit methods open right now.</div> : null}
             <div style={{ fontSize: 11.5, color: "var(--r-faint)", lineHeight: 1.6, padding: "6px 2px" }}>Funds are received directly by your broker. The platform does not hold client money.</div>
           </div>
 
@@ -107,8 +103,18 @@ export default function RoomDeposit() {
                     ))}
                   </div>
                 ) : method.wallet ? (
-                  <div style={{ fontSize: 12.5 }}><div style={{ color: "var(--r-muted)", fontSize: 11, marginBottom: 3 }}>{method.label} address</div><div className="mono" style={{ wordBreak: "break-all" }}>{method.wallet}</div></div>
+                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "flex-start" }}>
+                    {method.qr ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={method.qr} alt={`QR code of the ${method.label} address`} width={148} height={148} style={{ background: "#fff", borderRadius: 6, padding: 4 }} />
+                    ) : null}
+                    <div style={{ flex: "1 1 220px", minWidth: 0, fontSize: 12.5, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start" }}>
+                      <div><div style={{ color: "var(--r-muted)", fontSize: 11, marginBottom: 3 }}>{method.label} address</div><div className="mono" data-wallet style={{ wordBreak: "break-all" }}>{method.wallet}</div></div>
+                      <button type="button" className="r-btn-ghost" style={{ fontSize: 12, padding: "7px 14px" }} onClick={() => { void navigator.clipboard?.writeText(method.wallet!).then(() => { setAddressCopied(true); setTimeout(() => setAddressCopied(false), 1600); }); }}>{addressCopied ? "Copied" : "Copy address"}</button>
+                    </div>
+                  </div>
                 ) : null}
+                {method.warning ? <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--r-pending)", lineHeight: 1.5 }}>{method.warning}</div> : null}
                 {method.instructions ? <div style={{ fontSize: 12, color: "var(--r-text-2)", lineHeight: 1.6, whiteSpace: "pre-line" }}>{method.instructions}</div> : null}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, borderTop: "1px solid var(--r-line)", paddingTop: 12, flexWrap: "wrap" }}>
                   <div>

@@ -1771,6 +1771,11 @@ enum PaymentMethodType {
   BTC
   ETH
   BANK_TRANSFER
+  BNB
+  BINANCE_PAY
+  EASYPAISA
+  JAZZCASH
+  NETELLER
 }
 
 // One row per (broker, method) -- what a broker's Payment Methods
@@ -1786,6 +1791,8 @@ model PaymentMethod {
   broker        Broker            @relation(fields: [brokerId], references: [id])
   type          PaymentMethodType
   enabled       Boolean           @default(true)
+  // Off but listed: the Trader's Room shows the method greyed, and it cannot be picked. Off and not listed: not shown.
+  listed        Boolean           @default(false)
   minAmount     Decimal           @default(0) @db.Decimal(18, 2)
   maxAmount     Decimal?          @db.Decimal(18, 2)
   feePercent    Decimal           @default(0) @db.Decimal(6, 3)

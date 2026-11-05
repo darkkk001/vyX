@@ -156,6 +156,13 @@
 .r-tier-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; width: 100%; text-align: left; font-family: inherit; color: var(--r-text); background: var(--r-gold-tint); border: 1px solid color-mix(in srgb, var(--r-accent) 35%, transparent); border-radius: 10px; padding: 12px 18px; cursor: pointer; }
 .r-modal-back { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow-y: auto; }
 .r-modal { width: 100%; max-width: 760px; background: var(--r-card); border: 1px solid var(--r-border); border-radius: 10px; padding: 22px; display: flex; flex-direction: column; gap: 16px; }
+.r-method-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.r-method { display: flex; flex-direction: column; gap: 6px; text-align: left; font-family: inherit; color: var(--r-text); background: var(--r-card); border: 1px solid var(--r-border); border-radius: 10px; padding: 14px 16px; cursor: pointer; }
+.r-method.is-selected { background: var(--r-gold-tint); border: 1.5px solid var(--r-accent); }
+.r-method:disabled { cursor: not-allowed; opacity: 0.55; }
+.r-method-name { font-size: 14px; font-weight: 600; }
+.r-method-line { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--r-text-2); }
+.r-method-chip { align-self: flex-start; margin-top: 4px; font-size: 10.5px; font-weight: 600; color: var(--r-muted); border: 1px solid var(--r-input); border-radius: 4px; padding: 2px 6px; }
 .r-note { font-size: 12px; color: var(--r-muted); line-height: 1.6; }
 .r-error { font-size: 12.5px; color: var(--r-loss); }
 .r-okmsg { font-size: 12.5px; color: var(--r-ok); }
