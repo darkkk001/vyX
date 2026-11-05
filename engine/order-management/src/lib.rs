@@ -13,6 +13,7 @@ pub mod db;
 pub mod events;
 pub mod fx;
 pub mod gates;
+pub mod hmr;
 pub mod ingress;
 pub mod monitor;
 pub mod outbox;
@@ -510,11 +511,19 @@ pub async fn place_market_order(
     // marked-up/marked-down price, which only exists once pricing has run. The web places it at
     // exactly this point as well: `marginGate(fillPrice)` in app/api/trade/orders/route.ts, after
     // applySpreadMarkup and before the transaction that writes the position.
+    // HMR plugin (owner spec 2026-11-06, C3): the leverage this NEW position opens with = min(account, group maximum, every active
+    // window touching the symbol). It is the leverage of the margin check below and, when below the account's, is written to
+    // Position.openLeverage by the same statement that inserts the position. hmr.rs is the engine's copy of the web's lib/hmr.ts,
+    // pinned by docs/contracts/leverage-hmr-vectors.json.
+    let mut open_leverage: Option<u32> = None;
     if let (Some(inputs), Some(snap)) = (&gate_inputs, &snapshot) {
         // L2 Step 2: the funds and the priced positions came with the one read above -- the same
         // snapshot the gates were judged on, which is what `calc::load_book_state`'s own REPEATABLE
         // READ transaction was there to guarantee.
         let state = &snap.account;
+        let hmr_now = chrono::Utc::now();
+        let hmr_state = hmr::load_state(pool, &req.broker_id, hmr_now).await;
+        let eff = hmr::effective_open_leverage(state.leverage, inputs.group_leverage.map(|g| g.max(1) as u32), &hmr_state, &req.symbol, hmr_now);
         let leg = calc::NewLeg {
             symbol: &req.symbol,
             side: req.side,
@@ -532,8 +541,15 @@ pub async fn place_market_order(
                 chrono::Utc::now(),
             ),
             hedged_margin_pct: inputs.symbol_hedged_margin_pct,
+            open_leverage: eff.open_leverage,
         };
+        open_leverage = eff.open_leverage;
         if let Some(reject_reason) = calc::pre_trade_margin_decision(state, &leg, inputs.margin_call_level) {
+            // a refusal on margin names the window that raised this order's requirement (the web's hmrRefusalText)
+            let reject_reason = match (&eff.hmr, reject_reason.as_str()) {
+                (Some(h), "INSUFFICIENT_MARGIN" | "INSUFFICIENT_BALANCE") => hmr::margin_refusal_with_hmr(&reject_reason, h),
+                _ => reject_reason,
+            };
             let reason = refuse(pool, nats, book, &mut legacy_tx, &new_order, &order_id, &req.account_id, reject_reason, req.idempotency_key.as_deref()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
@@ -577,7 +593,7 @@ pub async fn place_market_order(
                 order_id: &order_id,
                 // this call owns the row: see the note where `legacy_tx` is opened
                 create_order: true,
-                idempotency_key: req.idempotency_key.as_deref(),
+                idempotency_key: req.idempotency_key.as_deref(), open_leverage,
             };
             // The double-fill guard. NOT REACHABLE FROM HERE TODAY -- this path's order row is created
             // inside the same statement, so no other writer can see it and the compare-and-set cannot
@@ -620,7 +636,7 @@ pub async fn place_market_order(
                     open_price: fill.price,
                     sl_price: req.sl_price,
                     tp_price: req.tp_price,
-                    book_type,
+                    book_type, open_leverage: None,
                 },
             )
             .await?;

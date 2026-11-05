@@ -142,6 +142,7 @@ fn verdict(gate: &str, i: &serde_json::Value) -> Option<String> {
                         rate_missing: rate.is_none(),
                         hedged_margin_pct: dec(&p["hedgedMarginPct"]),
                         ask_rule: None,
+                        open_leverage: p.get("openLeverage").and_then(|v| v.as_u64()).map(|v| v as u32),
                         quote: None,
                     }
                 })
@@ -162,6 +163,7 @@ fn verdict(gate: &str, i: &serde_json::Value) -> Option<String> {
                 fill_price: dec(&o["fillPrice"]),
                 fx_rate: dec_opt(&o["rate"]),
                 hedged_margin_pct: dec(&o["hedgedMarginPct"]),
+                open_leverage: o.get("leverage").and_then(|v| v.as_u64()).map(|v| v as u32),
             };
             calc::pre_trade_margin_decision(&state, &leg, dec(&i["marginCallLevel"]))
         }

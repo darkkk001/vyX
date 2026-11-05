@@ -225,7 +225,7 @@ async fn open_on(pool: &PgPool, fx: &Fx, symbol_id: &str, volume: Decimal, price
             deal_reason: "CLIENT",
             order_id: &order_id,
             create_order: true,
-            idempotency_key: None,
+            idempotency_key: None, open_leverage: None,
         },
     )
     .await
@@ -267,7 +267,7 @@ async fn a_zero_commission_charges_nothing_through_the_one_call_write() {
             deal_reason: "CLIENT",
             order_id: &order_id,
             create_order: true,
-            idempotency_key: None,
+            idempotency_key: None, open_leverage: None,
         },
     )
     .await
@@ -523,7 +523,7 @@ async fn bench_the_depth_cut() {
         deal_reason: "CLIENT",
         order_id,
         create_order: true,
-            idempotency_key: None,
+            idempotency_key: None, open_leverage: None,
     };
 
     // three open positions, so the read shapes have a book to carry
@@ -608,7 +608,7 @@ async fn bench_the_depth_cut() {
                 open_price: dec!(4299.13),
                 sl_price: None,
                 tp_price: None,
-                book_type: db::BookType::ABook,
+                book_type: db::BookType::ABook, open_leverage: None,
             },
         )
         .await
@@ -729,7 +729,7 @@ async fn the_one_call_write_is_row_identical_to_the_multi_statement_path() {
             open_price: fill_price,
             sl_price: None,
             tp_price: None,
-            book_type: db::BookType::ABook,
+            book_type: db::BookType::ABook, open_leverage: None,
         },
     )
     .await
@@ -764,7 +764,7 @@ async fn the_one_call_write_is_row_identical_to_the_multi_statement_path() {
             deal_reason: "CLIENT",
             order_id: &new_id,
             create_order: true,
-            idempotency_key: None,
+            idempotency_key: None, open_leverage: None,
         },
     )
     .await
@@ -880,6 +880,13 @@ async fn the_functions_position_insert_names_no_trigger_owned_column() {
         "vyx_open_position's position insert names a column a BEFORE INSERT trigger fills: {:?}",
         bypassed.iter().map(|t| (t.trigger, t.column, t.bypass_consequence)).collect::<Vec<_>>()
     );
+    // The HMR plugin (web migration 20261106120000_leverage_hmr) adds ONE trailing column to the function's insert, "openLeverage"
+    // (Position.openLeverage, stored in the same statement as the insert). It is NOT trigger-owned: nothing fills it. Before that
+    // migration the function names the eleven columns the Rust insert names; after it, those eleven and then openLeverage.
+    let columns: Vec<&str> = match columns.split_last() {
+        Some((&"openLeverage", rest)) => rest.to_vec(),
+        _ => columns,
+    };
     // not vacuous: the parse really found the real column list, the same eleven the Rust insert names
     assert_eq!(columns.len(), 11, "parsed {columns:?}");
     for required in ["id", "brokerId", "accountId", "symbolId", "originOrderId", "side", "volume", "openPrice", "bookType"] {

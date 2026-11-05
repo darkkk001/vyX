@@ -182,6 +182,9 @@ pub struct GateInputs {
     /// `Symbol.quoteCurrency` -- the currency the new leg's margin comes out in, to be converted to
     /// `account_currency` before it is compared with anything.
     pub symbol_quote_currency: String,
+    /// `Group.leverage`, the account's group maximum (None = no group). Read for the HMR plugin's effective leverage
+    /// (hmr::effective_open_leverage); None also when the projection does not carry it.
+    pub group_leverage: Option<i32>,
     /// `Account.currency` -- what every money figure in the margin gate is denominated in.
     pub account_currency: String,
     /// `Account.accountMode` (DEMO / LIVE). Read for the ingress scope's DEMO-only rule
@@ -256,6 +259,7 @@ pub async fn get_gate_inputs(
              COALESCE(g."marginCallLevel", 100) AS margin_call_level,
              COALESCE(bs."hedgedMarginPct", 200) AS symbol_hedged_margin_pct,
              sym."quoteCurrency" AS symbol_quote_currency,
+             g.leverage AS group_leverage,
              a.currency AS account_currency,
              COALESCE((SELECT SUM(p.volume) FROM "Position" p
                          JOIN "Account" pa ON pa.id = p."accountId"
@@ -324,6 +328,7 @@ pub(crate) fn gate_inputs_from_row(r: &sqlx::postgres::PgRow) -> Result<GateInpu
         margin_call_level: r.try_get("margin_call_level")?,
         symbol_hedged_margin_pct: r.try_get("symbol_hedged_margin_pct")?,
         symbol_quote_currency: r.try_get("symbol_quote_currency")?,
+        group_leverage: r.try_get::<Option<i32>, _>("group_leverage").unwrap_or(None),
         account_currency: r.try_get("account_currency")?,
         account_mode: r.try_get("account_mode")?,
         broker_open_volume: r.try_get("broker_open_volume")?,
@@ -457,6 +462,7 @@ pub async fn get_open_snapshot(
                COALESCE(g."marginCallLevel", 100) AS margin_call_level,
                COALESCE(bs."hedgedMarginPct", 200) AS symbol_hedged_margin_pct,
                sym."quoteCurrency" AS symbol_quote_currency,
+               g.leverage AS group_leverage,
                a.currency AS account_currency,
                a."accountMode"::text AS account_mode,
                COALESCE((SELECT SUM(p.volume) FROM "Position" p
@@ -515,7 +521,7 @@ pub async fn get_open_snapshot(
              LEFT JOIN (SELECT {columns}, p."openedAt" AS opened_at {from} WHERE p."accountId" = $2 AND p.status = 'OPEN') pos ON true
             ORDER BY pos.opened_at, pos.id"#,
         broker_day = broker_day,
-        columns = crate::book::POSITION_COLUMNS,
+        columns = format!("{}{}", crate::book::POSITION_COLUMNS, crate::book::open_leverage_column_pool(pool).await),
         from = crate::book::POSITION_FROM,
     );
 
@@ -939,6 +945,10 @@ pub struct OpenPositionCall<'a> {
     /// `None` for a caller with no client key (the load test, the parallel-run harness, a direct
     /// engine call): the function falls back to `'engine:' || order_id`, exactly as before.
     pub idempotency_key: Option<&'a str>,
+    /// HMR plugin: the leverage the position opens with when it is below the account's (hmr::effective_open_leverage), written to
+    /// `Position.openLeverage` by vyx_open_position in the same statement as the insert. None = the account's (the 23-argument
+    /// call, which also runs against a database whose function does not take it yet). Some with an old function: logged, not written.
+    pub open_leverage: Option<u32>,
 }
 
 /// What one call left behind.
@@ -985,11 +995,26 @@ pub async fn open_position_one_call(
     let commission = call.commission_per_lot * call.filled_volume;
     let note = commission_note(call.filled_volume, call.commission_per_lot);
 
-    let row = sqlx::query_as::<_, (String, String, DateTime<Utc>, String, Option<String>, Decimal, bool)>(
+    // HMR plugin: bind the 24th argument only when there is something to write AND the function takes it (the web migration
+    // 20261106120000_leverage_hmr replaces the 23-argument function by one with a trailing defaulted p_open_leverage).
+    let with_leverage = match call.open_leverage {
+        Some(_) if open_position_takes_leverage(pool).await => true,
+        Some(leverage) => {
+            tracing::warn!(account_id = call.account_id, leverage, "vyx_open_position does not take open leverage yet: the position opens on the account's leverage");
+            false
+        }
+        None => false,
+    };
+    let sql = if with_leverage {
         r#"SELECT order_id, position_id, opened_at, deal_id, group_category_at_open, commission_charged, effect_enqueued
              FROM vyx_open_position($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                                    $15, $16, $17, $18, $19, $20, $21, $22, $23)"#,
-    )
+                                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)"#
+    } else {
+        r#"SELECT order_id, position_id, opened_at, deal_id, group_category_at_open, commission_charged, effect_enqueued
+             FROM vyx_open_position($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                                    $15, $16, $17, $18, $19, $20, $21, $22, $23)"#
+    };
+    let query = sqlx::query_as::<_, (String, String, DateTime<Utc>, String, Option<String>, Decimal, bool)>(sql)
     // L2 optimization pass, REVERTED AND KEPT AS A WARNING: `.persistent(false)` here produced
     // `26000 unnamed prepared statement does not exist` on EVERY order within seconds of deploy.
     //
@@ -1023,9 +1048,9 @@ pub async fn open_position_one_call(
     .bind(&note)
     .bind(call.deal_reason)
     .bind(call.create_order)
-    .bind(call.idempotency_key)
-    .fetch_one(pool)
-    .await;
+    .bind(call.idempotency_key);
+    let query = if with_leverage { query.bind(call.open_leverage.map(|l| l as i32)) } else { query };
+    let row = query.fetch_one(pool).await;
 
     let (order_id, position_id, opened_at, deal_id, category, _charged, effect) = match row {
         Ok(r) => r,
@@ -1045,6 +1070,40 @@ pub async fn open_position_one_call(
         opened_at,
         effect_enqueued: effect,
     }))
+}
+
+static OPEN_FN_ARITY: std::sync::Mutex<(Option<bool>, Option<std::time::Instant>)> = std::sync::Mutex::new((None, None));
+
+/// Whether `vyx_open_position` takes the trailing `p_open_leverage` (24 arguments). Present is cached for good; absent is re-checked every 30 s.
+pub async fn open_position_takes_leverage(pool: &PgPool) -> bool {
+    let cached = *OPEN_FN_ARITY.lock().unwrap_or_else(|e| e.into_inner());
+    match cached {
+        (Some(true), _) => return true,
+        (Some(false), Some(at)) if at.elapsed() < std::time::Duration::from_secs(30) => return false,
+        _ => {}
+    }
+    let found: Result<(i64,), _> = sqlx::query_as(r#"SELECT count(*) FROM pg_proc WHERE proname = 'vyx_open_position' AND pronargs = 24"#).fetch_one(pool).await;
+    match found {
+        Ok((n,)) if n >= 1 => {
+            *OPEN_FN_ARITY.lock().unwrap_or_else(|e| e.into_inner()) = (Some(true), None);
+            true
+        }
+        Ok(_) => {
+            *OPEN_FN_ARITY.lock().unwrap_or_else(|e| e.into_inner()) = (Some(false), Some(std::time::Instant::now()));
+            false
+        }
+        Err(err) => {
+            tracing::warn!(?err, "vyx_open_position arity check failed: writing without open leverage this time");
+            false
+        }
+    }
+}
+
+/// `Group.leverage` of the account's group: the ceiling an account's leverage is held to (None = no group). Read for the HMR plugin's
+/// effective leverage on a resting order's fill (hmr::effective_open_leverage).
+pub async fn get_group_leverage(pool: &PgPool, account_id: &str) -> Result<Option<i32>, sqlx::Error> {
+    let row: Option<(Option<i32>,)> = sqlx::query_as(r#"SELECT g.leverage FROM "Account" a LEFT JOIN "Group" g ON g.id = a."groupId" WHERE a.id = $1"#).bind(account_id).fetch_optional(pool).await?;
+    Ok(row.and_then(|(l,)| l))
 }
 
 /// `vyx_open_position`'s own SQLSTATE for "this order was already answered". In the 'VYX' class so it
@@ -1213,6 +1272,9 @@ pub struct NewPosition {
     pub tp_price: Option<Decimal>,
     /// Where this position's risk goes. Legacy-book inserts ignore it.
     pub book_type: BookType,
+    /// The leverage this position opens with when it is below the account's (HMR plugin, hmr::effective_open_leverage), written to
+    /// `Position.openLeverage` in the same transaction. None = the account's. Ignored when the column is not in the database yet.
+    pub open_leverage: Option<u32>,
 }
 
 /// The `"Position"` insert, as ONE string, so the column list below can be checked against the SQL
@@ -1288,6 +1350,16 @@ pub async fn insert_position(
                 .bind(position.book_type.as_str())
                 .fetch_one(&mut **tx)
                 .await?;
+            // HMR plugin: the leverage the position opened with, in the SAME transaction as the insert (a resting order's fill is a
+            // transaction, so nothing can read the position without it). Only when a window (or the group maximum) lowered it and
+            // the column exists; the market path writes it inside vyx_open_position instead.
+            if let Some(leverage) = position.open_leverage {
+                if crate::book::open_leverage_column_present(&mut **tx).await {
+                    sqlx::query(r#"UPDATE "Position" SET "openLeverage" = $1 WHERE id = $2"#).bind(leverage as i32).bind(&id).execute(&mut **tx).await?;
+                } else {
+                    tracing::warn!(position_id = %id, leverage, "Position.openLeverage is not in the database yet: the position opens on the account's leverage");
+                }
+            }
             Ok((id, Some(opened_at)))
         }
     }
@@ -2373,6 +2445,10 @@ pub struct OpenPositionWithMarket {
     /// The account's ask rule for this symbol (market_data::ask_markup, 2026-09-26): a SELL closes, triggers and is
     /// valued at the account's marked-up ask. None = the raw ask.
     pub ask_rule: Option<market_data::ask_markup::AskRule>,
+    /// `Position.openLeverage` (HMR plugin, owner 2026-11-06): the leverage this position was margined with when it opened.
+    /// None = the account's (margin leverage is `open_leverage.unwrap_or(account leverage)`, calc::used_margin), and also
+    /// None when the column is not in the database yet (book::open_leverage_column).
+    pub open_leverage: Option<u32>,
     /// Where `bid` / `ask` came from and the tick's time (book.rs price_rows). None = unpriced, or a caller that does
     /// not track it (the legacy order-path table, the margin trigger's measure, the parity scenarios). An engine close
     /// records it in its POSITION_CLOSED payload as the trigger tick (book::enqueue_post_close).
@@ -2478,6 +2554,7 @@ pub async fn get_open_positions_with_market(
                     rate_missing: false,
                     hedged_margin_pct: Decimal::from(200), // legacy order-path table: no hedged margin
                     ask_rule: None, // legacy order-path table (ENGINE_ORDER_MANAGEMENT off in production): raw ask
+                    open_leverage: None, // legacy order-path table: no HMR
                     quote: None,
                 }
             },

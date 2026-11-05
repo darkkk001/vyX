@@ -457,6 +457,8 @@ pub struct RawPosition {
     account_broker_id: String,
     account_group_id: Option<String>,
     ask_rule: Option<market_data::ask_markup::AskRule>,
+    /// Position.openLeverage (HMR plugin); None = unset, or the column is not in the database yet (see `open_leverage_column`)
+    open_leverage: Option<u32>,
 }
 
 /// The columns of a RawPosition (aliases p, s, a, bs), shared by the per-account read and the pass's read.
@@ -504,6 +506,61 @@ pub async fn amount_columns(conn: &mut sqlx::PgConnection) -> &'static str {
     }
 }
 
+/// `Position.openLeverage` (web migration 20261106120000_leverage_hmr, HMR plugin). Same rule as `amount_columns`: the engine must
+/// run before AND after that migration, so a read adds `p."openLeverage"` only when the column exists, else NULL. Present is cached
+/// for good; absent is re-checked every 30 s; a failed check counts as absent and is not cached.
+static LEVERAGE_COLUMN: std::sync::Mutex<(Option<bool>, Option<std::time::Instant>)> = std::sync::Mutex::new((None, None));
+
+const LEVERAGE_SELECT_PRESENT: &str = r#", p."openLeverage" AS open_leverage"#;
+const LEVERAGE_SELECT_ABSENT: &str = ", NULL::integer AS open_leverage";
+
+/// Whether `Position.openLeverage` exists (cached; see LEVERAGE_COLUMN). Also what decides whether the open writes it.
+pub async fn open_leverage_column_present(conn: &mut sqlx::PgConnection) -> bool {
+    let cached = *LEVERAGE_COLUMN.lock().unwrap_or_else(|e| e.into_inner());
+    match cached {
+        (Some(true), _) => return true,
+        (Some(false), Some(at)) if at.elapsed() < std::time::Duration::from_secs(30) => return false,
+        _ => {}
+    }
+    let found: Result<(i64,), _> = sqlx::query_as(
+        r#"SELECT count(*) FROM information_schema.columns
+           WHERE table_schema = current_schema() AND table_name = 'Position' AND column_name = 'openLeverage'"#,
+    )
+    .fetch_one(&mut *conn)
+    .await;
+    match found {
+        Ok((1,)) => {
+            *LEVERAGE_COLUMN.lock().unwrap_or_else(|e| e.into_inner()) = (Some(true), None);
+            tracing::info!("Position.openLeverage present: margin is per position (openLeverage ?? account leverage)");
+            true
+        }
+        Ok(_) => {
+            *LEVERAGE_COLUMN.lock().unwrap_or_else(|e| e.into_inner()) = (Some(false), Some(std::time::Instant::now()));
+            false
+        }
+        Err(err) => {
+            tracing::warn!(?err, "openLeverage column check failed: reading without it this time");
+            false
+        }
+    }
+}
+
+/// The select fragment of `open_leverage_column_present`, appended after RAW_COLUMNS.
+pub async fn open_leverage_column(conn: &mut sqlx::PgConnection) -> &'static str {
+    if open_leverage_column_present(conn).await { LEVERAGE_SELECT_PRESENT } else { LEVERAGE_SELECT_ABSENT }
+}
+
+/// The same, from a pool (acquires a connection only when the answer is not cached yet).
+pub async fn open_leverage_column_pool(pool: &PgPool) -> &'static str {
+    if matches!(*LEVERAGE_COLUMN.lock().unwrap_or_else(|e| e.into_inner()), (Some(true), _)) {
+        return LEVERAGE_SELECT_PRESENT;
+    }
+    match pool.acquire().await {
+        Ok(mut conn) => open_leverage_column(&mut conn).await,
+        Err(_) => LEVERAGE_SELECT_ABSENT,
+    }
+}
+
 /// FROM ... of a RawPosition read: the position, its symbol, its account, its BrokerSymbol (hedged margin %). No price,
 /// no pricing table.
 const RAW_FROM: &str = r#"FROM "Position" p
@@ -537,6 +594,9 @@ fn raw_from_row(r: &sqlx::postgres::PgRow) -> Result<RawPosition, sqlx::Error> {
         account_broker_id: r.try_get("account_broker_id")?,
         account_group_id: r.try_get("account_group_id")?,
         ask_rule: None,
+        // absent from a database without the HMR migration (open_leverage_column selects NULL then), and from any projection that
+        // does not list it: None, the account's leverage
+        open_leverage: r.try_get::<Option<i32>, _>("open_leverage").unwrap_or(None).map(|v| v.max(1) as u32),
     })
 }
 
@@ -739,6 +799,7 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
                 rate_missing: rate.is_none(),
                 hedged_margin_pct: r.hedged_margin_pct,
                 ask_rule: r.ask_rule,
+                open_leverage: r.open_leverage,
                 quote: if usable { quote } else { None },
             }
         })
@@ -764,8 +825,9 @@ pub async fn open_positions_with_market_on(
     let pin = current_pin();
     let source = current_price_source()?;
     let amounts = amount_columns(conn).await;
+    let lev = open_leverage_column(conn).await;
     let sql = format!(
-        "SELECT {RAW_COLUMNS}{amounts} {RAW_FROM} WHERE p.\"accountId\" = $1 AND {open} ORDER BY p.\"openedAt\", p.id",
+        "SELECT {RAW_COLUMNS}{amounts}{lev} {RAW_FROM} WHERE p.\"accountId\" = $1 AND {open} ORDER BY p.\"openedAt\", p.id",
         // pinned (Stage 5 snapshot): what was open at the pin's moment, including a position closed since; plus the
         // positions the margin trigger measured open at it, by identity (Pin::measured; none for an SL / TP snapshot)
         open = if pin.is_some() {
@@ -869,8 +931,9 @@ async fn load_pass_book_on(conn: &mut sqlx::PgConnection, extra_accounts: &[Stri
     use sqlx::Row;
     let d = margin::MarginThresholds::default();
     let amounts = amount_columns(conn).await;
+    let lev = open_leverage_column(conn).await;
     let sql = format!(
-        r#"SELECT {RAW_COLUMNS}{amounts}, a.balance, a.credit, a.leverage, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
+        r#"SELECT {RAW_COLUMNS}{amounts}{lev}, a.balance, a.credit, a.leverage, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
                   COALESCE(b."negativeBalanceProtection", false) AS nbp
            {RAW_FROM}
            LEFT JOIN "Group" g ON g.id = a."groupId"

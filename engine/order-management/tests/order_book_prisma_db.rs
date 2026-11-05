@@ -372,7 +372,7 @@ async fn open_position(tx: &mut sqlx::PgTransaction<'_>, fx: &Fx, order_id: &str
             open_price: dec!(4300),
             sl_price: None,
             tp_price: None,
-            book_type,
+            book_type, open_leverage: None,
         },
     )
     .await
@@ -777,7 +777,7 @@ async fn the_engines_open_chain_matches_the_webs_row_for_row() {
             open_price: fill_price,
             sl_price: None,
             tp_price: None,
-            book_type,
+            book_type, open_leverage: None,
         },
     )
     .await

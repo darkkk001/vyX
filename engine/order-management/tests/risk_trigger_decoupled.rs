@@ -58,7 +58,7 @@ fn s3_account() -> WatchedAccount {
             contract_size: dec!(100000),
             quote_currency: "USD".into(),
             hedged_margin_pct: dec!(50),
-            ask_rule: None,
+            ask_rule: None, open_leverage: None,
         }],
     }
 }

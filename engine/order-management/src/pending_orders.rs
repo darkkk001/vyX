@@ -112,9 +112,20 @@ async fn trigger_order(
     // placement time (see module doc comment). Lot size and
     // symbol-enabled were already checked at placement (lib.rs's
     // place_pending_order) and don't need rechecking here.
-    let required = risk::required_margin(order.volume, contract_size, tick.bid, state.leverage);
+    //
+    // HMR plugin (owner 2026-11-06): a resting order that fills during a window is a NEW position, so the windows active NOW (at
+    // the fill, not at the order's placement) set its leverage -- for this check and for Position.openLeverage below.
+    let hmr_now = chrono::Utc::now();
+    let hmr_state = crate::hmr::load_state(pool, &order.broker_id, hmr_now).await;
+    let group_leverage = db::get_group_leverage(pool, &order.account_id).await?;
+    let eff = crate::hmr::effective_open_leverage(state.leverage, group_leverage.map(|g| g.max(1) as u32), &hmr_state, &order.symbol, hmr_now);
+    let required = risk::required_margin(order.volume, contract_size, tick.bid, eff.leverage);
     if let Err(reject_reason) = risk::check_free_margin(calc::equity(&state), calc::used_margin(&state), required) {
-        reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
+        let reason = match &eff.hmr {
+            Some(h) => format!("{reject_reason}. {}", crate::hmr::refusal_text(h)),
+            None => reject_reason.to_string(),
+        };
+        reject_order(tx, nats, &order.id, &order.account_id, reason).await?;
         return Ok(());
     }
 
@@ -177,6 +188,7 @@ async fn trigger_order(
             sl_price: order.sl_price,
             tp_price: order.tp_price,
             book_type,
+            open_leverage: eff.open_leverage,
         },
     )
     .await?;

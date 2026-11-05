@@ -67,7 +67,8 @@ pub fn used_margin(state: &AccountState) -> Decimal {
     let mut books: Vec<(&str, SymbolMarginBook)> = Vec::new();
     for p in &state.positions {
         let (Some(bid), Some(ask)) = (p.bid, p.ask) else { continue };
-        let margin = risk::required_margin(p.volume, p.contract_size, position_close_price(p, bid, ask), state.leverage) * p.fx_rate;
+        // HMR plugin: a position keeps the leverage it opened with (Position.openLeverage); web lib/margin.ts `openLeverage ?? account.leverage`
+        let margin = risk::required_margin(p.volume, p.contract_size, position_close_price(p, bid, ask), p.open_leverage.unwrap_or(state.leverage)) * p.fx_rate;
         let idx = match books.iter().position(|(s, _)| *s == p.symbol) {
             Some(i) => i,
             None => {
@@ -154,6 +155,9 @@ pub struct NewLeg<'a> {
     /// for the same reason. It is carried because the web carries it -- if the netting ever starts
     /// charging the new leg's own %, the engine already has the input and the vectors will say so.
     pub hedged_margin_pct: Decimal,
+    /// The leverage the new leg is margined at when it is not the account's: `hmr::effective_open_leverage`'s `open_leverage`
+    /// (min of account, group maximum and every active HMR window). None = the account's.
+    pub open_leverage: Option<u32>,
 }
 
 /// `lib/margin.ts evaluatePreTradeMargin`, whole: the state math around the ported decision in
@@ -222,6 +226,7 @@ pub fn pre_trade_margin_decision(
         hedged_margin_pct: leg.hedged_margin_pct,
         // none: fill_price is ALREADY this account's price (pricing::quoted_tick ran on it)
         ask_rule: None,
+        open_leverage: leg.open_leverage,
         quote: None,
     });
     crate::gates::pre_trade_margin(
@@ -401,7 +406,7 @@ mod tests {
         let pos = |side: OrderSide| db::OpenPositionWithMarket {
             id: String::new(), symbol: "XAUUSD".into(), side, volume: dec!(1), open_price: dec!(4290), contract_size: dec!(100),
             bid: Some(dec!(4298.96)), ask: Some(dec!(4299.13)), sl_price: None, tp_price: None, sl_amount: None, tp_amount: None, fx_rate: Decimal::ONE, rate_missing: false,
-            hedged_margin_pct: dec!(200), ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }), quote: None,
+            hedged_margin_pct: dec!(200), ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }), open_leverage: None, quote: None,
         };
         let (sell, buy) = (pos(OrderSide::Sell), pos(OrderSide::Buy));
         // SYMMETRIC MARKUP: 1.5 pips = 0.15 split, so the account's ask is ceil(4299.13 + 0.075) = 4299.21 and its
@@ -433,6 +438,7 @@ mod tests {
             rate_missing: false,
             hedged_margin_pct: pct,
             ask_rule: None,
+            open_leverage: None,
             quote: None,
         };
         // XAU pair at 50%: BUY 2000 (bid), SELL 2000.20 (ask) at 1:100 -> (2000 + 2000.2) * 50 / 200 = 1000.05

@@ -69,6 +69,8 @@ pub struct WatchedPosition {
     pub hedged_margin_pct: Decimal,
     /// The account's ask rule (market_data::ask_markup): a SELL is valued at the account's ask. None = raw.
     pub ask_rule: Option<market_data::ask_markup::AskRule>,
+    /// Position.openLeverage (HMR plugin); None = the account's (calc::used_margin)
+    pub open_leverage: Option<u32>,
 }
 
 /// What the per-tick margin trigger hands the shadow when it fires (Stage 5 fan-in race, 2026-09-29): the account AND
@@ -137,11 +139,12 @@ pub async fn load_book<'c, A: sqlx::Acquire<'c, Database = sqlx::Postgres>>(a: A
 /// pricing table.
 pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market_data::ask_markup::PricingSnapshot>) -> Result<Book, sqlx::Error> {
     use sqlx::Row;
-    let raw = sqlx::query(
+    let lev = crate::book::open_leverage_column(conn).await;
+    let sql = format!(
         r#"SELECT a.id, a.balance, a.credit, a.leverage, a.currency, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
                   a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode,
                   p.id AS position_id, s.id AS symbol_id, s.digits, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price,
-                  s."contractSize" AS contract_size, s."quoteCurrency" AS quote_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct
+                  s."contractSize" AS contract_size, s."quoteCurrency" AS quote_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct{lev}
            FROM "Position" p
            JOIN "Account" a ON a.id = p."accountId"
            JOIN "Broker" sb ON sb.id = a."brokerId" AND NOT sb."isDemoSandbox"
@@ -149,10 +152,9 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
            LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
            LEFT JOIN "Group" g ON g.id = a."groupId"
            WHERE p.status = 'OPEN'
-           ORDER BY a.id COLLATE "C", p."openedAt", p.id"#,
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+           ORDER BY a.id COLLATE "C", p."openedAt", p.id"#
+    );
+    let raw = sqlx::query(&sql).fetch_all(&mut *conn).await?;
     let mut keys: Vec<(String, String, Option<String>, String, i32)> = Vec::with_capacity(raw.len());
     for r in &raw {
         keys.push((r.try_get("id")?, r.try_get("a_broker")?, r.try_get("a_group")?, r.try_get("symbol_id")?, r.try_get("digits")?));
@@ -163,12 +165,13 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
         .collect();
     let rules = market_data::ask_markup::rules_for(conn, pricing, &rule_keys).await?;
     #[allow(clippy::type_complexity)]
-    let mut rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, String, Decimal, Decimal, Decimal, String, Decimal, Option<market_data::ask_markup::AskRule>)> = Vec::with_capacity(raw.len());
+    let mut rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, String, Decimal, Decimal, Decimal, String, Decimal, Option<market_data::ask_markup::AskRule>, Option<u32>)> = Vec::with_capacity(raw.len());
     for (r, ask_rule) in raw.iter().zip(rules) {
         rows.push((
             r.try_get("id")?, r.try_get("balance")?, r.try_get("credit")?, r.try_get("leverage")?, r.try_get("currency")?, r.try_get("call")?, r.try_get("stop_out")?,
             r.try_get("position_id")?, r.try_get("name")?, r.try_get("side")?, r.try_get("volume")?, r.try_get("open_price")?, r.try_get("contract_size")?, r.try_get("quote_ccy")?,
             r.try_get("hedged_margin_pct")?, ask_rule,
+            r.try_get::<Option<i32>, _>("open_leverage").unwrap_or(None).map(|v| v.max(1) as u32),
         ));
     }
     let d = MarginThresholds::default();
@@ -180,7 +183,7 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
         }
     }
     let mut accounts: Vec<WatchedAccount> = Vec::new();
-    for (id, balance, credit, leverage, currency, call, stop_out, position_id, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule) in rows {
+    for (id, balance, credit, leverage, currency, call, stop_out, position_id, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule, open_leverage) in rows {
         if accounts.last().map(|a| a.id != id).unwrap_or(true) {
             accounts.push(WatchedAccount {
                 id,
@@ -193,7 +196,7 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
             });
         }
         let side = if side == "SELL" { protocol::OrderSide::Sell } else { protocol::OrderSide::Buy };
-        accounts.last_mut().unwrap().positions.push(WatchedPosition { id: position_id, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule });
+        accounts.last_mut().unwrap().positions.push(WatchedPosition { id: position_id, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule, open_leverage });
     }
     Ok(Book::new(accounts).with_owners(owners))
 }
@@ -226,6 +229,7 @@ pub fn measure(account: &WatchedAccount, cache: &TickCache) -> (Decimal, Decimal
                 rate_missing: rate.is_none(),
                 hedged_margin_pct: p.hedged_margin_pct,
                 ask_rule: p.ask_rule,
+                open_leverage: p.open_leverage,
                 quote: None,
             }
         })
@@ -564,7 +568,7 @@ mod tests {
                     contract_size: dec!(100),
                     quote_currency: "USD".into(),
                     hedged_margin_pct: dec!(200),
-                    ask_rule: None,
+                    ask_rule: None, open_leverage: None,
                 })
                 .collect(),
         }
@@ -790,7 +794,7 @@ mod tests {
             leverage: 100,
             currency: "USD".into(),
             thresholds: MarginThresholds { call_level: dec!(100), stop_out_level: dec!(50) },
-            positions: vec![WatchedPosition { id: "p".into(), symbol: "USDJPY".into(), side: protocol::OrderSide::Sell, volume: dec!(0.1), open_price: dec!(150), contract_size: dec!(100000), quote_currency: "JPY".into(), hedged_margin_pct: dec!(200), ask_rule: None }],
+            positions: vec![WatchedPosition { id: "p".into(), symbol: "USDJPY".into(), side: protocol::OrderSide::Sell, volume: dec!(0.1), open_price: dec!(150), contract_size: dec!(100000), quote_currency: "JPY".into(), hedged_margin_pct: dec!(200), ask_rule: None, open_leverage: None, }],
         };
         let cache = cache_with(&[(tick("USDJPY", dec!(151), dec!(151)), 0)]);
         let (equity, used) = measure(&a, &cache);
