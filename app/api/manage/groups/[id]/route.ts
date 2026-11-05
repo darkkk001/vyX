@@ -67,6 +67,11 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     );
   }
   const isDefault = body?.isDefault === true;
+  // Part A (owner 2026-11-06): absent = keep (a form older than the field must not switch it off)
+  if (body?.flexibleLeverage != null && typeof body.flexibleLeverage !== "boolean") {
+    return NextResponse.json({ error: "flexibleLeverage must be true or false" }, { status: 400 });
+  }
+  const flexibleLeverage = typeof body?.flexibleLeverage === "boolean" ? body.flexibleLeverage : existing.flexibleLeverage;
 
   let maxLotSize: Prisma.Decimal | null = null;
   if (body?.maxLotSize != null && body.maxLotSize !== "") {
@@ -140,7 +145,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   // RISK_SETTINGS; the rest: GROUPS_SYMBOLS); BROKER_ADMIN holds all three
   {
     const changed = new Set<WriteClass>();
-    if (!same(leverage, existing.leverage) || !same(marginCallLevel, existing.marginCallLevel) || !same(stopOutLevel, existing.stopOutLevel)) changed.add("risk");
+    if (!same(leverage, existing.leverage) || flexibleLeverage !== existing.flexibleLeverage || !same(marginCallLevel, existing.marginCallLevel) || !same(stopOutLevel, existing.stopOutLevel)) changed.add("risk");
     if (category !== existing.category || modeRestriction !== existing.modeRestriction || dealingMode !== existing.dealingMode || forceDealingMode !== existing.forceDealingMode) changed.add("routing");
     if (name !== existing.name || (hasDisplayName && displayName !== existing.displayName) || isDefault !== existing.isDefault || !same(maxLotSize, existing.maxLotSize)
       || !same(minLotSize, existing.minLotSize) || !same(lotStep, existing.lotStep) || tradingRestriction !== existing.tradingRestriction || swapFree !== existing.swapFree
@@ -170,7 +175,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, ...(hasDisplayName ? { displayName } : {}), leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
+        data: { name, ...(hasDisplayName ? { displayName } : {}), leverage, flexibleLeverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -183,6 +188,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             name: existing.name,
             displayName: existing.displayName,
             leverage: existing.leverage,
+            flexibleLeverage: existing.flexibleLeverage,
             marginCallLevel: existing.marginCallLevel.toString(),
             stopOutLevel: existing.stopOutLevel.toString(),
             isDefault: existing.isDefault,
@@ -203,6 +209,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             displayName: updated.displayName,
             name,
             leverage,
+            flexibleLeverage,
             marginCallLevel: marginCallLevel.toString(),
             stopOutLevel: stopOutLevel.toString(),
             isDefault,
@@ -237,6 +244,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       name: group.name,
       displayName: group.displayName,
       leverage: group.leverage,
+      flexibleLeverage: group.flexibleLeverage,
       marginCallLevel: group.marginCallLevel.toString(),
       stopOutLevel: group.stopOutLevel.toString(),
       isDefault: group.isDefault,

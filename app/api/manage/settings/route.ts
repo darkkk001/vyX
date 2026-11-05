@@ -45,6 +45,8 @@ export async function GET() {
     // step 3b item 3
     passwordMaxAgeDays: broker.passwordMaxAgeDays,
     staffIpAllowlist: broker.staffIpAllowlist,
+    // leverage rules (owner 2026-11-06)
+    flexibleLeverageMinTrades: broker.flexibleLeverageMinTrades,
   });
 }
 
@@ -56,7 +58,7 @@ async function patchHandler(request: NextRequest) {
   const brokerId = session.brokerId!;
 
   const body = await request.json().catch(() => null);
-  const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number; withdrawalApproval?: "SINGLE" | "DUAL"; sessionTimeoutMinutes?: number | null; auditRetentionDays?: number | null; autoApproveWithdrawalMax?: Prisma.Decimal | null; hedgingAllowed?: boolean; passwordMaxAgeDays?: number | null; staffIpAllowlist?: string[] } = {};
+  const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number; withdrawalApproval?: "SINGLE" | "DUAL"; sessionTimeoutMinutes?: number | null; auditRetentionDays?: number | null; autoApproveWithdrawalMax?: Prisma.Decimal | null; hedgingAllowed?: boolean; passwordMaxAgeDays?: number | null; staffIpAllowlist?: string[]; flexibleLeverageMinTrades?: number } = {};
   const extra = parseNewSettings(body && typeof body === "object" ? (body as Record<string, unknown>) : null);
   if (!extra.ok) return NextResponse.json({ error: extra.error }, { status: 400 });
   Object.assign(data, extra.data);
@@ -93,6 +95,16 @@ async function patchHandler(request: NextRequest) {
     data.defaultAccountLeverage = n;
   }
 
+  // Part A (owner 2026-11-06): closed trades an account needs before it may change its own leverage (flexible-leverage groups)
+  if (body && typeof body === "object" && "flexibleLeverageMinTrades" in body) {
+    const raw = (body as Record<string, unknown>).flexibleLeverageMinTrades;
+    const n = typeof raw === "number" ? raw : typeof raw === "string" && /^[0-9]+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+    if (!Number.isInteger(n) || n < 0 || n > 1000) {
+      return NextResponse.json({ error: "flexibleLeverageMinTrades must be a whole number from 0 to 1000", code: "MIN_TRADES_INVALID" }, { status: 400 });
+    }
+    data.flexibleLeverageMinTrades = n;
+  }
+
   if (body?.withdrawalApproval !== undefined) {
     if (body.withdrawalApproval !== "SINGLE" && body.withdrawalApproval !== "DUAL") {
       return NextResponse.json({ error: "withdrawalApproval must be SINGLE or DUAL" }, { status: 400 });
@@ -106,7 +118,7 @@ async function patchHandler(request: NextRequest) {
 
   // audited (audit 2026-09-24: broker-settings saves wrote no AuditLog row); old and new value of every field sent
   const updated = await prisma.$transaction(async (tx) => {
-    const before = await tx.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, withdrawalApproval: true, sessionTimeoutMinutes: true, auditRetentionDays: true, autoApproveWithdrawalMax: true, hedgingAllowed: true, passwordMaxAgeDays: true, staffIpAllowlist: true } });
+    const before = await tx.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, withdrawalApproval: true, sessionTimeoutMinutes: true, auditRetentionDays: true, autoApproveWithdrawalMax: true, hedgingAllowed: true, passwordMaxAgeDays: true, staffIpAllowlist: true, flexibleLeverageMinTrades: true } });
     const after = await tx.broker.update({ where: { id: brokerId }, data });
     const keys = Object.keys(data) as (keyof typeof data)[];
     await tx.auditLog.create({
@@ -132,6 +144,7 @@ async function patchHandler(request: NextRequest) {
     hedgingAllowed: updated.hedgingAllowed,
     passwordMaxAgeDays: updated.passwordMaxAgeDays,
     staffIpAllowlist: updated.staffIpAllowlist,
+    flexibleLeverageMinTrades: updated.flexibleLeverageMinTrades,
   });
 }
 

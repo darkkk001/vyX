@@ -93,6 +93,7 @@ export async function GET() {
       name: g.name,
       displayName: g.displayName,
       leverage: g.leverage,
+      flexibleLeverage: g.flexibleLeverage,
       marginCallLevel: g.marginCallLevel.toString(),
       stopOutLevel: g.stopOutLevel.toString(),
       isDefault: g.isDefault,
@@ -173,6 +174,11 @@ async function postHandler(request: NextRequest) {
     );
   }
   const isDefault = body?.isDefault === true;
+  // Part A (owner 2026-11-06): traders on this group may change their own leverage up to its maximum. Absent = off.
+  if (body?.flexibleLeverage != null && typeof body.flexibleLeverage !== "boolean") {
+    return NextResponse.json({ error: "flexibleLeverage must be true or false" }, { status: 400 });
+  }
+  const flexibleLeverage = body?.flexibleLeverage === true;
 
   let maxLotSize: Prisma.Decimal | null = null;
   if (body?.maxLotSize != null && body.maxLotSize !== "") {
@@ -237,7 +243,7 @@ async function postHandler(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, ...(hasDisplayName ? { displayName } : {}), leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
+        data: { brokerId, name, ...(hasDisplayName ? { displayName } : {}), leverage, flexibleLeverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, lotStep, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -249,6 +255,7 @@ async function postHandler(request: NextRequest) {
           newValue: {
             name,
             leverage,
+            flexibleLeverage,
             marginCallLevel: marginCallLevel.toString(),
             stopOutLevel: stopOutLevel.toString(),
             isDefault,
@@ -275,6 +282,7 @@ async function postHandler(request: NextRequest) {
         name: group.name,
         displayName: group.displayName,
         leverage: group.leverage,
+        flexibleLeverage: group.flexibleLeverage,
         marginCallLevel: group.marginCallLevel.toString(),
         stopOutLevel: group.stopOutLevel.toString(),
         isDefault: group.isDefault,
