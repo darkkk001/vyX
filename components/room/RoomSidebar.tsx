@@ -49,7 +49,7 @@ export default function RoomSidebar({ brokerName, logoUrl, isPartner }: { broker
   const kyc = KYC_LINE[data?.kyc.status ?? "NONE"] ?? KYC_LINE.NONE;
   return (
     <aside className="r-side">
-      <a className="r-brand" href="/room"><RoomBrand name={brokerName} logoUrl={logoUrl} /></a>
+      <a className="r-brand" href="/room"><RoomBrand name={brokerName} logoUrl={logoUrl} showName /></a>
       {GROUPS.filter((g) => !g.partner || isPartner).map((g) => (
         <div key={g.title} style={{ display: "contents" }}>
           <div className="r-nav-group">{g.title.toUpperCase()}</div>

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
-import { periodStart, sessionOf, type Period } from "@/lib/room/analytics";
+import { periodStart, sessionOf, tradeAccounts, type Period } from "@/lib/room/analytics";
 import { JOURNAL_SELECT, PRESET_TAGS, netOf, rOf } from "@/lib/room/journal";
 
 // GET ?account=all|<id>&symbol=&tag=&period=30d|90d|ytd|all&page=: every closed trade of the client's accounts, newest
@@ -19,8 +19,7 @@ export async function GET(request: NextRequest) {
   const from = periodStart(period);
   const page = Math.max(1, Math.min(10_000, Number(q.get("page")) || 1));
   const own = await prisma.account.findMany({ where: { clientId: session.clientId, brokerId: session.brokerId }, select: { id: true, accountNumber: true } });
-  const wanted = q.get("account");
-  const accounts = wanted && wanted !== "all" ? own.filter((a) => a.id === wanted) : own;
+  const accounts = tradeAccounts(own, q.get("account"));
   const numberById = new Map(own.map((a) => [a.id, a.accountNumber]));
   const symbol = q.get("symbol");
   const tag = q.get("tag");

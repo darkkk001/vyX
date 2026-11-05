@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
-import { roomAnalytics, loadTrades, periodStart, type Period } from "@/lib/room/analytics";
+import { roomAnalytics, loadTrades, periodStart, tradeAccounts, type Period } from "@/lib/room/analytics";
 import { toCsv } from "@/lib/csv";
 
-// GET ?account=all|<id>&period=30d|90d|ytd|all[&format=csv]: the Analytics screen (lib/room/analytics.ts), live accounts
-// by default (a demo account counts only when picked on its own). CSV = the period's trades with session and R.
+// GET ?account=all|<id>&period=30d|90d|ytd|all[&format=csv]: the Analytics screen (lib/room/analytics.ts), over the same
+// accounts as the Journal (tradeAccounts). CSV = the period's trades with session and R.
 const PERIODS: Period[] = ["30d", "90d", "ytd", "all"];
 
 export async function GET(request: NextRequest) {
@@ -19,8 +19,7 @@ export async function GET(request: NextRequest) {
     select: { id: true, accountNumber: true, accountMode: true, currency: true, group: { select: { displayName: true } } },
     orderBy: { createdAt: "asc" },
   });
-  const wanted = q.get("account");
-  const picked = wanted && wanted !== "all" ? own.filter((a) => a.id === wanted) : own.filter((a) => a.accountMode === "LIVE");
+  const picked = tradeAccounts(own, q.get("account"));
   const accounts = picked.map((a) => ({ id: a.id, accountNumber: a.accountNumber, plan: a.accountMode === "DEMO" ? "Demo" : a.group?.displayName ?? "Standard" }));
 
   if (q.get("format") === "csv") {

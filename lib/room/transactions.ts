@@ -87,6 +87,8 @@ function toRow(t: Raw, ownNumbers: Set<string>, payoutTitle: Map<string, string>
   } else if (type === "Adjustment" && !method) {
     method = "Broker";
   }
+  // a deposit or withdrawal booked by staff has no payment method on it
+  if (!method) method = "Manual";
   return { id: t.id, ref: `TX-${t.id.slice(-8).toUpperCase()}`, at: t.createdAt.toISOString(), type, account, method, amount, currency: t.account.currency, status: STATUS[t.status] };
 }
 

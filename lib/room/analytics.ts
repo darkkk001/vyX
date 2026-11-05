@@ -12,6 +12,12 @@ import { accountEquityCurve } from "@/lib/equity-curve";
 // 21:00-23:00. R multiple = the price move in the trade's favour / the distance to its stop loss (the SL the trade
 // closed with; a trade without one has no R). Risk % = the money at the stop / the account's equity when it opened.
 
+/** The accounts Analytics and the Journal read: the one picked, else all of the client's own, demo included. One rule, so
+ *  the two screens always show the same trades. */
+export function tradeAccounts<T extends { id: string }>(own: T[], wanted: string | null): T[] {
+  return wanted && wanted !== "all" ? own.filter((a) => a.id === wanted) : own;
+}
+
 export type Period = "30d" | "90d" | "ytd" | "all";
 export function periodStart(p: Period, now = new Date()): Date | null {
   if (p === "30d") return new Date(now.getTime() - 30 * 86400e3);
