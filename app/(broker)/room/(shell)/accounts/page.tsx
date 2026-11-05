@@ -145,7 +145,7 @@ export default function RoomAccounts() {
               ))}
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 340px))", gap: 14 }}>
             {(meta?.plans ?? []).map((p) => {
               const sel = plan?.groupId === p.groupId;
               return (

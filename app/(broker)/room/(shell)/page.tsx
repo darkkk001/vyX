@@ -7,7 +7,7 @@ import { useRoom } from "@/components/room/RoomData";
 import { money, pnlClass, dayShort, dayTime, greeting } from "@/components/room/format";
 
 // Artboard "Dashboard": greeting, equity strip of the picked account, account cards, recent transactions,
-// verification card, trade-on card, then the My tier section.
+// verification card, trade-on card. The tier strip sits under the greeting.
 const KYC_STATUS: Record<string, string> = { APPROVED: "Approved", PENDING: "Pending", REJECTED: "Rejected", NONE: "Not verified" };
 const Check = ({ ok }: { ok: boolean }) => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={ok ? "var(--r-ok)" : "var(--r-muted)"} strokeWidth="1.8" aria-hidden="true">
@@ -34,6 +34,8 @@ export default function RoomDashboard() {
             <a className="r-btn-ghost" href="/room/withdraw">Withdraw</a>
           </div>
         </div>
+
+        <TierPanel />
 
         <div className="r-grid-tiles">
           {([["Balance", f?.balance], ["Equity", f?.equity], ["Free margin", f?.freeMargin], ["Floating P/L", f?.floating]] as const).map(([label, v], i) => (
@@ -74,7 +76,7 @@ export default function RoomDashboard() {
           </div>
         </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "stretch" }}>
           <div className="r-card r-pad" style={{ flex: "2 1 480px", minWidth: 0 }}>
             <div className="r-sec-head" style={{ marginBottom: 14 }}>
               <div className="r-label">Recent transactions</div>
@@ -119,7 +121,7 @@ export default function RoomDashboard() {
                 {data?.kyc.status === "APPROVED" || data?.kyc.status === "PENDING" ? "View documents" : "Verify now"}
               </a>
             </div>
-            <div className="r-card r-pad">
+            <div className="r-card r-pad" style={{ flex: 1 }}>
               <div className="r-label" style={{ marginBottom: 14 }}>Trade on</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 11, fontSize: 13 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>Desktop terminal</span><a href="/room/downloads" style={{ fontSize: 12.5, fontWeight: 500 }}>Download</a></div>
@@ -129,8 +131,6 @@ export default function RoomDashboard() {
             </div>
           </div>
         </div>
-
-        <TierPanel />
       </div>
     </>
   );

@@ -43,9 +43,18 @@ export function reviewDates(now: Date, back: number): Date[] {
   return out; // newest first
 }
 
+/** Since when the client has held the current tier: the oldest review in an unbroken run of it, never before they joined.
+ *  reviews and atReview are newest first; a quiet client sits on the lowest tier at every review, joined or not. */
+export function tierSince(reviews: Date[], atReview: { name: string }[], joinedAt: Date): Date {
+  let since = reviews[0];
+  for (let i = 1; i < reviews.length && atReview[i].name === atReview[0].name; i++) since = reviews[i];
+  return since < joinedAt ? joinedAt : since;
+}
+
 export async function clientTier(brokerId: string, clientId: string, now = new Date()) {
-  const [broker, accounts] = await Promise.all([
+  const [broker, client, accounts] = await Promise.all([
     prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { tierConfig: true } }),
+    prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { createdAt: true } }),
     prisma.account.findMany({ where: { clientId, brokerId, accountMode: "LIVE" }, select: { id: true, accountNumber: true } }),
   ]);
   const tiers = tiersOf(broker.tierConfig);
@@ -64,8 +73,7 @@ export async function clientTier(brokerId: string, clientId: string, now = new D
 
   const atReview = reviews.map((r) => tierFor(tiers, lotsIn(r.getTime() - 90 * DAY, r.getTime())));
   const current = atReview[0];
-  let since = reviews[0];
-  for (let i = 1; i < reviews.length && atReview[i].name === current.name; i++) since = reviews[i];
+  const since = tierSince(reviews, atReview, client.createdAt);
 
   const t = now.getTime() + 1;
   const from90 = now.getTime() - 90 * DAY;
@@ -81,6 +89,7 @@ export async function clientTier(brokerId: string, clientId: string, now = new D
     lots90: lots90.toFixed(1),
     lotsMonth: lotsIn(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1), t).toFixed(1),
     lotsAll: (all[0]?.s ?? 0).toFixed(1),
+    hasLiveAccount: accounts.length > 0,
     perAccount: accounts.map((a) => ({ accountNumber: a.accountNumber, lots: lotsIn(from90, t, a.id).toFixed(1) })),
     maxLeverage: current.maxLeverage,
   };
