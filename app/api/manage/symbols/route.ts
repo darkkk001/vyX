@@ -10,7 +10,7 @@ import { symbolSlippageCapPoints } from "@/lib/slippage-cap";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hoursSummary, validateSessions } from "@/lib/symbol-sessions";
-import { CORE_KEYS, EXTRA_KEYS, crossCheck, fieldsView, parseSymbolFields, symbolWriteRefusal } from "@/lib/symbol-config";
+import { CORE_KEYS, EXTRA_KEYS, closeOnlyRefusal, crossCheck, fieldsView, parseSymbolFields, symbolWriteRefusal } from "@/lib/symbol-config";
 import { createBrokerSymbol, readSessions } from "@/lib/symbol-write";
 
 const TRADING_MODES: TradingMode[] = ["BOTH", "BUY_ONLY", "SELL_ONLY", "CLOSE_ONLY"];
@@ -342,6 +342,9 @@ async function patchHandler(request: NextRequest) {
     tradingMode === null
   ) {
     return NextResponse.json({ error: "all fields must be valid numbers/booleans/tradingMode" }, { status: 400 });
+  }
+  if (closeOnlyRefusal(tradingMode)) {
+    return NextResponse.json({ error: closeOnlyRefusal(tradingMode), fieldErrors: [{ field: "tradingMode", reason: closeOnlyRefusal(tradingMode) }] }, { status: 400 });
   }
   if (maxExposureRaw != null && maxExposureRaw !== "" && !maxExposure) {
     return NextResponse.json({ error: "maxExposure must be a valid number or empty" }, { status: 400 });

@@ -10,6 +10,14 @@ import type { AdminSessionPayload } from "@/lib/auth";
 export type FieldError = { field: string; reason: string };
 
 const TRADING_MODES = ["BOTH", "BUY_ONLY", "SELL_ONLY", "CLOSE_ONLY"] as const;
+
+// 2026-11-05 (owner): the live engine's own open gate (order-management gates.rs) and its pending triggers do not know
+// CLOSE_ONLY yet, so an engine-routed open would ignore it. Until the engine fix is live, no symbol may BE set to Close
+// only: the web refuses the setting unless SYMBOL_CLOSE_ONLY_ENABLED=1 (set only after that engine deploy).
+export const CLOSE_ONLY_NOT_YET = "Close only arrives with the next server update";
+export function closeOnlyRefusal(mode: unknown): string | null {
+  return mode === "CLOSE_ONLY" && process.env.SYMBOL_CLOSE_ONLY_ENABLED !== "1" ? CLOSE_ONLY_NOT_YET : null;
+}
 const EXECUTION_MODES = ["MARKET", "INSTANT"] as const;
 const FILL_POLICIES = ["FOK", "IOC"] as const;
 const SWAP_TYPES = ["POINTS", "PERCENT", "MONEY"] as const;
@@ -109,8 +117,9 @@ export function parseSymbolFields(input: Record<string, unknown>, allowed: reado
         break;
       }
       case "tradingMode":
-        if (TRADING_MODES.includes(v as (typeof TRADING_MODES)[number])) data.tradingMode = v;
-        else bad(key, `must be one of ${TRADING_MODES.join(", ")}`);
+        if (!TRADING_MODES.includes(v as (typeof TRADING_MODES)[number])) bad(key, `must be one of ${TRADING_MODES.join(", ")}`);
+        else if (closeOnlyRefusal(v)) bad(key, closeOnlyRefusal(v)!);
+        else data.tradingMode = v;
         break;
       case "tickSize":
       case "tickValue":

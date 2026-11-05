@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { EXTRA_KEYS, changedAgainst, crossCheck, parseSymbolFields } from "@/lib/symbol-config";
 import { parseCsv } from "@/lib/symbol-csv";
@@ -72,9 +72,19 @@ describe("parseSymbolFields: the new fields", () => {
 });
 
 describe("parseSymbolFields: the core settings keep the existing rules", () => {
-  it("tradingMode accepts CLOSE_ONLY and refuses unknown", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("tradingMode accepts CLOSE_ONLY (with SYMBOL_CLOSE_ONLY_ENABLED=1) and refuses unknown", () => {
+    vi.stubEnv("SYMBOL_CLOSE_ONLY_ENABLED", "1");
     expect(parseSymbolFields({ tradingMode: "CLOSE_ONLY" }).data.tradingMode).toBe("CLOSE_ONLY");
     expect(parseSymbolFields({ tradingMode: "HALF" }).errors).toHaveLength(1);
+  });
+  it("2026-11-05: CLOSE_ONLY is refused until the engine knows it (flag unset or not exactly 1); the other modes are unaffected", () => {
+    for (const v of [undefined, "0", "true"]) {
+      vi.stubEnv("SYMBOL_CLOSE_ONLY_ENABLED", v as string);
+      const r = parseSymbolFields({ tradingMode: "CLOSE_ONLY" });
+      expect([r.data.tradingMode, r.errors]).toEqual([undefined, [{ field: "tradingMode", reason: "Close only arrives with the next server update" }]]);
+    }
+    expect(parseSymbolFields({ tradingMode: "BUY_ONLY" }).data.tradingMode).toBe("BUY_ONLY");
   });
   it("blank markup / swap means zero, lots must be above zero, maxExposure blank means no limit", () => {
     const r = parseSymbolFields({ spreadMarkup: "", swapLong: null, maxLot: "0", maxExposure: "" });

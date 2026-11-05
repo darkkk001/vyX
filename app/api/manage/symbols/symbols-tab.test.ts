@@ -153,7 +153,13 @@ describe("new BrokerSymbol fields: default, validation, audit row (PATCH /symbol
     const row = await mkRow(fx, sym.id);
     const { PATCH } = await import("./[id]/route");
     as(fx);
+    // 2026-11-05: refused until the engine knows CLOSE_ONLY (SYMBOL_CLOSE_ONLY_ENABLED unset), accepted with the flag
+    vi.stubEnv("SYMBOL_CLOSE_ONLY_ENABLED", "");
+    const refused = await call(PATCH, "PATCH", { tradingMode: "CLOSE_ONLY" }, row.id);
+    expect([refused.status, refused.json.fieldErrors]).toEqual([400, [{ field: "tradingMode", reason: "Close only arrives with the next server update" }]]);
+    vi.stubEnv("SYMBOL_CLOSE_ONLY_ENABLED", "1");
     expect((await call(PATCH, "PATCH", { tradingMode: "CLOSE_ONLY" }, row.id)).json.tradingMode).toBe("CLOSE_ONLY");
+    vi.unstubAllEnvs();
     expect((await call(PATCH, "PATCH", { tradingMode: "NOPE" }, row.id)).status).toBe(400);
     as(other);
     expect((await call(PATCH, "PATCH", { tradingMode: "BOTH" }, row.id)).status).toBe(404);
