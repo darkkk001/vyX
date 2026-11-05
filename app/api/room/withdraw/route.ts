@@ -20,8 +20,14 @@ export async function POST(request: NextRequest) {
   const account = await ownAccount(session, body?.accountId);
   if (!account) return NextResponse.json({ error: "Account not found." }, { status: 404 });
   if (account.accountMode !== "LIVE") return NextResponse.json({ error: "Demo accounts have nothing to withdraw." }, { status: 400 });
-  // 2FA on: every withdrawal carries a code from the authenticator app
-  const tf = await prisma.client.findUniqueOrThrow({ where: { id: session.clientId }, select: { twoFactorEnabled: true, twoFactorSecret: true } });
+  // 2FA on: every withdrawal carries a code from the authenticator app. A broker may also require 2FA for withdrawing.
+  const [tf, broker] = await Promise.all([
+    prisma.client.findUniqueOrThrow({ where: { id: session.clientId }, select: { twoFactorEnabled: true, twoFactorSecret: true } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { requireWithdrawal2fa: true } }),
+  ]);
+  if (broker.requireWithdrawal2fa && !(tf.twoFactorEnabled && tf.twoFactorSecret)) {
+    return NextResponse.json({ error: "Your broker requires 2FA for withdrawals. Turn it on in Profile.", code: "TWO_FACTOR_SETUP_REQUIRED" }, { status: 403 });
+  }
   if (tf.twoFactorEnabled && tf.twoFactorSecret) {
     const code = typeof body?.code === "string" ? body.code.replace(/\s+/g, "") : "";
     if (!code) return NextResponse.json({ error: "Enter the code from your authenticator app.", code: "TWO_FACTOR_REQUIRED" }, { status: 401 });

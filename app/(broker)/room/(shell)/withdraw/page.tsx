@@ -38,6 +38,8 @@ export default function RoomWithdraw() {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ type: "BANK_TRANSFER", bank: "", account: "", swift: "", address: "" });
   const [addMsg, setAddMsg] = useState("");
+  const [addNeedsCode, setAddNeedsCode] = useState(false);
+  const [addCode, setAddCode] = useState("");
   const offered = useMemo(() => NETWORKS.filter((n) => funds?.methods.some((m) => m.type === n.type)), [funds]);
 
   async function submit() {
@@ -58,9 +60,12 @@ export default function RoomWithdraw() {
 
   async function addMethod() {
     setAddMsg("");
-    const res = await fetch("/api/room/payout-methods", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+    const res = await fetch("/api/room/payout-methods", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, ...(addNeedsCode ? { code: addCode } : {}) }) });
     const body = await res.json().catch(() => null);
+    if (body?.code === "TWO_FACTOR_REQUIRED") setAddNeedsCode(true);
     if (!res.ok) { setAddMsg(body?.error ?? "Could not save."); return; }
+    setAddNeedsCode(false);
+    setAddCode("");
     if (funds) setFunds({ ...funds, payoutMethods: body.payoutMethods });
     setPayoutId(body.payoutMethods[body.payoutMethods.length - 1]?.id ?? "");
     setAdding(false);
@@ -127,6 +132,12 @@ export default function RoomWithdraw() {
                   )}
                 </div>
                 <div style={{ fontSize: 11.5, color: "var(--r-muted)" }}>Account holder: {data?.client.fullName}. Accounts in another name are refused.</div>
+                {addNeedsCode ? (
+                  <div className="r-field" style={{ maxWidth: 220 }}>
+                    <label htmlFor="pmcode" style={label}>Authenticator code</label>
+                    <input id="pmcode" className="r-input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={addCode} onChange={(e) => setAddCode(e.target.value.replace(/\D/g, ""))} />
+                  </div>
+                ) : null}
                 {addMsg ? <div className="r-error">{addMsg}</div> : null}
                 <div style={{ display: "flex", gap: 10 }}>
                   <button type="button" className="r-btn r-btn-sm" onClick={addMethod}>Save method</button>
