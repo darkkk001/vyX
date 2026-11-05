@@ -15,7 +15,7 @@
 
 import type { NextFunction, Request, Response } from "express";
 import { internalSecretOk } from "./internal-secret.js";
-import { checkRateLimitLocal } from "./rate-limit.js";
+import { checkRateLimitLocal, countRateLimitRejection } from "./rate-limit.js";
 
 const WINDOW_SECONDS = 60;
 
@@ -49,6 +49,11 @@ export function edgeRateLimit(limitPerMinute: number) {
       next();
       return;
     }
+    // Counted and logged for the same reason the per-account limiter is: a refusal that leaves no trace
+    // makes "how many requests did we turn away" unanswerable, and an empty grep then reads as "none".
+    // Bucket "edge" keeps it distinguishable from the per-account buckets in /internal/gateway-stats.
+    countRateLimitRejection("edge");
+    console.warn(`[rate-limit] 429 bucket=edge ip=${ip} limit=${limitPerMinute}/${WINDOW_SECONDS}s path=${req.method} ${req.originalUrl}`);
     res.setHeader("Retry-After", String(WINDOW_SECONDS));
     res.status(429).json({ error: "too many requests, slow down" });
   };

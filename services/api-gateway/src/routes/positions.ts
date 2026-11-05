@@ -26,10 +26,21 @@ const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? "";
 type ModifyPositionBody = z.infer<typeof modifyPositionSchema>;
 type ClosePositionBody = z.infer<typeof closePositionSchema>;
 
+// SL/TP EDITS DO NOT SHARE THE OPENS' BUDGET EITHER.
+//
+// Same defect as the close route had: this keyed `order:<accountId>` at 30/60s, so editing stops on a
+// basket of positions spent the allowance that placing orders needs -- and a trader dragging an SL across
+// twenty positions is making twenty requests without placing a single order. Changing protective stops is
+// also risk-REDUCING work, so throttling it at the same rate as order entry has the priority backwards.
+//
+// Its own bucket, same generous budget as closes: enough that no real SL/TP editing reaches it, still a
+// backstop against a client stuck in a modify loop.
+const MODIFY_RATE_LIMIT_PER_MINUTE = 600;
+
 router.post(
   "/:id/modify",
   requireTraderSession,
-  rateLimitOrders(30, 60),
+  rateLimitOrders(MODIFY_RATE_LIMIT_PER_MINUTE, 60, "modify"),
   validateBody(modifyPositionSchema),
   async (req: AuthedRequest, res) => {
     const body = req.body as ModifyPositionBody;

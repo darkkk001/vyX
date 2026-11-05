@@ -62,6 +62,16 @@ export function checkRateLimitLocal(key: string, limit: number, windowSeconds: n
 // trade checkRateLimitLocal already makes.
 const rejections = new Map<string, number>();
 
+/**
+ * Count one refusal against `bucket`. Exported because the per-IP edge limiter (edge-rate-limit.ts)
+ * refuses requests too, by calling checkRateLimitLocal directly rather than going through
+ * rateLimitOrders -- so without this it would be a second 429 source that reports nothing, which is the
+ * exact blind spot this accounting was added to remove. One counter, every refusal, whoever refused it.
+ */
+export function countRateLimitRejection(bucket: string): void {
+  rejections.set(bucket, (rejections.get(bucket) ?? 0) + 1);
+}
+
 /** 429 counts for /internal/gateway-stats: a total, plus one entry per bucket ("order", "close", ...). */
 export function rateLimitStats(): { rateLimited: { total: number; byBucket: Record<string, number> } } {
   const byBucket: Record<string, number> = {};
@@ -93,7 +103,7 @@ export function rateLimitOrders(limit: number, windowSeconds: number, bucket = "
     const { allowed, remaining } = checkRateLimitLocal(`${bucket}:${accountId}`, limit, windowSeconds);
     res.setHeader("X-RateLimit-Remaining", String(remaining));
     if (!allowed) {
-      rejections.set(bucket, (rejections.get(bucket) ?? 0) + 1);
+      countRateLimitRejection(bucket);
       console.warn(
         `[rate-limit] 429 bucket=${bucket} account=${accountId} limit=${limit}/${windowSeconds}s path=${req.method} ${req.originalUrl}`
       );

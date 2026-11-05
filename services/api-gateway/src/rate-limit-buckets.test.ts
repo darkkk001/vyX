@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rateLimitOrders, rateLimitStats, checkRateLimitLocal } from "./rate-limit.js";
+import { rateLimitOrders, rateLimitStats, checkRateLimitLocal, countRateLimitRejection } from "./rate-limit.js";
 
 // The close route used to share the opens' budget (both called rateLimitOrders(30, 60), both keying
 // `order:<accountId>`), so a basket of opens followed by its closes spent one 30-request allowance twice
@@ -105,4 +105,33 @@ test("the close budget is large enough for a realistic bulk close", async () => 
     const r = await run(closes, acct);
     assert.equal(r.nexted, true, `close ${i + 1} of 60 must not be refused`);
   }
+});
+
+test("the three real buckets -- order, close, modify -- are mutually independent", async () => {
+  const acct = "acct-three-buckets";
+  // the real mount points: orders.ts uses 30/60 on the default "order" bucket, positions.ts uses
+  // 600/60 on "close" and on "modify". Exhausting any one must leave the other two whole, because the
+  // whole point is that order entry cannot starve risk-reducing actions.
+  const opens = rateLimitOrders(1, 60, "order");
+  const closes = rateLimitOrders(1, 60, "close");
+  const modifies = rateLimitOrders(1, 60, "modify");
+
+  assert.equal((await run(opens, acct)).nexted, true);
+  assert.equal((await run(opens, acct)).status, 429, "opens exhausted");
+
+  assert.equal((await run(closes, acct)).nexted, true, "close unaffected by the opens budget");
+  assert.equal((await run(modifies, acct)).nexted, true, "modify unaffected by the opens budget");
+
+  // and closes must not starve modifies either
+  assert.equal((await run(closes, acct)).status, 429, "closes exhausted");
+  assert.equal((await run(modifies, acct)).status, 429, "modifies exhausted independently, not by closes");
+});
+
+test("countRateLimitRejection feeds the same stats the edge limiter reports through", () => {
+  const before = rateLimitStats().rateLimited;
+  countRateLimitRejection("edge");
+  countRateLimitRejection("edge");
+  const after = rateLimitStats().rateLimited;
+  assert.equal(after.byBucket["edge"], (before.byBucket["edge"] ?? 0) + 2);
+  assert.equal(after.total, before.total + 2);
 });

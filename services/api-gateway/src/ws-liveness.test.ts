@@ -62,7 +62,12 @@ test("traffic pushes the keepalive back: none while events flow, one after they 
   const lastEvent = p.frames[p.frames.length - 1].at;
   await sleep(IDLE_MS + 150);
   const keepalives = p.frames.filter((f) => f.msg.type === "keepalive");
-  assert.equal(keepalives.length, 1);
+  // >= 1, not == 1. The invariant under test is "the keepalive timer restarts from the last event, so one
+  // arrives once traffic stops" -- not "exactly one arrives in this particular sleep". On a loaded box the
+  // sleep below can overshoot the idle period far enough for a second keepalive to be due, and asserting
+  // the exact count turned that into a flake that fails the whole suite for a reason unrelated to the
+  // behaviour. Observed failing as `2 !== 1` on 2026-11-05 while the same file passed in isolation.
+  assert.ok(keepalives.length >= 1, `expected at least one keepalive after the idle period, got ${keepalives.length}`);
   assert.ok(keepalives[0].at - lastEvent >= IDLE_MS - 20, "keepalive counts from the last event");
   await p.close();
 });
