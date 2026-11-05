@@ -20,6 +20,7 @@ beforeAll(async () => {
   try { await prisma.$queryRaw`SELECT 1`; dbReachable = true; } catch { console.warn("two-factor-money.test.ts: DB unreachable, skipping"); return; }
   brokerId = (await prisma.broker.create({ data: { name: `Tf ${s}`, subdomain: `tf-${s}` } })).id;
   groupId = (await prisma.group.create({ data: { brokerId, name: "g", leverage: 100 } })).id;
+  await prisma.paymentMethod.create({ data: { brokerId, type: "BANK_TRANSFER", enabled: true } });
 });
 afterAll(async () => { if (dbReachable) await prisma.$disconnect(); });
 
