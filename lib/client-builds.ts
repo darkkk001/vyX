@@ -190,7 +190,20 @@ export type ClientManifest = {
   minVersion: string;
   iat: number;
   exp: number;
+  /// Additive (2026-11-05, gateway exec): the host a terminal may send market opens and full closes to, and the broker id the gateway
+  /// wants in x-broker-id. Both sit inside the signed payload. Absent = the terminal never uses the gateway. Older clients ignore them.
+  execHost?: string;
+  brokerId?: string;
 };
+
+/// Terminal manifests carry the gateway exec host and the broker id (signed with the rest). Other apps get nothing extra.
+/// CLIENT_MANIFEST_EXEC_HOST overrides the host; set it to an empty string to switch the field off without a code change.
+export function manifestExecFields(app: string, brokerId: string): { execHost?: string; brokerId?: string } {
+  if (app !== "terminal") return {};
+  const host = (process.env.CLIENT_MANIFEST_EXEC_HOST ?? "feed.vyxtrader.com").trim().toLowerCase();
+  if (!host) return {};
+  return { execHost: host, brokerId };
+}
 
 /// {manifest (base64 of the JSON), signature (base64, ECDSA P-256 / SHA-256, IEEE P1363 r||s)}.
 /// The private key is CLIENT_MANIFEST_PRIVATE_KEY (PKCS#8 PEM); the matching public key is compiled
