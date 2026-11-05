@@ -17,6 +17,7 @@ import { withDeadlockRetry } from "@/lib/tx-retry";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { loadAccountMarginState, evaluatePreTradeMargin } from "@/lib/margin";
+import { resolveOpenLeverage } from "@/lib/hmr";
 import { runAfterResponse } from "@/lib/after-response";
 import { positionDto, POSITION_DTO_INCLUDE } from "@/lib/position-dto";
 import { recordOrderAckLatency } from "@/lib/order-latency";
@@ -378,6 +379,9 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
     type === "MARKET" && pricingInput ? resolveFillPricing(prisma, pricingInput) : Promise.resolve(null),
     loadAccountMarginState(prisma, session.accountId, account.leverage, [brokerSymbol.symbol.quoteCurrency], session.brokerId),
   ]);
+  // HMR plugin (owner 2026-11-06): the leverage this NEW position opens with = min(account, group maximum, every active
+  // HMR window touching the symbol). It is the leverage of the margin check below and is stored on the position.
+  const openLev = await resolveOpenLeverage(prisma, { brokerId: session.brokerId, accountLeverage: account.leverage, groupMax: account.group?.leverage ?? null, symbol: brokerSymbol.symbol.name });
   const asyncRiskError = riskResults.find((e) => e != null) ?? null;
   if (asyncRiskError) return riskResponse(asyncRiskError);
 
@@ -386,7 +390,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
   const marginGate = (fillPrice: Prisma.Decimal) =>
     marginState
       ? evaluatePreTradeMargin(marginState, {
-          leverage: account.leverage,
+          leverage: openLev.leverage,
+          newOrderHmr: openLev.hmr,
           marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
           newOrderContractSize: brokerSymbol.symbol.contractSize,
           newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
@@ -646,7 +651,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
           const marginError = marginGate(fillPrice);
           if (!marginError) {
             const position = await withDeadlockRetry(() => prisma.$transaction(async (tx) => {
-              const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", executionMode: "AUTO" });
+              const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", executionMode: "AUTO", openLeverage: openLev.openLeverage });
               await tx.auditLog.create({
                 data: {
                   brokerId: session.brokerId,
@@ -841,6 +846,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             slAmount,
             tpAmount,
             bookType,
+            openLeverage: openLev.openLeverage,
           },
         });
         const balanceAfter = await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: fillPricing.commissionPerLot, volume });

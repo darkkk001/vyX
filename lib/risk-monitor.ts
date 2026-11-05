@@ -64,6 +64,8 @@ type OpenPositionWithMarket = {
   fxRate: Prisma.Decimal;
   // MT5 hedged margin (2026-09-25): BrokerSymbol.hedgedMarginPct of this position's symbol (200 = no reduction).
   hedgedMarginPct: Prisma.Decimal;
+  // HMR plugin: the leverage this position was margined with when it opened; null = the account's (margin leverage = openLeverage ?? account.leverage)
+  openLeverage: number | null;
 };
 
 async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPositionWithMarket[]> {
@@ -147,6 +149,7 @@ async function loadMarketBook(accountIds: string[]): Promise<Map<string, OpenPos
       // THIS account's ask -- a SELL's close price, SL / TP level and stop-out
       ask: live ? markedUpAsk(askRule, live.bid, live.ask) : null,
       hedgedMarginPct: hedgedPctBySymbol.get(key(p.brokerId, p.symbol.name)) ?? DEFAULT_HEDGED_MARGIN_PCT,
+      openLeverage: p.openLeverage,
     });
   }
   return byAccount;
@@ -203,7 +206,7 @@ function measureAccount(account: { balance: Prisma.Decimal; credit: Prisma.Decim
     const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(p.fxRate);
     equity = equity.add(pnl);
     // p.bid / p.ask are already THIS account's prices (both marked, see the row built in loadRiskBook)
-    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, accountBid: p.bid, accountAsk: p.ask, leverage: account.leverage }).mul(p.fxRate), hedgedMarginPct: p.hedgedMarginPct });
+    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, accountBid: p.bid, accountAsk: p.ask, leverage: p.openLeverage ?? account.leverage }).mul(p.fxRate), hedgedMarginPct: p.hedgedMarginPct });
     if (!worst || pnl.lt(worst.pnl)) worst = { position: p, pnl, closePrice: cp };
   }
   // hedged per symbol (lib/margin.ts hedgedUsedMargin); the stop-out still closes the LARGEST LOSS first (MT5),

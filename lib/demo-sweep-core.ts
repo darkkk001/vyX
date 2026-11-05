@@ -40,6 +40,8 @@ export type SimPos = {
   quoteCurrency: string;
   openedMs: number;
   hedgedMarginPct: Prisma.Decimal;
+  /** HMR plugin: the leverage this position opened with; absent / null = the account's */
+  openLeverage?: number | null;
 };
 
 export type SimOrder = {
@@ -154,7 +156,7 @@ function measure(acct: SimAccount, positions: SimPos[], q: TickQuotes): Measure 
     equity = equity.add(pnl);
     // the demo's quotes ARE the account's prices: the deterministic demo path carries no broker markup
     // (lib/demo-client.ts reports askMarkup "0"), so symmetric markup leaves both sides unchanged here
-    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, accountBid: bid, accountAsk: ask, leverage: acct.leverage }).mul(rate), hedgedMarginPct: p.hedgedMarginPct });
+    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, accountBid: bid, accountAsk: ask, leverage: p.openLeverage ?? acct.leverage }).mul(rate), hedgedMarginPct: p.hedgedMarginPct });
     if (!worst || pnl.lt(worst.pnl)) worst = { pos: p, pnl, closePrice: cp };
   }
   const used = hedgedUsedMargin(legs);
@@ -176,8 +178,9 @@ function slackEstimate(acct: SimAccount, positions: SimPos[], q: TickQuotes): { 
     const cp = (p.side === "BUY" ? qt.bidPts : qt.askPts) / info.pow;
     const units = p.volume.toNumber() * p.contractSize.toNumber();
     equity += (p.side === "BUY" ? cp - p.openPrice.toNumber() : p.openPrice.toNumber() - cp) * units * rate;
-    used += (units * cp * rate) / acct.leverage;
-    delta += units * info.rateBound * info.maxPriceMovePerTick * (1 + so / acct.leverage);
+    const lev = p.openLeverage ?? acct.leverage;
+    used += (units * cp * rate) / lev;
+    delta += units * info.rateBound * info.maxPriceMovePerTick * (1 + so / lev);
   }
   return { s: equity - so * used, scale: Math.abs(equity) + used, deltaPerTick: delta * 1.05 };
 }

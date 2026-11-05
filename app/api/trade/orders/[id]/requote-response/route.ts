@@ -12,6 +12,7 @@ import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { orderAuditFields } from "@/lib/order-audit";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { resolveOpenLeverage } from "@/lib/hmr";
 import { expireIfStale, OFFER_EXPIRED } from "@/lib/order-expiry";
 import { Prisma } from "@prisma/client";
 import {
@@ -223,9 +224,11 @@ async function postInner(request: NextRequest, { params }: { params: Promise<{ i
   const fillPrice = applySpreadMarkup({ side: order.side, price: order.requotedPrice!, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
   // Audit 2026-09-24 (money): accepting a requote is a fill like any other, so it passes the same pre-trade margin
   // gate as a direct order (the account may have changed since it was queued).
+  const openLev = await resolveOpenLeverage(prisma, { brokerId: order.brokerId, accountLeverage: account.leverage, groupMax: account.group?.leverage ?? null, symbol: brokerSymbol.symbol.name }); // HMR plugin (lib/hmr.ts)
   const marginError = await checkAccountPreTradeMargin(prisma, {
     accountId: account.id,
-    leverage: account.leverage,
+    leverage: openLev.leverage,
+    newOrderHmr: openLev.hmr,
     marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
     newOrderContractSize: brokerSymbol.symbol.contractSize,
     newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
@@ -247,7 +250,7 @@ async function postInner(request: NextRequest, { params }: { params: Promise<{ i
       });
       if (claimed.count === 0) throw new Error("RACED");
 
-      const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", executionMode: "DEALER" });
+      const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", executionMode: "DEALER", openLeverage: openLev.openLeverage });
 
       await tx.auditLog.create({
         data: {

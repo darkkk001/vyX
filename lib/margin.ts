@@ -5,6 +5,7 @@ import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
 import { markedDownBid, markedUpAsk, NO_MARKUP } from "@/lib/ask-markup";
 import { closeAskRulesCached } from "@/lib/ask-markup-cache";
+import { hmrRefusalText } from "@/lib/hmr";
 
 export type AccountMarginSnapshot = {
   accountId: string;
@@ -84,7 +85,7 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
       const accountAsk = markedUpAsk(rule, live.bid, live.ask);
       const currentPrice = closePriceFor(p.side, accountBid, accountAsk);
       acc.floating = acc.floating.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate));
-      const margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, accountBid, accountAsk, leverage: p.account.leverage }).mul(rate);
+      const margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, accountBid, accountAsk, leverage: p.openLeverage ?? p.account.leverage }).mul(rate); // HMR: a position keeps the leverage it opened with
       const legs = legsByAccount.get(p.account.id) ?? [];
       legs.push({ symbolKey: p.symbolId, side: p.side, volume: p.volume, margin, hedgedMarginPct: hedgedPct.get(p.symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT });
       legsByAccount.set(p.account.id, legs);
@@ -257,7 +258,7 @@ export function checkPreTradeMargin(params: {
 // "NO_CONVERSION_RATE" (2026-09-23): the new order's symbol, or one already open, is quoted in a currency
 // other than the account's and no price exists to convert it with (lib/fx.ts). Margin cannot be known, so
 // the order is refused rather than sized as if JPY were USD.
-export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFICIENT_MARGIN" | "NO_CONVERSION_RATE"; required: string | null; available: string | null; balance: string }; // null: cannot be valued now (NO_CONVERSION_RATE)
+export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFICIENT_MARGIN" | "NO_CONVERSION_RATE"; required: string | null; available: string | null; balance: string; /** HMR plugin: set when a window set the leverage of this order and the order was refused on margin */ hmrMessage?: string }; // null: cannot be valued now (NO_CONVERSION_RATE)
 
 // DB-touching wrapper around checkPreTradeMargin above -- computes this
 // one account's current equity/used-margin (same per-position formulas
@@ -303,7 +304,7 @@ export async function loadAccountMarginState(
     prisma.account.findUniqueOrThrow({ where: { id: accountId }, select: { balance: true, credit: true, currency: true, brokerId: true } }),
     prisma.position.findMany({
       where: { accountId, status: "OPEN" },
-      select: { side: true, volume: true, openPrice: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
+      select: { side: true, volume: true, openPrice: true, symbolId: true, openLeverage: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
     }),
     brokerId ? loadHedgedMarginPct(prisma, brokerId) : Promise.resolve(null),
   ]);
@@ -343,12 +344,12 @@ export async function loadAccountMarginState(
       const accountBid = markedDownBid(rule, live.bid, live.ask);
       const accountAsk = markedUpAsk(rule, live.bid, live.ask);
       const currentPrice = closePriceFor(p.side, accountBid, accountAsk);
-      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, accountBid, accountAsk, leverage }).mul(rate);
+      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, accountBid, accountAsk, leverage: p.openLeverage ?? leverage }).mul(rate); // HMR: openLeverage ?? account leverage
       equity = equity.add(
         computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );
     } else {
-      margin = requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, leverage).mul(rate);
+      margin = requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, p.openLeverage ?? leverage).mul(rate);
     }
     legs.push({ symbolKey: p.symbolId, side: p.side, volume: p.volume, margin, hedgedMarginPct: pctFor(p.symbolId) });
   }
@@ -368,6 +369,8 @@ export async function checkAccountPreTradeMargin(
     /** Hedged margin (2026-09-25): the new order's side and symbol decide how much of it offsets open positions. */
     newOrderSide: "BUY" | "SELL";
     newOrderSymbolId: string;
+    /** HMR plugin: the window behind `leverage` (lib/hmr.ts OpenLeverage.hmr); named in a margin refusal. */
+    newOrderHmr?: { currency: string; endsAt: Date; leverage: number; symbol: string } | null;
   }
 ): Promise<PreTradeMarginRejection | null> {
   const state = await loadAccountMarginState(prisma, params.accountId, params.leverage, [params.newOrderQuoteCurrency]);
@@ -392,6 +395,7 @@ export function evaluatePreTradeMargin(
     newOrderQuoteCurrency: string;
     newOrderSide: "BUY" | "SELL";
     newOrderSymbolId: string;
+    newOrderHmr?: { currency: string; endsAt: Date; leverage: number; symbol: string } | null;
   }
 ): PreTradeMarginRejection | null {
   const { account, equity, usedMargin, legs, pctFor } = state;
@@ -417,6 +421,7 @@ export function evaluatePreTradeMargin(
     required: requiredMargin.toFixed(2),
     available: equity.sub(usedMargin).toFixed(2),
     balance: account.balance.toFixed(2),
+    ...(params.newOrderHmr ? { hmrMessage: hmrRefusalText(params.newOrderHmr) } : {}),
   };
 }
 

@@ -13,6 +13,7 @@ import { recordDealerActivity } from "@/lib/dealer-activity";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { resolveOpenLeverage } from "@/lib/hmr";
 import { orderAuditFields } from "@/lib/order-audit";
 import { assertRiskActorInTx, loadRiskOwners, NotRiskOwnerError } from "@/lib/risk-owner";
 import type { RiskOwner } from "@/lib/risk-authority";
@@ -84,7 +85,8 @@ async function rejectPending(
   accountNumber: string,
   reason: string,
   origin: "server" | "client",
-  actor?: RiskOwner
+  actor?: RiskOwner,
+  note?: string
 ): Promise<boolean> {
   const done = await prisma.$transaction(async (tx) => {
     if (actor) await assertRiskActorInTx(tx, order.accountId, actor);
@@ -109,7 +111,7 @@ async function rejectPending(
     type: "PENDING_ORDER_REJECTED",
     title: `Pending order rejected: ${order.symbol.name}`,
     // step 2: the reason is a sentence, never a machine code (LP_NOT_CONNECTED, INSUFFICIENT_MARGIN...); lib/plain-error.ts
-    body: `Your ${order.side} ${order.type} ${order.volume.toFixed(2)} ${order.symbol.name}${order.requestedPrice ? ` at ${order.requestedPrice.toString()}` : ""} reached its price but could not be filled. ${withStop(plainError(reason, "It was rejected."))}`,
+    body: `Your ${order.side} ${order.type} ${order.volume.toFixed(2)} ${order.symbol.name}${order.requestedPrice ? ` at ${order.requestedPrice.toString()}` : ""} reached its price but could not be filled. ${withStop(plainError(reason, "It was rejected."))}${note ? ` ${withStop(note)}` : ""}`,
     entityType: "Order",
     entityId: order.id,
   }).catch((err) => console.error("[pending-trigger] notification failed", err));
@@ -155,7 +157,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
 
   const fail = async (reason: string, detail?: Record<string, string>): Promise<TriggerOutcome> => {
     if (isTransient(reason)) return { kind: "kept", reason };
-    const rejected = await rejectPending(order, account.accountNumber, reason, origin, actor);
+    const rejected = await rejectPending(order, account.accountNumber, reason, origin, actor, detail?.hmrMessage); // HMR plugin: the notification names the window
     return rejected ? { kind: "rejected", reason, detail } : { kind: "skipped", reason: "already handled" };
   };
 
@@ -276,9 +278,13 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
     // the market jumped past the entry: MT5 fills at the next price; here the order waits for the next pass
     return { kind: "kept", reason: slippageError };
   }
+  // HMR plugin (owner 2026-11-06): a pending order that fills during a window is a NEW position, so the windows active now
+  // (at the fill, not at the order's placement) set its leverage, for this margin check and for Position.openLeverage
+  const openLev = await resolveOpenLeverage(prisma, { brokerId: order.brokerId, accountLeverage: account.leverage, groupMax: account.group?.leverage ?? null, symbol: order.symbol.name });
   const marginError = await checkAccountPreTradeMargin(prisma, {
     accountId: order.accountId,
-    leverage: account.leverage,
+    leverage: openLev.leverage,
+    newOrderHmr: openLev.hmr,
     marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
     newOrderContractSize: brokerSymbol.symbol.contractSize,
     newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
@@ -287,7 +293,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
     newOrderSide: order.side,
     newOrderSymbolId: order.symbolId,
   });
-  if (marginError) return fail(marginError.error, marginError.required != null && marginError.available != null ? { required: marginError.required, available: marginError.available } : undefined);
+  if (marginError) return fail(marginError.error, marginError.required != null && marginError.available != null ? { required: marginError.required, available: marginError.available, ...(marginError.hmrMessage ? { hmrMessage: marginError.hmrMessage } : {}) } : undefined);
 
   const bookType = resolveBookType(account.group.category);
   const result = await prisma.$transaction(async (tx) => {
@@ -311,6 +317,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
         slAmount: order.slAmount,
         tpAmount: order.tpAmount,
         bookType,
+        openLeverage: openLev.openLeverage,
       },
     });
     await chargeCommission(tx, { brokerId: order.brokerId, accountId: order.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume: order.volume });

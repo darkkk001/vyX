@@ -41,7 +41,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
   const [posRows, orderRows, hedgedPct] = await Promise.all([
     prisma.position.findMany({
       where: { accountId, status: "OPEN" },
-      select: { id: true, side: true, volume: true, openPrice: true, slPrice: true, tpPrice: true, slAmount: true, tpAmount: true, openedAt: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
+      select: { id: true, side: true, volume: true, openPrice: true, slPrice: true, tpPrice: true, slAmount: true, tpAmount: true, openedAt: true, openLeverage: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
     }),
     prisma.order.findMany({
       where: { accountId, status: "PENDING", type: { in: ["LIMIT", "STOP"] }, requestedPrice: { not: null }, closesPositionId: null },
@@ -56,7 +56,7 @@ export async function sweepDemoAccount(accountId: string, nowMs: number = Date.n
     symbolIdByName.set(p.symbol.name, p.symbolId);
     positions.push({
       id: p.id, side: p.side, volume: p.volume, openPrice: p.openPrice, slPrice: p.slPrice, tpPrice: p.tpPrice, slAmount: p.slAmount, tpAmount: p.tpAmount, symbol: p.symbol.name,
-      contractSize: p.symbol.contractSize, quoteCurrency: p.symbol.quoteCurrency, openedMs: p.openedAt.getTime(), hedgedMarginPct: hedgedPct.get(p.symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT,
+      contractSize: p.symbol.contractSize, quoteCurrency: p.symbol.quoteCurrency, openedMs: p.openedAt.getTime(), hedgedMarginPct: hedgedPct.get(p.symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT, openLeverage: p.openLeverage,
     });
   }
   const orders: SimOrder[] = [];

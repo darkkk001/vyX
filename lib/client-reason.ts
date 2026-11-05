@@ -71,7 +71,7 @@ export function clientReasonFor(internal: Internal): ClientReason {
 // clientReason stays INVALID_SLTP (one of the eleven) and `message` / `amountCode` carry the exact reason.
 const AMOUNT_CODES = new Set(["AMOUNT_SLTP_NOT_AVAILABLE", "AMOUNT_INVALID", "AMOUNT_BOTH_UNITS", "AMOUNT_ALREADY_REACHED", "AMOUNT_INSIDE_SPREAD", "NO_CONVERSION_RATE"]);
 
-const SAFE_EXTRAS = ["nextOpenAt", "retryAfterSeconds", "orderId", "required", "available", "balance", "serverPrice", "rejected", "pending"] as const;
+const SAFE_EXTRAS = ["nextOpenAt", "retryAfterSeconds", "orderId", "required", "available", "balance", "serverPrice", "rejected", "pending", "hmrMessage"] as const;
 
 /** A refusal answer cut to what a client may see. CLOSE_PENDING is a state the client acts on (the close awaiting the
  *  dealer, with its order id), not a reason: it keeps its code. */
@@ -83,7 +83,10 @@ export function clientRefusal(internal: Record<string, unknown>): Record<string,
   }
   const clientReason = clientReasonFor(internal);
   // the rate limit's own sentence is already plain and says when to try again
-  const message = CLIENT_REASON_TEXT[clientReason];
+  // HMR plugin (owner 2026-11-06): a margin refusal caused by a window names it ("HMR in effect for USD until 14:30 UTC: leverage 1:20 on
+  // new XAUUSD positions") -- window facts the trader is entitled to, so it joins the plain sentence (installed terminals show `error`)
+  const hmr = clientReason === "NOT_ENOUGH_MARGIN" && typeof internal.hmrMessage === "string" && internal.hmrMessage ? internal.hmrMessage : null;
+  const message = hmr ? `${CLIENT_REASON_TEXT[clientReason]}. ${hmr}` : CLIENT_REASON_TEXT[clientReason];
   const out: Record<string, unknown> = {
     // MARKET_CLOSED keeps its code: installed terminals turn it (+ nextOpenAt) into "Market closed, opens ..."
     error: clientReason === "MARKET_CLOSED" ? "MARKET_CLOSED" : message,

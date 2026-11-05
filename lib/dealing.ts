@@ -38,7 +38,8 @@ export async function openPositionFromOrder(
   // the IN deal's reason (docs/POSITION-DEAL-MODEL.md): DEALER for a dealer-queue fill, MIRROR for a mirror copy.
   // executionMode (lib/order-execution.ts): DEALER when a dealer's hand decided the fill (an accept, or a requote the client
   // took), AUTO otherwise (smart dealer, desk-off flush, mirror); by default DEALER exactly when a staff member is named.
-  deal: { reason: DealReason; adminId?: string | null; executionMode?: ExecutionMode }
+  // openLeverage: the HMR plugin's effective leverage for this open (lib/hmr.ts), null = the account's.
+  deal: { reason: DealReason; adminId?: string | null; executionMode?: ExecutionMode; openLeverage?: number | null }
 ) {
   const now = new Date();
   await tx.order.update({
@@ -59,6 +60,7 @@ export async function openPositionFromOrder(
       slAmount: order.slAmount,
       tpAmount: order.tpAmount,
       bookType,
+      openLeverage: deal.openLeverage ?? null,
     },
   });
   await chargeCommission(tx, {

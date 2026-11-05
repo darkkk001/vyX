@@ -46,13 +46,17 @@ const CODES: Record<string, string | ((c: Ctx) => string)> = {
   INSUFFICIENT_MARGIN: (c) => {
     const req = bodyStr(c.body, "required");
     const avail = bodyStr(c.body, "available");
-    return req && avail ? `Not enough free margin: this order needs ${req}, ${avail} is free.` : "Not enough free margin for this order.";
+    const base = req && avail ? `Not enough free margin: this order needs ${req}, ${avail} is free.` : "Not enough free margin for this order.";
+    const hmr = bodyStr(c.body, "hmrMessage"); // HMR plugin: the window that raised this order's margin (lib/hmr.ts hmrRefusalText)
+    return hmr ? `${base} ${hmr}.` : base;
   },
   INSUFFICIENT_FREE_MARGIN: "Not enough free margin for this order.",
   INSUFFICIENT_BALANCE: (c) => {
     const req = bodyStr(c.body, "required");
     const bal = bodyStr(c.body, "balance");
-    return req && bal ? `Not enough balance: this order needs ${req}, the balance is ${bal}.` : "Not enough balance for this order.";
+    const base = req && bal ? `Not enough balance: this order needs ${req}, the balance is ${bal}.` : "Not enough balance for this order.";
+    const hmr = bodyStr(c.body, "hmrMessage");
+    return hmr ? `${base} ${hmr}.` : base;
   },
   NO_CONVERSION_RATE: "No conversion rate for this currency right now. Try again in a moment.",
   NO_LIVE_FEED: "No live price for this symbol right now. Try again shortly.",

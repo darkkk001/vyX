@@ -16,6 +16,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { resolveOpenLeverage } from "@/lib/hmr";
 import { Prisma } from "@prisma/client";
 import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
 import {
@@ -262,9 +263,11 @@ async function flushDealingQueueToMarket(
     const fillPrice = applySpreadMarkup({ side: order.side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
     // Audit 2026-09-24 (money): the same pre-trade margin gate as a direct fill; an order that fails it is left in
     // the queue (skipped, with the reason), the same as a risk-battery failure above.
+    const openLev = await resolveOpenLeverage(prisma, { brokerId, accountLeverage: order.account.leverage, groupMax: order.account.group?.leverage ?? null, symbol: order.symbol.name }); // HMR plugin (lib/hmr.ts)
     const marginError = await checkAccountPreTradeMargin(prisma, {
       accountId: order.accountId,
-      leverage: order.account.leverage,
+      leverage: openLev.leverage,
+      newOrderHmr: openLev.hmr,
       marginCallLevel: order.account.group?.marginCallLevel ?? new Prisma.Decimal(100),
       newOrderContractSize: order.symbol.contractSize,
       newOrderQuoteCurrency: order.symbol.quoteCurrency,
@@ -283,7 +286,7 @@ async function flushDealingQueueToMarket(
       const position = await prisma.$transaction(async (tx) => {
         const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "ACCEPTED" } });
         if (claimed.count === 0) throw new Error("RACED");
-        const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER" });
+        const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", openLeverage: openLev.openLeverage });
         await tx.auditLog.create({
           data: {
             brokerId,

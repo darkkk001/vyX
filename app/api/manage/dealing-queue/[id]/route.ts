@@ -18,6 +18,7 @@ import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { resolveOpenLeverage } from "@/lib/hmr";
 import { expireIfStale, OFFER_EXPIRED, offerExpiresAt } from "@/lib/order-expiry";
 import {
   checkTradingHalted,
@@ -405,9 +406,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // Audit 2026-09-24 (money): the same pre-trade margin gate as a direct fill. The margin picture can have changed
   // while the order sat in the queue; a dealer accept must not open what the client could not open themselves.
   // A close never reaches here (handled above) and an order that does not raise used margin always passes.
+  // HMR plugin: a dealer accept is a NEW position, so the windows active now set its leverage (lib/hmr.ts)
+  const openLev = await resolveOpenLeverage(prisma, { brokerId: order.brokerId, accountLeverage: order.account.leverage, groupMax: order.account.group?.leverage ?? null, symbol: order.symbol.name });
   const marginError = await checkAccountPreTradeMargin(prisma, {
     accountId: order.accountId,
-    leverage: order.account.leverage,
+    leverage: openLev.leverage,
+    newOrderHmr: openLev.hmr,
     marginCallLevel: order.account.group?.marginCallLevel ?? new Prisma.Decimal(100),
     newOrderContractSize: order.symbol.contractSize,
     newOrderQuoteCurrency: order.symbol.quoteCurrency,
@@ -429,7 +433,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
       if (claimed.count === 0) throw new Error("RACED");
 
-      const position = await openPositionFromOrder(tx, order, markedUpFillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", adminId: session.adminId });
+      const position = await openPositionFromOrder(tx, order, markedUpFillPrice, bookType, pricing.commissionPerLot, { reason: "DEALER", adminId: session.adminId, openLeverage: openLev.openLeverage });
 
       await tx.auditLog.create({
         data: {
