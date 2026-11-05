@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { getClientBuild, signManifest, type ClientManifest } from "@/lib/client-builds";
+import { getClientBuild, manifestExecFields, signManifest, type ClientManifest } from "@/lib/client-builds";
 import { bridgeLicenseExpiries, expiryState } from "@/lib/bridge-licenses";
 
 // GET /api/client/manifest?slug=<broker subdomain>&app=terminal|backoffice&buildId=<id>
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
   // mandatory-update policy (owner 2026-10-29): the broker's minimum for this app, inside the signed payload ("" = none); a blocked client still gets
   // this manifest and the feed, so it can update
   const minRow = await prisma.brokerAppMinVersion.findUnique({ where: { brokerId_app: { brokerId: broker.id, app } }, select: { minVersion: true } });
-  const manifest: ClientManifest = { slug: broker.subdomain, apiHost: `${broker.subdomain}.${rootDomain}`, app, buildId, status: expiredBridge ? "EXPIRED" : status, minVersion: minRow?.minVersion ?? "", iat: now, exp: now + 24 * 3600 };
+  const manifest: ClientManifest = { slug: broker.subdomain, apiHost: `${broker.subdomain}.${rootDomain}`, app, buildId, status: expiredBridge ? "EXPIRED" : status, minVersion: minRow?.minVersion ?? "", iat: now, exp: now + 24 * 3600, ...manifestExecFields(app, broker.id) };
   try {
     return NextResponse.json(signManifest(manifest), { headers: { "cache-control": "no-store" } });
   } catch (err) {
