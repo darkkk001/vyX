@@ -80,7 +80,7 @@ export async function computeBadges(viewer: BadgeViewer): Promise<BadgeCounts> {
       ${count("LAR", Prisma.sql`SELECT count(*) FROM "LiveAccountRequest" WHERE "brokerId" = ${brokerId} AND status = 'PENDING'`)} AS lar,
       ${count("DEP", Prisma.sql`SELECT count(*) FROM "Transaction" WHERE "brokerId" = ${brokerId} AND type IN ('DEPOSIT', 'WITHDRAWAL') AND status = 'PENDING'`)} AS dep,
       (SELECT count(*) FROM "Notification" n
-        WHERE n."brokerId" = ${brokerId} AND n."accountId" IS NULL AND n."readAt" IS NULL
+        WHERE n."brokerId" = ${brokerId} AND n."accountId" IS NULL AND n."clientId" IS NULL AND n."readAt" IS NULL
           AND NOT EXISTS (SELECT 1 FROM "NotificationRead" r WHERE r."notificationId" = n.id AND r."adminId" = ${adminId}))::int AS unread`;
   // RDR is role-only (every MANAGER and BROKER_ADMIN, never SUPPORT), so the cached radar loads alongside the counts
   const [[row], radar, marks] = await Promise.all([counts, maybe.has("RDR") ? getRiskRadarPayload(brokerId) : null, maybe.has("RDR") ? loadRiskMarks(prisma, brokerId) : null]);

@@ -11,7 +11,7 @@ import { money, dayTime } from "@/components/room/format";
 // verification card, processing card, pending requests.
 const KYC_CARD: Record<string, { status: string; text: string }> = {
   APPROVED: { status: "Approved", text: "Your account is verified. Withdrawal requests go straight to processing." },
-  PENDING: { status: "Pending", text: "Your documents are with your broker. Withdrawals open once they are approved." },
+  PENDING: { status: "Under review", text: "Your documents are with your broker. Withdrawals open once they are approved." },
   REJECTED: { status: "Rejected", text: "Your documents were not accepted. Upload new ones to withdraw." },
   NONE: { status: "Not verified", text: "Complete KYC before your first withdrawal." },
 };

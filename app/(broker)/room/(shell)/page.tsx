@@ -8,7 +8,7 @@ import { money, pnlClass, dayShort, dayTime, greeting } from "@/components/room/
 
 // Artboard "Dashboard": greeting, equity strip of the picked account, account cards, recent transactions,
 // verification card, trade-on card. The tier strip sits under the greeting.
-const KYC_STATUS: Record<string, string> = { APPROVED: "Approved", PENDING: "Pending", REJECTED: "Rejected", NONE: "Not verified" };
+const KYC_STATUS: Record<string, string> = { APPROVED: "Approved", PENDING: "Under review", REJECTED: "Rejected", NONE: "Not verified" };
 const Check = ({ ok }: { ok: boolean }) => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={ok ? "var(--r-ok)" : "var(--r-muted)"} strokeWidth="1.8" aria-hidden="true">
     {ok ? <path d="m2.5 7.5 3 3 6-6" /> : <circle cx="7" cy="7" r="4.5" />}

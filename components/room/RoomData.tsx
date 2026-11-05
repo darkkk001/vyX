@@ -42,6 +42,7 @@ export function RoomDataProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState("");
   const [picked, setPicked] = useState<string | null>(null);
   const inflight = useRef(false);
+  const kycSeen = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (inflight.current) return;
@@ -56,7 +57,10 @@ export function RoomDataProvider({ children }: { children: ReactNode }) {
         setError("Could not load your accounts. Retrying.");
         return;
       }
-      setData(await res.json());
+      const next = (await res.json()) as RoomOverview;
+      if (kycSeen.current !== null && kycSeen.current !== next.kyc.status) window.dispatchEvent(new CustomEvent("room:changed", { detail: { type: "kyc" } }));
+      kycSeen.current = next.kyc.status;
+      setData(next);
       setError("");
     } catch {
       setError("No connection. Retrying.");

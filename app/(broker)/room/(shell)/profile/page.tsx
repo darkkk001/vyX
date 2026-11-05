@@ -13,7 +13,7 @@ type Profile = {
   twoFactorEnabled: boolean;
   sessions: { id: string; device: string; ip: string | null; at: string | null; current: boolean }[];
 };
-const DOC_COLOR: Record<string, string> = { Approved: "var(--r-ok)", "Pending": "var(--r-pending)", Rejected: "var(--r-loss)", "Not uploaded": "var(--r-muted)" };
+const DOC_COLOR: Record<string, string> = { Approved: "var(--r-ok)", "Under review": "var(--r-pending)", Rejected: "var(--r-loss)", "Not uploaded": "var(--r-muted)" };
 const Field = ({ k, v, mono }: { k: string; v: string | null; mono?: boolean }) => (
   <div><div style={{ color: "var(--r-muted)", fontSize: 11, marginBottom: 4 }}>{k}</div><div className={mono ? "mono" : undefined} style={{ wordBreak: "break-word" }}>{v || "Not given"}</div></div>
 );

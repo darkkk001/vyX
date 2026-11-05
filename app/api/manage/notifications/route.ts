@@ -29,7 +29,7 @@ export async function GET() {
   // Phase 2 batch 6 (issues 145 / 146): staff rows only -- a trader-copy row (accountId set: MARGIN_CALL, MARGIN_CALL_CLEARED,
   // price alerts ...) belongs to the trader's own inbox; the staff copy of the same event has no accountId
   const notifications = await prisma.notification.findMany({
-    where: { brokerId: session.brokerId!, accountId: null },
+    where: { brokerId: session.brokerId!, accountId: null, clientId: null },
     orderBy: { createdAt: "desc" },
     take: 100,
     // web3 (issues.md 324): the caller's own read mark only

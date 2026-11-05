@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 
-// The dashboard bell: the client's own notifications, the rows tied to one of their accounts. Staff rows have no
-// accountId, so they can never match. GET lists the latest 20 and the unread count; POST marks them all read.
-const own = (clientId: string, brokerId: string) => ({ brokerId, account: { clientId, brokerId } });
+// The dashboard bell: the client's own notifications, the rows tied to one of their accounts or to the client. Staff rows
+// have neither, so they can never match. GET lists the latest 20 and the unread count; POST marks them all read.
+const own = (clientId: string, brokerId: string) => ({ brokerId, OR: [{ account: { clientId, brokerId } }, { clientId }] });
 
 export async function GET() {
   const ctx = await roomApiSession();

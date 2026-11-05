@@ -3,11 +3,12 @@ import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { publishRoomChanged } from "@/lib/room/events";
 import { advanceLead } from "@/lib/crm/leads";
+import { sendFundsDecisionEmail } from "@/lib/email/client-notices";
 
 export type FundsRequestChange = "created" | "marked" | "unmarked" | "rejected" | "approved";
 
 // Phase 2 batch 8 (issue 112): the trader hears the outcome of their own request -- an event to their terminal /
-// WebTrader (toast) and a notification row on their account (history). Never fails the caller.
+// WebTrader (toast), a notification row on their account (history) and an e-mail. Never fails the caller.
 export async function notifyFundsRequestResolved(args: {
   brokerId: string;
   accountId: string;
@@ -40,6 +41,11 @@ export async function notifyFundsRequestResolved(args: {
     review_note: args.reviewNote ?? "",
     message: body,
   }).catch((err) => console.error("[funds-events] FundsRequestResolved publish failed", err));
+  const account = await prisma.account.findUnique({ where: { id: args.accountId }, select: { accountNumber: true, accountMode: true, currency: true, email: true, client: { select: { email: true } } } }).catch(() => null);
+  const to = account?.client?.email ?? account?.email;
+  if (account && to && account.accountMode === "LIVE") {
+    await sendFundsDecisionEmail({ brokerId: args.brokerId, to, kind: args.kind, approved: args.outcome === "APPROVED", amount: args.amount, currency: account.currency, accountNumber: account.accountNumber, reviewNote: args.reviewNote });
+  }
 }
 
 // Phase 2 batch 7 (issue 298): tell the broker's backoffice that a funds request changed, so the funds queue and the
