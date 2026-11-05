@@ -11,6 +11,7 @@ import { connect, StringCodec, type NatsConnection } from "nats";
 import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
 import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, askRegistry, gatewayStats, onlineAccountIds, orderAckStats } from "./ws.js";
+import { rateLimitStats } from "./rate-limit.js";
 import { BOOK_SEQ_SUBJECT, newBookSeqState, stampBookEvent } from "./book-seq.js";
 import { internalSecretOk, rotationInProgress } from "./internal-secret.js";
 import { corsMiddleware, parseAllowedOrigins } from "./cors.js";
@@ -39,7 +40,8 @@ app.get("/internal/gateway-stats", (req, res) => {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  res.json({ ...gatewayStats, ...orderAckStats(), ...askRegistry.stats() });
+  // rateLimitStats(): 429 counts per bucket -- see rate-limit.ts for why a refusal is reported.
+  res.json({ ...gatewayStats, ...orderAckStats(), ...askRegistry.stats(), ...rateLimitStats() });
 });
 
 // Traders online now (bo 1.0.96 dashboard B): the accounts of one broker with an open trading-event connection. Ids only;

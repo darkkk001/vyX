@@ -49,10 +49,39 @@ export function checkRateLimitLocal(key: string, limit: number, windowSeconds: n
   return { allowed: b.count <= limit, remaining: Math.max(0, limit - b.count) };
 }
 
+// REFUSALS ARE COUNTED, AND SAID OUT LOUD.
+//
+// Before this, a 429 left no trace anywhere: no log line, no counter. Asked "how many orders did the
+// limiter refuse in the last 20 minutes", the honest answer was "unknowable" -- `grep 429 gateway.log`
+// returns nothing because nothing was ever written, which reads like "none happened" and is not the same
+// claim. A refused order is the limiter doing its job, but it is also a trader seeing a rejection, so it
+// belongs in the log and in /internal/gateway-stats like every other thing we measure.
+//
+// Keyed by BUCKET, not by account: the per-account identity is already in the log line, and a per-account
+// counter map would grow without bound. Counters are process-local and reset with the process, the same
+// trade checkRateLimitLocal already makes.
+const rejections = new Map<string, number>();
+
+/** 429 counts for /internal/gateway-stats: a total, plus one entry per bucket ("order", "close", ...). */
+export function rateLimitStats(): { rateLimited: { total: number; byBucket: Record<string, number> } } {
+  const byBucket: Record<string, number> = {};
+  let total = 0;
+  for (const [bucket, n] of rejections) {
+    byBucket[bucket] = n;
+    total += n;
+  }
+  return { rateLimited: { total, byBucket } };
+}
+
 // Express middleware -- keys by accountId (set by requireTraderSession,
 // so this must run after it) rather than IP, since a trader's own
 // order-placement rate is what matters here, not their network address.
-export function rateLimitOrders(limit: number, windowSeconds: number) {
+//
+// `bucket` names the budget. It defaults to "order" so every existing call site keeps the exact key it
+// had (`order:<accountId>`), and a different name buys a SEPARATE allowance -- which is the point for
+// closes: see routes/positions.ts. Two call sites sharing a bucket share one budget, so opens stealing
+// from closes is a choice of bucket name, not an accident of mounting order.
+export function rateLimitOrders(limit: number, windowSeconds: number, bucket = "order") {
   return async (req: import("./auth.js").AuthedRequest, res: import("express").Response, next: import("express").NextFunction) => {
     const accountId = req.session?.accountId;
     if (!accountId) {
@@ -61,9 +90,13 @@ export function rateLimitOrders(limit: number, windowSeconds: number) {
       next();
       return;
     }
-    const { allowed, remaining } = checkRateLimitLocal(`order:${accountId}`, limit, windowSeconds);
+    const { allowed, remaining } = checkRateLimitLocal(`${bucket}:${accountId}`, limit, windowSeconds);
     res.setHeader("X-RateLimit-Remaining", String(remaining));
     if (!allowed) {
+      rejections.set(bucket, (rejections.get(bucket) ?? 0) + 1);
+      console.warn(
+        `[rate-limit] 429 bucket=${bucket} account=${accountId} limit=${limit}/${windowSeconds}s path=${req.method} ${req.originalUrl}`
+      );
       res.status(429).json({ error: "too many order requests, slow down" });
       return;
     }

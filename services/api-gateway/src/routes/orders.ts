@@ -299,7 +299,8 @@ router.post(
     }
     mark("parse");
     res.status(upstream.status).json(data);
-    console.log(`[order-timing] total=${Date.now() - t0}ms ${stage.join(" ")}`);
+    // route= so this line and the close route's are separable in one grep -- see routes/positions.ts.
+    console.log(`[order-timing] route=market total=${Date.now() - t0}ms ${stage.join(" ")}`);
   }
 );
 

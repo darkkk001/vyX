@@ -106,16 +106,55 @@ router.post(
 // the double-close case and weaker for a LOST ANSWER: the caller cannot ask "did my close land?" by
 // key. Closing that gap needs a unique constraint on a close artifact -- a migration -- so it is
 // deliberately not in this piece.
+// CLOSES DO NOT SHARE THE OPENS' BUDGET.
+//
+// Both routes used to call rateLimitOrders(30, 60), which keys on `order:<accountId>` -- so 30 was the
+// combined allowance for opening AND closing. A terminal that opens a basket and then closes it spends
+// the budget twice over: 16 opens followed by 15 closes is 31 requests, and the 31st was refused. Being
+// unable to CLOSE is the one refusal a trading client must never meet, because the trader is trying to
+// get OUT of risk; a refused open is an inconvenience, a refused close is an unhedged position.
+//
+// So closes get their own bucket with a budget set high enough that no honest client reaches it
+// (600/minute = 10/s sustained, against a bulk close of a few dozen positions). It is deliberately not
+// "unlimited": a runaway client retrying one close forever still gets stopped, and the 429 is now
+// counted and logged so we would see it. Opens keep 30/60s, untouched.
+const CLOSE_RATE_LIMIT_PER_MINUTE = 600;
+
 router.post(
   "/:id/close",
   requireTraderSession,
-  rateLimitOrders(30, 60),
+  rateLimitOrders(CLOSE_RATE_LIMIT_PER_MINUTE, 60, "close"),
   validateBody(closePositionSchema),
   async (req: AuthedRequest, res) => {
     const body = req.body as ClosePositionBody;
     const session = req.session!;
     const brokerId = req.headers["x-broker-id"] as string;
     const positionId = req.params.id as string;
+
+    // CLOSE-PATH TIMING -- the counterpart to the market route's [order-timing] (routes/orders.ts).
+    //
+    // Hooked on res "finish" rather than appended before each res.json: this handler has nine distinct
+    // exit paths (404, 403, 403, 404, 409, 409, 400, 400, 502, 200, 200), and one log line per exit would
+    // silently miss whichever branch someone adds next. "finish" fires exactly once per answered request,
+    // whichever branch answered it, so the measurement cannot drift away from the code.
+    //
+    // `route=` goes on BOTH lines (this one and the market route's). Without it the two are
+    // indistinguishable in gateway.log -- which is precisely why close latency could not be measured
+    // before, even though the file was full of [order-timing] lines. `status=` is here for the same
+    // reason: a 150 ms refusal and a 150 ms fill are not the same measurement.
+    const t0 = Date.now();
+    let tMark = t0;
+    const stage: string[] = [];
+    const mark = (name: string) => {
+      const now = Date.now();
+      stage.push(`${name}=${now - tMark}ms`);
+      tMark = now;
+    };
+    res.on("finish", () => {
+      console.log(
+        `[order-timing] route=close status=${res.statusCode} total=${Date.now() - t0}ms ${stage.join(" ")}`
+      );
+    });
 
     const account = await getAccount(session.accountId, brokerId);
     if (!account) {
@@ -136,6 +175,7 @@ router.post(
 
     // (2) ownership + state
     const position = await getPositionForClose(positionId, session.accountId, brokerId);
+    mark("position");
     if (!position) {
       res.status(404).json({ error: "position not found" });
       return;
@@ -152,6 +192,7 @@ router.post(
 
     // (3) the fresh tick
     const price = await getFreshPrice(position.symbolName);
+    mark("price");
     if (!price) {
       res.status(400).json({ error: "NO_LIVE_FEED", symbol: position.symbolName });
       return;
@@ -250,7 +291,9 @@ router.post(
 
     // (6) the answer the UI already handles: the closed Position, its ledger row, the new balance. Read
     // back, because the engine returns only {close_price, realized_pnl} and the client needs the rest.
+    mark("engine");
     const view = await getCloseResultView(positionId, session.accountId);
+    mark("readback");
 
     await writeAuditLog({
       brokerId,
