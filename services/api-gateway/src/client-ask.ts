@@ -52,30 +52,32 @@ export function markupPipsAt(rule: AskRule, bid: Decimal.Value, ask: Decimal.Val
   return diff.isNegative() ? new Decimal(0) : diff;
 }
 
-/** Half the markup in PRICE units -- what each side moves under the symmetric (mid-anchored) split. */
-function halfMarkupPrice(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
-  const m = markupPipsAt(rule, bid, ask);
-  return m.isZero() ? new Decimal(0) : m.mul(pipSize(rule.digits)).div(2);
+/** What each side moves at this tick, in PRICE units. Mirrors lib/group-pricing.ts markupSplit: the markup in whole points of
+ *  the last digit, rounded up only if not whole, the ask taking the larger share. The total is exactly the markup. */
+function markupParts(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): { ask: Decimal; bid: Decimal } {
+  const point = new Decimal(1).div(new Decimal(10).pow(Math.max(rule.digits, 0)));
+  const total = markupPipsAt(rule, bid, ask).mul(pipSize(rule.digits)).div(point).ceil();
+  const askPoints = total.div(2).ceil();
+  return { ask: askPoints.mul(point), bid: total.sub(askPoints).mul(point) };
 }
 
-/** The account's ask at this tick: raw ask + m/2, rounded AWAY FROM THE CLIENT (up) at the symbol's precision, never
- *  tighter than the raw ask. The price a BUY opens at / a SELL closes at. */
+/** The account's ask at this tick: raw ask + its share of the markup, at the symbol's precision, never tighter than the raw
+ *  ask. The price a BUY opens at / a SELL closes at. */
 export function clientAsk(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
   const a = new Decimal(ask);
-  const half = halfMarkupPrice(rule, bid, ask);
-  if (half.isZero()) return a;
-  return Decimal.max(a.add(half).toDecimalPlaces(rule.digits, Decimal.ROUND_CEIL), a);
+  const part = markupParts(rule, bid, ask).ask;
+  if (part.isZero()) return a;
+  return Decimal.max(a.add(part).toDecimalPlaces(rule.digits, Decimal.ROUND_CEIL), a);
 }
 
-/** The account's bid at this tick: raw bid - m/2, rounded AWAY FROM THE CLIENT (down), never tighter than the raw bid
- *  and never at or below zero. The price a SELL opens at / a BUY closes at.
- *  Symmetric markup, owner decision 2026-10-29 -- before it, the bid went to the trader raw. */
+/** The account's bid at this tick: raw bid - its share of the markup, never tighter than the raw bid and never at or below
+ *  zero. The price a SELL opens at / a BUY closes at. */
 export function clientBid(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
   const b = new Decimal(bid);
-  const half = halfMarkupPrice(rule, bid, ask);
-  if (half.isZero()) return b;
+  const part = markupParts(rule, bid, ask).bid;
+  if (part.isZero()) return b;
   const floor = new Decimal(1).div(new Decimal(10).pow(Math.max(rule.digits, 0)));
-  const out = b.sub(half).toDecimalPlaces(rule.digits, Decimal.ROUND_FLOOR);
+  const out = b.sub(part).toDecimalPlaces(rule.digits, Decimal.ROUND_FLOOR);
   return Decimal.min(Decimal.max(out, floor), b);
 }
 
