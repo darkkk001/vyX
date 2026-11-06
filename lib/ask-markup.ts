@@ -1,11 +1,10 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { pipSize } from "@/lib/group-pricing";
+import { markupSplit, pipSize } from "@/lib/group-pricing";
 import { resolvePricingV2, resolveEffectiveSpreadMarkup, type ResolvedSpread } from "@/lib/pricing-engine";
 
 // Owner decision (2026-10-29): the markup is SYMMETRIC -- divided between the two sides around the mid, instead of
-// being added to the ask alone. bid = raw_bid - m/2, ask = raw_ask + m/2, each rounded away from the client (bid down,
-// ask up) at the symbol's own precision. The total spread a client sees is raw_spread + m, exactly as before: only the
-// split moved. Industry-standard presentation -- a one-sided markup makes SL / TP look "never reached" and the spread
+// being added to the ask alone. Since 2026-11-06 the split is in whole points (lib/group-pricing.ts markupSplit): the ask
+// takes the larger share, so the total spread a client sees is exactly raw_spread + m. Industry-standard presentation -- a one-sided markup makes SL / TP look "never reached" and the spread
 // look wider than it is.
 //
 // This replaces the ask-only rule of 2026-09-26 ("the bid is never marked up"). EVERY account-side price now moves:
@@ -20,7 +19,7 @@ import { resolvePricingV2, resolveEffectiveSpreadMarkup, type ResolvedSpread } f
 //     target-total-spread mode included (resolvePricingV2 + resolveEffectiveSpreadMarkup);
 //   - the broker's coverage account (a COVERAGE group) is always raw: its legs mirror the real market, never the
 //     broker's own markup (lib/coverage.ts).
-// The price itself is applySpreadMarkup's formula (half of the markup on each side), so a SELL closing and a BUY
+// The price itself is applySpreadMarkup's formula (each side's share of the markup), so a SELL closing and a BUY
 // opening on the same tick at the same account pay the same ask, and a BUY closing and a SELL opening pay the same bid.
 // docs/contracts/ask-markup-vectors.json pins it for the engine (Rust) and the clients (WebTrader, the installed
 // terminal); lib/ask-markup.test.ts keeps that file honest.
@@ -35,7 +34,7 @@ export const RAW_RULE = (digits: number): AskRule => ({ mode: "markup", markupPi
 export const RAW_ASK = RAW_RULE;
 
 /** The rule for an account with no markup on this symbol (no BrokerSymbol row, a coverage account, or a server that
- *  sent none). `digits` is deliberately 0 and irrelevant: a zero markup short-circuits in halfMarkupPrice before any
+ *  sent none). `digits` is deliberately 0 and irrelevant: a zero markup leaves both sides raw before any
  *  pip or rounding is read, so both sides come back raw. Use this as the `?? NO_MARKUP` fallback wherever a rule
  *  lookup is nullable -- accountClosePrice now requires one. */
 export const NO_MARKUP: AskRule = { mode: "markup", markupPips: new Prisma.Decimal(0), digits: 0 };
@@ -55,21 +54,10 @@ export function markupPipsAt(rule: AskRule, bid: Prisma.Decimal.Value, ask: Pris
   return resolveEffectiveSpreadMarkup({ mode: "target", targetTotalSpreadPips: rule.targetPips, fallbackSpreadMarkup: rule.fallbackPips }, base).markup;
 }
 
-/** Half of this rule's markup in PRICE units -- the amount EACH side moves under the symmetric (mid-anchored) split.
- *
- *  Symmetric markup (owner decision 2026-10-29, supersedes the ask-only rule of 2026-09-26): the markup is divided
- *  between the two sides instead of being added to the ask alone: bid = raw_bid - m/2, ask = raw_ask + m/2.
- *
- *  That IS the mid-anchored form, for BOTH modes, because `markupPipsAt` already floors m at 0:
- *    mid = (raw_bid + raw_ask)/2,  raw_spread = raw_ask - raw_bid,  m = max(0, target - raw_spread)
- *    raw_ask + m/2 = raw_ask + (target - raw_spread)/2 = mid + target/2
- *    raw_bid - m/2 = raw_bid - (target - raw_spread)/2 = mid - target/2
- *  and when target <= raw_spread, m is 0, so the quote stays exactly raw. So the
- *  `min(raw_bid, mid - target/2)` / `max(raw_ask, mid + target/2)` safety is structural -- never tighter than raw.
- *  The clamps below restate that as an assertion instead of relying on the algebra holding after rounding. */
-export function halfMarkupPrice(rule: AskRule, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): Prisma.Decimal {
-  const m = markupPipsAt(rule, bid, ask);
-  return m.isZero() ? new Prisma.Decimal(0) : m.mul(pipSize(rule.digits)).div(2);
+/** What each side moves at this tick, in PRICE units: the whole-point split of this rule's markup. Never tighter than raw:
+ *  `markupPipsAt` floors m at 0, and in target mode the two parts add up to the gap to the target. */
+export function markupParts(rule: AskRule, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): { ask: Prisma.Decimal; bid: Prisma.Decimal } {
+  return markupSplit(markupPipsAt(rule, bid, ask), rule.digits);
 }
 
 /** The smallest price this symbol can quote (one unit of its last digit) -- the floor a marked-down bid may not cross. */
@@ -77,23 +65,22 @@ function priceFloor(digits: number): Prisma.Decimal {
   return new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(Math.max(digits, 0)));
 }
 
-/** The account's ask: raw ask + m/2, rounded AWAY FROM THE CLIENT (up) at the symbol's own precision, never tighter
- *  than the raw ask. */
+/** The account's ask: raw ask + its share of the markup, at the symbol's own precision, never tighter than the raw ask. */
 export function markedUpAsk(rule: AskRule, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): Prisma.Decimal {
   const raw = new Prisma.Decimal(ask);
-  const half = halfMarkupPrice(rule, bid, ask);
-  if (half.isZero()) return raw;
-  return Prisma.Decimal.max(raw.add(half).toDecimalPlaces(rule.digits, Prisma.Decimal.ROUND_CEIL), raw);
+  const part = markupParts(rule, bid, ask).ask;
+  if (part.isZero()) return raw;
+  return Prisma.Decimal.max(raw.add(part).toDecimalPlaces(rule.digits, Prisma.Decimal.ROUND_CEIL), raw);
 }
 
-/** The account's bid: raw bid - m/2, rounded AWAY FROM THE CLIENT (down) at the symbol's own precision, never tighter
- *  than the raw bid, and never at or below zero -- a markup wider than the price itself (the 60-pip hedge group on a
+/** The account's bid: raw bid - its share of the markup, at the symbol's own precision, never tighter than the raw bid,
+ *  and never at or below zero -- a markup wider than the price itself (the 60-pip hedge group on a
  *  cheap symbol) must degrade to the smallest quotable price, not to a zero or negative bid. */
 export function markedDownBid(rule: AskRule, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): Prisma.Decimal {
   const raw = new Prisma.Decimal(bid);
-  const half = halfMarkupPrice(rule, bid, ask);
-  if (half.isZero()) return raw;
-  const out = raw.sub(half).toDecimalPlaces(rule.digits, Prisma.Decimal.ROUND_FLOOR);
+  const part = markupParts(rule, bid, ask).bid;
+  if (part.isZero()) return raw;
+  const out = raw.sub(part).toDecimalPlaces(rule.digits, Prisma.Decimal.ROUND_FLOOR);
   return Prisma.Decimal.min(Prisma.Decimal.max(out, priceFloor(rule.digits)), raw);
 }
 
@@ -123,8 +110,8 @@ export function accountClosePrice(side: "BUY" | "SELL", bid: Prisma.Decimal.Valu
 
 /** The wire form a client needs to apply the same rule on every tick (lib/trade-api.ts spreadRuleFromPrice).
  *
- *  Symmetric change, kept BACKWARD COMPATIBLE on purpose: `askMarkup` still means "add this to the raw ask", so it now
- *  carries m/2 rather than m, and the new `bidMarkup` means "subtract this from the raw bid" (also m/2). A client that
+ *  Kept BACKWARD COMPATIBLE on purpose: `askMarkup` still means "add this to the raw ask" and `bidMarkup` "subtract this
+ *  from the raw bid", each that side's share of the markup (markupSplit). A client that
  *  reads only `askMarkup` -- an installed terminal that has not been updated, on a broker still doing the markup
  *  client-side (Broker.clientAskServerSideAt null) -- therefore gets the correct ask and a raw bid: narrower than it
  *  should be on the bid only, never crossed and never wrong on the ask. A client that reads both is exact.
@@ -135,12 +122,12 @@ export function askRuleWire(
   ask?: Prisma.Decimal.Value | null
 ): { askMarkup: string; bidMarkup: string; spreadRule: "markup" | "target"; targetSpread?: string } {
   const pip = pipSize(rule.digits);
-  const half = (mPips: Prisma.Decimal) => mPips.mul(pip).div(2).toString();
+  const wire = (mPips: Prisma.Decimal) => { const p = markupSplit(mPips, rule.digits); return { askMarkup: p.ask.toString(), bidMarkup: p.bid.toString() }; };
   if (rule.mode === "target") {
     const m = bid != null && ask != null ? markupPipsAt(rule, bid, ask) : (rule.fallbackPips ?? new Prisma.Decimal(0));
-    return { askMarkup: half(m), bidMarkup: half(m), spreadRule: "target", targetSpread: rule.targetPips.mul(pip).toString() };
+    return { ...wire(m), spreadRule: "target", targetSpread: rule.targetPips.mul(pip).toString() };
   }
-  return { askMarkup: half(rule.markupPips), bidMarkup: half(rule.markupPips), spreadRule: "markup" };
+  return { ...wire(rule.markupPips), spreadRule: "markup" };
 }
 
 type Db = PrismaClient | Prisma.TransactionClient;

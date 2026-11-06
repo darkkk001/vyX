@@ -37,17 +37,17 @@ describe("ask-markup vectors", () => {
     }
   });
 
-  it("a zero markup leaves BOTH sides raw, and the half is rounded away from the client", () => {
+  it("a zero markup leaves BOTH sides raw, and the markup is split in whole points", () => {
     expect(markedUpAsk(RAW_RULE(2), "1", "1.5").toString()).toBe("1.5");
     expect(markedDownBid(RAW_RULE(2), "1", "1.5").toString()).toBe("1");
     expect(accountClosePrice("SELL", "1", "1.5", RAW_RULE(2)).toString()).toBe("1.5");
     expect(accountClosePrice("BUY", "1", "1.5", RAW_RULE(2)).toString()).toBe("1");
 
-    // XAUUSD, digits 2 (pip 0.1), 1.5 pips = 0.15 -> half 0.075, not representable at 2 digits:
+    // XAUUSD, digits 2 (pip 0.1), 1.5 pips = 15 points -> ask +8, bid -7, a total of exactly 15:
     // the ask must round UP and the bid DOWN, so the client never gains the half point.
     const rule = { mode: "markup" as const, markupPips: D("1.5"), digits: 2 };
     expect(markedUpAsk(rule, "4298.96", "4299.13").toString()).toBe("4299.21");
-    expect(markedDownBid(rule, "4298.96", "4299.13").toString()).toBe("4298.88");
+    expect(markedDownBid(rule, "4298.96", "4299.13").toString()).toBe("4298.89");
 
     // a markup wider than the price itself degrades to the smallest quotable price, never zero or negative
     const huge = { mode: "markup" as const, markupPips: D("600"), digits: 2 };

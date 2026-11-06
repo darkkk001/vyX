@@ -22,7 +22,7 @@ import { resolvePricingV2 } from "@/lib/pricing-engine";
 // the engine already uses (engine/market-data/src/ask_markup.rs PricingSnapshot, held in memory and reloaded on a
 // config event, for the same Neon-compute reason -- the 2026-09-26 quota outage).
 //
-// MARKUP-0 SHORT-CIRCUIT. A resolved rule of zero markup costs nothing beyond the lookup: halfMarkupPrice returns 0
+// MARKUP-0 SHORT-CIRCUIT. A resolved rule of zero markup costs nothing beyond the lookup: markupParts returns 0
 // and markedDownBid / markedUpAsk hand back the raw bid and ask untouched. So for a symbol whose levels are all zero
 // -- XAUUSD, where every broker's BrokerSymbol.spreadMarkup is 0 and the group has no row -- a BUY still closes at
 // the raw bid, exactly as under the ask-only rule, and the hot path performs no query at all once warm.

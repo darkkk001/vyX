@@ -33,15 +33,20 @@ export function pipSize(digits: number): Prisma.Decimal {
   return new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(exp));
 }
 
-// SYMMETRIC markup (owner decision 2026-10-29, see lib/ask-markup.ts's module comment for the rule and the
-// mid-anchor algebra). Moves a fill price by HALF the markup, away from the client on whichever side it is:
-// an ask-side fill (a BUY open, a SELL close) goes UP by m/2 and rounds up; a bid-side fill (a SELL open, a BUY
-// close) goes DOWN by m/2 and rounds down. Total client-visible spread stays raw_spread + m, as under the old
-// ask-only rule -- only the split moved.
-//
-// `side` is the side of the BOOK this price sits on, which is what each call site already passes: the previous
-// ask-only rule needed the same distinction (it returned the price untouched for "SELL"), so every existing call
-// site is already correct here and keeps its signature. What changed is that the bid side is no longer a no-op.
+// The split of a markup between the two sides (owner decision 2026-11-06, replaces rounding each half outward). The markup
+// is counted in whole points of the symbol's last digit, rounded up only if it is not already whole, and the ask takes the
+// larger share: 1 point = ask +1, bid +0; 2 = +1, +1; 3 = +2, +1. The total the client pays is exactly the markup. Rounding
+// each half outward made a 0.1-pip markup on a 5-digit symbol cost 0.2.
+export function markupSplit(markupPips: Prisma.Decimal.Value, digits: number): { ask: Prisma.Decimal; bid: Prisma.Decimal } {
+  const point = new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(Math.max(digits, 0)));
+  const total = new Prisma.Decimal(markupPips).mul(pipSize(digits)).div(point).ceil();
+  const askPoints = total.div(2).ceil();
+  return { ask: askPoints.mul(point), bid: total.sub(askPoints).mul(point) };
+}
+
+// Moves a fill price by its side's share of the markup, away from the client. `side` is the side of the BOOK this price sits
+// on, which is what each call site already passes: an ask-side fill (a BUY open, a SELL close) goes up, a bid-side fill (a
+// SELL open, a BUY close) goes down.
 //
 // Same formula as pricing.rs's own apply_spread_markup, applied to whatever price is actually used to fill
 // (client-supplied, dealer-typed, or a live tick -- this app's trading routes don't yet have a single point where
@@ -58,15 +63,15 @@ export function applySpreadMarkup(params: {
   digits: number;
 }): Prisma.Decimal {
   const price = new Prisma.Decimal(params.price);
-  const markup = new Prisma.Decimal(params.spreadMarkup);
-  if (markup.isZero()) return price;
-  const half = markup.mul(pipSize(params.digits)).div(2);
+  const split = markupSplit(params.spreadMarkup, params.digits);
   if (params.side === "SELL") {
+    if (split.bid.isZero()) return price;
     const floor = new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(Math.max(params.digits, 0)));
-    const out = price.sub(half).toDecimalPlaces(params.digits, Prisma.Decimal.ROUND_FLOOR);
+    const out = price.sub(split.bid).toDecimalPlaces(params.digits, Prisma.Decimal.ROUND_FLOOR);
     return Prisma.Decimal.min(Prisma.Decimal.max(out, floor), price);
   }
-  return Prisma.Decimal.max(price.add(half).toDecimalPlaces(params.digits, Prisma.Decimal.ROUND_CEIL), price);
+  if (split.ask.isZero()) return price;
+  return Prisma.Decimal.max(price.add(split.ask).toDecimalPlaces(params.digits, Prisma.Decimal.ROUND_CEIL), price);
 }
 
 export type ResolvedSymbolPricing = { spreadMarkup: Prisma.Decimal; commissionPerLot: Prisma.Decimal };

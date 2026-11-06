@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { checkTradingSession } from "@/lib/risk";
-import { pipSize } from "@/lib/group-pricing";
+import { markupSplit, pipSize } from "@/lib/group-pricing";
 import { resolvePricingV2, resolveEffectiveSpreadMarkup } from "@/lib/pricing-engine";
 import { getLivePriceRows, getLivePriceRowsWithSource } from "@/lib/live-price";
 import { conversionRate, conversionSymbolsFor, fxLookupFromQuotes, FX_RATE_MAX_AGE_MS } from "@/lib/fx";
@@ -125,10 +125,9 @@ export async function GET(request: Request) {
     groupSymbolConfigBySymbolId = new Map(groupSymbolConfigsFull.map((c) => [c.symbolId, c]));
   }
 
-  // SYMMETRIC MARKUP (owner decision 2026-10-29, lib/ask-markup.ts): this map holds HALF the markup in price units,
-  // because that is what each side moves -- the ask up by it, the bid down by it. The wire's `askMarkup` and
-  // `bidMarkup` are therefore both this value, exactly as lib/ask-markup.ts askRuleWire emits them.
-  const halfMarkupByName = new Map<string, string>();
+  // Each side's share of the markup in price units (lib/group-pricing.ts markupSplit): the ask moves up by one, the bid
+  // down by the other. The wire's `askMarkup` and `bidMarkup` carry them, as lib/ask-markup.ts askRuleWire does.
+  const partsByName = new Map<string, { ask: Prisma.Decimal; bid: Prisma.Decimal }>();
   const digitsByName = new Map<string, number>();
   // Batch 5 (quote = fill, docs/audit/2026-09-24/realtime-contract.md): the RULE, not only today's number, so the
   // client applies the fill formula on every tick -- target mode: BUY = max(ask, bid + targetSpread)
@@ -165,8 +164,7 @@ export async function GET(request: Request) {
     }
     digitsByName.set(bs.symbol.name, bs.symbol.digits);
     if (markupPips.isZero()) continue;
-    // half, not the full markup: the symmetric split moves each side by this much
-    halfMarkupByName.set(bs.symbol.name, markupPips.mul(pipSize(bs.symbol.digits)).div(2).toString());
+    partsByName.set(bs.symbol.name, markupSplit(markupPips, bs.symbol.digits));
   }
   // markup-leak fix (owner 2026-10-01: traders never see the broker's markup). Once the broker is switched to
   // server-side asks (Broker.clientAskServerSideAt, set together with the price stream's own switch,
@@ -174,22 +172,21 @@ export async function GET(request: Request) {
   // fields say "nothing to add": askMarkup "0", spreadRule "markup", no targetSpread -- so an installed terminal /
   // WebTrader that still adds them prices exactly right, and the raw ask and the markup never leave the server.
   const serverSide = broker?.clientAskServerSideAt != null;
-  // Symmetric, and rounded AWAY FROM THE CLIENT at the symbol's own precision -- the same rule and the same rounding
+  // Each side's share, at the symbol's own precision -- the same rule and the same rounding
   // as lib/ask-markup.ts markedUpAsk / markedDownBid and the stream's clientAsk / clientBid, so the HTTP poll, the
   // socket and the fill cannot disagree. The bid never goes to or below zero.
-  const halfOf = (symbol: string) => halfMarkupByName.get(symbol);
   const clientAskOf = (symbol: string, _bid: Prisma.Decimal, ask: Prisma.Decimal) => {
-    const h = halfOf(symbol);
-    if (h == null) return ask;
+    const part = partsByName.get(symbol)?.ask;
+    if (part == null || part.isZero()) return ask;
     const d = digitsByName.get(symbol) ?? 2;
-    return Prisma.Decimal.max(ask.add(new Prisma.Decimal(h)).toDecimalPlaces(d, Prisma.Decimal.ROUND_CEIL), ask);
+    return Prisma.Decimal.max(ask.add(part).toDecimalPlaces(d, Prisma.Decimal.ROUND_CEIL), ask);
   };
   const clientBidOf = (symbol: string, bid: Prisma.Decimal) => {
-    const h = halfOf(symbol);
-    if (h == null) return bid;
+    const part = partsByName.get(symbol)?.bid;
+    if (part == null || part.isZero()) return bid;
     const d = digitsByName.get(symbol) ?? 2;
     const floor = new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(Math.max(d, 0)));
-    const out = bid.sub(new Prisma.Decimal(h)).toDecimalPlaces(d, Prisma.Decimal.ROUND_FLOOR);
+    const out = bid.sub(part).toDecimalPlaces(d, Prisma.Decimal.ROUND_FLOOR);
     return Prisma.Decimal.min(Prisma.Decimal.max(out, floor), bid);
   };
   const rows = [...priceByName.values()].map((p) =>
@@ -207,9 +204,9 @@ export async function GET(request: Request) {
       : {
           ...p,
           marketClosed: closedByName.get(p.symbol) ?? false,
-          // half on each side: add to the raw ask, subtract from the raw bid
-          askMarkup: halfMarkupByName.get(p.symbol) ?? "0",
-          bidMarkup: halfMarkupByName.get(p.symbol) ?? "0",
+          // each side's share: add to the raw ask, subtract from the raw bid
+          askMarkup: partsByName.get(p.symbol)?.ask.toString() ?? "0",
+          bidMarkup: partsByName.get(p.symbol)?.bid.toString() ?? "0",
           spreadRule: targetSpreadByName.has(p.symbol) ? "target" : "markup",
           ...(targetSpreadByName.has(p.symbol) ? { targetSpread: targetSpreadByName.get(p.symbol) } : {}),
         }
