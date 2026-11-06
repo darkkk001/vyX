@@ -90,7 +90,7 @@ describe("History method", () => {
     const { rows } = await roomTransactions({ accountIds: [acc.id] }, new Set([acc.accountNumber]), { skip: 0, take: 10 });
     const method = (id: string) => rows.find((r) => r.id === id)?.method;
     expect(method(staff.id)).toBe("Manual");
-    expect(method(bank.id)).toBe("Bank transfer");
+    expect(method(bank.id)).toBe("Local Bank Transfer");
     expect(method(out.id)).toBe("Manual");
     await prisma.transaction.deleteMany({ where: { accountId: acc.id } });
     await prisma.paymentMethod.delete({ where: { id: pm.id } });
