@@ -203,7 +203,7 @@ describe("suspending signs the account out everywhere (DB)", () => {
     const f = await fixture();
     as(await admin(f.brokerId));
     const { PATCH } = await import("@/app/api/manage/accounts/[id]/route");
-    expect((await call(PATCH, "/x", "PATCH", { leverage: 200 }, { id: f.acc.id })).status).toBe(200);
+    expect((await call(PATCH, "/x", "PATCH", { leverage: 50 }, { id: f.acc.id })).status).toBe(200);
     const s = await fixture("SUSPENDED");
     as(await admin(s.brokerId));
     expect((await call(PATCH, "/x", "PATCH", { status: "ACTIVE" }, { id: s.acc.id })).status).toBe(200);
