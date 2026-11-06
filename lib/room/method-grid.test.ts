@@ -81,6 +81,27 @@ describe("what a client can do", () => {
   });
 });
 
+describe("withdrawal terms", () => {
+  it("a withdrawal uses its own limits, a deposit keeps the deposit limits", async () => {
+    if (!dbReachable) return;
+    const pm = await prisma.paymentMethod.findFirstOrThrow({ where: { brokerId, type: "USDT_BEP20" } });
+    await prisma.paymentMethod.update({ where: { id: pm.id }, data: { minAmount: 50, maxAmount: 200, withdrawMinAmount: 10, withdrawMaxAmount: 1000, withdrawProcessingTime: "Instant-15 min" } });
+    const a = await prisma.account.findFirstOrThrow({ where: { brokerId, clientId } });
+    await prisma.account.update({ where: { id: a.id }, data: { balance: 5000 } });
+    await prisma.clientKycRecord.upsert({ where: { clientId }, update: { status: "APPROVED" }, create: { clientId, status: "APPROVED", documentType: "passport", documentFrontUrl: "f", documentBackUrl: "b", annualIncome: "UNDER_25K", sourceOfFunds: "SALARY", tradingExperience: "NONE", employmentStatus: "EMPLOYED", riskTolerance: "LOW" } });
+    const { createFundsRequest } = await import("@/lib/funds-request-create");
+    const go = (type: "DEPOSIT" | "WITHDRAWAL", amount: string) => createFundsRequest({ brokerId, accountId: a.id, type, amount, paymentMethodId: pm.id, ...(type === "WITHDRAWAL" ? { destinationAddress: "0x1111111111111111111111111111111111111111" } : {}) });
+    expect((await go("DEPOSIT", "300")).ok).toBe(false);
+    expect((await go("DEPOSIT", "20")).ok).toBe(false);
+    expect((await go("WITHDRAWAL", "300")).ok).toBe(true);
+    expect((await go("WITHDRAWAL", "9")).ok).toBe(false);
+    expect((await go("WITHDRAWAL", "1001")).ok).toBe(false);
+    const { roomMethods } = await import("@/lib/room/funds");
+    expect((await roomMethods(brokerId))[0].withdraw).toEqual({ min: "10.00", max: "1000.00", processing: "Instant-15 min" });
+    await prisma.paymentMethod.update({ where: { id: pm.id }, data: { minAmount: 50, maxAmount: null, withdrawMinAmount: null, withdrawMaxAmount: null, withdrawProcessingTime: null } });
+  });
+});
+
 describe("broker settings", () => {
   const patch = async (body: object) => {
     const { getAdminSession } = await import("@/lib/auth");

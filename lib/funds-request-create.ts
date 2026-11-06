@@ -53,8 +53,11 @@ export async function createFundsRequest(p: FundsRequestInput): Promise<FundsReq
   if (!paymentMethodId) return fail(400, "paymentMethodId is required");
   const paymentMethod = await prisma.paymentMethod.findUnique({ where: { id: paymentMethodId } });
   if (!paymentMethod || paymentMethod.brokerId !== p.brokerId || !paymentMethod.enabled) return fail(400, "unknown or disabled payment method");
-  if (requestedAmount.lt(paymentMethod.minAmount)) return fail(400, `amount is below this method's minimum of ${paymentMethod.minAmount.toString()}`);
-  if (paymentMethod.maxAmount && requestedAmount.gt(paymentMethod.maxAmount)) return fail(400, `amount is above this method's maximum of ${paymentMethod.maxAmount.toString()}`);
+  // a withdrawal has its own limits when the broker set them
+  const minAmount = p.type === "WITHDRAWAL" ? paymentMethod.withdrawMinAmount ?? paymentMethod.minAmount : paymentMethod.minAmount;
+  const maxAmount = p.type === "WITHDRAWAL" ? paymentMethod.withdrawMaxAmount ?? paymentMethod.maxAmount : paymentMethod.maxAmount;
+  if (requestedAmount.lt(minAmount)) return fail(400, `amount is below this method's minimum of ${minAmount.toString()}`);
+  if (maxAmount && requestedAmount.gt(maxAmount)) return fail(400, `amount is above this method's maximum of ${maxAmount.toString()}`);
 
   const destinationAddress = typeof p.destinationAddress === "string" ? p.destinationAddress.trim().slice(0, 500) : null;
   if (p.type === "WITHDRAWAL" && !destinationAddress) return fail(400, "destinationAddress is required for a withdrawal");

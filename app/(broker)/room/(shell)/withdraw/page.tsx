@@ -78,7 +78,7 @@ export default function RoomWithdraw() {
   }
 
   const kyc = KYC_CARD[funds?.kyc ?? data?.kyc.status ?? "NONE"] ?? KYC_CARD.NONE;
-  const minW = funds?.methods.length ? Math.min(...funds.methods.map((m) => Number(m.min))) : null;
+  const minW = method && Number(method.withdraw.min) > 0 ? Number(method.withdraw.min) : null;
   const fee = funds?.methods.find((m) => m.feeLine)?.feeLine ?? "0.00";
   const ccy = account?.currency ?? "USD";
   const label = { fontSize: 10.5, letterSpacing: 1.2 } as const;
@@ -104,7 +104,7 @@ export default function RoomWithdraw() {
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div className="r-label">Payout method</div>
-            <MethodGrid methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={ccy} onSelect={(id) => { setMethodId(id); setPayoutId(""); setAdding(false); setAddMsg(""); setMsg(null); }} />
+            <MethodGrid side="withdraw" methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={ccy} onSelect={(id) => { setMethodId(id); setPayoutId(""); setAdding(false); setAddMsg(""); setMsg(null); }} />
             {saved.map((p) => {
               const sel = payout?.id === p.id;
               return (
@@ -174,9 +174,7 @@ export default function RoomWithdraw() {
             <div className="r-label" style={{ marginBottom: 14 }}>Processing</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 12.5, color: "var(--r-text-2)" }}>
               {minW != null ? <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}><span>Minimum</span><span className="mono" style={{ color: "var(--r-text)" }}>{money(minW)} {ccy}</span></div> : null}
-              {(funds?.methods ?? []).filter((m) => m.processing).map((m) => (
-                <div key={m.id} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}><span>{m.label}</span><span className="mono" style={{ color: "var(--r-text)" }}>{m.processing}</span></div>
-              ))}
+              {method?.withdraw.processing ? <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}><span>{method.label}</span><span className="mono" style={{ color: "var(--r-text)" }}>{method.withdraw.processing}</span></div> : null}
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}><span>Platform fee</span><span className="mono" style={{ color: "var(--r-text)" }}>{fee}</span></div>
             </div>
           </div>

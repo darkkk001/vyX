@@ -51,6 +51,10 @@ export async function GET() {
         type,
         enabled: row ? row.enabled : DEFAULTS.enabled,
         listed: row ? row.listed : DEFAULTS.listed,
+        processingTime: row?.processingTime ?? null,
+        withdrawMinAmount: row?.withdrawMinAmount?.toString() ?? null,
+        withdrawMaxAmount: row?.withdrawMaxAmount?.toString() ?? null,
+        withdrawProcessingTime: row?.withdrawProcessingTime ?? null,
         minAmount: row ? row.minAmount.toString() : DEFAULTS.minAmount,
         maxAmount: row ? (row.maxAmount ? row.maxAmount.toString() : null) : DEFAULTS.maxAmount,
         feePercent: row ? row.feePercent.toString() : DEFAULTS.feePercent,
@@ -124,8 +128,18 @@ async function patchHandler(request: NextRequest) {
   const instructions = typeof body.instructions === "string" ? body.instructions.trim().slice(0, 1000) || null : null;
   const walletAddress = typeof body.walletAddress === "string" ? body.walletAddress.trim().slice(0, 200) || null : null;
 
-  // a caller that does not know this switch (an older backoffice) leaves it as it is
-  const data = { enabled, minAmount, maxAmount, feePercent, feeFixed, instructions, walletAddress, ...(typeof body.listed === "boolean" ? { listed: body.listed } : {}) };
+  // withdrawal terms: only when sent, so an older backoffice leaves them as they are
+  const raw = body as Record<string, unknown>;
+  const optional: { withdrawMinAmount?: Prisma.Decimal | null; withdrawMaxAmount?: Prisma.Decimal | null } = {};
+  for (const k of ["withdrawMinAmount", "withdrawMaxAmount"] as const) {
+    if (!(k in raw)) continue;
+    const v = raw[k] == null || raw[k] === "" ? null : parseDecimal(raw[k]);
+    if (raw[k] != null && raw[k] !== "" && (!v || v.lt(0))) return NextResponse.json({ error: `${k} must be a valid amount or empty` }, { status: 400 });
+    optional[k] = v;
+  }
+  const text = (k: string) => (k in raw ? { [k]: typeof raw[k] === "string" ? (raw[k] as string).trim().slice(0, 60) || null : null } : {});
+  // a caller that does not know these (an older backoffice) leaves them as they are
+  const data = { enabled, minAmount, maxAmount, feePercent, feeFixed, instructions, walletAddress, ...(typeof body.listed === "boolean" ? { listed: body.listed } : {}), ...optional, ...text("processingTime"), ...text("withdrawProcessingTime") };
 
   // audited (audit 2026-09-24, money): a changed deposit wallet address, fee or limit is exactly what a dispute or an
   // account takeover investigation needs on record -- old and new value of every field, in the same transaction

@@ -1794,6 +1794,10 @@ model PaymentMethod {
   enabled       Boolean           @default(true)
   // Off but listed: the Trader's Room shows the method greyed, and it cannot be picked. Off and not listed: not shown.
   listed        Boolean           @default(false)
+  // A method's withdrawal terms when they differ from its deposit terms. Limits unset = the deposit limits above apply.
+  withdrawMinAmount      Decimal?   @db.Decimal(18, 2)
+  withdrawMaxAmount      Decimal?   @db.Decimal(18, 2)
+  withdrawProcessingTime String?
   minAmount     Decimal           @default(0) @db.Decimal(18, 2)
   maxAmount     Decimal?          @db.Decimal(18, 2)
   feePercent    Decimal           @default(0) @db.Decimal(6, 3)

@@ -37,6 +37,7 @@ export type RoomMethod = {
   max: string | null;
   feeLine: string | null;
   processing: string | null;
+  withdraw: { min: string; max: string | null; processing: string | null };
   bank: { beneficiary: string; bank: string; iban: string; swift: string } | null;
   wallet: string | null;
   qr: string | null; // the plain address, so a wallet app's scanner fills its recipient field
@@ -58,6 +59,7 @@ export async function roomMethods(brokerId: string): Promise<RoomMethod[]> {
       available: m.enabled,
       min: m.minAmount.toFixed(2),
       max: m.maxAmount?.toFixed(2) ?? null,
+      withdraw: { min: (m.withdrawMinAmount ?? new Prisma.Decimal(0)).toFixed(2), max: m.withdrawMaxAmount?.toFixed(2) ?? null, processing: m.withdrawProcessingTime },
       feeLine: fee || null,
       processing: m.processingTime,
       // receiving details only for a method that is open
