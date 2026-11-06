@@ -28,6 +28,8 @@ export async function GET() {
       email: current.email,
       id: { not: session.accountId },
       status: "ACTIVE",
+      isWallet: false,
+      archivedAt: null,
     },
     // every account picker reads "Plan · Name · Number" (owner 2026-10-23): the plan is the group's client-facing
     // displayName, never the group's own name

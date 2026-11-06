@@ -389,6 +389,7 @@ async function route(request: NextRequest) {
 
   const requestHeaders = trustedHeaders(request);
   requestHeaders.set("x-broker-id", broker.id);
+  requestHeaders.set("x-broker-request-method", request.method);
   requestHeaders.set("x-broker-slug", broker.subdomain);
   requestHeaders.set("x-broker-tier", broker.tier);
   requestHeaders.set("x-broker-logo-url", broker.logoUrl ?? "");

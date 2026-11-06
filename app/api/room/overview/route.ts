@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { brokerServers, serverForKind } from "@/lib/broker-servers";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 import { accountFigures } from "@/lib/room/figures";
@@ -17,14 +18,19 @@ export async function GET() {
       select: { fullName: true, email: true, clientNumber: true, prevLoginAt: true, passwordHash: true, kycRecord: { select: { status: true, documentFrontUrl: true, addressProofUrl: true, rejectionReason: true } } },
     }),
     prisma.account.findMany({
-      where: { clientId: session.clientId, brokerId: session.brokerId, status: { not: "CLOSED" } },
-      select: { id: true, accountNumber: true, accountMode: true, currency: true, leverage: true, balance: true, credit: true, brokerId: true, createdAt: true, passwordHash: true, group: { select: { displayName: true } } },
+      where: { clientId: session.clientId, brokerId: session.brokerId, status: { not: "CLOSED" }, archivedAt: null },
+      select: { isWallet: true, nickname: true, investorPasswordHash: true, id: true, accountNumber: true, accountMode: true, currency: true, leverage: true, balance: true, credit: true, brokerId: true, createdAt: true, passwordHash: true, group: { select: { displayName: true } } },
       orderBy: [{ accountMode: "desc" }, { createdAt: "asc" }], // LIVE first
     }),
   ]);
   if (!client) return NextResponse.json({ error: "Signed out. Sign in again." }, { status: 401 });
 
-  const withFigures = await Promise.all(accounts.map(async (a) => ({
+  const servers = brokerServers(session.broker.name);
+  const all = await Promise.all(accounts.map(async (a) => ({
+    isWallet: a.isWallet,
+    nickname: a.nickname,
+    server: serverForKind(servers, a.accountMode)?.name ?? "",
+    readOnlyPassword: a.investorPasswordHash !== null,
     id: a.id,
     accountNumber: a.accountNumber,
     mode: a.accountMode,
@@ -37,6 +43,8 @@ export async function GET() {
     figures: await accountFigures(a),
   })));
 
+  const withFigures = all.filter((a) => !a.isWallet);
+  const wallet = all.find((a) => a.isWallet) ?? null;
   const live = withFigures.filter((a) => a.mode === "LIVE");
   const currencies = new Set(live.map((a) => a.currency));
   const sum = (k: "balance" | "equity" | "freeMargin" | "floating") => live.reduce((s, a) => s + Number(a.figures[k]), 0).toFixed(2);
@@ -56,6 +64,7 @@ export async function GET() {
       ? { status: kyc.status, identity: Boolean(kyc.documentFrontUrl), address: Boolean(kyc.addressProofUrl), rejectionReason: kyc.rejectionReason ?? null }
       : { status: "NONE", identity: false, address: false, rejectionReason: null },
     accounts: withFigures,
+    wallet,
     totals,
     recent: recent.rows,
   });

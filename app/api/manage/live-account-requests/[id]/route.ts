@@ -54,7 +54,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // status-guarded (audit 2026-09-24): not while another admin is approving it (reviewedAt set = claimed)
       const claimed = await tx.liveAccountRequest.updateMany({
         where: { id, status: "PENDING", reviewedAt: null },
-        data: { status: "REJECTED", rejectionReason, reviewedByAdminId: session!.adminId, reviewedAt: new Date() },
+        data: { status: "REJECTED", rejectionReason, reviewedByAdminId: session!.adminId, reviewedAt: new Date(), requestedPasswordHash: null },
       });
       if (claimed.count === 0) return null;
       const r = await tx.liveAccountRequest.findUniqueOrThrow({ where: { id } });
@@ -141,8 +141,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     );
   }
 
-  const password = generateTemporaryPassword();
-  const passwordHash = await hashPassword(password);
+  // the client chose a trading password in the Room: nothing is generated, stashed or e-mailed
+  const password = existing.requestedPasswordHash ? null : generateTemporaryPassword();
+  const passwordHash = existing.requestedPasswordHash ?? (await hashPassword(password!));
 
   // provisionAccount runs assertAccountStructure for every creation path
   // (mode vs the group's restriction, and the type-vs-group routing
@@ -166,6 +167,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       dateOfBirth: client.dateOfBirth,
       clientId: client.id,
       createdByAdminId: session!.adminId,
+      nickname: existing.requestedNickname,
     });
   } catch (error) {
     await releaseClaim().catch(() => {});
@@ -178,7 +180,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const updated = await prisma.$transaction(async (tx) => {
     const r = await tx.liveAccountRequest.update({
       where: { id },
-      data: { status: "APPROVED", reviewedByAdminId: session!.adminId, reviewedAt: new Date(), createdAccountId: account.id },
+      data: { status: "APPROVED", reviewedByAdminId: session!.adminId, reviewedAt: new Date(), createdAccountId: account.id, requestedPasswordHash: null },
     });
     await tx.auditLog.create({
       data: {
@@ -194,7 +196,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return r;
   });
 
-  await stashRevealedCredentials(client.id, { accountNumber: account.accountNumber, password });
+  if (password) await stashRevealedCredentials(client.id, { accountNumber: account.accountNumber, password });
 
   const portalLoginUrl = `${brokerPublicOrigin(broker)}/portal/login`;
 
@@ -210,8 +212,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         bodyLines: [
           `Your Live account request has been approved. Here are your account details:`,
           `Account number: ${account.accountNumber}`,
-          `Password: ${password}`,
-          `For your security, please log in and change your password as soon as possible.`,
+          ...(password ? [`Password: ${password}`, `For your security, please log in and change your password as soon as possible.`] : [`Sign in with the trading password you chose.`]),
         ],
         cta: { label: "Log in to your account", url: portalLoginUrl },
       }

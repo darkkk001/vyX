@@ -24,10 +24,11 @@ export async function POST(request: NextRequest) {
   if (await bcrypt.compare(next, client.passwordHash)) return NextResponse.json({ error: "Pick a password you have not used here." }, { status: 400 });
 
   const hash = await hashPassword(next);
-  const accounts = await prisma.account.findMany({ where: { clientId: session.clientId, brokerId: session.brokerId }, select: { id: true } });
+  const accounts = await prisma.account.findMany({ where: { clientId: session.clientId, brokerId: session.brokerId }, select: { id: true, passwordHash: true } });
+  const shared = accounts.filter((a) => a.passwordHash === client.passwordHash).map((a) => a.id);
   await prisma.$transaction(async (tx) => {
     await tx.client.update({ where: { id: session.clientId }, data: { passwordHash: hash } });
-    if (accounts.length) await tx.account.updateMany({ where: { id: { in: accounts.map((a) => a.id) } }, data: { passwordHash: hash } });
+    if (shared.length) await tx.account.updateMany({ where: { id: { in: shared } }, data: { passwordHash: hash } });
     await tx.auditLog.create({ data: { brokerId: session.brokerId, clientId: session.clientId, action: "CLIENT_PASSWORD_CHANGED", entityType: "Client", entityId: session.clientId, newValue: { accounts: accounts.length, source: "CLIENT" } } });
   });
   await revokeAllClientSessions(session.clientId, session.sessionId);

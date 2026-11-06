@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => null);
   const account = await ownAccount(session, body?.accountId);
-  if (!account) return NextResponse.json({ error: "Account not found." }, { status: 404 });
+  if (!account || account.isWallet) return NextResponse.json({ error: "Account not found." }, { status: 404 });
   const to = parseLeverage(body?.leverage);
   if (to == null) return NextResponse.json({ error: "Pick a leverage." }, { status: 400 });
 

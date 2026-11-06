@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
   // Constant-shape response whether the account doesn't exist, belongs to a
   // different broker, is inactive, or the password is wrong — avoid leaking
   // any of it.
-  const auth = await authenticateAccountDetailed(brokerId, accountNumber, password);
+  const auth = await authenticateAccountDetailed(brokerId, accountNumber, password, { allowReadOnly: true });
   if (auth.kind === "invalid") {
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
@@ -87,7 +87,8 @@ export async function POST(request: NextRequest) {
   // the trader supplies their code. See lib/totp.ts's
   // issuePending2faChallenge doc comment for why the SSO handoff route
   // doesn't have this same branch.
-  if (account.twoFactorEnabled) {
+  // the read-only password is made to be handed to someone else, who has no authenticator; it can only look
+  if (account.twoFactorEnabled && !auth.readOnly) {
     const pendingToken = await issuePending2faChallenge({ accountId: account.id, brokerId: account.brokerId });
     return NextResponse.json({ requiresTwoFactor: true, pendingToken });
   }
@@ -97,7 +98,7 @@ export async function POST(request: NextRequest) {
   const clientBuild = (request.headers.get("x-client-build") ?? "").trim();
   const userAgent = [request.headers.get("user-agent"), clientBuild ? `VyxBuild/${clientBuild}` : ""].filter(Boolean).join(" ") || null;
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
-  const token = await completeAccountLogin(account, previousSession, { userAgent, ip }, remember);
+  const token = await completeAccountLogin(account, previousSession, { userAgent, ip }, remember, auth.readOnly);
 
   const response = NextResponse.json({
     accountId: account.id,

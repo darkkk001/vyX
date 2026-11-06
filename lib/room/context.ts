@@ -45,7 +45,7 @@ export async function roomApiSession(): Promise<{ session: RoomSession } | { res
 export async function ownAccount(session: ClientSessionPayload, accountId: unknown) {
   if (typeof accountId !== "string" || !accountId) return null;
   return prisma.account.findFirst({
-    where: { id: accountId, clientId: session.clientId, brokerId: session.brokerId },
-    select: { id: true, accountNumber: true, accountMode: true, currency: true, leverage: true, balance: true, credit: true, status: true, groupId: true, createdAt: true },
+    where: { id: accountId, clientId: session.clientId, brokerId: session.brokerId, archivedAt: null },
+    select: { isWallet: true, id: true, accountNumber: true, accountMode: true, currency: true, leverage: true, balance: true, credit: true, status: true, groupId: true, createdAt: true },
   });
 }

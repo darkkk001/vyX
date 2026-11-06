@@ -29,6 +29,8 @@ export type AccountSessionPayload = {
   // the meantime, which is fine -- the token itself still authenticates
   // requests normally either way).
   sessionId?: string;
+  // Signed in with the read-only (investor) password: every write is refused in getAccountSession and at the gateway.
+  readOnly?: boolean;
 };
 
 export type SessionMetadata = {
@@ -283,6 +285,8 @@ export async function getAccountSession(): Promise<AccountSessionPayload | null>
   if (!verdict.ok && verdict.reason === "update-required") redirect(`${UPDATE_REQUIRED_PATH}?min=${encodeURIComponent(verdict.minVersion)}&latest=${encodeURIComponent(verdict.latestVersion)}`);
   if (!verdict.ok) return null;
 
+  if (session.readOnly && readOnlyRefused(headerList.get("x-broker-request-method"), headerList.get("x-pathname"))) redirect(READ_ONLY_PATH);
+
   // QoreTrader demo (lib/demo-hook.ts): lazy SL/TP, pending orders and stop-out for a guest; a deleted guest has no session.
   // Returns at once for every other tenant.
   if (!(await demoSessionHook(session))) return null;
@@ -309,31 +313,45 @@ export async function authenticateAccount(
 // pointer to support instead of retyping a password that is not the
 // problem (2026-09-11, Futurix live testing).
 export type AuthenticateResult =
-  | { kind: "ok"; account: NonNullable<Awaited<ReturnType<typeof prisma.account.findUnique>>> }
+  | { kind: "ok"; account: NonNullable<Awaited<ReturnType<typeof prisma.account.findUnique>>>; readOnly: boolean }
   | { kind: "invalid" }
-  | { kind: "inactive"; status: "SUSPENDED" | "CLOSED" };
+  | { kind: "inactive"; status: "SUSPENDED" | "CLOSED" | "ARCHIVED" };
 
 export async function authenticateAccountDetailed(
   brokerId: string,
   accountNumber: string,
-  password: string
+  password: string,
+  // only the trading sign-in routes pass this; nothing else may treat the read-only password as a credential
+  opts?: { allowReadOnly?: boolean }
 ): Promise<AuthenticateResult> {
   if (!accountNumber || !password) return { kind: "invalid" };
 
   const account = await prisma.account.findUnique({ where: { accountNumber } });
-  if (!account || account.brokerId !== brokerId) return { kind: "invalid" };
+  if (!account || account.brokerId !== brokerId || account.isWallet) return { kind: "invalid" };
 
   const passwordMatches = await bcrypt.compare(password, account.passwordHash);
-  if (!passwordMatches) return { kind: "invalid" };
+  const readOnly = !passwordMatches && opts?.allowReadOnly === true && account.investorPasswordHash !== null && (await bcrypt.compare(password, account.investorPasswordHash));
+  if (!passwordMatches && !readOnly) return { kind: "invalid" };
 
   if (account.status !== "ACTIVE") return { kind: "inactive", status: account.status };
-  return { kind: "ok", account };
+  if (account.archivedAt) return { kind: "inactive", status: "ARCHIVED" };
+  return { kind: "ok", account, readOnly };
 }
 
-export function inactiveAccountMessage(status: "SUSPENDED" | "CLOSED"): string {
+export function inactiveAccountMessage(status: "SUSPENDED" | "CLOSED" | "ARCHIVED"): string {
+  if (status === "ARCHIVED") return "This account is archived. Restore it in your client portal.";
   return status === "SUSPENDED"
     ? "This account is suspended. Contact your broker's support."
     : "This account is closed. Contact your broker's support.";
+}
+
+// What a read-only session may still do besides reading. Anything else that is not a read is refused, and so is a
+// request with no method header (it did not come through middleware.ts).
+export const READ_ONLY_PATH = "/api/client/read-only";
+const READ_ONLY_WRITES = new Set(["/api/trade/logout", "/api/trade/ws-ticket"]);
+export function readOnlyRefused(method: string | null, path: string | null): boolean {
+  if (method === "GET" || method === "HEAD") return false;
+  return !(method && path && READ_ONLY_WRITES.has(path));
 }
 
 // Shared tail of both login paths that can actually complete a session
@@ -348,9 +366,10 @@ export async function completeAccountLogin(
   account: { id: string; brokerId: string },
   previousSession: AccountSessionPayload | null,
   meta: { userAgent: string | null; ip: string | null },
-  remember: boolean = true
+  remember: boolean = true,
+  readOnly: boolean = false
 ): Promise<string> {
-  const token = await createAccountSession({ accountId: account.id, brokerId: account.brokerId }, meta, remember);
+  const token = await createAccountSession({ accountId: account.id, brokerId: account.brokerId, ...(readOnly ? { readOnly: true } : {}) }, meta, remember);
 
   // Same-IP multi-account detection (Risk Radar) -- a durable,
   // queryable record of this login's IP, separate from the Redis
