@@ -153,15 +153,31 @@ describe("money between an account and the wallet", () => {
     expect((await transfer(account.id, other, "10")).status).toBe(404);
     expect((await balance(other)).toFixed(2)).toBe("0.00");
   });
-  it("a wallet goes through the same deposit and withdrawal request as an account, and a withdrawal stays within it", async () => {
+  it("a deposit and a withdrawal go through the normal request and approval, with the wallet's limit and KYC", async () => {
     if (!dbReachable) return;
-    const { c, account } = await client("100");
+    const { c } = await client("0");
     const w = (await wallet()).body.id as string;
-    await transfer(account.id, w, "40");
+    const method = await prisma.paymentMethod.upsert({ where: { brokerId_type: { brokerId, type: "BANK_TRANSFER" } }, update: {}, create: { brokerId, type: "BANK_TRANSFER", enabled: true } });
+    const { createFundsRequest } = await import("@/lib/funds-request-create");
+    const { approveFundsRequest } = await import("@/lib/funds-approval");
+    const approve = (id: string, amount: string, type: "DEPOSIT" | "WITHDRAWAL") => prisma.$transaction((tx) => approveFundsRequest(tx, { transactionId: id, brokerId, accountId: w, amount: D(amount), adminId: null, note: null, type }));
+
+    const dep = await createFundsRequest({ brokerId, accountId: w, type: "DEPOSIT", amount: "75", paymentMethodId: method.id });
+    if (!dep.ok) throw new Error(dep.error);
+    expect(dep.created.status).toBe("PENDING");
+    expect((await balance(w)).toFixed(2)).toBe("0.00");
+    await approve(dep.created.id, "75", "DEPOSIT");
+    expect((await balance(w)).toFixed(2)).toBe("75.00");
+
+    const noKyc = await createFundsRequest({ brokerId, accountId: w, type: "WITHDRAWAL", amount: "10", paymentMethodId: method.id, destinationAddress: "x" });
+    expect(noKyc.ok).toBe(false);
+    await prisma.clientKycRecord.create({ data: { clientId: c.id, status: "APPROVED", documentType: "passport", documentFrontUrl: "x" } as never });
     const { withdrawable } = await import("@/lib/room/funds");
-    expect((await withdrawable(w)).available.toString()).toMatch(/^40/);
-    const { ownAccount } = await import("@/lib/room/context");
-    expect((await ownAccount({ clientId: c.id, brokerId } as never, w))?.isWallet).toBe(true);
+    expect(Number((await withdrawable(w)).available)).toBe(75);
+    const out = await createFundsRequest({ brokerId, accountId: w, type: "WITHDRAWAL", amount: "30", paymentMethodId: method.id, destinationAddress: "x" });
+    if (!out.ok) throw new Error(out.error);
+    await approve(out.created.id, "-30", "WITHDRAWAL"); // a withdrawal row is signed, as lib/funds-request-create.ts stores it
+    expect((await balance(w)).toFixed(2)).toBe("45.00");
   });
 });
 

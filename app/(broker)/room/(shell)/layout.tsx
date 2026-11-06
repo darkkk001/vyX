@@ -6,6 +6,7 @@ import { CLIENT_SESSION_COOKIE_NAME, getClientSession } from "@/lib/client-auth"
 import { prisma } from "@/lib/prisma";
 import { RoomDataProvider } from "@/components/room/RoomData";
 import RoomSidebar from "@/components/room/RoomSidebar";
+import OpenAccountModal from "@/components/room/OpenAccountModal";
 import { partnerAccountOf } from "@/lib/room/partner";
 
 // Signed-in Trader's Room screens. Sign-in and sign-up are /login and /register, outside this group.
@@ -28,6 +29,7 @@ export default async function RoomShellLayout({ children }: { children: ReactNod
         <RoomSidebar brokerName={broker.name} logoUrl={broker.logoUrl} isPartner={isPartner} rail={rail} closedGroups={closedGroups} />
         <main className="r-main">{children}</main>
       </div>
+      <OpenAccountModal />
     </RoomDataProvider>
   );
 }

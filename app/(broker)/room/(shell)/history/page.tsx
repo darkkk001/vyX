@@ -20,6 +20,7 @@ export default function RoomHistory() {
   const { data } = useRoom();
   const [tab, setTab] = useState<"transactions" | "trades">("transactions");
   const [account, setAccount] = useState("all");
+  useEffect(() => { const a = new URLSearchParams(window.location.search).get("account"); if (a) setAccount(a); }, []);
   const [type, setType] = useState("all");
   const [period, setPeriod] = useState("90d");
   const [page, setPage] = useState(1);
@@ -62,7 +63,7 @@ export default function RoomHistory() {
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <select aria-label="Account" className="mono" style={sel} value={account} onChange={(e) => { setAccount(e.target.value); reset(); }}>
               <option value="all">All accounts</option>
-              {(data?.accounts ?? []).map((a) => <option key={a.id} value={a.id}>{a.accountNumber}</option>)}
+              {[...(data?.accounts ?? []), ...(data?.wallet ? [data.wallet] : [])].map((a) => <option key={a.id} value={a.id}>{a.accountNumber}{a === data?.wallet ? " · Funding wallet" : ""}</option>)}
             </select>
             {tab === "transactions" ? (
               <select aria-label="Type" style={sel} value={type} onChange={(e) => { setType(e.target.value); reset(); }}>
