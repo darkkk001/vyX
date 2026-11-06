@@ -82,11 +82,10 @@ mod tests {
 
     #[test]
     fn three_digit_symbol_uses_a_larger_pip() {
-        // USDJPY-style: digits=3, pip = 0.01, so 1.5 pips = 0.015 of spread, 0.0075 per side,
-        // each rounded AWAY from the client at 3 digits.
+        // USDJPY-style: digits=3, pip = 0.01, so 1.5 pips = 15 points: ask +8, bid -7.
         let jpy = Tick { symbol: "USDJPY".into(), bid: dec!(150.000), ask: dec!(150.020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None };
         let quoted = quoted_tick(&jpy, Some(&AskRule::Markup { markup_pips: dec!(1.5), digits: 3 }));
-        assert_eq!((quoted.bid, quoted.ask), (dec!(149.992), dec!(150.028)));
+        assert_eq!((quoted.bid, quoted.ask), (dec!(149.993), dec!(150.028)));
     }
 
     #[test]

@@ -246,12 +246,11 @@ mod tests {
     #[test]
     fn the_entry_is_measured_against_the_account_price_the_fill_will_use() {
         use market_data::ask_markup::AskRule;
-        // 1.5 pips on a 5-digit symbol = 0.00015 of spread, half (0.000075) each side, rounded away
-        // from the client: ask ceil(1.09000 + 0.000075) = 1.09008, bid floor(1.08980 - 0.000075) = 1.08972
+        // 1.5 pips on a 5-digit symbol = 15 points: ask 1.09000 + 0.00008 = 1.09008, bid 1.08980 - 0.00007 = 1.08973
         let rule = AskRule::Markup { markup_pips: dec!(1.5), digits: 5 };
         let raw = tick(dec!(1.08980), dec!(1.09000));
         let quoted = crate::pricing::quoted_tick(&raw, Some(&rule));
-        assert_eq!((quoted.bid, quoted.ask), (dec!(1.08972), dec!(1.09008)));
+        assert_eq!((quoted.bid, quoted.ask), (dec!(1.08973), dec!(1.09008)));
 
         // a BUY LIMIT at the raw ask: the RAW tick would trigger it, the account's ask has not reached it
         let buy_limit = order(OrderSide::Buy, OrderType::Limit, dec!(1.09000));
@@ -261,7 +260,7 @@ mod tests {
         // a SELL STOP at the raw bid: symmetrically, the account's marked-down bid HAS fallen through it
         let sell_stop = order(OrderSide::Sell, OrderType::Stop, dec!(1.08975));
         assert!(!is_triggered(&sell_stop, &raw));
-        assert!(is_triggered(&sell_stop, &quoted), "the account's bid 1.08972 is below the entry");
+        assert!(is_triggered(&sell_stop, &quoted), "the account's bid 1.08973 is below the entry");
     }
 
     #[test]
