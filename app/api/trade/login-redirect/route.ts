@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.redirect(`${origin}/trade/login${qs}`, { status: 303 });
   }
 
-  const auth = await authenticateAccountDetailed(brokerId, accountNumber, password);
+  const auth = await authenticateAccountDetailed(brokerId, accountNumber, password, { allowReadOnly: true });
   if (auth.kind !== "ok") {
     // error=2 -> the login page shows the suspended/closed sentence instead of "wrong password"
     const reason = auth.kind === "inactive" ? `&error=2&status=${auth.status}` : "&error=1";
@@ -51,14 +51,14 @@ export async function POST(request: NextRequest) {
   // step with the pending token in the query string rather than a
   // response body, then POST /api/trade/login/verify-2fa (used by both
   // entry points) takes it from there.
-  if (account.twoFactorEnabled) {
+  if (account.twoFactorEnabled && !auth.readOnly) {
     const pendingToken = await issuePending2faChallenge({ accountId: account.id, brokerId: account.brokerId });
     return NextResponse.redirect(`${origin}/trade/login?requires2fa=1&pendingToken=${pendingToken}&remember=${remember}`, { status: 303 });
   }
 
   const userAgent = request.headers.get("user-agent");
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
-  const token = await completeAccountLogin(account, null, { userAgent, ip });
+  const token = await completeAccountLogin(account, null, { userAgent, ip }, true, auth.readOnly);
 
   const response = NextResponse.redirect(`${origin}/trade?remember=${remember}`, { status: 303 });
   response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, await accountSessionCookieOptions());

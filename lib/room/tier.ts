@@ -55,7 +55,7 @@ export async function clientTier(brokerId: string, clientId: string, now = new D
   const [broker, client, accounts] = await Promise.all([
     prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { tierConfig: true } }),
     prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { createdAt: true } }),
-    prisma.account.findMany({ where: { clientId, brokerId, accountMode: "LIVE" }, select: { id: true, accountNumber: true } }),
+    prisma.account.findMany({ where: { clientId, brokerId, accountMode: "LIVE", isWallet: false }, select: { id: true, accountNumber: true } }),
   ]);
   const tiers = tiersOf(broker.tierConfig);
   const ids = accounts.map((a) => a.id);

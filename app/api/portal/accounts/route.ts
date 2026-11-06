@@ -23,7 +23,7 @@ export async function GET() {
 
   const [accounts, revealedCredentials] = await Promise.all([
     prisma.account.findMany({
-      where: { clientId: session.clientId },
+      where: { clientId: session.clientId, isWallet: false, archivedAt: null },
       select: {
         id: true,
         accountNumber: true,

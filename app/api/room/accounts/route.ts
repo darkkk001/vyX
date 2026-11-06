@@ -11,12 +11,18 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { advanceLead } from "@/lib/crm/leads";
+import { hashPassword } from "@/lib/client-auth";
+import { cleanNickname, tradingPasswordOk } from "@/lib/room/password-rules";
+
+const DEMO_MIN_BALANCE = 100;
+const DEMO_MAX_BALANCE = 1_000_000;
 
 // Trader's Room Accounts screen.
 // GET ?mode=LIVE|DEMO -> the plans for that mode, each own account's leverage ceiling / choices / pending request,
 //                        the pending live-account request, KYC state.
-// POST {mode, groupId, leverage, currency} -> DEMO: created now (starting balance 10,000, the client's own password);
-//                        LIVE: a request for the broker (KYC approved first), the plan and leverage kept as its defaults.
+// POST {mode, groupId, leverage, currency, password, nickname?, startingBalance?} -> DEMO: created now; LIVE: a request for
+//                        the broker (KYC approved first). Each account gets the trading password chosen here; a live
+//                        request keeps only its hash, until the decision.
 export async function GET(request: NextRequest) {
   const ctx = await roomApiSession();
   if ("response" in ctx) return ctx.response;
@@ -26,7 +32,7 @@ export async function GET(request: NextRequest) {
   const [plans, accounts, pending, liveRequest, kyc, broker] = await Promise.all([
     roomPlans(session.brokerId, mode),
     prisma.account.findMany({
-      where: { clientId: session.clientId, brokerId: session.brokerId, status: "ACTIVE" },
+      where: { clientId: session.clientId, brokerId: session.brokerId, status: "ACTIVE", isWallet: false, archivedAt: null },
       select: { id: true, leverage: true, group: { select: { leverage: true, planMaxLeverage: true } } },
     }),
     prisma.leverageChangeRequest.findMany({ where: { clientId: session.clientId, status: "PENDING" }, select: { accountId: true, toLeverage: true, createdAt: true } }),
@@ -34,6 +40,11 @@ export async function GET(request: NextRequest) {
     prisma.clientKycRecord.findUnique({ where: { clientId: session.clientId }, select: { status: true } }),
     prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, leverageChangeReview: true } }),
   ]);
+  const archived = await prisma.account.findMany({
+    where: { clientId: session.clientId, brokerId: session.brokerId, isWallet: false, status: { not: "CLOSED" }, archivedAt: { not: null } },
+    select: { id: true, accountNumber: true, nickname: true, accountMode: true, currency: true, balance: true, archivedAt: true, group: { select: { displayName: true } } },
+    orderBy: { archivedAt: "desc" },
+  });
   const pendingBy = new Map(pending.map((p) => [p.accountId, p]));
   const tierCeiling = await tierLeverageCeiling(session.brokerId, session.clientId);
   return NextResponse.json({
@@ -46,6 +57,8 @@ export async function GET(request: NextRequest) {
       const p = pendingBy.get(a.id);
       return { accountId: a.id, current: a.leverage, ceiling, options: leverageOptions(ceiling), pending: p ? { to: p.toLeverage, at: p.createdAt.toISOString() } : null };
     }),
+    archived: archived.map((a) => ({ id: a.id, accountNumber: a.accountNumber, nickname: a.nickname, mode: a.accountMode, plan: a.group?.displayName ?? "Standard", balance: a.balance.toFixed(2), currency: a.currency, at: a.archivedAt!.toISOString() })),
+    demoBalance: { min: DEMO_MIN_BALANCE, max: DEMO_MAX_BALANCE, default: Number(GUEST_START_BALANCE) },
     liveRequest: liveRequest ? { at: liveRequest.createdAt.toISOString() } : null,
     kycApproved: kyc?.status === "APPROVED",
   });
@@ -67,6 +80,8 @@ export async function POST(request: NextRequest) {
   if (!Number.isInteger(leverage) || !plan.leverageOptions.includes(leverage)) {
     return NextResponse.json({ error: `Pick a leverage up to 1:${plan.maxLeverage}.` }, { status: 400 });
   }
+  if (!tradingPasswordOk(body?.password)) return NextResponse.json({ error: "The trading password does not meet the rules." }, { status: 400 });
+  const nickname = cleanNickname(body?.nickname);
   const [client, broker] = await Promise.all([
     prisma.client.findUnique({ where: { id: session.clientId }, select: { id: true, fullName: true, email: true, passwordHash: true, country: true, phone: true, dateOfBirth: true, kycRecord: { select: { status: true } } } }),
     prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { defaultAccountCurrency: true } }),
@@ -75,13 +90,18 @@ export async function POST(request: NextRequest) {
   const currency = typeof body?.currency === "string" && body.currency === broker.defaultAccountCurrency ? body.currency : broker.defaultAccountCurrency;
 
   if (mode === "DEMO") {
-    const demoCount = await prisma.account.count({ where: { clientId: client.id, accountMode: "DEMO", status: "ACTIVE" } });
+    const demoCount = await prisma.account.count({ where: { clientId: client.id, accountMode: "DEMO", status: "ACTIVE", archivedAt: null } });
     if (demoCount >= 5) return NextResponse.json({ error: "You already have 5 demo accounts." }, { status: 409 });
+    let start: Prisma.Decimal;
+    try { start = new Prisma.Decimal(String(body?.startingBalance ?? GUEST_START_BALANCE)); } catch { return NextResponse.json({ error: "Enter a starting balance." }, { status: 400 }); }
+    if (start.lt(DEMO_MIN_BALANCE) || start.gt(DEMO_MAX_BALANCE) || start.decimalPlaces() > 2) {
+      return NextResponse.json({ error: `Starting balance: ${DEMO_MIN_BALANCE} to ${DEMO_MAX_BALANCE.toLocaleString("en-US")}.` }, { status: 400 });
+    }
     try {
       const account = await provisionAccount({
-        brokerId: session.brokerId, fullName: client.fullName, email: client.email, passwordHash: client.passwordHash,
+        brokerId: session.brokerId, fullName: client.fullName, email: client.email, passwordHash: await hashPassword(body.password),
         accountMode: "DEMO", accountTypeId: null, currency, leverage, groupId: plan.groupId,
-        initialBalance: new Prisma.Decimal(GUEST_START_BALANCE), country: client.country, phone: client.phone, dateOfBirth: client.dateOfBirth,
+        initialBalance: start, nickname, country: client.country, phone: client.phone, dateOfBirth: client.dateOfBirth,
         clientId: client.id, createdByAdminId: null,
       });
       await advanceLead(session.brokerId, client.id, "DEMO");
@@ -98,7 +118,7 @@ export async function POST(request: NextRequest) {
   const existing = await prisma.liveAccountRequest.findFirst({ where: { clientId: client.id, status: "PENDING" }, select: { id: true } });
   if (existing) return NextResponse.json({ error: "Your live account request is already with your broker." }, { status: 409 });
   const created = await prisma.liveAccountRequest.create({
-    data: { brokerId: session.brokerId, clientId: client.id, accountTypeId: null, status: "PENDING", requestedGroupId: plan.groupId, requestedLeverage: leverage, requestedCurrency: currency },
+    data: { brokerId: session.brokerId, clientId: client.id, accountTypeId: null, status: "PENDING", requestedGroupId: plan.groupId, requestedLeverage: leverage, requestedNickname: nickname, requestedPasswordHash: await hashPassword(body.password), requestedCurrency: currency },
   });
   await prisma.auditLog.create({
     data: { brokerId: session.brokerId, clientId: client.id, action: "LIVE_ACCOUNT_REQUESTED", entityType: "LiveAccountRequest", entityId: created.id, newValue: { plan: plan.name, groupId: plan.groupId, leverage, currency, source: "CLIENT" } },

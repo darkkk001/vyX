@@ -46,7 +46,7 @@ export async function GET() {
   // Per-account trading rights (2026-09-28): READ_ONLY reads as "halted" and CLOSE_ONLY as "close_only", so an installed
   // terminal (which knows open / close_only / halted) already disables what the server refuses; tradingRights below
   // is the exact value for the wording
-  const tradingState = broker?.tradingHaltedAt || group?.tradingHaltedAt || rest.tradingRights === "READ_ONLY" ? "halted"
+  const tradingState = broker?.tradingHaltedAt || group?.tradingHaltedAt || rest.tradingRights === "READ_ONLY" || session.readOnly ? "halted"
     : broker?.closeOnlyAt || group?.closeOnlyAt || rest.tradingRights === "CLOSE_ONLY" ? "close_only" : "open";
   // stopOutLevel (audit 2026-09-24): the terminal shows and warns at stop-out too, not only at margin call
   // Phase 2 batch 9 (issue 363, owner decision): the broker's trading day / week start (the charts' D1 boundary), so the

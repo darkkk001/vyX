@@ -55,6 +55,9 @@ export type ProvisionAccountParams = {
   // account -- the one account allowed into a COVERAGE group. Every other
   // caller leaves it unset and is refused there.
   allowCoverage?: boolean;
+  nickname?: string | null;
+  // lib/room/wallet.ts only: a funding wallet never trades
+  isWallet?: boolean;
 };
 
 const MAX_ATTEMPTS = 5;
@@ -112,6 +115,8 @@ export async function provisionAccount(params: ProvisionAccountParams) {
             phone: params.phone,
             dateOfBirth: params.dateOfBirth,
             clientId: params.clientId,
+            nickname: params.nickname ?? null,
+            ...(params.isWallet ? { isWallet: true, tradingRights: "READ_ONLY" as const } : {}),
           },
         });
 
@@ -134,7 +139,7 @@ export async function provisionAccount(params: ProvisionAccountParams) {
 
         // Partner portal (CRM 2026-11-03): a client who signed up through a partner's link brings each LIVE account to
         // that partner (lib/room/partner.ts); nothing happens for anyone else
-        await attachReferredAccount(tx, { brokerId: params.brokerId, clientId: params.clientId, accountId: account.id, accountMode: params.accountMode, groupId: params.groupId });
+        if (!params.isWallet) await attachReferredAccount(tx, { brokerId: params.brokerId, clientId: params.clientId, accountId: account.id, accountMode: params.accountMode, groupId: params.groupId });
 
         await tx.auditLog.create({
           data: {

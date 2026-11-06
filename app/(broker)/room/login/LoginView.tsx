@@ -5,7 +5,7 @@ import RoomBrand from "@/components/room/RoomBrand";
 import LoginForm from "./LoginForm";
 import ServerClock from "./ServerClock";
 
-// Trader's Room sign-in (artboard "Login"): split brand panel + form, "Powered by QoreTrader" footer. Served at
+// Trader's Room sign-in (artboard "Login"): split brand panel + form, "Powered by VyX Technologies" footer. Served at
 // /login for a broker with the CRM module.
 export default async function RoomLoginView({ broker, verify, signedOut = false }: { broker: RoomBroker; verify?: string; signedOut?: boolean }) {
   // what a client depends on: the way in and the prices (readInfraSummary never throws; no report shows no line)
@@ -43,7 +43,7 @@ export default async function RoomLoginView({ broker, verify, signedOut = false 
             <ServerClock />
           </div>
         </div>
-        <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>Powered by QoreTrader</div>
+        <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>Powered by VyX Technologies</div>
       </section>
       <section className="r-auth-form">
         <LoginForm notice={signedOut ? { ok: true, text: "You were signed out. Sign in to continue." } : verify === "success" ? { ok: true, text: "Email confirmed. Sign in to continue." } : verify === "invalid" ? { ok: false, text: "That link has expired. Open an account again with the same email for a new one." } : null} />
