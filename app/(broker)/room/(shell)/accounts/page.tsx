@@ -155,7 +155,7 @@ export default function RoomAccounts() {
                     {sel ? <span style={{ fontSize: 10, letterSpacing: 1, fontWeight: 700, color: "var(--r-gold-text)" }}>SELECTED</span> : null}
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 9, fontSize: 12.5, color: "var(--r-text-2)" }}>
-                    {p.spreadFrom ? <div style={{ display: "flex", justifyContent: "space-between" }}><span>Spread from</span><span className="mono" style={{ color: "var(--r-text)" }}>{p.spreadFrom}</span></div> : null}
+                    {p.spreadFrom ? <div>Spread from <span className="mono" style={{ color: "var(--r-text)" }}>{p.spreadFrom}</span> on major FX</div> : null}
                     {p.commissionPerLot ? <div style={{ display: "flex", justifyContent: "space-between" }}><span>Commission</span><span className="mono" style={{ color: "var(--r-text)" }}>{money(p.commissionPerLot)} / lot</span></div> : null}
                     {p.minDeposit && mode === "LIVE" ? <div style={{ display: "flex", justifyContent: "space-between" }}><span>Min deposit</span><span className="mono" style={{ color: "var(--r-text)" }}>{Number(p.minDeposit).toLocaleString("en-US")} {meta?.currencies[0]}</span></div> : null}
                     <div style={{ display: "flex", justifyContent: "space-between" }}><span>Max leverage</span><span className="mono" style={{ color: "var(--r-text)" }}>1:{p.maxLeverage}</span></div>
@@ -165,6 +165,7 @@ export default function RoomAccounts() {
               );
             })}
           </div>
+          {meta && meta.plans.length > 0 ? <a href="/room/specifications" style={{ fontSize: 12.5, fontWeight: 500, alignSelf: "flex-start" }}>Contract specifications</a> : null}
           {meta && meta.plans.length === 0 ? <div className="r-note">No plans are open for {mode === "LIVE" ? "live" : "demo"} accounts right now.</div> : null}
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-end" }}>
             <div className="r-field">
