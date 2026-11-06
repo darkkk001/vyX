@@ -18,6 +18,8 @@ export type AccountSessionPayload = {
   // set only on a Trader's Room ws ticket (lib/account-auth.ts issueWsTicket): the socket follows the account without
   // counting it as online
   observer?: boolean;
+  // signed in with the read-only (investor) password (lib/account-auth.ts): reads only
+  readOnly?: boolean;
   // web security batch 1 S1: a staff password reset is pending; the session may only change the password (on the web app)
   mustChangePassword?: boolean;
 };
@@ -145,6 +147,11 @@ export async function getTraderSessionByTicket(
 // itself yet — that's still middleware.ts's job on the Next.js side,
 // see docs/api.md §1) — a session minted for one broker is never valid
 // against another, same rule as the existing getAccountSession().
+/** True when a read-only session tries anything but a read. */
+export function readOnlyWrite(payload: Pick<AccountSessionPayload, "readOnly">, method: string): boolean {
+  return payload.readOnly === true && method !== "GET" && method !== "HEAD";
+}
+
 export async function requireTraderSession(req: AuthedRequest, res: Response, next: NextFunction) {
   // L2 optimization pass: a short in-process cache in front of the SAME lookup. The store is still
   // Upstash (the web mints the session there and this only validates it); see session-cache.ts for
@@ -167,6 +174,11 @@ export async function requireTraderSession(req: AuthedRequest, res: Response, ne
   const requestBrokerId = req.headers["x-broker-id"];
   if (!requestBrokerId || requestBrokerId !== payload.brokerId) {
     res.status(403).json({ error: "broker mismatch" });
+    return;
+  }
+
+  if (readOnlyWrite(payload, req.method)) {
+    res.status(403).json({ error: "Read-only access. Sign in with the trading password to trade.", code: "READ_ONLY_SESSION" });
     return;
   }
 
