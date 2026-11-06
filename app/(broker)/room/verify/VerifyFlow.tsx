@@ -90,7 +90,7 @@ export default function VerifyFlow({ initial, kyc, rejectionReason, countries }:
           <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>{kyc === "APPROVED" ? "Your documents are approved." : "Your documents are with your broker for review."} Open a live account, then make your first deposit.</div>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <a className="r-btn" href="/room/accounts#open">Open a live account</a>
+          <a className="r-btn" href="/room?open=1">Open a real account</a>
           <a className="r-btn-ghost" href="/room/deposit">Deposit</a>
           <a className="r-btn-ghost" href="/room/downloads">Trade on demo</a>
         </div>

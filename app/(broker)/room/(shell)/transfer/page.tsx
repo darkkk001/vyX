@@ -3,15 +3,22 @@
 import { useEffect, useMemo, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { useRoom } from "@/components/room/RoomData";
+import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import { useFunds, amountOk, cleanAmount } from "@/components/room/useFunds";
 import { money, dayTime } from "@/components/room/format";
 
 // Artboard "Internal transfer": between the client's own accounts, instant, free-margin check on the server.
 export default function RoomTransfer() {
   const { data, refresh } = useRoom();
-  const accounts = useMemo(() => data?.accounts ?? [], [data]);
+  const accounts = useMemo(() => [...(data?.accounts ?? []), ...(data?.wallet ? [data.wallet] : [])], [data]);
   const [fromId, setFromId] = useState("");
   const [toId, setToId] = useState("");
+  // ?from=<id> / ?to=<id> from an account card or the wallet
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    setFromId(q.get("from") ?? "");
+    setToId(q.get("to") ?? "");
+  }, []);
   const from = accounts.find((a) => a.id === fromId) ?? accounts.find((a) => a.mode === "LIVE") ?? accounts[0] ?? null;
   const targets = accounts.filter((a) => a.id !== from?.id && a.mode === from?.mode && a.currency === from?.currency);
   const to = targets.find((a) => a.id === toId) ?? targets[0] ?? null;
@@ -61,7 +68,7 @@ export default function RoomTransfer() {
             <input id="tamt" className="r-input mono" inputMode="decimal" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: "10px 12px" }} />
             {funds ? <div style={{ fontSize: 11.5, color: "var(--r-muted)" }}>Free to move: <span className="mono" style={{ color: "var(--r-text)" }}>{money(funds.available)} {from?.currency}</span></div> : null}
           </div>
-          {targets.length === 0 && from ? <div className="r-note">You need a second {from.mode === "LIVE" ? "live" : "demo"} account in {from.currency} to transfer. <a href="/room/accounts#open">Open an account</a></div> : null}
+          {targets.length === 0 && from ? <div className="r-note">You need a second {from.mode === "LIVE" ? "live" : "demo"} account in {from.currency} to transfer. <OpenAccountButton className="r-link-btn">Open an account</OpenAccountButton></div> : null}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", borderTop: "1px solid var(--r-line)", paddingTop: 18 }}>
             <div style={{ fontSize: 12, color: "var(--r-muted)", maxWidth: 420, lineHeight: 1.6 }}>Transfers between your own accounts are instant and free. Free margin on the source account must cover the amount.</div>
             <button type="button" className="r-btn" style={{ padding: "11px 24px" }} disabled={!from || !to || busy} onClick={submit}>{busy ? "Moving…" : "Transfer"}</button>

@@ -14,12 +14,13 @@ export type RoomFigures = {
   balance: string; credit: string; equity: string; freeMargin: string; floating: string; usedMargin: string;
   marginLevel: string | null; openPositions: number; priced: boolean;
 };
-export type RoomAccount = { id: string; accountNumber: string; mode: "LIVE" | "DEMO"; plan: string; leverage: number; currency: string; openedAt: string; portalPassword: boolean; figures: RoomFigures };
+export type RoomAccount = { nickname: string | null; server: string; readOnlyPassword: boolean; id: string; accountNumber: string; mode: "LIVE" | "DEMO"; plan: string; leverage: number; currency: string; openedAt: string; portalPassword: boolean; figures: RoomFigures };
 export type RoomTx = { id: string; ref: string; at: string; type: string; account: string; method: string; amount: string; currency: string; status: "Completed" | "Pending" | "Rejected" | "Cancelled" };
 export type RoomOverview = {
   client: { fullName: string; email: string; clientId: string; lastLoginAt: string | null };
   kyc: { status: "NONE" | "PENDING" | "APPROVED" | "REJECTED"; identity: boolean; address: boolean; rejectionReason: string | null };
   accounts: RoomAccount[];
+  wallet: RoomAccount | null;
   totals: { currency: string; balance: string; equity: string; freeMargin: string; floating: string } | null;
   recent: RoomTx[];
 };

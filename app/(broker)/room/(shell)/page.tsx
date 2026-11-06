@@ -1,6 +1,7 @@
 "use client";
 
 import RoomHeader from "@/components/room/RoomHeader";
+import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import StatusChip from "@/components/room/StatusChip";
 import TierPanel from "@/components/room/TierPanel";
 import { useRoom } from "@/components/room/RoomData";
@@ -21,7 +22,7 @@ export default function RoomDashboard() {
   const firstName = data?.client.fullName.split(/\s+/)[0] ?? "";
   return (
     <>
-      <RoomHeader title="Dashboard" bell />
+      <RoomHeader title="Dashboard" />
       <div className="r-body">
         {error && !data ? <div className="r-error">{error}</div> : null}
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
@@ -69,10 +70,10 @@ export default function RoomDashboard() {
                 </div>
               </div>
             ))}
-            <a href="/room/accounts#open" style={{ border: "1px dashed var(--r-dash)", borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--r-text-2)", minHeight: 150 }}>
+            <OpenAccountButton style={{ background: "none", cursor: "pointer", font: "inherit",  border: "1px dashed var(--r-dash)", borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--r-text-2)", minHeight: 150 }}>
               <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M11 4v14M4 11h14" /></svg>
               <span style={{ fontSize: 13, fontWeight: 500 }}>Open new account</span>
-            </a>
+            </OpenAccountButton>
           </div>
         </div>
 

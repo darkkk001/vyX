@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { useRoom } from "@/components/room/RoomData";
+import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import { useFunds, amountOk, cleanAmount, readDataUrl } from "@/components/room/useFunds";
 import MethodGrid from "@/components/room/MethodGrid";
 
@@ -12,14 +13,17 @@ export default function RoomDeposit() {
   const { data, selected, select, refresh } = useRoom();
   // ?account=<id> from a Deposit button elsewhere picks that account once
   const picked = useRef(false);
+  const [toWallet, setToWallet] = useState(false);
   useEffect(() => {
     if (picked.current || !data) return;
     picked.current = true;
     const wanted = new URLSearchParams(window.location.search).get("account");
-    if (wanted && data.accounts.some((a) => a.id === wanted)) select(wanted);
+    if (wanted && wanted === data.wallet?.id) setToWallet(true);
+    else if (wanted && data.accounts.some((a) => a.id === wanted)) select(wanted);
   }, [data, select]);
   const live = useMemo(() => (data?.accounts ?? []).filter((a) => a.mode === "LIVE"), [data]);
-  const account = selected?.mode === "LIVE" ? selected : live[0] ?? null;
+  const wallet = data?.wallet ?? null;
+  const account = toWallet && wallet ? wallet : selected?.mode === "LIVE" ? selected : live[0] ?? wallet;
   const { funds, reload } = useFunds(account?.id);
   const [methodId, setMethodId] = useState("");
   const open = funds?.methods.filter((m) => m.available) ?? [];
@@ -68,7 +72,7 @@ export default function RoomDeposit() {
     <>
       <RoomHeader title="Deposit" />
       <div className="r-body" style={{ gap: 18 }}>
-        {data && live.length === 0 ? <div className="r-card r-pad r-note">Open a live account first. Demo accounts are not funded. <a href="/room/accounts#open">Open an account</a></div> : null}
+        {data && live.length === 0 && !wallet ? <div className="r-card r-pad r-note">Open a live account first. Demo accounts are not funded. <OpenAccountButton className="r-link-btn">Open an account</OpenAccountButton></div> : null}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="r-label" style={{ padding: "2px 2px 4px" }}>Payment method</div>
           <MethodGrid methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={funds?.account.currency ?? ""} onSelect={(id) => { setMethodId(id); setMsg(null); }} />
@@ -83,8 +87,8 @@ export default function RoomDeposit() {
             <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
               <div className="r-field" style={{ flex: "1 1 200px" }}>
                 <label htmlFor="acct" style={label}>To account</label>
-                <select id="acct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { select(e.target.value); setMsg(null); }}>
-                  {live.map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${a.plan}`}</option>)}
+                <select id="acct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setToWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
+                  {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${a.plan}`}</option>)}
                 </select>
               </div>
               <div className="r-field" style={{ flex: "1 1 200px" }}>

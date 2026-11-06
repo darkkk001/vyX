@@ -34,7 +34,7 @@ export async function GET() {
     id: a.id,
     accountNumber: a.accountNumber,
     mode: a.accountMode,
-    plan: a.group?.displayName ?? "Standard",
+    plan: a.isWallet ? "Funding wallet" : a.group?.displayName ?? "Standard",
     leverage: a.leverage,
     currency: a.currency,
     openedAt: a.createdAt.toISOString(),

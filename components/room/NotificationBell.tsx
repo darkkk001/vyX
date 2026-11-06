@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRoomEvent } from "./RoomData";
 import { dayTime } from "./format";
 
-// The dashboard bell (artboard "Dashboard"). The unread count and the list come from GET /api/room/notifications;
-// opening the panel marks them read on the server. Closes on Esc or a click outside.
+// The bell on every Room screen: a list with title, date and an unread dot (GET /api/room/notifications). Opening it marks
+// them read on the server; the dots stay until it closes, so the client sees what was new. Esc or a click outside closes.
 type Item = { id: string; title: string; body: string; read: boolean; at: string };
 
 export default function NotificationBell() {
@@ -43,7 +43,7 @@ export default function NotificationBell() {
   async function toggle() {
     const next = !open;
     setOpen(next);
-    if (!next) return;
+    if (!next) { await load(); return; }
     await load();
     if (unread === 0) return;
     const res = await fetch("/api/room/notifications", { method: "POST" }).catch(() => null);
@@ -62,10 +62,12 @@ export default function NotificationBell() {
           {failed ? <div className="r-note" style={{ padding: "4px 14px 14px" }}>Could not load notifications.</div> : null}
           {!failed && items.length === 0 ? <div className="r-note" style={{ padding: "4px 14px 14px" }}>No notifications</div> : null}
           {items.map((n) => (
-            <div key={n.id} className="r-bell-row">
-              <div style={{ fontSize: 13, fontWeight: n.read ? 400 : 600 }}>{n.title}</div>
-              {n.body ? <div style={{ fontSize: 12.5, color: "var(--r-text-2)", marginTop: 2, lineHeight: 1.5 }}>{n.body}</div> : null}
-              <div className="mono" style={{ fontSize: 11, color: "var(--r-muted)", marginTop: 4 }}>{dayTime(n.at)}</div>
+            <div key={n.id} className="r-bell-row" data-unread={!n.read} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <span aria-label={n.read ? undefined : "Unread"} style={{ width: 7, height: 7, borderRadius: "50%", marginTop: 6, flexShrink: 0, background: n.read ? "transparent" : "var(--r-accent)" }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: n.read ? 400 : 600 }}>{n.title}</div>
+                <div className="mono" style={{ fontSize: 11, color: "var(--r-muted)", marginTop: 4 }}>{dayTime(n.at)}</div>
+              </div>
             </div>
           ))}
         </div>

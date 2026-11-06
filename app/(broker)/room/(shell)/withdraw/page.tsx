@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import StatusChip from "@/components/room/StatusChip";
 import { useRoom } from "@/components/room/RoomData";
@@ -27,7 +27,18 @@ const NETWORKS = [
 export default function RoomWithdraw() {
   const { data, selected, select, refresh } = useRoom();
   const live = useMemo(() => (data?.accounts ?? []).filter((a) => a.mode === "LIVE"), [data]);
-  const account = selected?.mode === "LIVE" ? selected : live[0] ?? null;
+  const wallet = data?.wallet ?? null;
+  const [fromWallet, setFromWallet] = useState(false);
+  const picked = useRef(false);
+  // ?account=<id> from a Withdraw button elsewhere picks that account once
+  useEffect(() => {
+    if (picked.current || !data) return;
+    picked.current = true;
+    const wanted = new URLSearchParams(window.location.search).get("account");
+    if (wanted && wanted === data.wallet?.id) setFromWallet(true);
+    else if (wanted && data.accounts.some((a) => a.id === wanted)) select(wanted);
+  }, [data, select]);
+  const account = fromWallet && wallet ? wallet : selected?.mode === "LIVE" ? selected : live[0] ?? wallet;
   const { funds, reload, setFunds } = useFunds(account?.id);
   const [amount, setAmount] = useState("");
   const [payoutId, setPayoutId] = useState("");
@@ -90,8 +101,8 @@ export default function RoomWithdraw() {
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
             <div className="r-field" style={{ flex: "1 1 200px" }}>
               <label htmlFor="wacct" style={label}>From account</label>
-              <select id="wacct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { select(e.target.value); setMsg(null); }}>
-                {live.map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${a.plan}`}</option>)}
+              <select id="wacct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setFromWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
+                {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${a.plan}`}</option>)}
               </select>
               <div style={{ fontSize: 11.5, color: "var(--r-muted)" }}>Available for withdrawal: <span className="mono" style={{ color: "var(--r-text)" }}>{funds ? `${money(funds.available)} ${ccy}` : "0.00"}</span></div>
             </div>
