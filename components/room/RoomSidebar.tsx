@@ -20,6 +20,7 @@ const ICONS: Record<string, ReactNode> = {
   withdraw: I(<><rect x="2" y="2" width="12" height="7" rx="1.5" /><path d="M8 15v-5M6 11.5 8 9.5l2 2" /></>),
   transfer: I(<path d="M3 5h8M9 2l3 3-3 3M13 11H5M7 8l-3 3 3 3" />),
   history: I(<><circle cx="8" cy="8" r="6" /><path d="M8 5v3l2 2" /></>),
+  staking: I(<><ellipse cx="8" cy="4.5" rx="5.5" ry="2.2" /><path d="M2.5 4.5v7c0 1.2 2.5 2.2 5.5 2.2s5.5-1 5.5-2.2v-7M2.5 8c0 1.2 2.5 2.2 5.5 2.2s5.5-1 5.5-2.2" /></>),
   analytics: I(<path d="M2.5 13.5h11M4.5 13.5V8.5M8 13.5V3.5M11.5 13.5V6.5" />),
   journal: I(<><path d="M4 2h8.5v12H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 2Z" /><path d="M2.5 11.5A1.5 1.5 0 0 1 4 10h8.5M6.5 5h3.5" /></>),
   partner: I(<><circle cx="6" cy="6" r="2.5" /><path d="M2 13.5c0-2.2 1.8-4 4-4s4 1.8 4 4" /><circle cx="11.5" cy="5" r="2" /><path d="M11.5 9.5c1.7.5 2.8 2 2.8 4" /></>),
@@ -46,7 +47,7 @@ const KYC_LINE: Record<string, { text: string; cls: string }> = {
 
 const keep = (name: string, value: string) => { document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=31536000; samesite=lax`; };
 
-export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: railAtLoad, closedGroups }: { brokerName: string; logoUrl: string | null; isPartner: boolean; rail: boolean; closedGroups: string[] }) {
+export default function RoomSidebar({ brokerName, logoUrl, isPartner, staking, rail: railAtLoad, closedGroups }: { brokerName: string; logoUrl: string | null; isPartner: boolean; staking: boolean; rail: boolean; closedGroups: string[] }) {
   const path = usePathname() ?? "/room";
   const { data } = useRoom();
   const kyc = KYC_LINE[data?.kyc.status ?? "NONE"] ?? KYC_LINE.NONE;
@@ -78,7 +79,7 @@ export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: rail
     {drawer ? <div className="r-drawer-back" onClick={() => setDrawer(false)} /> : null}
     <aside className={`r-side${rail ? " is-rail" : ""}${drawer ? " is-open" : ""}`}>
       <a className="r-brand" href="/room"><RoomBrand name={brokerName} logoUrl={logoUrl} showName /></a>
-      {GROUPS.filter((g) => !g.partner || isPartner).map((g) => (
+      {GROUPS.filter((g) => !g.partner || isPartner).map((g) => (g.title === "Funds" && staking ? { ...g, items: [...g.items, { href: "/room/staking", label: "Staking", icon: "staking" }] } : g)).map((g) => (
         <div key={g.title} className="r-nav-sec">
           <button type="button" className="r-nav-group" aria-expanded={!closed.includes(g.title)} onClick={() => toggleGroup(g.title)}>
             {g.title.toUpperCase()}

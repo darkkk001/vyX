@@ -129,5 +129,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261105210000_client_idle_minutes",
   "20261105220000_require_withdrawal_2fa",
   "20261106100000_notification_client",
-  "20261106110000_payment_method_grid"
+  "20261106110000_payment_method_grid",
+  "20261106130000_staking"
 ];

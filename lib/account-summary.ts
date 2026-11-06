@@ -155,7 +155,7 @@ export function summarize(input: {
   const creditIn = sum(of("CREDIT_IN"));
   const creditOut = sum(of("CREDIT_OUT")).neg();
   const creditUsed = sum(of("CREDIT"));
-  const adjustments = sum((r) => r.type === "ADJUSTMENT" && !isVoidReversal(r));
+  const adjustments = sum((r) => (r.type === "ADJUSTMENT" && !isVoidReversal(r)) || r.type === "STAKE_OUT" || r.type === "STAKING_RETURN");
   const initialBalance = sum(isInitialBalanceRow);
   const voidReversal = sum(isVoidReversal);
   const deletedTrades = sumOf(hidden);

@@ -19,13 +19,14 @@ export default async function RoomShellLayout({ children }: { children: ReactNod
   const client = await prisma.client.findUnique({ where: { id: session.clientId }, select: { id: true, status: true } });
   if (!client || client.status !== "ACTIVE") redirect("/login");
   const isPartner = (await partnerAccountOf(prisma, client.id)) !== null;
+  const staking = (await prisma.broker.findUnique({ where: { id: broker.id }, select: { stakingEnabled: true } }))?.stakingEnabled === true;
   // read here, not in the browser, so the sidebar draws its saved state with no flash
   const rail = jar.get("room_rail")?.value === "1";
   const closedGroups = decodeURIComponent(jar.get("room_nav_closed")?.value ?? "").split(",").filter(Boolean);
   return (
     <RoomDataProvider>
       <div className="r-shell">
-        <RoomSidebar brokerName={broker.name} logoUrl={broker.logoUrl} isPartner={isPartner} rail={rail} closedGroups={closedGroups} />
+        <RoomSidebar brokerName={broker.name} logoUrl={broker.logoUrl} isPartner={isPartner} staking={staking} rail={rail} closedGroups={closedGroups} />
         <main className="r-main">{children}</main>
       </div>
     </RoomDataProvider>

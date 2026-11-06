@@ -11,6 +11,10 @@
   "ignoreCommand":"bash scripts/vercel-ignore.sh",
   "crons": [
     {
+      "path": "/api/internal/staking-payout",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/internal/swap-rollover",
       "schedule": "5 0 * * *"
     },

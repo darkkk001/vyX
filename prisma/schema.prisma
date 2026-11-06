@@ -144,6 +144,9 @@ enum TransactionType {
   // a credit change never moves. Kept apart from CREDIT, which is credit used up by a closing loss.
   CREDIT_IN
   CREDIT_OUT
+  // Staking (lib/room/staking.ts): the amount leaving for a stake, and principal + return coming back
+  STAKE_OUT
+  STAKING_RETURN
 }
 
 enum TransactionStatus {
@@ -555,6 +558,12 @@ model Broker {
   clientIdleMinutes    Int     @default(30)
   // Cloudflare Turnstile on the Trader's Room sign-in and sign-up (lib/turnstile.ts). Needs the platform's keys.
   humanCheckEnabled    Boolean @default(false)
+  // Staking (lib/room/staking.ts): off for every broker until switched on. Plan values apply to new stakes only.
+  stakingEnabled       Boolean @default(false)
+  stakingMinAmount     Decimal @default(1000) @db.Decimal(18, 2)
+  stakingCycleDays     Int     @default(14)
+  stakingRatePct       Decimal @default(10) @db.Decimal(6, 3)
+  stakes               Stake[]
   // On = a client needs 2FA turned on to withdraw (app/api/room/withdraw). Off = 2FA stays the client's own choice.
   requireWithdrawal2fa Boolean @default(false)
   // On = a client's leverage change from the Trader's Room waits for staff approval; off = applied at once.
@@ -986,6 +995,7 @@ model Account {
   @@index([clientId])
   @@index([accountTypeId])
   leverageChangeRequests LeverageChangeRequest[]
+  stakes Stake[]
 }
 
 // Per-broker pricing-tier classification an Account can be tagged with
@@ -1517,6 +1527,7 @@ model Client {
   payoutMethods ClientPayoutMethod[]
   supportTickets SupportTicket[]
   notifications Notification[]
+  stakes Stake[]
 }
 
 // One KYC submission per CLIENT (the person), not per account -- real
@@ -2652,6 +2663,41 @@ model EconomicCalendarCache {
 // broker-scoped, shared read state (any staff member marking one read
 // marks it for the whole team, same "one dealing desk" mental model
 // the rest of Manager already assumes). See lib/notifications.ts.
+enum StakeStatus {
+  ACTIVE
+  PAID
+}
+
+// One stake (lib/room/staking.ts): the money out of the account's balance until endAt. ratePct and cycleDays are copied from
+// the broker's plan at the start, so a later change of the plan never touches a stake already running.
+model Stake {
+  id                  String      @id @default(cuid())
+  brokerId            String
+  broker              Broker      @relation(fields: [brokerId], references: [id])
+  clientId            String
+  client              Client      @relation(fields: [clientId], references: [id])
+  accountId           String
+  account             Account     @relation(fields: [accountId], references: [id])
+  amount              Decimal     @db.Decimal(18, 2)
+  currency            String
+  ratePct             Decimal     @db.Decimal(6, 3)
+  cycleDays           Int
+  returnAmount        Decimal     @db.Decimal(18, 2)
+  status              StakeStatus @default(ACTIVE)
+  startAt             DateTime    @db.Timestamptz(3)
+  endAt               DateTime    @db.Timestamptz(3)
+  paidAt              DateTime?   @db.Timestamptz(3)
+  openTransactionId   String
+  payoutTransactionId String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([brokerId, status])
+  @@index([clientId])
+  @@index([status, endAt])
+}
+
 model Notification {
   id         String             @id @default(cuid())
   brokerId   String

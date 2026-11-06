@@ -11,7 +11,7 @@ import { CLIENT_IDLE_MAX_MINUTES, CLIENT_IDLE_MIN_MINUTES, parseIdleMinutes } fr
 // payment methods' receiving details. PATCH -> any of those parts.
 async function snapshot(brokerId: string) {
   const [b, groups, rates, methods] = await Promise.all([
-    prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { crmEnabled: true, leverageChangeReview: true, tierConfig: true, androidAppUrl: true, iosAppUrl: true, clientIdleMinutes: true, humanCheckEnabled: true, requireWithdrawal2fa: true } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { crmEnabled: true, leverageChangeReview: true, tierConfig: true, androidAppUrl: true, iosAppUrl: true, stakingEnabled: true, stakingMinAmount: true, stakingCycleDays: true, stakingRatePct: true, clientIdleMinutes: true, humanCheckEnabled: true, requireWithdrawal2fa: true } }),
     prisma.group.findMany({ where: { brokerId, isClientSelectable: true }, select: { id: true, name: true, displayName: true, leverage: true, planMinDeposit: true, planMaxLeverage: true, planSpreadFrom: true, planCommissionPerLot: true }, orderBy: { displayName: "asc" } }),
     prisma.ibPlanRate.findMany({ where: { brokerId }, select: { groupId: true, ratePerLot: true } }),
     prisma.paymentMethod.findMany({ where: { brokerId }, select: { id: true, type: true, enabled: true, processingTime: true, bankDetails: true, walletAddress: true }, orderBy: { createdAt: "asc" } }),
@@ -20,6 +20,7 @@ async function snapshot(brokerId: string) {
   return {
     crmEnabled: b.crmEnabled,
     leverageChangeReview: b.leverageChangeReview,
+    staking: { enabled: b.stakingEnabled, minAmount: b.stakingMinAmount.toFixed(2), cycleDays: b.stakingCycleDays, ratePct: b.stakingRatePct.toString() },
     clientIdleMinutes: b.clientIdleMinutes,
     humanCheckEnabled: b.humanCheckEnabled,
     requireWithdrawal2fa: b.requireWithdrawal2fa,
@@ -54,6 +55,13 @@ export async function PATCH(request: NextRequest) {
   const before = await snapshot(staff.brokerId);
   const brokerData: Prisma.BrokerUpdateInput = {};
   if ("leverageChangeReview" in b) brokerData.leverageChangeReview = b.leverageChangeReview === true;
+  if ("staking" in b) {
+    const st = b.staking as Record<string, unknown> | null;
+    if ("enabled" in (st ?? {})) brokerData.stakingEnabled = st!.enabled === true;
+    if ("minAmount" in (st ?? {})) { const v = Number(st!.minAmount); if (!Number.isFinite(v) || v <= 0) return NextResponse.json({ error: "Minimum must be a positive amount." }, { status: 400 }); brokerData.stakingMinAmount = new Prisma.Decimal(v.toFixed(2)); }
+    if ("cycleDays" in (st ?? {})) { const v = Number(st!.cycleDays); if (!Number.isInteger(v) || v < 1 || v > 365) return NextResponse.json({ error: "Cycle is 1 to 365 days." }, { status: 400 }); brokerData.stakingCycleDays = v; }
+    if ("ratePct" in (st ?? {})) { const v = Number(st!.ratePct); if (!Number.isFinite(v) || v < 0 || v > 100) return NextResponse.json({ error: "Rate is 0 to 100%." }, { status: 400 }); brokerData.stakingRatePct = new Prisma.Decimal(v.toFixed(3)); }
+  }
   if ("clientIdleMinutes" in b) {
     const v = parseIdleMinutes(b.clientIdleMinutes);
     if (v === null) return NextResponse.json({ error: `Idle limit is ${CLIENT_IDLE_MIN_MINUTES} to ${CLIENT_IDLE_MAX_MINUTES} minutes.` }, { status: 400 });

@@ -8,7 +8,7 @@ import { isInitialBalanceRow } from "@/lib/initial-balance";
 // of the client's own accounts is ONE row "from -> to" (its TRANSFER_OUT leg); a transfer in from an account the client
 // does not own (staff move) shows as its own TRANSFER_IN leg.
 
-export type RoomTxType = "Deposit" | "Withdrawal" | "Transfer" | "Credit" | "Adjustment";
+export type RoomTxType = "Deposit" | "Withdrawal" | "Transfer" | "Credit" | "Adjustment" | "Staking";
 export type RoomTxRow = {
   id: string;
   ref: string; // TX-<8 chars>
@@ -27,6 +27,7 @@ const TYPE_GROUPS: Record<RoomTxType, TransactionType[]> = {
   Transfer: ["TRANSFER_OUT", "TRANSFER_IN"],
   Credit: ["CREDIT_IN", "CREDIT_OUT"],
   Adjustment: ["ADJUSTMENT", "NEGATIVE_BALANCE_PROTECTION"],
+  Staking: ["STAKE_OUT", "STAKING_RETURN"],
 };
 export const ROOM_TX_TYPES = Object.keys(TYPE_GROUPS) as RoomTxType[];
 
@@ -84,6 +85,8 @@ function toRow(t: Raw, ownNumbers: Set<string>, payoutTitle: Map<string, string>
     method = "Starting balance";
   } else if (type === "Credit") {
     method = "Credit";
+  } else if (type === "Staking") {
+    method = t.type === "STAKING_RETURN" ? "Staking return" : "Stake";
   } else if (type === "Adjustment" && !method) {
     method = "Broker";
   }
