@@ -404,13 +404,13 @@ mod tests {
             hedged_margin_pct: dec!(200), ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }), quote: None,
         };
         let (sell, buy) = (pos(OrderSide::Sell), pos(OrderSide::Buy));
-        // SYMMETRIC MARKUP: 1.5 pips = 0.15 split, so the account's ask is ceil(4299.13 + 0.075) = 4299.21 and its
-        // bid floor(4298.96 - 0.075) = 4298.88. A BUY is no longer valued at the raw bid.
+        // 1.5 pips = 15 points: the account's ask is 4299.13 + 0.08 = 4299.21 and its bid 4298.96 - 0.07 = 4298.89.
+        // A BUY is not valued at the raw bid.
         assert_eq!(position_close_price(&sell, dec!(4298.96), dec!(4299.13)), dec!(4299.21));
-        assert_eq!(position_close_price(&buy, dec!(4298.96), dec!(4299.13)), dec!(4298.88));
-        // SELL: (4290 - 4299.21) x 100 = -921; BUY: (4298.88 - 4290) x 100 = +888
+        assert_eq!(position_close_price(&buy, dec!(4298.96), dec!(4299.13)), dec!(4298.89));
+        // SELL: (4290 - 4299.21) x 100 = -921; BUY: (4298.89 - 4290) x 100 = +889
         assert_eq!(floating_pnl_account(&sell), Some(dec!(-921.00)));
-        assert_eq!(floating_pnl_account(&buy), Some(dec!(888.00)));
+        assert_eq!(floating_pnl_account(&buy), Some(dec!(889.00)));
         let state = AccountState { effective_balance: dec!(10000), credit: dec!(0), leverage: 100, positions: vec![sell] };
         assert_eq!(used_margin(&state), dec!(4299.21));
         assert_eq!(equity(&state), dec!(9079.00));
