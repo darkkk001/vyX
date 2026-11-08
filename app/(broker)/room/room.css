@@ -80,6 +80,14 @@
 .room .r-brand { color: var(--r-text); } /* the design's wordmark is text colour, not the link gold */
 .r-brand img { max-height: 28px; max-width: 170px; object-fit: contain; }
 .r-wordmark { font-family: var(--r-head); font-weight: 600; letter-spacing: 3px; font-size: 13.5px; text-transform: uppercase; }
+/* the broker's full logo (sign-in, register, forgot password): mark + two-part wordmark, first word in the accent */
+.r-logo { display: inline-flex; align-items: center; gap: 12px; color: var(--r-text); min-width: 0; }
+.r-logo img { flex: none; height: 40px; width: auto; max-width: 64px; object-fit: contain; }
+.r-logo-word { font-family: var(--r-head); font-weight: 700; letter-spacing: 4px; font-size: 19px; text-transform: uppercase; line-height: 1.2; overflow-wrap: anywhere; }
+.r-logo-first { color: var(--r-accent); }
+.r-logo-sm { gap: 10px; }
+.r-logo-sm img { height: 28px; max-width: 44px; }
+.r-logo-sm .r-logo-word { font-size: 14px; letter-spacing: 3px; }
 .r-side .r-brand img { flex: none; max-width: 44px; }
 .r-side .r-wordmark { min-width: 0; line-height: 1.3; overflow-wrap: anywhere; }
 .r-nav-sec { display: flex; flex-direction: column; gap: 2px; }
