@@ -122,6 +122,33 @@ export const closePositionSchema = z.object({
   volume: z.never().optional(),
 });
 
+// POST /v1/positions/close-bulk. The scope vocabulary is the web's own
+// (app/api/trade/positions/close-bulk, lib/bulk-close.ts BulkCloseScope), so a client switching from the
+// Vercel route to this one changes the URL and nothing about the body.
+//
+// `positionIds` NARROWS, it never widens: the selection always starts from this account's own OPEN
+// positions and the list can only remove from it. That is the same rule selectBulkCloseTargets applies,
+// and it is what makes an id from another account harmless here rather than a probe.
+export const closeBulkSchema = z
+  .object({
+    scope: z.enum(["ALL", "PROFIT", "LOSS", "SYMBOL"]),
+    symbol: z.string().trim().min(1).optional(),
+    side: side.nullable().optional(),
+    positionIds: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
+    // ONE key for the basket; each position's own key becomes "<key>:<positionId>" in the engine, so a
+    // replayed basket is refused per position by UNIQUE (accountId, idempotencyKey) rather than
+    // half-applied. Optional, like the single close's.
+    idempotencyKey: z.string().trim().min(1).max(96).optional(),
+    // Same reason as closePositionSchema's: declared so `req.body = result.data` cannot silently strip a
+    // partial-close ask and close the basket in full.
+    volume: z.never().optional(),
+  })
+  .superRefine((body, ctx) => {
+    if (body.scope === "SYMBOL" && !body.symbol) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["symbol"], message: "symbol is required for scope SYMBOL" });
+    }
+  });
+
 export function validateBody(schema: z.ZodTypeAny) {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.body);

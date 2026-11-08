@@ -10,11 +10,21 @@ import { Decimal } from "decimal.js";
 import type { AuthedRequest } from "../auth.js";
 import { requireTraderSession } from "../auth.js";
 import { rateLimitOrders } from "../rate-limit.js";
-import { getAccount, getCloseResultView, getFreshPrice, getPositionForClose, query, writeAuditLog } from "../db.js";
+import {
+  getAccount,
+  getCloseResultView,
+  getFreshPrice,
+  getFreshPrices,
+  getOpenPositionsForBulk,
+  getPositionForClose,
+  query,
+  writeAuditLog,
+} from "../db.js";
 import { parseUpstreamJson } from "../http.js";
-import { closePositionSchema, modifyPositionSchema, validateBody } from "../validation.js";
+import { closeBulkSchema, closePositionSchema, modifyPositionSchema, validateBody } from "../validation.js";
 import { engineIngressVerdict } from "./orders.js";
 import { clientAsk, clientBid, loadAskRules } from "../client-ask.js";
+import { bulkErrorFor, selectBulkBasket, type BulkTarget, type Live } from "../bulk-select.js";
 import { effectiveCapPoints, slippageVerdict, symbolSlippageCapPoints, traderSlippagePoints } from "../slippage.js";
 import type { z } from "zod";
 
@@ -25,6 +35,7 @@ const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? "";
 
 type ModifyPositionBody = z.infer<typeof modifyPositionSchema>;
 type ClosePositionBody = z.infer<typeof closePositionSchema>;
+type CloseBulkBody = z.infer<typeof closeBulkSchema>;
 
 // SL/TP EDITS DO NOT SHARE THE OPENS' BUDGET EITHER.
 //
@@ -329,6 +340,230 @@ router.post(
       return;
     }
     res.status(200).json({ position: view.position, transaction: view.transaction, partial: false, balance: view.balance });
+  }
+);
+
+// ---- POST /v1/positions/close-bulk -------------------------------------------------------------
+//
+// THE WHOLE BASKET, ONE REQUEST, ONE LOCK HOLD. The replacement for the trader terminal's bulk close,
+// which today goes to Vercel (app/api/trade/positions/close-bulk -> lib/bulk-close.ts) and loops
+// closePositionInTx per position inside one transaction: for a basket of 20 that is roughly 200
+// sequential round trips from Vercel to Neon, which is where the measured 10-15 s comes from. Here the
+// Gateway resolves the basket and hands it to the engine in ONE call, and the engine settles it with one
+// `vyx_close_positions` -- one round trip, and the "Account" row lock taken once and held to COMMIT
+// instead of acquired and released 20 times with gaps for other writers to interleave.
+//
+// WHAT THIS ROUTE OWNS and the engine does not:
+//
+//   1. THE SCOPE. ALL / PROFIT / LOSS / SYMBOL, plus the optional `side` filter and `positionIds`
+//      narrowing -- the same vocabulary and the same semantics as the web's selectBulkCloseTargets, so a
+//      client switching from that route to this one changes a URL and nothing about the body. PROFIT and
+//      LOSS are classified off the SAME price snapshot the close fills at, which is the point: "close
+//      profitable" has to mean what was on the trader's screen when they pressed it, not what a second
+//      read says a tick later.
+//   2. THE INGRESS SCOPE, because the engine's close routes do not check it (see the single close's own
+//      comment on that asymmetry). Checked once for the basket, before any position is touched.
+//   3. OWNERSHIP, structurally rather than by checking: the selection STARTS from this account's own
+//      open positions, so `positionIds` can only remove from that set. An id belonging to someone else
+//      is not refused, it is simply never in the basket -- so this route cannot be used to probe for
+//      other accounts' position ids.
+//   4. THE PRICE, one fresh tick per distinct symbol (15 s, on `tickAt`), marked to the account the same
+//      way the single close marks it -- a BUY at the account's bid, a SELL at its ask. Every position in
+//      the same symbol therefore closes at an IDENTICAL price, which the old per-position loop could not
+//      promise. RAW bid/ask go to the engine, which applies the markup itself; the marked price is used
+//      here only for the PROFIT/LOSS split.
+//
+// NO SLIPPAGE CAP HERE, deliberately -- and the web's bulk path has none either. The cap compares the
+// client's own reference price against the fill, and a bulk close has no single reference to compare
+// against. Giving it a per-position reference would be a new client contract, not a port of one.
+//
+// MARKET-CLOSED SYMBOLS READ AS "no live price" here, where the web answers MARKET_CLOSED with the next
+// session open. That distinction needs the trading-session calendar (lib/risk.ts's checkTradingSession /
+// computeNextSessionOpen) and this service has never had a port of it. The money is the same either way
+// -- a closed symbol closes in neither route -- but the message is poorer, so this is a known gap and
+// deliberately a noted one rather than a silent one.
+//
+// THE DEAL READS "CLIENT", NOT "BULK". The engine's close primitive hardcodes DealReason::Client, and
+// the per-position fallback path goes through it, so stamping BULK on the set path would make the
+// flag's two paths write DIFFERENT history -- and byte-equality between them is the whole reason this is
+// safe to deploy. Matching the web's BULK reason means threading a reason through the single close as
+// well, which widens the diff into money-path code that is already live. Left for a separate change.
+const CLOSE_BULK_RATE_LIMIT_PER_MINUTE = CLOSE_RATE_LIMIT_PER_MINUTE;
+
+type BulkResult = {
+  positionId: string;
+  closed: boolean;
+  closePrice: string | null;
+  realizedPnl: string | null;
+  error: string | null;
+};
+
+router.post(
+  "/close-bulk",
+  requireTraderSession,
+  rateLimitOrders(CLOSE_BULK_RATE_LIMIT_PER_MINUTE, 60, "close"),
+  validateBody(closeBulkSchema),
+  async (req: AuthedRequest, res) => {
+    const body = req.body as CloseBulkBody;
+    const session = req.session!;
+    const brokerId = req.headers["x-broker-id"] as string;
+
+    // Same "finish" hook, and for the same reason, as the single close's: one line per answered
+    // request, whichever of this handler's exits answered it. `n=` is here because a bulk close's
+    // latency is meaningless without the basket size -- 400 ms for 2 positions and 400 ms for 40 are
+    // not the same measurement.
+    const t0 = Date.now();
+    let tMark = t0;
+    let basket = 0;
+    const stage: string[] = [];
+    const mark = (name: string) => {
+      const now = Date.now();
+      stage.push(`${name}=${now - tMark}ms`);
+      tMark = now;
+    };
+    res.on("finish", () => {
+      console.log(
+        `[order-timing] route=close-bulk status=${res.statusCode} scope=${body.scope} n=${basket} total=${Date.now() - t0}ms ${stage.join(" ")}`
+      );
+    });
+
+    const account = await getAccount(session.accountId, brokerId);
+    if (!account) {
+      res.status(404).json({ error: "account not found" });
+      return;
+    }
+    if (account.status !== "ACTIVE") {
+      res.status(403).json({ error: "account is not active" });
+      return;
+    }
+
+    // the scope the engine's close routes do not enforce
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    if (!ingress.ok) {
+      res.status(403).json({ error: ingress.why });
+      return;
+    }
+
+    // (1) this account's own open positions, oldest first -- the order the basket settles in
+    const open: BulkTarget[] = await getOpenPositionsForBulk(session.accountId, brokerId);
+    mark("select");
+    if (open.length === 0) {
+      res.status(200).json({ requested: 0, successful: 0, failed: 0, results: [] });
+      return;
+    }
+
+    // (2) one fresh tick per distinct symbol, plus this account's ask rules. Fetched for EVERY open
+    // symbol rather than only the in-scope ones, because under PROFIT / LOSS the scope cannot be decided
+    // until the price is known -- the classification and the fill come from the same snapshot, which is
+    // the property the whole selection rests on.
+    const symbols = [...new Set(open.map((p) => p.symbolName))];
+    const [prices, rules] = await Promise.all([
+      getFreshPrices(symbols),
+      loadAskRules(query, [session.accountId], brokerId),
+    ]);
+    mark("price");
+    const accountRules = rules.get(session.accountId);
+    // the account's marked close price: a BUY at its bid, a SELL at its ask (client-ask.ts, the same
+    // port of lib/ask-markup.ts the single close uses). A symbol with no rule gets a zero markup, which
+    // is the raw price -- never a silent skip.
+    const markedClose = (p: BulkTarget, live: Live) => {
+      const rule =
+        accountRules?.get(p.symbolName) ?? { mode: "markup" as const, markupPips: new Decimal(0), digits: p.digits };
+      return p.side === "BUY" ? clientBid(rule, live.bid, live.ask) : clientAsk(rule, live.bid, live.ask);
+    };
+
+    // (3) the scope, the side filter, the id narrowing and the per-position refusals -- all of it in
+    // bulk-select.ts, which is pure and proved on a table there rather than asserted here.
+    const selection = selectBulkBasket(open, body, prices, markedClose);
+    const results = new Map<string, BulkResult>();
+    for (const r of selection.refusals) {
+      results.set(r.positionId, { positionId: r.positionId, closed: false, closePrice: null, realizedPnl: null, error: r.error });
+    }
+    const items = selection.closable.map(({ position, live }) => ({
+      position_id: position.id,
+      bid: live.bid.toString(),
+      ask: live.ask.toString(),
+    }));
+    const order = selection.order;
+    basket = order.length;
+    if (order.length === 0) {
+      res.status(200).json({ requested: 0, successful: 0, failed: 0, results: [] });
+      return;
+    }
+
+    // (4) ONE call to the engine for everything that is closable
+    if (items.length > 0) {
+      const upstream = await fetch(`${TRADING_CORE_URL}/v1/positions/close-bulk`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-internal-secret": INTERNAL_SERVICE_SECRET },
+        body: JSON.stringify({
+          account_id: session.accountId,
+          items,
+          idempotency_prefix: body.idempotencyKey ?? null,
+        }),
+      });
+      const data = await parseUpstreamJson(upstream);
+      mark("engine");
+      if (!upstream.ok) {
+        // A REFUSED BASKET IS NOT PARTIALLY APPLIED. The engine settles the set inside ONE transaction,
+        // so a 500, or a 409 from a replayed idempotency key, means NOTHING was written. Hence a single
+        // status here rather than per-position errors, which would imply some of the closes landed.
+        console.error("[close-bulk] engine refused the basket", { status: upstream.status, n: items.length });
+        if (upstream.status === 409) {
+          res.status(409).json(data);
+        } else {
+          res.status(502).json({ error: "EXECUTION_UNAVAILABLE" });
+        }
+        return;
+      }
+      const rows = ((data as { results?: unknown }).results ?? []) as {
+        position_id: string;
+        status: string;
+        close_price?: string;
+        realized_pnl?: string;
+      }[];
+      for (const row of rows) {
+        const closed = row.status === "CLOSED";
+        results.set(row.position_id, {
+          positionId: row.position_id,
+          closed,
+          closePrice: closed ? String(row.close_price ?? "") : null,
+          realizedPnl: closed ? String(row.realized_pnl ?? "") : null,
+          error: closed ? null : bulkErrorFor(row.status),
+        });
+      }
+    }
+
+    // (5) answer in selection order, which is settle order -- so the ledger the client reads back and
+    // the list it renders run the same way. A position with no row at all would be a bug in the engine's
+    // answer, so it is reported as one rather than quietly dropped.
+    const out = order.map(
+      (id) =>
+        results.get(id) ?? { positionId: id, closed: false, closePrice: null, realizedPnl: null, error: "no answer" }
+    );
+    const successful = out.filter((r) => r.closed).length;
+
+    // ONE audit row for the basket, not N. The per-position record already exists and is richer than
+    // anything this could add: the engine writes a "Deal", a TRADE_PNL "Transaction" and a
+    // PostCloseEffect per close, in the same transaction as the money. What this row carries is the ASK
+    // -- who requested which scope, and what came back -- which is the part no engine artifact holds.
+    await writeAuditLog({
+      brokerId,
+      action: "GATEWAY_POSITIONS_CLOSED_BULK",
+      entityType: "Account",
+      entityId: session.accountId,
+      newValue: {
+        scope: body.scope,
+        ...(body.symbol ? { symbol: body.symbol } : {}),
+        ...(body.side ? { side: body.side } : {}),
+        idempotencyKey: body.idempotencyKey ?? null,
+        requested: out.length,
+        successful,
+        closed: out.filter((r) => r.closed).map((r) => r.positionId),
+      },
+    }).catch((err) => console.error("audit log write failed", err));
+
+    res.status(200).json({ requested: out.length, successful, failed: out.length - successful, results: out });
   }
 );
 
