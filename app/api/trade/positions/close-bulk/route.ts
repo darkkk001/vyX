@@ -37,6 +37,23 @@ async function postInner(request: NextRequest) {
     return NextResponse.json({ error: "side must be BUY or SELL" }, { status: 400 });
   }
   const side = body?.side === "BUY" || body?.side === "SELL" ? (body.side as "BUY" | "SELL") : undefined;
+  // Optional positionIds: close ONLY these positions (the scope still applies on top). They used to be dropped here, so
+  // scope ALL closed every open position on the account, including ones the client never listed. Ids of another
+  // account or already closed are ignored (selectBulkCloseTargets filters by this session's account and OPEN). A
+  // malformed or empty list is refused: falling back to "every position" is exactly the bug.
+  let positionIds: string[] | undefined;
+  if (body?.positionIds !== undefined && body?.positionIds !== null) {
+    if (!Array.isArray(body.positionIds) || !body.positionIds.every((x: unknown) => typeof x === "string" && x.length > 0)) {
+      return NextResponse.json({ error: "positionIds must be a list of position ids" }, { status: 400 });
+    }
+    if (body.positionIds.length === 0) {
+      return NextResponse.json({ error: "positionIds is empty" }, { status: 400 });
+    }
+    if (body.positionIds.length > 1000) {
+      return NextResponse.json({ error: "positionIds is limited to 1000" }, { status: 400 });
+    }
+    positionIds = [...new Set(body.positionIds as string[])];
+  }
   // Phase 2 batch 9 (issue 244): the terminal's Smart Trade Manager close ALL / PROFIT / LOSS comes through here; with
   // source "stm_bulk" each position it closes (or queues for the dealer) gets the STM_BULK_CLOSE audit row the single
   // close route already writes. Informational only: selection and execution are unchanged.
@@ -75,7 +92,7 @@ async function postInner(request: NextRequest) {
     const clientPlatformHeader = request.headers.get("x-client-platform");
     const orderSource: "WEB" | "DESKTOP_NATIVE" | "MOBILE" | "API" =
       clientPlatformHeader === "DESKTOP_NATIVE" || clientPlatformHeader === "MOBILE" || clientPlatformHeader === "API" ? clientPlatformHeader : "WEB";
-    const { matching, priceBySymbol, nextOpenBySymbolName, closePriceOf } = await selectBulkCloseTargets(prisma, { accountId: session.accountId, brokerId: session.brokerId, scope, symbol, side });
+    const { matching, priceBySymbol, nextOpenBySymbolName, closePriceOf } = await selectBulkCloseTargets(prisma, { accountId: session.accountId, brokerId: session.brokerId, scope, symbol, side, positionIds });
     const results: BulkClosePositionResult[] = [];
     const batch = Date.now();
     for (const p of matching) {
@@ -141,6 +158,7 @@ async function postInner(request: NextRequest) {
     scope,
     symbol,
     side,
+    positionIds,
     dealSource: clientDealSource(request.headers.get("x-client-platform")),
   });
   await auditStm(results);
