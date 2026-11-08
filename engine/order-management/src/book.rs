@@ -1445,23 +1445,25 @@ impl TriggerTick {
 /// engine's receive time of that tick is known `triggerTickEngineAt` and `engineDelayMs` = closeEngineAt -
 /// triggerTickEngineAt, ONE clock (owner 2026-10-23: the delay is measured on the engine clock; the feed and database
 /// stamps stay for reference). The web reads the payload by a plain cast, so these keys change nothing there.
-pub async fn enqueue_post_close(
-    tx: &mut sqlx::PgTransaction<'_>,
-    position_id: &str,
-    outcome: &CloseOutcome,
+/// The "PostCloseEffect" payload, everything except `dealId` / `dealTicket`.
+///
+/// Split out of `enqueue_post_close` so the ONE-CALL close path (vyx_close_position) builds the byte-same
+/// payload from the byte-same code. Those two keys are deliberately NOT here: they are only known after
+/// the "Deal" row exists, so each path adds them where it learns them -- Rust from `RETURNING ticket`,
+/// the SQL function from its own insert. Everything else -- the lots, the price, the P&L, the trigger
+/// tick and the millisecond stamps -- is decided here and here only, so the two paths cannot drift.
+pub fn post_close_payload(
+    realized_pnl: Decimal,
     reason: CloseReason,
     volume_before: Decimal,
     close_price: Decimal,
     trigger: Option<TriggerTick>,
-) -> Result<(), sqlx::Error> {
+) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "closedLots": volume_before.normalize().to_string(),
         "sourceVolumeBeforeClose": volume_before.normalize().to_string(),
         "closePrice": close_price.normalize().to_string(),
-        "realizedPnl": outcome.realized_pnl.normalize().to_string(),
-        // deal model step 2: the OUT deal this close wrote, and what is left open (the engine closes in full)
-        "dealId": outcome.deal_id,
-        "dealTicket": outcome.deal_ticket.to_string(),
+        "realizedPnl": realized_pnl.normalize().to_string(),
         "remainingVolume": "0",
         "triggerSource": if in_live_fire() { "fire" } else { "pass" },
     });
@@ -1484,6 +1486,26 @@ pub async fn enqueue_post_close(
         payload["marginLevel"] = serde_json::Value::String(fixed2(margin_level));
         payload["stopOutLevel"] = serde_json::Value::String(stop_out_level.normalize().to_string());
     }
+    payload
+}
+
+pub async fn enqueue_post_close(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    outcome: &CloseOutcome,
+    reason: CloseReason,
+    volume_before: Decimal,
+    close_price: Decimal,
+    trigger: Option<TriggerTick>,
+) -> Result<(), sqlx::Error> {
+    let mut payload = post_close_payload(outcome.realized_pnl, reason, volume_before, close_price, trigger);
+    // deal model step 2: the OUT deal this close wrote, and what is left open (the engine closes in full).
+    // Set here rather than in post_close_payload because only this path knows them: they come from the
+    // "Deal" insert's RETURNING. The one-call path (vyx_close_position) injects the same two keys inside
+    // the function, for the same reason -- see that function's own comment. jsonb normalises key order,
+    // so both assemblies store the identical value.
+    payload["dealId"] = serde_json::Value::String(outcome.deal_id.clone());
+    payload["dealTicket"] = serde_json::Value::String(outcome.deal_ticket.to_string());
     sqlx::query(
         r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", "positionId", reason, payload)
            VALUES ($1, 'POSITION_CLOSED', $2, $3, $4, $5, $6,

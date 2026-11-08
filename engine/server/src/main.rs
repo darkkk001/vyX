@@ -620,6 +620,121 @@ enum ClosePositionResponse {
     Closed { close_price: Decimal, realized_pnl: Decimal },
 }
 
+/// BULK CLOSE: one basket, one request.
+///
+/// The counterpart of `/v1/positions/{position_id}/close` for a whole basket. The body carries each
+/// position with the caller's own bid/ask -- the same convention the single route documents, so the
+/// engine does not form a second opinion about price -- and ORDER MATTERS: the money chains and the
+/// "is this the last open position" test that drives negative-balance protection is re-evaluated per
+/// position, so the array order is the order the basket settles in.
+///
+/// Every requested position gets its own row in the answer. One position being already closed does not
+/// fail the basket; a replayed idempotency key still refuses the whole thing with 409, because that is
+/// the constraint doing its job.
+#[derive(serde::Deserialize)]
+struct CloseBulkItem {
+    position_id: String,
+    bid: Decimal,
+    ask: Decimal,
+}
+
+#[derive(serde::Deserialize)]
+struct CloseBulkBody {
+    account_id: String,
+    items: Vec<CloseBulkItem>,
+    /// optional: each position's key becomes "<prefix>:<position_id>", so one basket is replay-safe
+    #[serde(default)]
+    idempotency_prefix: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct CloseBulkRow {
+    position_id: String,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    close_price: Option<Decimal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    realized_pnl: Option<Decimal>,
+}
+
+#[derive(serde::Serialize)]
+struct CloseBulkResponse {
+    requested: usize,
+    successful: usize,
+    failed: usize,
+    results: Vec<CloseBulkRow>,
+}
+
+async fn close_positions_bulk(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CloseBulkBody>,
+) -> Result<Json<CloseBulkResponse>, (StatusCode, String)> {
+    let items: Vec<(String, Decimal, Decimal)> =
+        body.items.into_iter().map(|i| (i.position_id, i.bid, i.ask)).collect();
+
+    let outcomes = order_management::close_positions_bulk(
+        &state.pool,
+        &state.nats,
+        &body.account_id,
+        &items,
+        body.idempotency_prefix.as_deref(),
+        &state.tick_cache,
+        Some(&state.pricing),
+    )
+    .await
+    .map_err(|err| match err {
+        // the same reasoning as the single close: a replayed key is the constraint working, not a fault
+        order_management::ClosePositionError::Db(sqlx::Error::Database(ref dbe))
+            if dbe.code().as_deref() == Some("23505") && dbe.constraint() == Some(CLOSE_IDEMPOTENCY_CONSTRAINT) =>
+        {
+            tracing::info!(constraint = CLOSE_IDEMPOTENCY_CONSTRAINT, "bulk close refused: an idempotency key was already answered");
+            (StatusCode::CONFLICT, "this close was already answered".to_string())
+        }
+        err => {
+            tracing::error!(?err, "close_positions_bulk failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        }
+    })?;
+
+    let results: Vec<CloseBulkRow> = outcomes
+        .into_iter()
+        .map(|o| match o.outcome {
+            ClosePositionOutcome::Closed { close_price, realized_pnl } => CloseBulkRow {
+                position_id: o.position_id,
+                status: "CLOSED",
+                close_price: Some(close_price),
+                realized_pnl: Some(realized_pnl),
+            },
+            ClosePositionOutcome::AlreadyClosed => CloseBulkRow {
+                position_id: o.position_id, status: "ALREADY_CLOSED", close_price: None, realized_pnl: None,
+            },
+            ClosePositionOutcome::InvalidStatus { .. } => CloseBulkRow {
+                position_id: o.position_id, status: "NOT_OPEN", close_price: None, realized_pnl: None,
+            },
+            ClosePositionOutcome::NotFound => CloseBulkRow {
+                position_id: o.position_id, status: "NOT_FOUND", close_price: None, realized_pnl: None,
+            },
+            ClosePositionOutcome::NotScoped => CloseBulkRow {
+                position_id: o.position_id, status: "NOT_SCOPED", close_price: None, realized_pnl: None,
+            },
+            ClosePositionOutcome::NotDemo => CloseBulkRow {
+                position_id: o.position_id, status: "NOT_DEMO", close_price: None, realized_pnl: None,
+            },
+            ClosePositionOutcome::NoConversionRate => CloseBulkRow {
+                position_id: o.position_id, status: "NO_CONVERSION_RATE", close_price: None, realized_pnl: None,
+            },
+        })
+        .collect();
+
+    let successful = results.iter().filter(|r| r.status == "CLOSED").count();
+    Ok(Json(CloseBulkResponse {
+        requested: results.len(),
+        successful,
+        failed: results.len() - successful,
+        results,
+    }))
+}
+
 /// Manually closes an open position — the trader-initiated counterpart to
 /// the margin monitor's automatic force-closes, see
 /// order_management::close_position's doc comment. `bid`/`ask` are the
@@ -2325,6 +2440,7 @@ async fn main() {
         .route("/v1/orders/pending", post(place_pending_order))
         .route("/v1/orders/{order_id}/cancel", post(cancel_order))
         .route("/v1/positions/{position_id}/modify", post(modify_position))
+        .route("/v1/positions/close-bulk", post(close_positions_bulk))
         .route("/v1/positions/{position_id}/close", post(close_position))
         .route("/internal/feed-stats", get(feed_stats))
         .route("/internal/alert-stats", get(alert_stats))
