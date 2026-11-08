@@ -1141,6 +1141,233 @@ pub async fn close_position(
 /// ANSWER -- and is stamped on this close's own ledger row inside the same transaction, where
 /// UNIQUE (accountId, idempotencyKey) makes a replay fail the whole close instead of writing a second.
 #[allow(clippy::too_many_arguments)]
+/// One requested position's answer in a bulk close, in request order.
+// not Clone: it carries a ClosePositionOutcome, which is an answer rather than a value
+#[derive(Debug)]
+pub struct BulkCloseOutcome {
+    pub position_id: String,
+    pub outcome: ClosePositionOutcome,
+}
+
+/// BULK CLOSE: one basket, one server-side pass.
+///
+/// WHAT IT REPLACES. Closing twenty positions today means twenty separate closes, each re-reading the
+/// account's book and each taking and releasing the "Account" row lock with gaps in between. On the web's
+/// own bulk path (lib/bulk-close.ts, N sequential closePositionInTx inside one transaction) that is
+/// roughly 200 sequential round trips for a basket of 20, which is where the measured 10-15 s comes from.
+///
+/// WHAT IT DOES. The guards once, the book read once, then ONE call to `vyx_close_positions`, which walks
+/// the basket server-side inside a single transaction: the first position takes the "Account" row lock and
+/// every later one finds it already held, so the lock is taken once and released at COMMIT. The basket
+/// settles as one unit rather than twenty racing units.
+///
+/// PRICES ARE THE CALLER'S, the same convention `close_position` documents: the Gateway resolves each
+/// position's account-marked bid/ask and passes the pair, so the engine does not gain a second opinion
+/// about price. `items` is (position_id, bid, ask) in the order the basket should settle -- and the order
+/// MATTERS: the money chains, and the "is this the last open position" test that drives negative-balance
+/// protection is re-evaluated per position after the earlier ones are already CLOSED.
+///
+/// FLAG AND FALLBACK. With `ENGINE_CLOSE_ONE_CALL` unset this loops `close_position` per item, which is
+/// exactly today's behaviour; the set call is only taken when the flag is on. Risk closes never arrive
+/// here -- this is the client entry, and `vyx_close_positions` refuses a non-null actor anyway.
+pub async fn close_positions_bulk(
+    pool: &PgPool,
+    nats: &async_nats::Client,
+    account_id: &str,
+    items: &[(String, Decimal, Decimal)],
+    idempotency_prefix: Option<&str>,
+    cache: &std::sync::Arc<TickCache>,
+    pricing: Option<&std::sync::Arc<market_data::pricing::PricingCache>>,
+) -> Result<Vec<BulkCloseOutcome>, ClosePositionError> {
+    // ClosePositionOutcome is deliberately not Clone (it is an answer, not a value), so the refusal is
+    // CONSTRUCTED per item rather than cloned.
+    let all = |mk: fn() -> ClosePositionOutcome| -> Vec<BulkCloseOutcome> {
+        items
+            .iter()
+            .map(|(id, _, _)| BulkCloseOutcome { position_id: id.clone(), outcome: mk() })
+            .collect()
+    };
+
+    // (1) the same two guards the single close applies, once for the basket
+    if !ingress::allows(account_id) {
+        return Ok(all(|| ClosePositionOutcome::NotScoped));
+    }
+    let Some(mode) = db::account_mode(pool, account_id).await? else {
+        return Ok(all(|| ClosePositionOutcome::NotFound));
+    };
+    if !ingress::mode_allowed(&mode) {
+        return Ok(all(|| ClosePositionOutcome::NotDemo));
+    }
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // (2) FALLBACK: today's behaviour, one close at a time. Also the only path for the legacy book.
+    if !close_one_call_enabled() || !matches!(db::configured(), db::Book::Prisma) {
+        let mut out = Vec::with_capacity(items.len());
+        for (id, bid, ask) in items {
+            let key = idempotency_prefix.map(|p| format!("{p}:{id}"));
+            let outcome =
+                close_position(pool, nats, account_id, id, *bid, *ask, key.as_deref(), cache, pricing).await?;
+            out.push(BulkCloseOutcome { position_id: id.clone(), outcome });
+        }
+        return Ok(out);
+    }
+
+    // (3) the book once, through the same sources the single close uses
+    let open = crate::book::with_book_sources(
+        crate::book::PriceSource::Ticks(cache.clone()),
+        pricing.cloned(),
+        book::open_positions_with_market(pool, account_id),
+    )
+    .await?;
+
+    // (4) resolve every basket member before writing anything. An id that is not closable gets its own
+    // answer and is left OUT of the set call -- it must not abort the basket.
+    struct Ready {
+        idx: usize,
+        id: String,
+        volume: Decimal,
+        close_price: Decimal,
+        realized_pnl: Decimal,
+        payload: String,
+    }
+    // built by iteration, not vec![None; n]: that macro needs Clone on the element, and the outcome
+    // deliberately is not Clone
+    let mut answers: Vec<Option<ClosePositionOutcome>> = (0..items.len()).map(|_| None).collect();
+    let mut ready: Vec<Ready> = Vec::with_capacity(items.len());
+
+    for (idx, (id, bid, ask)) in items.iter().enumerate() {
+        let Some(position) = open.iter().find(|p| &p.id == id) else {
+            answers[idx] = Some(match db::prisma_position_status(pool, id, account_id).await? {
+                Some(db::PositionStatus::Closed) => {
+                    ClosePositionOutcome::InvalidStatus { status: db::PositionStatus::Closed }
+                }
+                _ => ClosePositionOutcome::NotFound,
+            });
+            continue;
+        };
+        if position.rate_missing {
+            answers[idx] = Some(ClosePositionOutcome::NoConversionRate);
+            continue;
+        }
+        let close_price = crate::calc::position_close_price(position, *bid, *ask);
+        let realized_pnl = crate::fx::convert_pnl(
+            floating_pnl(position.side, position.open_price, close_price, position.contract_size, position.volume),
+            position.fx_rate,
+        );
+        // the shared builder, so a bulk close's effect payload cannot drift from a single close's
+        let payload = book::post_close_payload(
+            realized_pnl,
+            book::CloseReason::Client,
+            position.volume,
+            close_price,
+            book::TriggerTick::of(position),
+        );
+        ready.push(Ready {
+            idx,
+            id: id.clone(),
+            volume: position.volume,
+            close_price,
+            realized_pnl,
+            payload: payload.to_string(),
+        });
+    }
+
+    // (5) ONE call for everything that is closable
+    if !ready.is_empty() {
+        let n = ready.len();
+        let ids: Vec<String> = ready.iter().map(|r| r.id.clone()).collect();
+        let vols: Vec<Decimal> = ready.iter().map(|r| r.volume).collect();
+        let prices: Vec<Decimal> = ready.iter().map(|r| r.close_price).collect();
+        let pnls: Vec<Decimal> = ready.iter().map(|r| r.realized_pnl).collect();
+        let notes: Vec<String> = vec![String::new(); n];
+        let payloads: Vec<String> = ready.iter().map(|r| r.payload.clone()).collect();
+        let keys: Vec<Option<String>> =
+            ready.iter().map(|r| idempotency_prefix.map(|p| format!("{p}:{}", r.id))).collect();
+        let uuid7 = |_: usize| -> Vec<String> { (0..n).map(|_| uuid::Uuid::new_v4().to_string()).collect() };
+        let (t_ids, d_ids, ct_ids, ca_ids, wt_ids, wa_ids, e_ids) =
+            (uuid7(0), uuid7(1), uuid7(2), uuid7(3), uuid7(4), uuid7(5), uuid7(6));
+
+        let rows: Vec<(i32, String, String)> = sqlx::query_as(
+            r#"SELECT seq, position_id, outcome FROM vyx_close_positions(
+                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb[],$17)"#,
+        )
+        .bind(&ids)
+        .bind(&vols)
+        .bind(&prices)
+        .bind(&pnls)
+        .bind(&notes)
+        .bind(book::DealReason::Client.as_str())
+        .bind(Option::<&str>::None) // actor
+        .bind(&t_ids)
+        .bind(&d_ids)
+        .bind(&ct_ids)
+        .bind(&ca_ids)
+        .bind(&wt_ids)
+        .bind(&wa_ids)
+        .bind(&e_ids)
+        .bind(book::CloseReason::Client.as_str())
+        .bind(&payloads)
+        .bind(&keys)
+        .fetch_all(pool)
+        .await?;
+
+        for (seq, _pid, outcome) in &rows {
+            let r = &ready[(*seq as usize) - 1];
+            answers[r.idx] = Some(if outcome == "LOST" {
+                ClosePositionOutcome::AlreadyClosed
+            } else {
+                ClosePositionOutcome::Closed { close_price: r.close_price, realized_pnl: r.realized_pnl }
+            });
+        }
+
+        crate::outbox::wake();
+        for r in &ready {
+            if matches!(answers[r.idx], Some(ClosePositionOutcome::Closed { .. })) {
+                publish_best_effort(
+                    nats,
+                    &TradingEvent::PositionClosed {
+                        account_id: account_id.to_string(),
+                        position_id: r.id.clone(),
+                    },
+                )
+                .await;
+            }
+        }
+    }
+
+    let mut answers = answers;
+    Ok(items
+        .iter()
+        .enumerate()
+        .map(|(idx, (id, _, _))| BulkCloseOutcome {
+            position_id: id.clone(),
+            outcome: answers[idx].take().unwrap_or(ClosePositionOutcome::NotFound),
+        })
+        .collect())
+}
+
+/// ONE-CALL CLOSE, off by default.
+///
+/// `ENGINE_CLOSE_ONE_CALL=1` routes a CLIENT close through `vyx_close_position` -- one server-side call
+/// instead of `pool.begin()` plus the nine-to-thirteen statements `book::close_position_full` issues. The
+/// point is the "Account" row lock: today it is held across those statements, every one a network round
+/// trip to the database's region (measured ~55-65 ms of lock hold, which serialises closes on one
+/// account -- 50 concurrent closes measured engine p50 3182 ms against 50 x 64 ms predicted). Inside one
+/// call the lock is taken and released within a single server-side execution, the shape the OPEN path has
+/// used since vyx_open_position.
+///
+/// OFF BY DEFAULT, and the old path stays in full. Unset or anything but "1" keeps today's behaviour
+/// exactly; this is a flag to prove the new path on a demo account, not a migration.
+///
+/// NOT FOR RISK CLOSES. The function refuses a non-null actor (feature_not_supported), because the
+/// ownership re-read `close_position_full` does inside the transaction for risk closes is not ported. The
+/// client path passes actor = None, which is why it is the one that can move first.
+fn close_one_call_enabled() -> bool {
+    std::env::var("ENGINE_CLOSE_ONE_CALL").ok().as_deref() == Some("1")
+}
+
 async fn close_position_on_book(
     pool: &PgPool,
     nats: &async_nats::Client,
@@ -1194,7 +1421,60 @@ async fn close_position_on_book(
         position.fx_rate,
     );
 
-    // (4) One transaction: the close, its follow-up, and the key.
+    // (4) THE WRITE. One server-side call when the flag is on, otherwise the transaction below, unchanged.
+    if close_one_call_enabled() {
+        // the same builder the old path uses, so the stored payload cannot drift (book.rs's own comment);
+        // dealId / dealTicket are injected by the function, which is where they first exist
+        let payload = book::post_close_payload(
+            realized_pnl,
+            book::CloseReason::Client,
+            position.volume,
+            close_price,
+            book::TriggerTick::of(position),
+        );
+        let ids: Vec<String> = (0..7).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        // bound as text and cast, the convention book.rs already uses for jsonb parameters
+        let (outcome,): (String,) = sqlx::query_as(
+            r#"SELECT outcome FROM vyx_close_position($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18)"#,
+        )
+        .bind(position_id)
+        .bind(position.volume)
+        .bind(close_price)
+        .bind(realized_pnl)
+        .bind("") // note: NULLIF('', '') inside the function, as the web's client close writes NULL
+        .bind(book::DealReason::Client.as_str())
+        .bind(Option::<&str>::None) // close_by_position_id
+        .bind(Option::<&str>::None) // actor: a trader closing their own position is not the engine acting
+        .bind(&ids[0]) // trade txn
+        .bind(&ids[1]) // deal
+        .bind(&ids[2]) // credit txn
+        .bind(&ids[3]) // credit audit
+        .bind(&ids[4]) // write-off txn
+        .bind(&ids[5]) // write-off audit
+        .bind(&ids[6]) // post-close effect
+        .bind(book::CloseReason::Client.as_str())
+        .bind(payload.to_string())
+        .bind(idempotency_key)
+        .fetch_one(pool)
+        .await?;
+
+        // 'LOST' is the guarded UPDATE matching nothing: already closed, or a concurrent close won
+        if outcome == "LOST" {
+            return Ok(ClosePositionOutcome::AlreadyClosed);
+        }
+        crate::outbox::wake();
+        publish_best_effort(
+            nats,
+            &TradingEvent::PositionClosed {
+                account_id: account_id.to_string(),
+                position_id: position_id.to_string(),
+            },
+        )
+        .await;
+        return Ok(ClosePositionOutcome::Closed { close_price, realized_pnl });
+    }
+
+    // (4b) The existing path, untouched: one transaction, the close, its follow-up, and the key.
     let mut tx = pool.begin().await?;
     // `actor` is None: ownership is re-checked only for RISK closes (close_position_as's own doc). A
     // trader closing their own position is not the engine acting on that account's risk.
