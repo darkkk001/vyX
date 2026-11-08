@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import RoomBrand from "./RoomBrand";
+import RoomLogo from "./RoomLogo";
 
 // Artboard "Onboarding": the broker's brand line, the 4-step strip (Register, Personal details, Verification, Fund
 // account) and the step's own content in a 680 px column.
@@ -38,7 +38,7 @@ export default function Onboarding({ brokerName, logoUrl, step, right, children 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", padding: "18px 40px", borderBottom: "1px solid var(--r-line)" }}>
-        <a className="r-brand" href="/room" style={{ padding: 0 }}><RoomBrand name={brokerName} logoUrl={logoUrl} size={24} /></a>
+        <a className="r-brand" href="/room" style={{ padding: 0 }}><RoomLogo name={brokerName} logoUrl={logoUrl} size="sm" /></a>
         <div style={{ fontSize: 13, color: "var(--r-text-2)" }}>{right}</div>
       </header>
       <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "44px 24px" }}>
