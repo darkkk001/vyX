@@ -177,9 +177,31 @@
 .r-row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
 
 /* auth */
-.r-auth { display: flex; flex-wrap: wrap; min-height: 100vh; }
-.r-auth-brand { flex: 1 1 420px; min-width: 0; background: var(--r-card-2); border-right: 1px solid var(--r-line); padding: 60px 56px; display: flex; flex-direction: column; justify-content: space-between; gap: 40px; }
-.r-auth-form { flex: 999 1 460px; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 48px 24px; }
+.r-auth { position: relative; display: flex; flex-wrap: wrap; min-height: 100vh; overflow-x: clip; }
+/* the brand panel is always dark (both themes): its own text tokens, a soft glow in the broker's accent that runs
+   lightly past the panel's edge into the page */
+.r-auth-brand {
+  --r-text: #F4F2EE; --r-text-2: rgba(244, 242, 238, 0.76); --r-muted: rgba(244, 242, 238, 0.64);
+  position: relative; z-index: 0; flex: 1 1 420px; min-width: 0; color: var(--r-text); padding: 56px 48px 44px;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 40px;
+  background:
+    radial-gradient(110% 70% at 0% 0%, color-mix(in srgb, var(--r-accent) 24%, transparent), transparent 62%),
+    radial-gradient(90% 55% at 100% 55%, color-mix(in srgb, var(--r-accent) 13%, transparent), transparent 70%),
+    #0B0C0F;
+}
+.r-auth-brand::after { content: ""; position: absolute; z-index: -1; top: 0; bottom: 0; right: -140px; width: 140px; pointer-events: none;
+  background: radial-gradient(100% 45% at 0% 55%, color-mix(in srgb, var(--r-accent) 10%, transparent), transparent 75%); }
+.r-auth-brand .r-logo { color: #FFFFFF; }
+.r-auth-brand .r-logo img { height: 48px; max-width: 72px; }
+.r-auth-brand .r-logo-word { font-size: 22px; letter-spacing: 4px; white-space: nowrap; }
+.r-auth-copy { display: flex; flex-direction: column; gap: 12px; max-width: 400px; }
+.r-auth-title { font-family: var(--r-head); font-size: 32px; font-weight: 600; line-height: 1.2; color: var(--r-text); }
+.r-auth-line { font-size: 15px; line-height: 1.6; color: var(--r-text-2); }
+.r-auth-status { display: flex; gap: 22px; flex-wrap: wrap; font-size: 11.5px; color: var(--r-muted); }
+.r-auth-form { flex: 999 1 460px; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 48px 24px 64px; }
+.r-auth-foot { position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px; white-space: nowrap; text-align: center; font-size: 11.5px; color: var(--r-faint); pointer-events: none; }
+.r-auth-box-wide { max-width: 520px; }
+.room[data-theme="light"] .r-auth-brand::after { opacity: 0.5; }
 .r-auth-box { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 22px; }
 .r-auth-box h1 { margin: 0; font-family: var(--r-head); font-size: 23px; font-weight: 600; }
 
@@ -216,5 +238,12 @@
   .r-head-m .r-head-bal { flex: none; font-size: 12.5px; }
   .r-menu-btn { flex: none; display: inline-flex; background: none; border: none; padding: 4px; margin-left: -4px; color: var(--r-text); cursor: pointer; }
   .r-head-page { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left)); }
-  .r-auth-brand { padding: 32px 24px; }
+  /* phone: a dark strip with the logo, then the form, the footer at the bottom centre */
+  .r-auth { align-content: flex-start; }
+  .r-auth-brand { flex-basis: 100%; padding: calc(22px + env(safe-area-inset-top)) 16px 22px; gap: 0; }
+  .r-auth-brand::after { display: none; }
+  .r-auth-brand .r-logo img { height: 40px; max-width: 64px; }
+  .r-auth-brand .r-logo-word { font-size: 19px; letter-spacing: 4px; }
+  .r-auth-copy, .r-auth-status { display: none; }
+  .r-auth-form { padding: 32px 16px 64px; align-items: flex-start; }
 }
