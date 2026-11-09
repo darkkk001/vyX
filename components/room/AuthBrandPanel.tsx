@@ -1,11 +1,13 @@
+import type { ReactNode } from "react";
 import type { RoomBroker } from "@/lib/room/context";
 import { readInfraSummary } from "@/lib/infra-health";
 import { readLivePrices, roomServiceStatus } from "@/lib/room/service-status";
 import RoomLogo from "@/components/room/RoomLogo";
 import ServerClock from "@/app/(broker)/room/login/ServerClock";
 
-// The left brand panel of the Trader's Room sign-in and forgot-password pages: the broker's full logo, the headline,
-// the service status line and the clock, and the platform footer.
+// The left brand panel of the Trader's Room sign-in, register and forgot-password pages. Always dark (both themes),
+// with a soft glow in the broker's accent: the broker's full logo at the top, the headline in the middle, the service
+// status line and the clock at the bottom. Everything broker-specific comes from the tenant config.
 export default async function AuthBrandPanel({ broker }: { broker: RoomBroker }) {
   // what a client depends on: the way in and the prices they trade on (neither read throws; no report shows no line)
   const [caddy, prices] = await Promise.all([readInfraSummary("caddy"), readLivePrices()]);
@@ -13,24 +15,30 @@ export default async function AuthBrandPanel({ broker }: { broker: RoomBroker })
   return (
     <section className="r-auth-brand">
       <RoomLogo name={broker.name} logoUrl={broker.logoUrl} />
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 26 }}>
-        <div>
-          <div style={{ fontFamily: "var(--r-head)", fontSize: 30, fontWeight: 600, lineHeight: 1.25 }}>Client portal</div>
-          <div style={{ fontSize: 14.5, color: "var(--r-text-2)", marginTop: 10, maxWidth: 380, lineHeight: 1.6 }}>
-            Accounts, funding and verification in one place. Trade on desktop, web and mobile.
-          </div>
-        </div>
-        <div className="mono" style={{ display: "flex", gap: 22, fontSize: 11.5, color: "var(--r-muted)", flexWrap: "wrap" }}>
-          {status ? (
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-              <span className="r-dot" style={{ color: status === "ONLINE" ? "var(--r-ok)" : "var(--r-pending)", width: 5, height: 5 }} />
-              {status === "ONLINE" ? "SERVERS ONLINE" : "SOME SERVICES AFFECTED"}
-            </span>
-          ) : null}
-          <ServerClock />
-        </div>
+      <div className="r-auth-copy">
+        <div className="r-auth-title">Trade with {broker.name}</div>
+        <div className="r-auth-line">Forex, gold, indices and crypto. One account, every platform.</div>
       </div>
-      <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>Powered by VyX Technologies</div>
+      <div className="r-auth-status mono">
+        {status ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+            <span className="r-dot" style={{ color: status === "ONLINE" ? "var(--r-ok)" : "var(--r-pending)", width: 5, height: 5 }} />
+            {status === "ONLINE" ? "SERVERS ONLINE" : "SOME SERVICES AFFECTED"}
+          </span>
+        ) : null}
+        <ServerClock />
+      </div>
     </section>
+  );
+}
+
+/** The whole sign-in / register / forgot-password page: brand panel, the page's own form, the platform footer. */
+export async function AuthShell({ broker, children }: { broker: RoomBroker; children: ReactNode }) {
+  return (
+    <div className="r-auth">
+      <AuthBrandPanel broker={broker} />
+      <section className="r-auth-form">{children}</section>
+      <div className="r-auth-foot">Powered by VyX Technologies</div>
+    </div>
   );
 }
