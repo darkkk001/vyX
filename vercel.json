@@ -8,7 +8,7 @@
       "main": true
     }
   },
-  "ignoreCommand":"bash scripts/vercel-ignore.sh",
+  "ignoreCommand": "bash scripts/vercel-ignore.sh",
   "crons": [
     {
       "path": "/api/internal/swap-rollover",
@@ -37,6 +37,10 @@
     {
       "path": "/api/internal/demo-cleanup",
       "schedule": "50 3 * * *"
+    },
+    {
+      "path": "/api/internal/cert-expiry",
+      "schedule": "0 7 * * *"
     }
   ]
 }
