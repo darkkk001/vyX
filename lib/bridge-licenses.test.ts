@@ -8,7 +8,7 @@ import { getRedis } from "@/lib/redis";
 // QoreBridge license + kill switch + CONNECTED badge, web side (owner 2026-10-23). Real routes, scratch DB, test Redis,
 // a throwaway signing key (the real one is CLIENT_MANIFEST_PRIVATE_KEY).
 vi.mock("@/lib/auth", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/auth")>()), getAdminSession: vi.fn() }));
-vi.mock("@/lib/nats", () => ({ publishTradingEvent: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@/lib/nats", () => ({ publishTradingEvent: vi.fn().mockResolvedValue(undefined), publishBridgeLicenseChanged: vi.fn().mockResolvedValue(undefined) }));
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
 const saved: Record<string, string | undefined> = {};
@@ -241,7 +241,8 @@ describe("license expiry (owner 2026-10-23)", () => {
     const b = await broker();
     const { json } = await issue(b.subdomain, { expiresDays: 1 });
     expect((await manifest(b.subdomain, json.licenseId)).status).toBe("ACTIVE");
-    await prisma.auditLog.updateMany({ where: { action: "BRIDGE_LICENSE_ISSUED", entityId: json.licenseId }, data: { newValue: { licenseId: json.licenseId, expiresAt: new Date(Date.now() - 1000).toISOString() } } });
+    // license enforcement 1.2: the expiry is the ClientBuild.expiresAt column now (the audit row is only a fallback)
+    await prisma.clientBuild.update({ where: { buildId: json.licenseId }, data: { expiresAt: new Date(Date.now() - 1000) } });
     expect((await manifest(b.subdomain, json.licenseId)).status).toBe("EXPIRED");
   });
 });

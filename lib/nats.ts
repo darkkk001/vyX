@@ -161,6 +161,14 @@ export async function publishBridgeNudge(brokerId: string): Promise<void> {
   await postEvent(`bridge.intent.${brokerId}`, { type: "HedgeIntent", broker_id: brokerId }, "HedgeIntent");
 }
 
+/** License enforcement 1.2 (contract section 5): Super Admin suspended / resumed / revoked a bridge license. The bridge
+ *  subscribes bridge.license.<brokerId> and runs a manifest check at once. Loss-tolerant like publishBridgeNudge: the
+ *  bridge's 15 s status report carries the same verdict, so a lost nudge costs at most one report interval. */
+export async function publishBridgeLicenseChanged(brokerId: string, licenseId: string, status: "ACTIVE" | "SUSPENDED" | "REVOKED"): Promise<void> {
+  if (await isDemoBrokerId(brokerId)) return;
+  await postEvent(`bridge.license.${brokerId}`, { type: "BridgeLicenseChanged", broker_id: brokerId, license_id: licenseId, status }, "BridgeLicenseChanged");
+}
+
 async function postEvent(subject: string, payload: Record<string, unknown>, label: string): Promise<void> {
   const body = JSON.stringify({ subject, payload });
   const deadline = Date.now() + 2000;

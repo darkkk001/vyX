@@ -31,7 +31,9 @@ export type ClientBuild = {
   // bridge exe's own build id (version "exe"); revoking it is the bridge's kill switch
   app: "terminal" | "backoffice" | "bridge";
   version: string;
-  status: "ACTIVE" | "REVOKED";
+  // SUSPENDED: bridge licenses only (license enforcement 1.2, reversible). Every non-ACTIVE status is refused by
+  // checkClientBuild; terminal / backoffice builds are only ever ACTIVE or REVOKED.
+  status: "ACTIVE" | "SUSPENDED" | "REVOKED";
   createdAt: string;
   revokedAt: string | null;
   note: string;
@@ -69,24 +71,58 @@ async function writeRedis(rec: ClientBuild): Promise<void> {
   await r.sadd(INDEX, rec.buildId);
 }
 
-// `machineId` (bridge licenses only) is kept in Postgres alone: only /api/bridge/config reads it, never the hot path.
-export async function registerClientBuild(b: Omit<ClientBuild, "createdAt" | "revokedAt" | "status">, opts: { machineId?: string } = {}): Promise<ClientBuild> {
+// `machineId`, `expiresAt`, `features` (bridge licenses only) are kept in Postgres alone: only the bridge routes read
+// them, never the native-client hot path.
+export async function registerClientBuild(
+  b: Omit<ClientBuild, "createdAt" | "revokedAt" | "status">,
+  opts: { machineId?: string; expiresAt?: Date; features?: string[] } = {}
+): Promise<ClientBuild> {
   const rec: ClientBuild = { ...b, status: "ACTIVE", createdAt: new Date().toISOString(), revokedAt: null };
-  await prisma.clientBuild.create({ data: { ...recordToRow(rec), machineId: opts.machineId ?? null } }); // durable first: a Redis failure cannot lose a publish
+  // durable first: a Redis failure cannot lose a publish
+  await prisma.clientBuild.create({ data: { ...recordToRow(rec), machineId: opts.machineId ?? null, expiresAt: opts.expiresAt ?? null, features: opts.features ?? [] } });
   await writeRedis(rec);
   return rec;
 }
 
+/** A QoreBridge license row (not the bridge exe's own build, version "exe"). */
+export function isBridgeLicense(b: { app: string; version: string }): boolean {
+  return b.app === "bridge" && b.version !== "exe";
+}
+
+/** Thrown when a status change is not allowed (a revoked bridge license back to ACTIVE). */
+export class ClientBuildStatusError extends Error {}
+
 /// The kill switch (and its undo). Postgres first, then Redis; a build only Redis knows (registered before the durable
 /// copy existed and not yet backfilled) is written to Postgres here too.
+/// A REVOKED bridge license is permanent (license enforcement 1.2): it never goes back to ACTIVE, here or anywhere.
+/// Bridge licenses are suspended / resumed / revoked through lib/bridge-licenses.ts (audit row, FEED, nudge).
 export async function setClientBuildStatus(buildId: string, status: "ACTIVE" | "REVOKED", note?: string): Promise<ClientBuild | null> {
-  const cur = (await getClientBuild(buildId)) ?? (await prisma.clientBuild.findUnique({ where: { buildId } }).then((r) => (r ? rowToRecord(r) : null)));
+  const pg = await prisma.clientBuild.findUnique({ where: { buildId } });
+  const cur = (await getClientBuild(buildId)) ?? (pg ? rowToRecord(pg) : null);
   if (!cur) return null;
+  // Postgres is the truth for the guard: a stale Redis record must not reopen a revoked license
+  const curStatus = pg?.status ?? cur.status;
+  if (isBridgeLicense(cur) && curStatus === "REVOKED" && status === "ACTIVE") throw new ClientBuildStatusError("a revoked bridge license cannot be reinstated: issue a new license");
   const rec: ClientBuild = { ...cur, status, revokedAt: status === "REVOKED" ? new Date().toISOString() : null, note: note ?? cur.note };
   const row = recordToRow(rec);
   await prisma.clientBuild.upsert({ where: { buildId }, create: row, update: { status: row.status, revokedAt: row.revokedAt, note: row.note } });
   await writeRedis(rec);
   return rec;
+}
+
+/// A bridge license's status change, guarded: applied only while the Postgres row is still in one of `from` (two
+/// admins clicking at once cannot both win, and nothing reopens a REVOKED row). Postgres first, then the Redis record.
+/// Returns the updated row, or null when the row is not in `from` (or does not exist).
+export async function writeBridgeLicenseStatus(
+  buildId: string,
+  from: ClientBuild["status"][],
+  data: { status: ClientBuild["status"]; revokedAt?: Date | null; suspendReason?: string | null; suspendedAt?: Date | null; suspendedBy?: string | null; revokedBy?: string | null; revokeReason?: string | null }
+) {
+  const r = await prisma.clientBuild.updateMany({ where: { buildId, app: "bridge", status: { in: from } }, data });
+  if (r.count !== 1) return null;
+  const row = await prisma.clientBuild.findUniqueOrThrow({ where: { buildId } });
+  await writeRedis(rowToRecord(row));
+  return row;
 }
 
 /// Startup (instrumentation.ts): a Redis that has NO registry keys (flushed, replaced, failed over) is rebuilt from
@@ -186,7 +222,11 @@ export type ClientManifest = {
   apiHost: string;
   app: string;
   buildId: string;
-  status: "ACTIVE" | "REVOKED" | "UNKNOWN" | "EXPIRED";
+  // SUSPENDED / REFUSED: bridge verdicts only (license enforcement 1.2, lib/bridge-license-state.ts)
+  status: "ACTIVE" | "SUSPENDED" | "REVOKED" | "EXPIRED" | "UNKNOWN" | "REFUSED";
+  /// Additive, app=bridge only: the short reason code ("" when ACTIVE) and, only when SUSPENDED, what Super Admin typed.
+  reason?: "" | "suspended" | "revoked" | "expired" | "machine" | "unknown";
+  suspendReason?: string;
   minVersion: string;
   iat: number;
   exp: number;

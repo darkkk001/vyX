@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { bridgeReportKey, expiryState } from "@/lib/bridge-licenses";
+import { evaluateBridgeLicense, loadBridgeLicense, trySignBridgeVerdict, type SignedVerdict } from "@/lib/bridge-license-state";
 
 // Platform API bridge config (A.1.2, owner decisions 2026-11-03; C:\vyx\handoff\platform-api-bridge-config-plan.md):
 // how a QoreBridge proves itself on a GET. The same per-license key as its status reports
@@ -20,19 +21,37 @@ import { bridgeReportKey, expiryState } from "@/lib/bridge-licenses";
 //   clock      x-bridge-time within BRIDGE_CLOCK_SKEW_S of the platform's clock (a captured request dies quickly)
 //   signature  the HMAC above, constant time
 //   replay     that nonce not seen before for this license (Redis, kept for the whole window)
-//   license    a registered bridge license (ClientBuild app=bridge), ACTIVE, not expired, issued with "hedge"
-//   machine    x-bridge-machine = the full machine hash the license was issued for (a license issued before
-//              2026-11-03 has none and is refused: re-issue it)
-//   build      the bridge exe's own build is not REVOKED (the manifest's kill switch, app/api/client/manifest :28-35)
+//   rate       30 a minute per license (429)
+//   license    a registered bridge license (ClientBuild app=bridge)
 //   broker     the request came in on the license's own broker host: middleware's x-broker-id (set from the host,
-//              never from the client) must equal the license's broker (lib/account-auth.ts getAccountSession pattern)
+//              never from the client) must equal the license's broker (lib/account-auth.ts getAccountSession pattern).
+//              Checked before any verdict is signed: a verdict is only ever handed out on the license's own host.
+//   revoked    Super Admin revoked the license (license enforcement 1.2)                          + signed verdict
+//   expired    past its expiresAt                                                                  + signed verdict
+//   license    an unknown expiry, or a license not issued with "hedge"
+//   machine    x-bridge-machine = the license's machine: the full hash it was issued for, or (a license issued
+//              before 2026-11-03, no hash) the first machine that presented it, sticky (contract section 4)
+//                                                                                                 + signed verdict
+//   build      the bridge exe's own build is not REVOKED (the manifest's kill switch)                + signed verdict
+// A SUSPENDED license is NOT refused here (contract 2b): the bridge keeps its LP session and needs its config at a
+// restart; the route answers 200 with license: { status: "SUSPENDED", reason: "suspended" }.
 // The broker is ALWAYS the license's; nothing in the request names one.
 
 export const BRIDGE_CLOCK_SKEW_S = 120;
 const HEX64 = /^[0-9a-f]{64}$/;
 
-export type BridgeAuthReason = "headers" | "clock" | "signature" | "replay" | "rate" | "license" | "machine" | "build" | "broker";
-export type BridgeAuth = { ok: true; licenseId: string; brokerId: string } | { ok: false; status: 403 | 429; reason: BridgeAuthReason };
+export type BridgeAuthReason = "headers" | "clock" | "signature" | "replay" | "rate" | "license" | "revoked" | "expired" | "machine" | "build" | "broker";
+/** The top-level `license` field of an accepted config / version answer (contract 2b). */
+export type BridgeLicenseField = { status: "ACTIVE" | "SUSPENDED"; reason: "" | "suspended" };
+export type BridgeAuth =
+  | { ok: true; licenseId: string; brokerId: string; license: BridgeLicenseField }
+  // verdict: the signed license verdict, on revoked / expired / machine / build refusals only (null if signing failed)
+  | { ok: false; status: 403 | 429; reason: BridgeAuthReason; verdict?: SignedVerdict | null };
+
+/** The JSON body of a refused config / version request. */
+export function bridgeAuthRefusalBody(auth: Extract<BridgeAuth, { ok: false }>) {
+  return auth.verdict ? { error: "forbidden", reason: auth.reason, license: auth.verdict } : { error: "forbidden", reason: auth.reason };
+}
 
 /** The string a bridge signs for a GET (exported for the test vector shared with qorebridge). */
 export function bridgeSignedString(path: string, time: string, nonce: string, licenseId: string, machine: string, build: string): string {
@@ -42,14 +61,6 @@ export function bridgeSignedString(path: string, time: string, nonce: string, li
 export function bridgeGetSignature(licenseId: string, signed: string): string | null {
   const key = bridgeReportKey(licenseId);
   return key ? createHmac("sha256", key).update(signed).digest("hex") : null;
-}
-
-/** The license's issue facts from its BRIDGE_LICENSE_ISSUED audit row (the license file itself stays on the bridge). */
-async function licenseFacts(licenseId: string): Promise<{ expiresAt: number | null; features: string[] }> {
-  const row = await prisma.auditLog.findFirst({ where: { action: "BRIDGE_LICENSE_ISSUED", entityId: licenseId }, select: { newValue: true } });
-  const v = row?.newValue as { expiresAt?: unknown; features?: unknown } | null;
-  const t = typeof v?.expiresAt === "string" ? Date.parse(v.expiresAt) : NaN;
-  return { expiresAt: Number.isFinite(t) ? t : null, features: Array.isArray(v?.features) ? v.features.filter((f): f is string => typeof f === "string") : [] };
 }
 
 export async function verifyBridgeGet(headers: Headers, path: string, now = Date.now()): Promise<BridgeAuth> {
@@ -72,17 +83,34 @@ export async function verifyBridgeGet(headers: Headers, path: string, now = Date
   if (!(await checkRateLimit(`bridge-config:${licenseId}`, 30, 60)).allowed) return deny("rate", 429);
 
   // Postgres, not the Redis registry: the machine hash is only there, and every kill-switch write lands there first
-  const license = await prisma.clientBuild.findUnique({ where: { buildId: licenseId }, select: { app: true, status: true, brokerId: true, machineId: true } });
-  if (!license || license.app !== "bridge" || license.status !== "ACTIVE") return deny("license");
-  const facts = await licenseFacts(licenseId);
-  if (expiryState(facts.expiresAt, now) !== "ok" && expiryState(facts.expiresAt, now) !== "expiring") return deny("license");
-  if (!facts.features.includes("hedge")) return deny("license");
-  if (!license.machineId || license.machineId !== machine) return deny("machine");
-  if (build !== "dev") {
-    const exe = await prisma.clientBuild.findUnique({ where: { buildId: build }, select: { app: true, status: true } });
-    if (exe?.app === "bridge" && exe.status === "REVOKED") return deny("build");
-  }
+  const license = await loadBridgeLicense(licenseId);
+  if (!license) return deny("license");
   const requestBroker = headers.get("x-broker-id");
   if (!requestBroker || requestBroker !== license.brokerId) return deny("broker");
-  return { ok: true, licenseId, brokerId: license.brokerId };
+  const withVerdict = async (reason: BridgeAuthReason, v: Parameters<typeof trySignBridgeVerdict>[2]): Promise<BridgeAuth> => ({
+    ok: false,
+    status: 403,
+    reason,
+    verdict: await trySignBridgeVerdict(license.brokerSubdomain, licenseId, v, license.brokerId),
+  });
+
+  // revoked / expired first, without the machine (a dead license binds nothing)
+  const base = await evaluateBridgeLicense(license, { now });
+  if (base.reason === "revoked") return withVerdict("revoked", base);
+  if (base.reason === "expired") return withVerdict("expired", base);
+  const facts = base.facts!;
+  const exp = expiryState(facts.expiresAt, now);
+  if (exp !== "ok" && exp !== "expiring") return deny("license"); // no expiry known: not a proper license
+  if (!facts.features.includes("hedge")) return deny("license");
+  let exeRevoked = false;
+  if (build !== "dev") {
+    const exe = await prisma.clientBuild.findUnique({ where: { buildId: build }, select: { app: true, status: true } });
+    exeRevoked = exe?.app === "bridge" && exe.status === "REVOKED";
+  }
+  const v = await evaluateBridgeLicense(license, { now, machine, exeRevoked });
+  if (v.reason === "machine") return withVerdict("machine", v);
+  if (v.reason === "revoked") return withVerdict("build", v); // the exe build: verdict REVOKED / revoked (contract 2)
+  if (v.reason === "suspended") return { ok: true, licenseId, brokerId: license.brokerId, license: { status: "SUSPENDED", reason: "suspended" } };
+  if (v.status !== "ACTIVE") return deny("license");
+  return { ok: true, licenseId, brokerId: license.brokerId, license: { status: "ACTIVE", reason: "" } };
 }

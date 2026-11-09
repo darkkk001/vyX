@@ -3094,9 +3094,11 @@ model ClientBuild {
   buildId         String    @id
   brokerId        String
   brokerSubdomain String
-  app             String // "terminal" | "backoffice"
+  app             String // "terminal" | "backoffice" | "bridge"
   version         String
-  status          String // "ACTIVE" | "REVOKED"
+  // "ACTIVE" | "REVOKED"; a bridge license (app "bridge", version "license") can also be "SUSPENDED" (reversible).
+  // REVOKED is permanent for a bridge license (license enforcement 1.2, handoff license-enforcement-contract.md)
+  status          String
   createdAt       DateTime  @db.Timestamptz(3)
   revokedAt       DateTime? @db.Timestamptz(3)
   note            String    @default("")
@@ -3104,6 +3106,26 @@ model ClientBuild {
   // bridge licenses only: the full machine hash the license is bound to (`qorebridge.exe --machine-id`), checked on
   // every config fetch (/api/bridge/config). Null on licenses issued before 2026-11-03: those are refused there.
   machineId       String?
+
+  // ---- bridge licenses only (license enforcement 1.2, 2026-11-09) ----
+  // the license's issue facts, written by issueBridgeLicense (backfilled once from the BRIDGE_LICENSE_ISSUED audit row)
+  expiresAt         DateTime? @db.Timestamptz(3)
+  features          String[]  @default([])
+  // Super Admin's reversible stop: the reason typed (max 200), when, by which admin
+  suspendReason     String?
+  suspendedAt       DateTime? @db.Timestamptz(3)
+  suspendedBy       String?
+  // the permanent stop (revokedAt above is when): by which admin, why
+  revokedBy         String?
+  revokeReason      String?
+  // online status: the last signed status report (written at most every 30 s) and the machine hash it came from
+  lastReportAt      DateTime? @db.Timestamptz(3)
+  lastReportMachine String?
+  // one server per license: a license issued without a machineId binds to the first machine that presents it (sticky)
+  boundMachineId    String?
+  // the last other machine that presented this license (refused "machine"), and when
+  conflictMachine   String?
+  conflictAt        DateTime? @db.Timestamptz(3)
 
   @@index([brokerId])
 }

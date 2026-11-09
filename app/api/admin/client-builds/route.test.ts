@@ -7,13 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@/lib/auth", () => ({ getAdminSession: vi.fn().mockResolvedValue(null) }));
-vi.mock("@/lib/prisma", () => ({ prisma: { broker: { findUnique: vi.fn().mockResolvedValue({ id: "b1", subdomain: "acme" }) } } }));
+vi.mock("@/lib/prisma", () => ({ prisma: { broker: { findUnique: vi.fn().mockResolvedValue({ id: "b1", subdomain: "acme" }) }, clientBuild: { findUnique: vi.fn().mockResolvedValue(null) } } }));
+// license enforcement 1.2: PATCH on a bridge license goes through the revoke in lib/bridge-licenses (not reached here)
+vi.mock("@/lib/bridge-licenses", () => ({ BridgeLicenseError: class extends Error {}, changeBridgeLicenseStatus: vi.fn() }));
 vi.mock("@/lib/client-builds", () => ({
   listClientBuilds: vi.fn().mockResolvedValue([]),
   getClientBuild: vi.fn().mockResolvedValue(null),
   registerClientBuild: vi.fn(async (r: object) => ({ ...r, status: "ACTIVE" })),
   setClientBuildStatus: vi.fn(async (buildId: string, status: string) => ({ buildId, status })),
   backfillClientBuildsToPostgres: vi.fn().mockResolvedValue(0),
+  isBridgeLicense: (b: { app: string; version: string }) => b.app === "bridge" && b.version !== "exe",
+  ClientBuildStatusError: class extends Error {},
 }));
 
 const KEY = "CLIENT_BUILD_REGISTRY_SECRET";
