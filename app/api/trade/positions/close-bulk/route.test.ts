@@ -161,6 +161,47 @@ describe("trader bulk close honours positionIds (live DB)", () => {
     expect((await prisma.position.findUniqueOrThrow({ where: { id: p.id } })).status).toBe("OPEN");
   });
 
+  it("three positionIds with scope ALL close exactly those three; the other two stay open", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture({ dealer: false });
+    const listed = [await openPosition(fx), await openPosition(fx, "0.50"), await openPosition(fx, "0.30", "120.00")];
+    const unlisted = [await openPosition(fx), await openPosition(fx, "0.20", "110.00")];
+    await refreshPrice(fx);
+
+    const { status, json } = await clientBulk(fx, { scope: "ALL", positionIds: listed.map((p) => p.id) });
+    expect(status).toBe(200);
+    expect(json.requested).toBe(3);
+    expect(json.successful).toBe(3);
+    const rows = await prisma.position.findMany({ where: { accountId: fx.accountId }, select: { id: true, status: true } });
+    const byId = new Map(rows.map((p) => [p.id, p.status]));
+    for (const p of listed) expect(byId.get(p.id)).toBe("CLOSED");
+    for (const p of unlisted) expect(byId.get(p.id)).toBe("OPEN");
+  });
+
+  it("scope PROFIT / LOSS with positionIds close only the listed positions on that side", async () => {
+    if (!dbReachable) return;
+    // bid 100.00: a BUY opened at 90 is in profit, one opened at 120 / 110 is at a loss
+    for (const scope of ["PROFIT", "LOSS"] as const) {
+      const fx = await createFixture({ dealer: false });
+      const listedWin = await openPosition(fx, "1.00", "90.00");
+      const listedLoss = await openPosition(fx, "0.30", "120.00");
+      const unlistedWin = await openPosition(fx, "1.00", "95.00");
+      const unlistedLoss = await openPosition(fx, "0.20", "110.00");
+      await refreshPrice(fx);
+
+      const { status, json } = await clientBulk(fx, { scope, positionIds: [listedWin.id, listedLoss.id] });
+      expect(status).toBe(200);
+      expect(json.requested).toBe(1);
+      expect(json.successful).toBe(1);
+      const rows = await prisma.position.findMany({ where: { accountId: fx.accountId }, select: { id: true, status: true } });
+      const byId = new Map(rows.map((p) => [p.id, p.status]));
+      expect(byId.get(listedWin.id)).toBe(scope === "PROFIT" ? "CLOSED" : "OPEN");
+      expect(byId.get(listedLoss.id)).toBe(scope === "LOSS" ? "CLOSED" : "OPEN");
+      expect(byId.get(unlistedWin.id)).toBe("OPEN");
+      expect(byId.get(unlistedLoss.id)).toBe("OPEN");
+    }
+  });
+
   it("without positionIds scope ALL still closes every open position (unchanged)", async () => {
     if (!dbReachable) return;
     const fx = await createFixture({ dealer: false });
