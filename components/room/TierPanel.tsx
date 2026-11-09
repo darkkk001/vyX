@@ -66,7 +66,7 @@ function TierList({ d, onClose }: { d: Data; onClose: () => void }) {
           })}
         </div>
         <div className="mono" style={{ fontSize: 11.5, color: "var(--r-muted)" }}>{n1(d.lots90)} lots · 90 days / {n1(d.lotsMonth)} this month / {n1(d.lotsAll)} all time</div>
-        <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>{d.hasLiveAccount ? "" : "Tier volume counts live accounts. "}Reviewed monthly on 90-day traded volume. Thresholds and benefits are set by your broker and may change with notice.</div>
+        <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>Reviewed monthly on 90-day traded volume. Thresholds and benefits are set by your broker and may change with notice.</div>
       </div>
     </div>
   );
