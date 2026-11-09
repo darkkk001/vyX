@@ -99,8 +99,9 @@ export function RoomDataProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(t);
   }, [refresh, holding]);
 
-  // one observer socket per account; reopened when the account list changes or a socket drops
-  const accountKey = (data?.accounts ?? []).map((a) => a.id).sort().join(",");
+  // one observer socket per account, the funding wallet included (a wallet-only client still hears a deposit approved in
+  // ~1 s, E2E 2026-11-09: it had no socket and waited for the 30 s refresh); reopened when the list changes or a socket drops
+  const accountKey = [...(data?.accounts ?? []).map((a) => a.id), ...(data?.wallet ? [data.wallet.id] : [])].sort().join(",");
   useEffect(() => {
     if (!accountKey) return;
     const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL;

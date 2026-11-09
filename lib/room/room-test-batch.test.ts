@@ -244,3 +244,13 @@ describe("owner additions 2026-11-09", () => {
     expect(read("app/(broker)/room/(shell)/page.tsx")).toContain("const f = data?.totals ?? null;");
   });
 });
+
+describe("live updates reach a wallet-only client (E2E 2026-11-09)", () => {
+  it("the Room opens an observer socket for the funding wallet too, and reopens when the wallet appears", () => {
+    const src = fs.readFileSync(path.join(process.cwd(), "components/room/RoomData.tsx"), "utf8");
+    expect(src).toContain("...(data?.wallet ? [data.wallet.id] : [])");
+    // the ticket route covers every own account, the wallet included (no isWallet filter)
+    const route = fs.readFileSync(path.join(process.cwd(), "app/api/room/ws-ticket/route.ts"), "utf8");
+    expect(route).not.toContain("isWallet");
+  });
+});
