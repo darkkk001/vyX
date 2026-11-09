@@ -11,6 +11,7 @@ import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { formatDateTime } from "@/lib/format";
 import { plainError } from "@/lib/plain-error";
+import LpConnectionModal, { connectionSummary, type LpConnectionRow } from "./LpConnectionModal";
 
 export type LiquidityProviderRow = {
   id: string;
@@ -43,14 +44,19 @@ export default function LiquidityManager() {
   const [rows, setRows] = useState<LiquidityProviderRow[] | null>(null);
   const [bookExposure, setBookExposure] = useState<BookExposureRow[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // A.3: each provider's FIX connection(s), edited in LpConnectionModal
+  const [connections, setConnections] = useState<LpConnectionRow[]>([]);
+  const [connFor, setConnFor] = useState<{ id: string; name: string } | null>(null);
 
   function load() {
     return Promise.all([
       fetch("/api/manage/liquidity-providers").then((r) => r.json()),
       fetch("/api/manage/liquidity").then((r) => r.json()),
-    ]).then(([providers, exposure]: [LiquidityProviderRow[], BookExposureRow[]]) => {
+      fetch("/api/manage/lp-connections").then((r) => (r.ok ? r.json() : [])),
+    ]).then(([providers, exposure, conns]: [LiquidityProviderRow[], BookExposureRow[], LpConnectionRow[]]) => {
       setRows(providers.map((p) => ({ ...p, createdAt: formatDateTime(p.createdAt) })));
       setBookExposure(exposure);
+      setConnections(conns);
     });
   }
 
@@ -142,12 +148,13 @@ export default function LiquidityManager() {
           <TableHeaderCell>Contact</TableHeaderCell>
           <TableHeaderCell>Protocol</TableHeaderCell>
           <TableHeaderCell>Status</TableHeaderCell>
+          <TableHeaderCell>Connection</TableHeaderCell>
           <TableHeaderCell align="right">Routing rules</TableHeaderCell>
           <TableHeaderCell>Added</TableHeaderCell>
         </TableHead>
         <TableBody>
           {rows.length === 0 ? (
-            <TableEmptyState colSpan={6}>No liquidity providers yet.</TableEmptyState>
+            <TableEmptyState colSpan={7}>No liquidity providers yet.</TableEmptyState>
           ) : (
             rows.map((row) => (
               <TableRow key={row.id}>
@@ -168,6 +175,16 @@ export default function LiquidityManager() {
                     <option value="CONTRACTED">CONTRACTED</option>
                     <option value="CONNECTED">CONNECTED</option>
                   </Select>
+                </TableCell>
+                <TableCell>
+                  <div className="flex flex-col items-start gap-1">
+                    <span className="text-xs text-[var(--text-3)]">
+                      {connectionSummary(connections.filter((c) => c.liquidityProviderId === row.id)) || "Not set up"}
+                    </span>
+                    <Button size="sm" variant="secondary" onClick={() => setConnFor({ id: row.id, name: row.name })}>
+                      {connections.some((c) => c.liquidityProviderId === row.id) ? "Edit connection" : "Set up connection"}
+                    </Button>
+                  </div>
                 </TableCell>
                 <TableCell align="right" mono>{row.routingRuleCount}</TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{row.createdAt}</TableCell>
@@ -215,6 +232,8 @@ export default function LiquidityManager() {
           </TableBody>
         </Table>
       </Card>
+
+      <LpConnectionModal provider={connFor} onClose={() => setConnFor(null)} onChanged={() => load().catch(() => {})} />
 
       <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add liquidity provider">
         <div className="flex flex-col gap-3">
