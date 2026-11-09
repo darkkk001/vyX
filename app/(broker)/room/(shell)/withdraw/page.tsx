@@ -102,7 +102,7 @@ export default function RoomWithdraw() {
             <div className="r-field" style={{ flex: "1 1 200px" }}>
               <label htmlFor="wacct" style={label}>From account</label>
               <select id="wacct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setFromWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
-                {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${a.plan}`}</option>)}
+                {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`}</option>)}
               </select>
               <div style={{ fontSize: 11.5, color: "var(--r-muted)" }}>Available for withdrawal: <span className="mono" style={{ color: "var(--r-text)" }}>{funds ? `${money(funds.available)} ${ccy}` : "0.00"}</span></div>
             </div>

@@ -42,7 +42,7 @@ export default function RoomTransfer() {
     await Promise.all([reload(), refresh()]);
   }
 
-  const opt = (a: (typeof accounts)[number]) => `${a.accountNumber} · ${a.mode === "DEMO" ? "Demo" : a.plan} · ${money(a.figures.balance)} ${a.currency}`;
+  const opt = (a: (typeof accounts)[number]) => `${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`;
   const label = { fontSize: 10.5, letterSpacing: 1.2 } as const;
   return (
     <>

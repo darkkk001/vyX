@@ -262,3 +262,13 @@ describe("payment method label (owner 2026-11-09)", () => {
     expect(g).not.toContain("in your country");
   });
 });
+
+describe("account dropdowns (owner 2026-11-09)", () => {
+  it("Transfer, Deposit and Withdraw list each account as number · balance currency, never the plan name", () => {
+    for (const page of ["transfer", "deposit", "withdraw"]) {
+      const src = fs.readFileSync(path.join(process.cwd(), `app/(broker)/room/(shell)/${page}/page.tsx`), "utf8");
+      expect(src, page).toContain("`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`");
+      expect(src, page).not.toContain("a.plan");
+    }
+  });
+});

@@ -6,6 +6,7 @@ import { useRoom } from "@/components/room/RoomData";
 import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import { useFunds, amountOk, cleanAmount, readDataUrl } from "@/components/room/useFunds";
 import MethodGrid from "@/components/room/MethodGrid";
+import { money } from "@/components/room/format";
 
 // Artboard "Deposit": broker-configured methods, the broker's own receiving details with a payment reference,
 // receipt upload, request to the broker.
@@ -88,7 +89,7 @@ export default function RoomDeposit() {
               <div className="r-field" style={{ flex: "1 1 200px" }}>
                 <label htmlFor="acct" style={label}>To account</label>
                 <select id="acct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setToWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
-                  {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${a.plan}`}</option>)}
+                  {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`}</option>)}
                 </select>
               </div>
               <div className="r-field" style={{ flex: "1 1 200px" }}>
