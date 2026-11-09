@@ -68,7 +68,9 @@ export default function AccountDrawer({ account, lev, onClose, onChanged }: { ac
   const [msg, setMsg] = useState<Msg>(null);
   const [nick, setNick] = useState(account.nickname ?? "");
   const [nickMsg, setNickMsg] = useState<Msg>(null);
-  const [levNew, setLevNew] = useState(lev?.options.find((o) => o !== lev.current) ?? lev?.current ?? 0);
+  // the leverage picker opens on the account's current leverage (owner 2026-11-09) and follows it when it loads or changes
+  const [levNew, setLevNew] = useState(lev?.current ?? account.leverage);
+  useEffect(() => { if (lev) setLevNew(lev.current); }, [lev?.accountId, lev?.current]); // eslint-disable-line react-hooks/exhaustive-deps
   const [levMsg, setLevMsg] = useState<Msg>(null);
   const [offPw, setOffPw] = useState("");
   const [archiving, setArchiving] = useState(false);
@@ -137,13 +139,13 @@ export default function AccountDrawer({ account, lev, onClose, onChanged }: { ac
             ? <PasswordForm action="trading-password" label="Trading password" patch={patch} onDone={saved} />
             : <button type="button" className="r-btn-ghost r-btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => { setMsg(null); setPanel("trading"); }}>Change trading password</button>}
         </Row>
-        <Row label="Max leverage">
+        <Row label="Leverage">
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <span className="mono" style={{ fontSize: 13.5 }}>1:{lev?.current ?? account.leverage}</span>
             {lev && lev.options.length > 1 && !lev.pending ? (
               <>
-                <select aria-label="New leverage" className="r-input mono" style={{ padding: "6px 10px", fontSize: 12.5 }} value={levNew} onChange={(e) => setLevNew(Number(e.target.value))}>
-                  {lev.options.map((o) => <option key={o} value={o} disabled={o === lev.current}>1:{o}</option>)}
+                <select aria-label="Leverage" className="r-input mono" style={{ padding: "6px 10px", fontSize: 12.5 }} value={levNew} onChange={(e) => setLevNew(Number(e.target.value))}>
+                  {[...new Set([lev.current, ...lev.options])].sort((x, y) => y - x).map((o) => <option key={o} value={o}>1:{o}</option>)}
                 </select>
                 <button type="button" className="r-btn-ghost r-btn-sm" style={{ padding: "6px 12px" }} disabled={busy || levNew === lev.current} onClick={applyLeverage}>Change</button>
               </>

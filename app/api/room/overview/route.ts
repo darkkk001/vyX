@@ -53,9 +53,13 @@ export async function GET() {
     : null;
 
   const ownNumbers = new Set(accounts.map((a) => a.accountNumber));
-  const recent = accounts.length
-    ? await roomTransactions({ accountIds: accounts.map((a) => a.id), types: ["Deposit", "Withdrawal", "Transfer"] }, ownNumbers, { skip: 0, take: 5 })
-    : { rows: [], total: 0 };
+  // Recent transactions, live and demo apart (owner 2026-11-09: the dashboard shows live by default, a toggle shows demo);
+  // the funding wallet is a live ledger account, so it counts as live
+  const recentOf = async (mode: "LIVE" | "DEMO") => {
+    const ids = accounts.filter((a) => a.accountMode === mode).map((a) => a.id);
+    return ids.length ? (await roomTransactions({ accountIds: ids, types: ["Deposit", "Withdrawal", "Transfer"] }, ownNumbers, { skip: 0, take: 5 })).rows : [];
+  };
+  const [recentLive, recentDemo] = await Promise.all([recentOf("LIVE"), recentOf("DEMO")]);
 
   const kyc = client.kycRecord;
   return NextResponse.json({
@@ -66,6 +70,7 @@ export async function GET() {
     accounts: withFigures,
     wallet,
     totals,
-    recent: recent.rows,
+    recent: recentLive,
+    recentDemo,
   });
 }

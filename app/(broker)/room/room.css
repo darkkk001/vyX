@@ -132,6 +132,10 @@
 .r-mode { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: 1px; font-weight: 700; }
 .r-mode-live { color: var(--r-ok); }
 .r-mode-demo { color: var(--r-pending); }
+/* a small two-way toggle beside a section heading (dashboard Recent transactions: Live / Demo) */
+.r-mini-seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--r-input); border-radius: 7px; }
+.r-mini-seg button { border: 0; background: transparent; color: var(--r-text-2); font: inherit; font-size: 11.5px; font-weight: 600; padding: 3px 10px; border-radius: 5px; cursor: pointer; }
+.r-mini-seg button[aria-pressed="true"] { background: var(--r-accent); color: var(--r-on-accent, #0B0C0F); }
 .r-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; }
 .r-chip-ok { color: var(--r-ok); }
 .r-chip-pending { color: var(--r-pending); }

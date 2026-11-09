@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import StatusChip from "@/components/room/StatusChip";
@@ -20,6 +21,9 @@ export default function RoomDashboard() {
   const { data, error, selected } = useRoom();
   const f = selected?.figures;
   const firstName = data?.client.fullName.split(/\s+/)[0] ?? "";
+  // Recent transactions: live accounts by default, demo on the toggle (owner 2026-11-09); History is unchanged
+  const [txMode, setTxMode] = useState<"LIVE" | "DEMO">("LIVE");
+  const recent = (txMode === "LIVE" ? data?.recent : data?.recentDemo) ?? [];
   return (
     <>
       <RoomHeader title="Dashboard" />
@@ -80,8 +84,15 @@ export default function RoomDashboard() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "stretch" }}>
           <div className="r-card r-pad" style={{ flex: "2 1 480px", minWidth: 0 }}>
             <div className="r-sec-head" style={{ marginBottom: 14 }}>
-              <div className="r-label">Recent transactions</div>
-              <a href="/room/history">View all</a>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div className="r-label">Recent transactions</div>
+                <div className="r-mini-seg" role="group" aria-label="Accounts">
+                  {(["LIVE", "DEMO"] as const).map((m) => (
+                    <button key={m} type="button" aria-pressed={txMode === m} onClick={() => setTxMode(m)}>{m === "LIVE" ? "Live" : "Demo"}</button>
+                  ))}
+                </div>
+              </div>
+              <a href="/room/history" style={{ whiteSpace: "nowrap" }}>View all</a>
             </div>
             <div className="r-table-wrap">
               <table className="r-table" style={{ fontSize: 13 }}>
@@ -93,7 +104,7 @@ export default function RoomDashboard() {
                   </tr>
                 </thead>
                 <tbody className="mono">
-                  {(data?.recent ?? []).map((t) => (
+                  {recent.map((t) => (
                     <tr key={t.id}>
                       <td style={{ padding: 10, color: "var(--r-text-2)" }}>{dayShort(t.at)}</td>
                       <td style={{ padding: 10, fontFamily: "var(--r-sans)" }}>{t.type}</td>
@@ -104,7 +115,7 @@ export default function RoomDashboard() {
                   ))}
                 </tbody>
               </table>
-              {data && data.recent.length === 0 ? <div className="r-empty">No transactions yet.</div> : null}
+              {data && recent.length === 0 ? <div className="r-empty">{txMode === "LIVE" ? "No live transactions yet." : "No demo transactions yet."}</div> : null}
             </div>
           </div>
 

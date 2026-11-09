@@ -22,7 +22,8 @@ export type RoomOverview = {
   accounts: RoomAccount[];
   wallet: RoomAccount | null;
   totals: { currency: string; balance: string; equity: string; freeMargin: string; floating: string } | null;
-  recent: RoomTx[];
+  recent: RoomTx[]; // live accounts (and the funding wallet)
+  recentDemo: RoomTx[];
 };
 
 type Ctx = {

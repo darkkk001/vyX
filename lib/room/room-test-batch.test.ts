@@ -213,3 +213,23 @@ describe("My tier", () => {
     expect(fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/(shell)/accounts/page.tsx"), "utf8")).not.toContain("planSpreadFrom");
   });
 });
+
+describe("owner additions 2026-11-09", () => {
+  const read = (f: string) => fs.readFileSync(path.join(process.cwd(), f), "utf8");
+  it("the leverage picker reads LEVERAGE and opens on the account's current leverage, which is always an option", () => {
+    const d = read("components/room/AccountDrawer.tsx");
+    expect(d).toContain('<Row label="Leverage">');
+    expect(d).not.toContain("New leverage");
+    expect(d).toContain("useState(lev?.current ?? account.leverage)");
+    expect(d).toContain("if (lev) setLevNew(lev.current)");
+    expect(d).toContain("new Set([lev.current, ...lev.options])");
+  });
+  it("recent transactions come split by mode from the server, live by default, with a Live / Demo toggle", () => {
+    const r = read("app/api/room/overview/route.ts");
+    expect(r).toContain('recentOf("LIVE"), recentOf("DEMO")');
+    expect(r).toMatch(/recent: recentLive,\s+recentDemo,/);
+    const page = read("app/(broker)/room/(shell)/page.tsx");
+    expect(page).toContain('useState<"LIVE" | "DEMO">("LIVE")');
+    expect(page).toContain('className="r-mini-seg"');
+  });
+});
