@@ -86,13 +86,13 @@ export default function RoomDeposit() {
 
           <div className="r-card" style={{ flex: "2 1 480px", minWidth: 0, padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
             <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-              <div className="r-field" style={{ flex: "1 1 200px" }}>
+              <div className="r-field r-field-fixed">
                 <label htmlFor="acct" style={label}>To account</label>
                 <select id="acct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setToWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
                   {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`}</option>)}
                 </select>
               </div>
-              <div className="r-field" style={{ flex: "1 1 200px" }}>
+              <div className="r-field r-field-fixed">
                 <label htmlFor="amt" style={label}>Amount · {account?.currency ?? "USD"}</label>
                 <input id="amt" className="r-input mono" inputMode="decimal" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: "10px 12px" }} />
               </div>

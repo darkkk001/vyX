@@ -150,6 +150,9 @@
 .r-table .num { text-align: right; font-family: var(--r-mono); font-variant-numeric: tabular-nums; }
 .r-empty { padding: 26px 18px; color: var(--r-muted); font-size: 12.5px; }
 .r-field { display: flex; flex-direction: column; gap: 7px; }
+/* Deposit / Withdraw account + amount: about 260 px side by side, full width stacked on a phone */
+.r-field-fixed { flex: 0 1 260px; min-width: 0; }
+@media (max-width: 768px) { .r-field-fixed { flex: 1 1 100%; } }
 .r-field > label, .r-flabel { font-size: 10.5px; letter-spacing: 1.2px; color: var(--r-muted); font-weight: 600; text-transform: uppercase; }
 .r-input { background: var(--r-card-2); border: 1px solid var(--r-input); border-radius: 6px; color: var(--r-text); font-size: 14px; padding: 11px 13px; width: 100%; }
 .r-input.mono { font-size: 13.5px; }

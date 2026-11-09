@@ -272,3 +272,23 @@ describe("account dropdowns (owner 2026-11-09)", () => {
     }
   });
 });
+
+describe("withdraw verification card (owner 2026-11-09)", () => {
+  it("shows only while KYC is not approved, the only time it blocks a withdrawal", () => {
+    const src = fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/(shell)/withdraw/page.tsx"), "utf8");
+    expect(src).toContain('const kycStatus = funds?.kyc ?? data?.kyc.status ?? "NONE";');
+    expect(src).toMatch(/\{kycStatus !== "APPROVED" \? \(\s*<div className="r-card r-pad">\s*<div[^>]*>\s*<div className="r-label">Verification<\/div>/);
+  });
+});
+
+describe("deposit / withdraw field width (owner 2026-11-09)", () => {
+  it("account and amount are about 260 px side by side, full width stacked on a phone", () => {
+    const css = fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/room.css"), "utf8");
+    expect(css).toContain(".r-field-fixed { flex: 0 1 260px; min-width: 0; }");
+    expect(css).toContain("@media (max-width: 768px) { .r-field-fixed { flex: 1 1 100%; } }");
+    for (const [page, ids] of [["deposit", ["acct", "amt"]], ["withdraw", ["wacct", "wamt"]]] as const) {
+      const src = fs.readFileSync(path.join(process.cwd(), `app/(broker)/room/(shell)/${page}/page.tsx`), "utf8");
+      for (const id of ids) expect(src, `${page} ${id}`).toMatch(new RegExp(`<div className="r-field r-field-fixed">\\s*<label htmlFor="${id}"`));
+    }
+  });
+});
