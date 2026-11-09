@@ -628,7 +628,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
           // is a separate, broker-revenue adjustment applied only to the
           // actual fill price, not to the accept/reject threshold check.
           logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, pricing.warning);
-          const fillPrice = applySpreadMarkup({ side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+          const fillPrice = applySpreadMarkup({ side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits, opposite: side === "BUY" ? livePrice.bid : livePrice.ask });
           // the slippage cap comes before any auto-accept: over it, the order is requoted or refused, never auto-filled
           const verdict = overCap(fillPrice);
           if (verdict.over) {
@@ -785,7 +785,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       const fillPricing = pricing!;
       logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, fillPricing.warning);
       const serverRef = side === "BUY" ? livePrice!.ask : livePrice!.bid;
-      const fillPrice = applySpreadMarkup({ side, price: serverRef, spreadMarkup: fillPricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+      const fillPrice = applySpreadMarkup({ side, price: serverRef, spreadMarkup: fillPricing.spreadMarkup, digits: brokerSymbol.symbol.digits, opposite: side === "BUY" ? livePrice!.bid : livePrice!.ask });
       // the slippage cap (lib/slippage-cap.ts): only a fill worse than the client's price counts
       const verdict = overCap(fillPrice);
       if (verdict.over) {

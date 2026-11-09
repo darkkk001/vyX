@@ -424,7 +424,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
 
     if (liveTickForMarkup) {
       const serverRef = mirrorSide === "BUY" ? liveTickForMarkup.ask : liveTickForMarkup.bid;
-      fillPrice = applySpreadMarkup({ side: mirrorSide, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+      fillPrice = applySpreadMarkup({ side: mirrorSide, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits, opposite: mirrorSide === "BUY" ? liveTickForMarkup.bid : liveTickForMarkup.ask });
     }
 
     // checkAccountPreTradeMargin takes the real PrismaClient (it runs its
