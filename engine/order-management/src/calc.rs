@@ -43,6 +43,12 @@ pub fn position_close_price(p: &db::OpenPositionWithMarket, bid: Decimal, ask: D
 }
 
 pub struct AccountState {
+    /// THE ORDER PATH ONLY EVER USES THIS AS A SUM WITH `credit`, and that is why a mutant swapping
+    /// the two survives the L2 Step 2 sweep rather than being a gap in the tests: the pre-trade margin
+    /// gate's funds are `balance + credit` (`gates::pre_trade_margin`) and its equity is
+    /// `effective_balance + credit + floating` ([`equity`]), so no decision on this path can tell them
+    /// apart. They are NOT interchangeable anywhere money moves -- `vyx_open_position` debits
+    /// `"Account".balance` by name -- which is why both are carried separately all the same.
     pub effective_balance: Decimal,
     pub credit: Decimal,
     pub leverage: u32,
@@ -118,10 +124,140 @@ pub fn equity(state: &AccountState) -> Decimal {
     state.effective_balance + state.credit + floating
 }
 
+// ---- the pre-trade margin gate, whole (L2 Step 1d) ---------------------------------------------
+
+/// The leg about to open, as the pre-trade margin gate values it.
+pub struct NewLeg<'a> {
+    /// The symbol NAME: `calc::used_margin` books the hedge netting per symbol, and the state's own
+    /// positions carry names (the web keys the same map by symbolId -- same partition).
+    pub symbol: &'a str,
+    pub side: OrderSide,
+    pub volume: Decimal,
+    pub contract_size: Decimal,
+    /// The price the order would FILL at -- this ACCOUNT's marked-up/marked-down price, not the raw
+    /// tick. The web passes `newOrderFillPrice` after `applySpreadMarkup` for the same reason, so the
+    /// gate must run after pricing, not before it.
+    pub fill_price: Decimal,
+    /// quote currency -> account currency, from the engine's own in-memory ticks
+    /// (`book::fx_rate_from_ticks`, zero DB). None = no price to convert with -> NO_CONVERSION_RATE.
+    pub fx_rate: Option<Decimal>,
+    /// `BrokerSymbol.hedgedMarginPct` of THIS symbol (`db::GateInputs::symbol_hedged_margin_pct`),
+    /// the web's `pctFor(newOrderSymbolId)`.
+    ///
+    /// IT CANNOT CHANGE THE ANSWER, on either side, and that is not a bug to fix here. Both
+    /// implementations take a symbol's hedged % from the FIRST leg booked for it and push the new leg
+    /// LAST, so: if the account already holds that symbol, the open position's % wins; and if it does
+    /// not, the new leg is the symbol's only leg, nothing is hedged (`s == 0`) and the % is never
+    /// read. Measured, not reasoned: forcing the web's own `pctFor` to 0 in
+    /// scripts/contracts/gen-gate-vectors.ts leaves all 31 generated verdicts byte-identical, and the
+    /// two mutants that hardcode this field to 200 (here and in `get_gate_inputs`) survive the sweep
+    /// for the same reason. It is carried because the web carries it -- if the netting ever starts
+    /// charging the new leg's own %, the engine already has the input and the vectors will say so.
+    pub hedged_margin_pct: Decimal,
+}
+
+/// `lib/margin.ts evaluatePreTradeMargin`, whole: the state math around the ported decision in
+/// `gates::pre_trade_margin`, so the order path has one call and the oracle has one function to pin.
+///
+/// How the web's shape maps onto this one, piece for piece:
+/// - `equity` / `usedMargin` of `loadAccountMarginState` are [`equity`] and [`used_margin`] over the
+///   same state -- the live close-side price per position, converted, with MT5 hedge netting.
+/// - `usedMarginAfter = hedgedUsedMargin([...legs, newLeg])` is [`used_margin`] over this same state
+///   with the new leg PUSHED ON THE END. The order matters for one reason only: both implementations
+///   take a symbol's hedged % from the FIRST leg booked for it, so an existing position's % wins over
+///   the new leg's, exactly as the web's spread does.
+/// - the new leg is valued at `requiredMarginFor(volume, contractSize, fillPrice, leverage) * rate`.
+///   Here that falls out of `used_margin` itself by giving the synthetic leg `bid == ask ==
+///   fill_price`: `position_close_price` returns the fill price for either side, and no ask rule is
+///   applied twice (the fill price is already the account's).
+/// - the decision, including "an order that does not increase used margin is always allowed" and the
+///   INSUFFICIENT_BALANCE / INSUFFICIENT_MARGIN split, is `gates::pre_trade_margin`.
+///
+/// NO_CONVERSION_RATE comes first, for the new leg AND for any open position: the web's
+/// `loadAccountMarginState` returns null if a single open position cannot be converted, and the route
+/// then refuses the order. The engine's own convention is gentler (`book::price_rows` marks such a
+/// position unpriced, so it leaves both totals), and gentler is the wrong direction for an admission
+/// gate -- it would judge the order against an account whose real exposure it cannot see.
+///
+/// KNOWN DIFFERENCE, not introduced here: a position with no FRESH price, or one whose market is
+/// closed, is excluded from both totals by the engine (Stage 2 F4, platform-wide: the margin watcher
+/// and the stop-out loop share it) where the web falls back to that position's own `openPrice`. Both
+/// are defensible and the engine must not disagree with its own risk monitor, so it is left alone and
+/// flagged rather than changed inside this gate.
+pub fn pre_trade_margin_decision(
+    state: &AccountState,
+    leg: &NewLeg<'_>,
+    margin_call_level: Decimal,
+) -> Option<String> {
+    if state.positions.iter().any(|p| p.rate_missing) {
+        return Some(crate::gates::NO_CONVERSION_RATE.to_string());
+    }
+    let fx_rate = match leg.fx_rate {
+        Some(rate) => rate,
+        None => return Some(crate::gates::NO_CONVERSION_RATE.to_string()),
+    };
+    let equity_now = equity(state);
+    let used_now = used_margin(state);
+    let mut after = AccountState {
+        effective_balance: state.effective_balance,
+        credit: state.credit,
+        leverage: state.leverage,
+        positions: state.positions.clone(),
+    };
+    after.positions.push(db::OpenPositionWithMarket {
+        id: String::new(),
+        symbol: leg.symbol.to_string(),
+        side: leg.side,
+        volume: leg.volume,
+        open_price: leg.fill_price,
+        contract_size: leg.contract_size,
+        // the fill price on both sides: position_close_price gives it back for a BUY or a SELL, and
+        // the floating P&L of a leg opening at its own close price is zero, so the equity is untouched
+        bid: Some(leg.fill_price),
+        ask: Some(leg.fill_price),
+        sl_price: None,
+        tp_price: None, sl_amount: None, tp_amount: None,
+        fx_rate,
+        rate_missing: false,
+        hedged_margin_pct: leg.hedged_margin_pct,
+        // none: fill_price is ALREADY this account's price (pricing::quoted_tick ran on it)
+        ask_rule: None,
+        quote: None,
+    });
+    crate::gates::pre_trade_margin(
+        equity_now,
+        used_now,
+        used_margin(&after),
+        state.effective_balance,
+        state.credit,
+        margin_call_level,
+    )
+}
+
 /// `None` if the account doesn't exist (Prisma-owned `Account` row
 /// missing) — callers treat that as "nothing to do," not an error, same
 /// as before this was factored out of monitor.rs.
-pub async fn load_account_state(pool: &PgPool, account_id: &str) -> Result<Option<AccountState>, sqlx::Error> {
+/// The order path's account state: effective balance, credit, leverage and the open positions its
+/// margin and exposure gates judge.
+///
+/// L2 Step 1: on the Prisma book this **delegates to [`load_book_state`]**, which already reads the
+/// real book -- rather than porting `get_ledger_sum` and `get_open_positions_with_market` to it. Three
+/// reasons that is the right move and not a shortcut:
+///
+/// - `load_book_state` reads funds and positions inside ONE `REPEATABLE READ, READ ONLY` snapshot. The
+///   legacy three-read version is exactly what caused the 2026-10-01 torn read (see that function's
+///   comment); porting the reads one at a time would have rebuilt the same bug on the real book.
+/// - the ledger sum must NOT be added on the Prisma book. `book::close_position_in_tx` writes realized
+///   P&L straight into `"Account".balance` (the web's model), so adding `SUM(ledger_entries)` on top
+///   would count every close twice.
+/// - it is the same state the margin monitor already judges, so the order path and the risk path stop
+///   being able to disagree about one account.
+///
+/// The legacy branch is untouched, so `ENGINE_ORDER_MANAGEMENT=1|on|true|yes` behaves exactly as before.
+pub async fn load_account_state(pool: &PgPool, book: db::Book, account_id: &str) -> Result<Option<AccountState>, sqlx::Error> {
+    if book == db::Book::Prisma {
+        return load_book_state(pool, account_id).await;
+    }
     let Some(funds) = db::get_account_funds(pool, account_id).await? else {
         return Ok(None);
     };
@@ -264,17 +400,17 @@ mod tests {
         use market_data::ask_markup::AskRule;
         let pos = |side: OrderSide| db::OpenPositionWithMarket {
             id: String::new(), symbol: "XAUUSD".into(), side, volume: dec!(1), open_price: dec!(4290), contract_size: dec!(100),
-            bid: Some(dec!(4298.96)), ask: Some(dec!(4299.13)), sl_price: None, tp_price: None, fx_rate: Decimal::ONE,
+            bid: Some(dec!(4298.96)), ask: Some(dec!(4299.13)), sl_price: None, tp_price: None, sl_amount: None, tp_amount: None, fx_rate: Decimal::ONE, rate_missing: false,
             hedged_margin_pct: dec!(200), ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }), quote: None,
         };
         let (sell, buy) = (pos(OrderSide::Sell), pos(OrderSide::Buy));
-        // SYMMETRIC MARKUP: 1.5 pips = 0.15 split, so the account's ask is ceil(4299.13 + 0.075) = 4299.21 and its
-        // bid floor(4298.96 - 0.075) = 4298.88. A BUY is no longer valued at the raw bid.
+        // 1.5 pips = 15 points: the account's ask is 4299.13 + 0.08 = 4299.21 and its bid 4298.96 - 0.07 = 4298.89.
+        // A BUY is not valued at the raw bid.
         assert_eq!(position_close_price(&sell, dec!(4298.96), dec!(4299.13)), dec!(4299.21));
-        assert_eq!(position_close_price(&buy, dec!(4298.96), dec!(4299.13)), dec!(4298.88));
-        // SELL: (4290 - 4299.21) x 100 = -921; BUY: (4298.88 - 4290) x 100 = +888
+        assert_eq!(position_close_price(&buy, dec!(4298.96), dec!(4299.13)), dec!(4298.89));
+        // SELL: (4290 - 4299.21) x 100 = -921; BUY: (4298.89 - 4290) x 100 = +889
         assert_eq!(floating_pnl_account(&sell), Some(dec!(-921.00)));
-        assert_eq!(floating_pnl_account(&buy), Some(dec!(888.00)));
+        assert_eq!(floating_pnl_account(&buy), Some(dec!(889.00)));
         let state = AccountState { effective_balance: dec!(10000), credit: dec!(0), leverage: 100, positions: vec![sell] };
         assert_eq!(used_margin(&state), dec!(4299.21));
         assert_eq!(equity(&state), dec!(9079.00));
@@ -292,8 +428,9 @@ mod tests {
             bid,
             ask: bid.map(|b| b + dec!(0.20)),
             sl_price: None,
-            tp_price: None,
+            tp_price: None, sl_amount: None, tp_amount: None,
             fx_rate: Decimal::ONE,
+            rate_missing: false,
             hedged_margin_pct: pct,
             ask_rule: None,
             quote: None,

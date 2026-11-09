@@ -9,3 +9,5 @@
 
 # Prisma stores a checksum of each migration file: a CRLF checkout must never change those bytes.
 prisma/migrations/** text eol=lf
+# applied on live from a CRLF copy (checksum 8e6b4ec7...): keep these exact bytes so `migrate status` stays clean
+prisma/migrations/20261103210000_vyx_open_position_idempotency/migration.sql -text

@@ -33,8 +33,8 @@ test("every price vector: the stream's BOTH sides equal the web's account bid an
 test("a rewritten tick carries the account's bid AND ask in place of the raw ones, nothing else changes, same JSON type", () => {
   const rule: AskRule = { mode: "markup", markupPips: new Decimal("1.5"), digits: 2 };
   const out = JSON.parse(rewriteTick({ symbol: "XAUUSD", bid: "4298.96", ask: "4299.13", t0: 1 }, rule));
-  // 1.5 pips = 0.15 -> half 0.075: the ask rounds UP to 4299.21 and the bid DOWN to 4298.88, away from the client
-  assert.deepEqual(out, { symbol: "XAUUSD", bid: "4298.88", ask: "4299.21", t0: 1 });
+  // 1.5 pips = 15 points: ask +8 to 4299.21, bid -7 to 4298.89, a total of exactly 15
+  assert.deepEqual(out, { symbol: "XAUUSD", bid: "4298.89", ask: "4299.21", t0: 1 });
   assert.ok(!JSON.stringify(out).includes("4299.13"), "the raw ask must not reach the trader");
   assert.ok(!JSON.stringify(out).includes("4298.96"), "the raw bid must not reach the trader either");
   const num = JSON.parse(rewriteTick({ symbol: "X", bid: 1.1, ask: 1.2 }, { mode: "markup", markupPips: new Decimal(0), digits: 1 }));

@@ -11,14 +11,20 @@ import { connect, StringCodec, type NatsConnection } from "nats";
 import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
 import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, askRegistry, gatewayStats, onlineAccountIds, orderAckStats } from "./ws.js";
+import { rateLimitStats } from "./rate-limit.js";
 import { BOOK_SEQ_SUBJECT, newBookSeqState, stampBookEvent } from "./book-seq.js";
 import { internalSecretOk, rotationInProgress } from "./internal-secret.js";
+import { corsMiddleware, parseAllowedOrigins } from "./cors.js";
+import { edgeRateLimit, parseEdgeLimit } from "./edge-rate-limit.js";
 
 if (rotationInProgress()) {
   console.warn("secret rotation in progress: INTERNAL_SERVICE_SECRET_PREVIOUS is still accepted; unset it and restart once every caller has switched");
 }
 
 const app = express();
+// First, so it replaces the automatic OPTIONS answer and a refusal further down stays readable (cors.ts).
+app.use(corsMiddleware(parseAllowedOrigins(process.env.GATEWAY_CORS_ORIGINS)));
+app.use(edgeRateLimit(parseEdgeLimit(process.env.GATEWAY_EDGE_RATE_LIMIT_PER_MIN)));
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
@@ -34,7 +40,8 @@ app.get("/internal/gateway-stats", (req, res) => {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  res.json({ ...gatewayStats, ...orderAckStats(), ...askRegistry.stats() });
+  // rateLimitStats(): 429 counts per bucket -- see rate-limit.ts for why a refusal is reported.
+  res.json({ ...gatewayStats, ...orderAckStats(), ...askRegistry.stats(), ...rateLimitStats() });
 });
 
 // Traders online now (bo 1.0.96 dashboard B): the accounts of one broker with an open trading-event connection. Ids only;

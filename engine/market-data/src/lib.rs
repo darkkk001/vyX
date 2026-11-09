@@ -162,7 +162,7 @@ pub(crate) fn fixed_ms(tf: Timeframe) -> Option<i64> {
 /// codebase's history, so that's flagged, not fixed, here.
 /// The UTC offset a New-York-close broker server (UTC+2 in winter, UTC+3 while New York is on daylight time) has at
 /// instant `t`.
-fn ny_close_server_offset_sec(t: DateTime<Utc>) -> i64 {
+pub fn ny_close_server_offset_sec(t: DateTime<Utc>) -> i64 {
     if crate::gap_fill::us_eastern_is_dst(t) { 3 * 3600 } else { 2 * 3600 }
 }
 
@@ -284,6 +284,106 @@ fn broker_period_start(now: DateTime<Utc>, broker_offset_sec: i64, period_ms: i6
     Utc.timestamp_millis_opt(floored).unwrap()
 }
 
+/// Guards for `POST /internal/history` (candle de-dup, owner 2026-11-05).
+pub mod history_guard {
+    use super::{ny_close_server_offset_sec, CandleUpdate};
+    use chrono::{DateTime, Utc};
+
+    /// A history post must carry the New-York-close server offset in force now (+3h in US summer time, +2h
+    /// otherwise): a missing or different offset shifts every bar's time and files a second key beside the real one.
+    /// `Err` carries the human-readable reason.
+    pub fn check_server_offset(server_offset_sec: Option<i64>, now: DateTime<Utc>) -> Result<(), String> {
+        let expected = ny_close_server_offset_sec(now);
+        match server_offset_sec {
+            None => Err(format!("server_offset_sec is missing; the New-York-close offset in force now is {expected}")),
+            Some(got) if got != expected => Err(format!(
+                "server_offset_sec {got} is not the New-York-close offset in force now ({expected}); refused so no bar is filed on a wrong key"
+            )),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// `HISTORY_OVERWRITE_BEFORE`: an RFC3339 instant; unset (or empty) = every bar is authoritative. An unparseable
+    /// value is an `Err` (the caller logs it and falls back to unset).
+    pub fn parse_cutoff(raw: Option<&str>) -> Result<Option<DateTime<Utc>>, String> {
+        match raw.map(str::trim) {
+            None | Some("") => Ok(None),
+            Some(v) => DateTime::parse_from_rfc3339(v).map(|d| Some(d.with_timezone(&Utc))).map_err(|e| format!("HISTORY_OVERWRITE_BEFORE {v:?}: {e}")),
+        }
+    }
+
+    /// Splits bars into (authoritative overwrite, insert-if-missing only): bucket_start < cutoff overwrites,
+    /// bucket_start >= cutoff only fills gaps. No cutoff: everything is authoritative.
+    pub fn partition_by_cutoff(bars: Vec<CandleUpdate>, cutoff: Option<DateTime<Utc>>) -> (Vec<CandleUpdate>, Vec<CandleUpdate>) {
+        match cutoff {
+            None => (bars, Vec::new()),
+            Some(c) => bars.into_iter().partition(|b| b.bucket_start < c),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::Timeframe;
+        use chrono::TimeZone;
+        use rust_decimal::Decimal;
+
+        fn at(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+            Utc.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap()
+        }
+
+        #[test]
+        fn missing_offset_is_refused() {
+            assert!(check_server_offset(None, at(2026, 7, 15)).is_err());
+            assert!(check_server_offset(None, at(2026, 12, 15)).is_err());
+        }
+
+        #[test]
+        fn offset_zero_and_plus_one_hour_are_refused() {
+            for now in [at(2026, 7, 15), at(2026, 12, 15)] {
+                assert!(check_server_offset(Some(0), now).is_err());
+                assert!(check_server_offset(Some(3600), now).is_err());
+            }
+        }
+
+        #[test]
+        fn the_season_offset_passes_and_the_other_season_is_refused() {
+            assert!(check_server_offset(Some(3 * 3600), at(2026, 7, 15)).is_ok(), "summer +3h");
+            assert!(check_server_offset(Some(2 * 3600), at(2026, 12, 15)).is_ok(), "winter +2h");
+            assert!(check_server_offset(Some(2 * 3600), at(2026, 7, 15)).is_err());
+            assert!(check_server_offset(Some(3 * 3600), at(2026, 12, 15)).is_err());
+        }
+
+        fn bar(t: DateTime<Utc>) -> CandleUpdate {
+            CandleUpdate { symbol: "XAUUSD".into(), timeframe: Timeframe::D1, bucket_start: t, open: Decimal::ONE, high: Decimal::ONE, low: Decimal::ONE, close: Decimal::ONE, open_authoritative: true, tick_volume: 0 }
+        }
+
+        #[test]
+        fn cutoff_parsing() {
+            assert_eq!(parse_cutoff(None), Ok(None));
+            assert_eq!(parse_cutoff(Some("  ")), Ok(None));
+            assert_eq!(parse_cutoff(Some("2026-10-01T00:00:00+02:00")), Ok(Some(Utc.with_ymd_and_hms(2026, 9, 30, 22, 0, 0).unwrap())));
+            assert!(parse_cutoff(Some("yesterday")).is_err());
+        }
+
+        #[test]
+        fn partition_splits_at_the_cutoff_and_the_cutoff_bar_itself_is_gap_only() {
+            let cutoff = at(2026, 10, 1);
+            let (auth, gaps) = partition_by_cutoff(vec![bar(at(2026, 9, 30)), bar(cutoff), bar(at(2026, 10, 2))], Some(cutoff));
+            assert_eq!(auth.len(), 1);
+            assert_eq!(auth[0].bucket_start, at(2026, 9, 30));
+            assert_eq!(gaps.len(), 2);
+        }
+
+        #[test]
+        fn no_cutoff_keeps_todays_behaviour() {
+            let (auth, gaps) = partition_by_cutoff(vec![bar(at(2026, 9, 30)), bar(at(2030, 1, 1))], None);
+            assert_eq!(auth.len(), 2);
+            assert!(gaps.is_empty());
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CandleUpdate {
     pub symbol: String,
@@ -403,8 +503,8 @@ pub fn apply_broker_bars(updates: &mut [CandleUpdate], bars: &[BrokerBar], broke
         }
         update.open = bar.o;
         update.open_authoritative = true;
-        // the broker's running tick volume (a total); 0 when the EA predates v1.45 (then the stored value is kept)
-        update.tick_volume = bar.v.filter(|v| *v > 0).unwrap_or(0);
+        // `bar.v` (the MT5 demo's tick volume) is deliberately NOT used here: live volume is the FIX tick count the
+        // sample carries (a delta), never another venue's running total. The demo's volume enters only through history.
         if bar.h > update.high {
             update.high = bar.h;
         }
@@ -450,7 +550,7 @@ mod tests {
     // overlays the sampled update only where its open time IS the bucket this
     // engine computed for the same tick.
     fn bars_tick(bid: rust_decimal::Decimal, bars: Vec<BrokerBar>) -> Tick {
-        Tick { symbol: "XAUUSD".into(), bid, ask: bid + rust_decimal_macros::dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: Some(10_800), bars }
+        Tick { symbol: "XAUUSD".into(), bid, ask: bid + rust_decimal_macros::dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: Some(10_800), bars, tick_count: None }
     }
 
     fn bar(tf: &str, t: DateTime<Utc>, o: &str, h: &str, l: &str) -> BrokerBar {
@@ -461,10 +561,9 @@ mod tests {
         updates.iter().find(|u| u.timeframe == tf).unwrap()
     }
 
-    /// Native release 2026-11-04 (terminal Volume pane): a seeded update carries one sampled tick (a delta); a matched broker
-    /// bar carries the broker's running tick volume (a total); a bar from an EA before v1.45 (no `v`) carries 0 (keep stored).
+    /// A seeded update carries one sampled tick (a delta); a matched broker bar's `v` does NOT replace it (no mixing venues).
     #[test]
-    fn tick_volume_is_one_per_sampled_flush_and_the_brokers_total_on_a_matched_bar() {
+    fn tick_volume_is_a_delta_and_a_broker_bars_v_does_not_replace_it() {
         use rust_decimal_macros::dec;
         let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap() + chrono::Duration::milliseconds(40);
         let m1 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap();
@@ -473,12 +572,12 @@ mod tests {
         let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
         assert!(updates.iter().all(|u| u.tick_volume == 1), "every seeded update is one sampled flush");
         apply_broker_bars(&mut updates, &tick.bars, 0, Utc::now());
-        assert_eq!(by_tf(&updates, Timeframe::M1).tick_volume, 512, "the broker's total for the matched bar");
+        assert_eq!(by_tf(&updates, Timeframe::M1).tick_volume, 1, "the broker's v is ignored for live volume");
         assert_eq!(by_tf(&updates, Timeframe::M5).tick_volume, 1, "an unmatched timeframe stays a delta");
         let old = bars_tick(dec!(2402.5), vec![bar("M1", m1, "2402.0", "2402.5", "2401.8")]);
         let mut updates = candle_updates_for_tick_ohlc(&old, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
         apply_broker_bars(&mut updates, &old.bars, 0, Utc::now());
-        assert_eq!(by_tf(&updates, Timeframe::M1).tick_volume, 0, "no v (older EA): 0, the upsert keeps the stored value");
+        assert_eq!(by_tf(&updates, Timeframe::M1).tick_volume, 1, "no v (older EA): still the delta");
     }
 
     #[test]
@@ -678,7 +777,7 @@ mod tests {
     fn candle_updates_for_tick_covers_every_timeframe() {
         use rust_decimal_macros::dec;
 
-        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() };
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None };
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let updates = candle_updates_for_tick(&tick, now, 0);
 
@@ -696,7 +795,7 @@ mod tests {
     fn candle_updates_for_tick_bucket_starts_match_bucket_start_directly() {
         use rust_decimal_macros::dec;
 
-        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() };
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None };
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let updates = candle_updates_for_tick(&tick, now, 0);
 

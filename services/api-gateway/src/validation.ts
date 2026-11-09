@@ -45,12 +45,36 @@ const volume = decimalString({ positive: true });
 // here just because `.optional()` alone only covers "key omitted."
 const optionalPrice = decimalString().nullable().optional();
 
+// A trader's own slippage max: a decimal string in points/pips, or the literal "unlimited" that every
+// client already sends when the trader set no cap (lib/risk.ts's isValidMaxSlippageInput accepts the
+// same two forms). Rejecting "unlimited" here would refuse the common case.
+const slippageInput = z.union([z.literal("unlimited"), decimalString()]);
+
 export const placeMarketOrderSchema = z.object({
   symbol,
   side,
   volume,
   sl_price: optionalPrice,
   tp_price: optionalPrice,
+  // PRIORITY 1 (FAILOVER): the client's own idempotency key, passed straight through to the engine so
+  // the fill (or the rejection) is written under it. That is what lets the web resolve a LOST ANSWER by
+  // key instead of having to choose between a double fill and an error -- see lib/engine-ingress.ts.
+  //
+  // Optional, and deliberately NOT validated beyond a length bound: the gateway does not own this
+  // value's meaning, it only carries it. An absent key keeps the old behaviour exactly (the engine
+  // falls back to `engine:<order id>`), so a client that does not send one is not refused.
+  idempotencyKey: z.string().trim().min(1).max(128).optional(),
+  // THE CLIENT'S OWN SCREEN PRICE, for the slippage cap only -- the engine prices the fill itself.
+  //
+  // OPTIONAL, deliberately. The web guard (lib/engine-ingress.ts) forwards symbol/side/volume/key and no
+  // price, so requiring one here would refuse every order that path sends. Absent = no reference to
+  // compare against and therefore no cap check, exactly as the close route treats a missing closePrice.
+  // A client calling this Gateway DIRECTLY must send it to get the cap the web applies -- making it
+  // mandatory belongs with retiring the web guard, not before.
+  price: decimalString().nullable().optional(),
+  // the trader's own SLIPPAGE MAX, either spelling; points wins when both are sent, as on the web
+  maxSlippagePoints: slippageInput.nullable().optional(),
+  maxSlippagePips: slippageInput.nullable().optional(),
 });
 
 export const placePendingOrderSchema = z.object({
@@ -78,6 +102,53 @@ export const modifyPositionSchema = z.object({
 // (typed) result on success, so downstream handlers read already-valid
 // data. On failure, responds 400 with every issue at once (not just the
 // first) rather than making the client guess-and-check field by field.
+// POST /v1/positions/:id/close. Everything is optional, because the engine prices the close itself off
+// the Gateway's fresh tick: `closePrice` is the client's OWN reference (what its screen showed) and is
+// used only for the slippage comparison, exactly as the web close route uses it. Sending none means
+// "fill at the server price, no reference to check against" -- the same meaning it has there.
+export const closePositionSchema = z.object({
+  closePrice: decimalString().nullable().optional(),
+  maxSlippagePoints: slippageInput.nullable().optional(),
+  maxSlippagePips: slippageInput.nullable().optional(),
+  // Carried for traceability only, and length-bounded like the market route's. A DIRECT close has no
+  // key-based dedupe to offer -- see the route's own comment: neither this service nor the web has one,
+  // the guarantee is the engine's compare-and-set. Declared so it survives `req.body = result.data`.
+  idempotencyKey: z.string().trim().min(1).max(128).optional(),
+  // PARTIAL CLOSE IS NOT SUPPORTED HERE, and this is why it is DECLARED rather than omitted: an
+  // undeclared key is stripped by `req.body = result.data`, so a client asking to close 0.01 of a 1.00
+  // position would have been silently closed in FULL. `z.never()` makes that a 400 instead. The engine's
+  // own /v1/positions/{id}/close takes no volume either -- it is a full-close primitive, so partial
+  // closes stay on the web route until the engine grows one.
+  volume: z.never().optional(),
+});
+
+// POST /v1/positions/close-bulk. The scope vocabulary is the web's own
+// (app/api/trade/positions/close-bulk, lib/bulk-close.ts BulkCloseScope), so a client switching from the
+// Vercel route to this one changes the URL and nothing about the body.
+//
+// `positionIds` NARROWS, it never widens: the selection always starts from this account's own OPEN
+// positions and the list can only remove from it. That is the same rule selectBulkCloseTargets applies,
+// and it is what makes an id from another account harmless here rather than a probe.
+export const closeBulkSchema = z
+  .object({
+    scope: z.enum(["ALL", "PROFIT", "LOSS", "SYMBOL"]),
+    symbol: z.string().trim().min(1).optional(),
+    side: side.nullable().optional(),
+    positionIds: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
+    // ONE key for the basket; each position's own key becomes "<key>:<positionId>" in the engine, so a
+    // replayed basket is refused per position by UNIQUE (accountId, idempotencyKey) rather than
+    // half-applied. Optional, like the single close's.
+    idempotencyKey: z.string().trim().min(1).max(96).optional(),
+    // Same reason as closePositionSchema's: declared so `req.body = result.data` cannot silently strip a
+    // partial-close ask and close the basket in full.
+    volume: z.never().optional(),
+  })
+  .superRefine((body, ctx) => {
+    if (body.scope === "SYMBOL" && !body.symbol) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["symbol"], message: "symbol is required for scope SYMBOL" });
+    }
+  });
+
 export function validateBody(schema: z.ZodTypeAny) {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.body);

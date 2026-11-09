@@ -37,6 +37,13 @@ pub struct CandleSample {
     pub open: Decimal,
     pub high: Decimal,
     pub low: Decimal,
+    /// Tick volume of this segment: the sum of its ticks' `tick_count` (a tick without one counts as 1).
+    pub tick_count: i64,
+}
+
+/// What one tick adds to the segment's tick volume: its `tick_count`, or 1 when missing / below 1.
+pub fn tick_weight(tick: &Tick) -> i64 {
+    tick.tick_count.filter(|n| *n >= 1).unwrap_or(1)
 }
 
 /// Every timeframe this engine buckets (lib::TIMEFRAMES) starts on a whole UTC minute
@@ -64,6 +71,8 @@ struct TickEntry {
     candle_high: Decimal,
     candle_low: Decimal,
     candle_minute: i64,
+    // Sum of `tick_weight` over the ticks of the current segment (reset with it).
+    candle_ticks: i64,
     // Segments completed by a minute rollover but not yet taken by a flush, oldest first.
     // In practice at most one (the flush cadence is ~1s, a rollover happens once a minute),
     // and drained on every take, so this never grows.
@@ -153,6 +162,7 @@ impl TickCache {
                     if tick.bid < e.candle_low {
                         e.candle_low = tick.bid;
                     }
+                    e.candle_ticks = e.candle_ticks.saturating_add(tick_weight(tick));
                 } else {
                     if e.candle_dirty && minute > e.candle_minute {
                         e.closed_segments.push(CandleSample {
@@ -161,8 +171,10 @@ impl TickCache {
                             open: e.candle_open,
                             high: e.candle_high,
                             low: e.candle_low,
+                            tick_count: e.candle_ticks,
                         });
                     }
+                    e.candle_ticks = tick_weight(tick);
                     e.candle_open = tick.bid;
                     e.candle_high = tick.bid;
                     e.candle_low = tick.bid;
@@ -191,6 +203,7 @@ impl TickCache {
                         candle_high: tick.bid,
                         candle_low: tick.bid,
                         candle_minute: minute,
+                        candle_ticks: tick_weight(tick),
                         closed_segments: Vec::new(),
                         live_price_dirty: true,
                         candle_dirty: true,
@@ -398,7 +411,7 @@ impl TickCache {
         for e in guard.values_mut().filter(|e| e.candle_dirty) {
             e.candle_dirty = false;
             out.append(&mut e.closed_segments);
-            out.push(CandleSample { tick: e.tick.clone(), at: e.at, open: e.candle_open, high: e.candle_high, low: e.candle_low });
+            out.push(CandleSample { tick: e.tick.clone(), at: e.at, open: e.candle_open, high: e.candle_high, low: e.candle_low, tick_count: e.candle_ticks });
         }
         out
     }
@@ -429,7 +442,36 @@ mod tests {
     use chrono::TimeZone;
 
     fn tick(symbol: &str) -> Tick {
-        Tick { symbol: symbol.to_string(), bid: rust_decimal::Decimal::ONE, ask: rust_decimal::Decimal::TWO, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() }
+        Tick { symbol: symbol.to_string(), bid: rust_decimal::Decimal::ONE, ask: rust_decimal::Decimal::TWO, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new(), tick_count: None }
+    }
+
+    fn counted(symbol: &str, n: Option<i64>) -> Tick {
+        let mut t = tick(symbol);
+        t.tick_count = n;
+        t
+    }
+
+    /// Tick volume: a segment's volume is the SUM of its ticks' tick_count; a missing, 0 or negative count is 1; a minute
+    /// rollover splits the sum per minute; a take resets it.
+    #[test]
+    fn tick_count_is_summed_per_symbol_segment_and_missing_counts_as_one() {
+        use chrono::TimeZone;
+        let cache = TickCache::new();
+        let m0 = Utc.with_ymd_and_hms(2026, 11, 5, 12, 0, 5).unwrap();
+        cache.set(&counted("XAUUSD", Some(7)), m0);
+        cache.set(&counted("XAUUSD", None), m0 + Duration::seconds(1));
+        cache.set(&counted("XAUUSD", Some(0)), m0 + Duration::seconds(2));
+        cache.set(&counted("XAUUSD", Some(-3)), m0 + Duration::seconds(3));
+        cache.set(&counted("XAUUSD", Some(5)), m0 + Duration::seconds(4));
+        cache.set(&counted("EURUSD", Some(2)), m0);
+        let mut samples = cache.take_dirty_candles();
+        samples.sort_by(|a, b| a.tick.symbol.cmp(&b.tick.symbol));
+        assert_eq!(samples.iter().map(|s| (s.tick.symbol.as_str(), s.tick_count)).collect::<Vec<_>>(), vec![("EURUSD", 2), ("XAUUSD", 7 + 1 + 1 + 1 + 5)]);
+        // the take ended the segment: the next tick starts a fresh sum; a minute rollover splits it
+        cache.set(&counted("XAUUSD", Some(4)), m0 + Duration::seconds(10));
+        cache.set(&counted("XAUUSD", Some(3)), m0 + Duration::seconds(70));
+        let counts: Vec<i64> = cache.take_dirty_candles().iter().map(|s| s.tick_count).collect();
+        assert_eq!(counts, vec![4, 3]);
     }
 
     /// Ingest stores a tick at its tick_ms (the feed's clock, ingest::resolve_tick_time): `latest` gives that time back,

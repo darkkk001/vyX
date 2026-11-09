@@ -203,7 +203,7 @@ async fn upsert_candles_open_replacing(
             high = GREATEST("Candle".high, EXCLUDED.high),
             low = LEAST("Candle".low, EXCLUDED.low),
             close = EXCLUDED.close,
-            "tickVolume" = GREATEST("Candle"."tickVolume", EXCLUDED."tickVolume"),   -- the broker's running total
+            "tickVolume" = "Candle"."tickVolume" + EXCLUDED."tickVolume",   -- a live sample adds its FIX ticks
             "updatedAt" = now()
         "#,
     )
@@ -246,9 +246,14 @@ async fn upsert_candles_open_replacing(
 /// last for a given historical bucket wins," which for real historical
 /// buckets is always the backfill (broker bars beat our aggregates, per
 /// this fix's own name for the rule).
+///
+/// Tick volume (`v` from the history backfill) NEVER overwrites a FIX count: with `before_fix` false the volume is
+/// written only where the stored tickVolume is 0. `before_fix` true (bars older than HISTORY_OVERWRITE_BEFORE, which
+/// predate FIX) takes the larger of stored and sent. Either way a non-zero count is never lowered.
 pub async fn upsert_candles_authoritative_batch(
     tx: &mut sqlx::PgTransaction<'_>,
     updates: &[CandleUpdate],
+    before_fix: bool,
 ) -> Result<(), sqlx::Error> {
     if updates.is_empty() {
         return Ok(());
@@ -273,8 +278,54 @@ pub async fn upsert_candles_authoritative_batch(
             high = EXCLUDED.high,
             low = EXCLUDED.low,
             close = EXCLUDED.close,
-            "tickVolume" = GREATEST("Candle"."tickVolume", EXCLUDED."tickVolume"),   -- 0 from an older EA keeps the stored value
+            "tickVolume" = CASE WHEN "Candle"."tickVolume" = 0 OR $9 THEN GREATEST("Candle"."tickVolume", EXCLUDED."tickVolume")
+                                ELSE "Candle"."tickVolume" END,
             "updatedAt" = now()
+        "#,
+    )
+    .bind(&symbols)
+    .bind(&timeframes)
+    .bind(&bucket_starts)
+    .bind(&opens)
+    .bind(&highs)
+    .bind(&lows)
+    .bind(&closes)
+    .bind(&tick_volumes)
+    .bind(before_fix)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// The gap-only half of the history overwrite guard (`HISTORY_OVERWRITE_BEFORE`,
+/// see `history_guard`): bars at or after the cutoff are the live feed's own
+/// (cTrader FIX) and a backfill from another venue must never replace them.
+/// Same UNNEST shape as `upsert_candles_authoritative_batch`, but `ON CONFLICT
+/// DO NOTHING`: a missing bucket is created, an existing row is left exactly
+/// as it is. Returns how many rows were actually inserted (the rest existed).
+pub async fn insert_candles_if_missing_batch(
+    tx: &mut sqlx::PgTransaction<'_>,
+    updates: &[CandleUpdate],
+) -> Result<u64, sqlx::Error> {
+    if updates.is_empty() {
+        return Ok(0);
+    }
+    let symbols: Vec<&str> = updates.iter().map(|u| u.symbol.as_str()).collect();
+    let timeframes: Vec<&str> = updates.iter().map(|u| timeframe_to_str(u.timeframe)).collect();
+    let bucket_starts: Vec<chrono::DateTime<chrono::Utc>> = updates.iter().map(|u| u.bucket_start).collect();
+    let opens: Vec<Decimal> = updates.iter().map(|u| u.open).collect();
+    let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
+    let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
+    let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
+    let tick_volumes: Vec<i64> = updates.iter().map(|u| u.tick_volume.max(0)).collect();
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "tickVolume", "updatedAt")
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, tick_volume, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::bigint[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close, tick_volume)
+        ON CONFLICT (symbol, timeframe, "bucketStart") DO NOTHING
         "#,
     )
     .bind(&symbols)
@@ -287,7 +338,7 @@ pub async fn upsert_candles_authoritative_batch(
     .bind(&tick_volumes)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Synchronous current bid/ask read — the path `docs/market-data.md` §2's
@@ -537,6 +588,41 @@ mod tests {
         (counter.load(std::sync::atomic::Ordering::SeqCst), output)
     }
 
+    /// History overwrite guard: insert-if-missing creates a missing bucket and leaves an existing row untouched;
+    /// the authoritative batch still replaces. Needs MARKET_DATA_TEST_LOCAL_URL (scratch Postgres), else skips.
+    #[tokio::test]
+    async fn insert_if_missing_never_touches_an_existing_row() {
+        let Ok(url) = std::env::var("MARKET_DATA_TEST_LOCAL_URL") else {
+            eprintln!("skipping: MARKET_DATA_TEST_LOCAL_URL not set");
+            return;
+        };
+        let pool = PgPool::connect(&url).await.expect("connect");
+        let symbol = format!("TESTDB_GUARD{}", chrono::Utc::now().timestamp_millis() % 1_000_000);
+        let t0 = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 8, 11, 21, 0, 0).unwrap();
+        let t1 = t0 + chrono::Duration::days(1);
+        let mk = |t, v: i64| CandleUpdate {
+            symbol: symbol.clone(),
+            timeframe: Timeframe::D1,
+            bucket_start: t,
+            open: Decimal::from(v),
+            high: Decimal::from(v + 1),
+            low: Decimal::from(v - 1),
+            close: Decimal::from(v),
+            open_authoritative: true, tick_volume: 0,
+        };
+        let mut tx = pool.begin().await.unwrap();
+        upsert_candles_authoritative_batch(&mut tx, &[mk(t0, 100)], false).await.unwrap();
+        let inserted = insert_candles_if_missing_batch(&mut tx, &[mk(t0, 500), mk(t1, 500)]).await.unwrap();
+        assert_eq!(inserted, 1, "only the missing bucket is created");
+        let rows: Vec<(chrono::DateTime<chrono::Utc>, Decimal)> =
+            sqlx::query_as(r#"SELECT "bucketStart", open FROM "Candle" WHERE symbol = $1 ORDER BY "bucketStart""#).bind(&symbol).fetch_all(&mut *tx).await.unwrap();
+        assert_eq!(rows, vec![(t0, Decimal::from(100)), (t1, Decimal::from(500))]);
+        upsert_candles_authoritative_batch(&mut tx, &[mk(t0, 700)], false).await.unwrap();
+        let open: Decimal = sqlx::query_scalar(r#"SELECT open FROM "Candle" WHERE symbol = $1 AND "bucketStart" = $2"#).bind(&symbol).bind(t0).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(open, Decimal::from(700), "the authoritative batch still replaces");
+        let _ = tx.rollback().await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn batched_upserts_are_exactly_one_query_each_regardless_of_row_count() {
         let Ok(database_url) = std::env::var("DATABASE_URL") else {
@@ -583,7 +669,7 @@ mod tests {
         result.expect("upsert_candles_batch (authoritative) should succeed");
         assert_eq!(n, 1, "an all-authoritative batch must issue exactly one query, got {n}");
 
-        let (n, result) = count_sqlx_queries(upsert_candles_authoritative_batch(&mut tx, &candle_updates)).await;
+        let (n, result) = count_sqlx_queries(upsert_candles_authoritative_batch(&mut tx, &candle_updates, false)).await;
         result.expect("upsert_candles_authoritative_batch should succeed");
         assert_eq!(n, 1, "upsert_candles_authoritative_batch must issue exactly one query for 50 rows, got {n}");
 

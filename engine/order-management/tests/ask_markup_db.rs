@@ -141,12 +141,15 @@ async fn run<T: Send + 'static>(w: &World, f: impl std::future::Future<Output = 
     }
 }
 
-const SL: Decimal = dec!(4299.25);
+// SYMMETRIC MARKUP (2026-10-29): the account's ask carries HALF the markup, so an SL that has to sit
+// between the raw ask (4299.13) and the account ask is 4299.20 now, not 4299.25 -- a 1.5-pip markup
+// puts the account ask at ceil(4299.13 + 0.075) = 4299.21, where it used to be 4299.28.
+const SL: Decimal = dec!(4299.20);
 
 #[tokio::test]
 async fn a_sell_sl_between_the_raw_and_the_account_ask_fires_at_the_account_ask_in_shadow_and_live() {
     let Some(pool) = pool().await else { return };
-    // engine off, group markup 1.5 pips (Futurix Standard's shape): account ask = 4299.13 + 0.15 = 4299.28 >= SL 4299.25
+    // engine off, group markup 1.5 pips (Futurix Standard's shape): account ask = ceil(4299.13 + 0.075) = 4299.21 >= SL 4299.20
     let w = world(&pool, &Pricing { group_markup: Some(dec!(1.5)), broker_markup: dec!(0.5), ..Default::default() }, dec!(100000), Some(SL)).await;
     let (w_pool, w_acct) = (w.pool.clone(), w.account.clone());
     let (shadow, live) = run(&w, async move {
@@ -154,9 +157,9 @@ async fn a_sell_sl_between_the_raw_and_the_account_ask_fires_at_the_account_ask_
         assert_eq!(positions[0].ask_rule, Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }), "the group's markup wins over the broker's");
         World { pool: w_pool.clone(), broker: String::new(), account: w_acct.clone(), symbol: String::new(), symbol_name: String::new() }.shadow_then_live().await
     }).await;
-    // P&L = (4290.00 - 4299.28) x 1 x 10 = -92.80
-    assert_eq!(shadow, vec![(Kind::StopLoss, dec!(4299.28), dec!(-92.80))]);
-    assert_eq!(live, vec![(dec!(4299.28), dec!(-92.80))], "live closes at the same price and P&L as the shadow decided");
+    // P&L = (4290.00 - 4299.21) x 1 x 10 = -92.10
+    assert_eq!(shadow, vec![(Kind::StopLoss, dec!(4299.21), dec!(-92.10))]);
+    assert_eq!(live, vec![(dec!(4299.21), dec!(-92.10))], "live closes at the same price and P&L as the shadow decided");
 }
 
 #[tokio::test]
@@ -164,14 +167,14 @@ async fn a_sell_is_stopped_out_on_its_account_ask_when_the_raw_ask_would_leave_i
     let Some(pool) = pool().await else { return };
     // balance 307, SELL 10 x 4290 at leverage 100:
     //   raw     ask 4299.13: equity 307 - 91.30 = 215.70 / margin 429.913 = 50.17 %  (> 50: no stop-out)
-    //   account ask 4299.28: equity 307 - 92.80 = 214.20 / margin 429.928 = 49.82 %  (<= 50: stop-out)
+    //   account ask 4299.21: equity 307 - 92.10 = 214.90 / margin 429.921 = 49.99 %  (<= 50: stop-out)
     let w = world(&pool, &Pricing { group_markup: Some(dec!(1.5)), ..Default::default() }, dec!(307), None).await;
     let (w_pool, w_acct) = (w.pool.clone(), w.account.clone());
     let (shadow, live) = run(&w, async move {
         World { pool: w_pool, broker: String::new(), account: w_acct, symbol: String::new(), symbol_name: String::new() }.shadow_then_live().await
     }).await;
-    assert_eq!(shadow, vec![(Kind::StopOut, dec!(4299.28), dec!(-92.80))]);
-    assert_eq!(live, vec![(dec!(4299.28), dec!(-92.80))]);
+    assert_eq!(shadow, vec![(Kind::StopOut, dec!(4299.21), dec!(-92.10))]);
+    assert_eq!(live, vec![(dec!(4299.21), dec!(-92.10))]);
 }
 
 #[tokio::test]
@@ -184,26 +187,27 @@ async fn the_coverage_account_stays_raw_whatever_is_configured() {
         assert_eq!(positions[0].ask_rule, Some(AskRule::Markup { markup_pips: Decimal::ZERO, digits: 2 }));
         World { pool: w_pool, broker: String::new(), account: w_acct, symbol: String::new(), symbol_name: String::new() }.shadow_then_live().await
     }).await;
-    assert!(shadow.is_empty() && live.is_empty(), "raw ask 4299.13 is below the SL 4299.25: nothing fires");
+    assert!(shadow.is_empty() && live.is_empty(), "raw ask 4299.13 is below the SL 4299.20: nothing fires");
 }
 
 #[tokio::test]
 async fn pricing_engine_target_mode_and_the_account_override_resolve_like_the_web() {
     let Some(pool) = pool().await else { return };
-    // engine on, group target 3 pips over a 1.7-pip raw spread -> +1.3 pips -> 4299.26 >= SL: fires at 4299.26
-    let w = world(&pool, &Pricing { engine: true, group_target: Some(dec!(3)), group_markup: Some(dec!(9)), ..Default::default() }, dec!(100000), Some(SL)).await;
+    // engine on, group target 4 pips over a 1.7-pip raw spread -> +2.3 pips of spread -> HALF (0.115) each side,
+    // so the account ask is ceil(4299.13 + 0.115) = 4299.25 >= SL 4299.20: fires at 4299.25.
+    let w = world(&pool, &Pricing { engine: true, group_target: Some(dec!(4)), group_markup: Some(dec!(9)), ..Default::default() }, dec!(100000), Some(SL)).await;
     let (w_pool, w_acct) = (w.pool.clone(), w.account.clone());
     let (shadow, live) = run(&w, async move {
         let positions = order_management::book::open_positions_with_market(&w_pool, &w_acct).await.unwrap();
-        assert_eq!(positions[0].ask_rule, Some(AskRule::Target { target_pips: dec!(3), fallback_pips: Some(dec!(9)), digits: 2 }));
+        assert_eq!(positions[0].ask_rule, Some(AskRule::Target { target_pips: dec!(4), fallback_pips: Some(dec!(9)), digits: 2 }));
         World { pool: w_pool, broker: String::new(), account: w_acct, symbol: String::new(), symbol_name: String::new() }.shadow_then_live().await
     }).await;
-    // (4290.00 - 4299.26) x 10 = -92.60
-    assert_eq!(shadow, vec![(Kind::StopLoss, dec!(4299.26), dec!(-92.60))]);
-    assert_eq!(live, vec![(dec!(4299.26), dec!(-92.60))]);
+    // (4290.00 - 4299.25) x 10 = -92.50
+    assert_eq!(shadow, vec![(Kind::StopLoss, dec!(4299.25), dec!(-92.50))]);
+    assert_eq!(live, vec![(dec!(4299.25), dec!(-92.50))]);
 
-    // an AccountSymbolConfig markup of 0.2 pips beats the group target: 4299.15 < SL, nothing fires
-    let w = world(&pool, &Pricing { engine: true, group_target: Some(dec!(3)), account_symbol_markup: Some(dec!(0.2)), ..Default::default() }, dec!(100000), Some(SL)).await;
+    // an AccountSymbolConfig markup of 0.2 pips beats the group target: ceil(4299.13 + 0.01) = 4299.14 < SL, nothing fires
+    let w = world(&pool, &Pricing { engine: true, group_target: Some(dec!(4)), account_symbol_markup: Some(dec!(0.2)), ..Default::default() }, dec!(100000), Some(SL)).await;
     let (w_pool, w_acct) = (w.pool.clone(), w.account.clone());
     let (shadow, live) = run(&w, async move {
         let positions = order_management::book::open_positions_with_market(&w_pool, &w_acct).await.unwrap();
@@ -226,8 +230,150 @@ async fn the_margin_trigger_book_carries_the_rule_and_values_the_sell_at_the_acc
         let t: protocol::Tick = serde_json::from_value(serde_json::json!({ "symbol": w_sym, "bid": "4298.96", "ask": "4299.13" })).unwrap();
         cache.set(&t, chrono::Utc::now());
         let (equity, used) = order_management::margin_watch::measure(acct, &cache);
-        // at the account ask 4299.28: equity 307 - 92.80, margin 10 x 4299.28 / 100
-        assert_eq!(equity, dec!(214.20));
-        assert_eq!(used, dec!(429.928));
+        // at the account ask 4299.21: equity 307 - 92.10, margin 10 x 4299.21 / 100
+        assert_eq!(equity, dec!(214.90));
+        assert_eq!(used, dec!(429.921));
     }).await;
+}
+
+// ── FLIP L2 (2026-11-02): the FILL path resolves the same rule as the QUOTING path ──────────────
+//
+// engine/order-management/src/pricing.rs used to read BrokerSymbol.spreadMarkup alone and widen only
+// the ask, so at ENGINE_ORDER_MANAGEMENT=on a group / account override and every target-spread rule
+// vanished from the fill, and a SELL filled at the raw bid. `db::get_ask_levels` + `ask_markup::resolve`
+// now resolve it, and this asserts the two resolvers agree ROW FOR ROW with the cached one the quoting
+// path uses (`PricingSnapshot::rule`) across every pricing shape -- a markup, a group override, a
+// per-account override, target mode, and a coverage account.
+
+/// Every shape, as (label, pricing, expected account bid, expected account ask) off raw 4298.96 / 4299.13
+/// (digits 2, pip 0.1, raw spread 1.7 pips). Half the markup each side, rounded AWAY from the client.
+/// The same four numbers the web pins in tests/pentest/markup-leak.test.ts.
+fn shapes() -> Vec<(&'static str, Pricing, Decimal, Decimal)> {
+    vec![
+        ("broker 1.5 pips", Pricing { broker_markup: dec!(1.5), ..Default::default() }, dec!(4298.88), dec!(4299.21)),
+        ("group 2 pips over a broker default", Pricing { broker_markup: dec!(1.5), group_markup: Some(dec!(2)), ..Default::default() }, dec!(4298.86), dec!(4299.23)),
+        (
+            "pricing engine: a per-account override beats the group",
+            Pricing { engine: true, broker_markup: dec!(1.5), group_markup: Some(dec!(2)), account_symbol_markup: Some(dec!(0.7)), ..Default::default() },
+            dec!(4298.92),
+            dec!(4299.17),
+        ),
+        (
+            "pricing engine: group target 5 pips over a 1.7-pip raw spread",
+            Pricing { engine: true, broker_markup: dec!(1.5), group_target: Some(dec!(5)), ..Default::default() },
+            dec!(4298.79),
+            dec!(4299.30),
+        ),
+        ("a coverage group prices raw", Pricing { coverage_group: true, broker_markup: dec!(3), ..Default::default() }, dec!(4298.96), dec!(4299.13)),
+    ]
+}
+
+#[tokio::test]
+async fn the_fill_path_resolves_the_same_rule_as_the_quoting_path_for_every_shape() {
+    let Some(pool) = pool().await else { return };
+    for (label, pr, want_bid, want_ask) in shapes() {
+        let w = world(&pool, &pr, dec!(100000), None).await;
+        let (w_pool, broker, account, symbol, symbol_name) =
+            (w.pool.clone(), w.broker.clone(), w.account.clone(), w.symbol.clone(), w.symbol_name.clone());
+        run(&w, async move {
+            // what the FILL path now resolves (one fresh read, no cache)
+            let levels = order_management::db::get_ask_levels(&w_pool, &broker, &account, &symbol_name)
+                .await
+                .unwrap()
+                .expect("the Symbol row exists");
+            let fill_rule = market_data::ask_markup::resolve(&levels);
+
+            // what the QUOTING path resolves (the cached snapshot)
+            let group: (Option<String>,) = sqlx::query_as(r#"SELECT "groupId" FROM "Account" WHERE id = $1"#)
+                .bind(&account)
+                .fetch_one(&w_pool)
+                .await
+                .unwrap();
+            let mut conn = w_pool.acquire().await.unwrap();
+            let snap = market_data::ask_markup::PricingSnapshot::load(&mut conn, None).await.unwrap();
+            let quote_rule = snap.rule(market_data::ask_markup::RuleKey {
+                account_id: &account,
+                broker_id: &broker,
+                group_id: group.0.as_deref(),
+                symbol_id: &symbol,
+                digits: 2,
+            });
+
+            assert_eq!(fill_rule, quote_rule, "{label}: the fill and the quote must resolve the SAME rule");
+
+            // and the fill prices off it symmetrically, both sides, mid preserved
+            let raw = protocol::Tick {
+                symbol: symbol_name.clone(),
+                bid: dec!(4298.96),
+                ask: dec!(4299.13),
+                t0: None,
+                clock_offset_ms: None,
+                rtt_ms: None,
+                tick_ms: None,
+                broker_offset_sec: None,
+                bars: Vec::new(), tick_count: None,
+            };
+            let quoted = order_management::pricing::quoted_tick(&raw, fill_rule.as_ref());
+            assert_eq!((quoted.bid, quoted.ask), (want_bid, want_ask), "{label}: account bid / ask");
+            assert!(quoted.bid <= raw.bid && quoted.ask >= raw.ask, "{label}: a markup may never tighten the book");
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn an_unknown_symbol_leaves_the_fill_raw_rather_than_failing() {
+    let Some(pool) = pool().await else { return };
+    let levels = order_management::db::get_ask_levels(&pool, "no-such-broker", "no-such-account", "ZZ_NO_SUCH_SYMBOL").await.unwrap();
+    assert!(levels.is_none(), "no Symbol row = None, the long-standing benign fallback");
+}
+
+/// The per-tick pending scan reads each resting order's pricing levels in its OWN query (the five
+/// config LEFT JOINs in `db::get_pending_orders_for_symbol`), so the entry test and the fill price
+/// off one resolved rule without a read per order. This exercises that SQL against a real database:
+/// the Rust-side behaviour is unit-tested in pending_orders.rs, but the joins are only ever checked
+/// here, and they span the engine's own `orders` table and the five Prisma config tables.
+#[tokio::test]
+async fn the_pending_scan_carries_each_orders_resolved_rule() {
+    let Some(pool) = pool().await else { return };
+    for (label, pr, want_bid, want_ask) in shapes() {
+        let w = world(&pool, &pr, dec!(100000), None).await;
+        let (w_pool, account, symbol_name) = (w.pool.clone(), w.account.clone(), w.symbol_name.clone());
+        run(&w, async move {
+            // a resting BUY LIMIT on the engine's own order table, for this account and symbol
+            let id = format!("pnd-{}", Uuid::new_v4().simple());
+            sqlx::query(
+                r#"INSERT INTO orders (id, broker_id, account_id, symbol, side, type, status, volume, requested_price)
+                   SELECT $1, a."brokerId", a.id, $2, 'BUY'::order_side, 'LIMIT'::order_type, 'ACCEPTED'::order_status, 1, 4290.00
+                     FROM "Account" a WHERE a.id = $3"#,
+            )
+            .bind(&id)
+            .bind(&symbol_name)
+            .bind(&account)
+            .execute(&w_pool)
+            .await
+            .unwrap();
+
+            let pending = order_management::db::get_pending_orders_for_symbol(&w_pool, order_management::db::Book::Legacy, &symbol_name).await.unwrap();
+            let mine = pending.iter().find(|o| o.id == id).expect("the resting order comes back from the scan");
+            let rule = mine.ask_levels.as_ref().and_then(market_data::ask_markup::resolve);
+
+            let raw = protocol::Tick {
+                symbol: symbol_name.clone(),
+                bid: dec!(4298.96),
+                ask: dec!(4299.13),
+                t0: None,
+                clock_offset_ms: None,
+                rtt_ms: None,
+                tick_ms: None,
+                broker_offset_sec: None,
+                bars: Vec::new(), tick_count: None,
+            };
+            let quoted = order_management::pricing::quoted_tick(&raw, rule.as_ref());
+            assert_eq!((quoted.bid, quoted.ask), (want_bid, want_ask), "{label}: the scan's own levels must resolve to the same quote as the fill path");
+
+            sqlx::query("DELETE FROM orders WHERE id = $1").bind(&id).execute(&w_pool).await.unwrap();
+        })
+        .await;
+    }
 }

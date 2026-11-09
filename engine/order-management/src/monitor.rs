@@ -188,6 +188,15 @@ async fn apply_close(
                 book::CloseReason::StopLoss => (crate::shadow::Kind::StopLoss, None),
                 book::CloseReason::TakeProfit => (crate::shadow::Kind::TakeProfit, None),
                 book::CloseReason::StopOut { margin_level, .. } => (crate::shadow::Kind::StopOut, Some(margin_level)),
+                // UNREACHABLE BY CONSTRUCTION, and deliberately not a panic. A client close is not a risk
+                // decision: it arrives on the engine's HTTP route, which always runs Live, and this monitor
+                // only ever constructs the three reasons above. There is no shadow decision to record for
+                // something the engine did not decide -- so nothing is written and the pass moves on. If
+                // this ever logs, a caller has routed a manual close through the risk monitor by mistake.
+                book::CloseReason::Client => {
+                    tracing::warn!(account_id, position_id = %position.id, "shadow: a client close reached the risk monitor; not recorded");
+                    return Ok(Applied::Lost);
+                }
             };
             recorder
                 .record(crate::shadow::Decision {
@@ -232,6 +241,7 @@ fn sl_tp_trigger(p: &db::OpenPositionWithMarket) -> Option<SlTpReason> {
     let crossed = |level: Decimal, is_below_trigger: bool| {
         if is_below_trigger { close_price <= level } else { close_price >= level }
     };
+    // price legs first, exactly as the web's slTpTrigger (lib/risk-monitor.ts), then the amount legs
     match p.side {
         protocol::OrderSide::Buy => {
             if p.sl_price.is_some_and(|sl| crossed(sl, true)) {
@@ -250,7 +260,34 @@ fn sl_tp_trigger(p: &db::OpenPositionWithMarket) -> Option<SlTpReason> {
             }
         }
     }
+    amount_trigger(p, close_price)
+}
+
+/// Amount SL / TP (owner 2026-11-04; web lib/amount-sltp.ts amountTrigger): the GROSS floating P/L in the account currency,
+/// (close - open) x contract size x lots x the quote -> account rate (no swap or commission, NOT rounded: the same figure the
+/// web compares), against the amounts. P/L <= -slAmount closes as a stop loss (checked first), P/L >= +tpAmount as a take profit.
+fn amount_trigger(p: &db::OpenPositionWithMarket, close_price: Decimal) -> Option<SlTpReason> {
+    if p.sl_amount.is_none() && p.tp_amount.is_none() {
+        return None;
+    }
+    let pnl = floating_pnl(p.side, p.open_price, close_price, p.contract_size, p.volume) * p.fx_rate;
+    if p.sl_amount.is_some_and(|sl| pnl <= -sl) {
+        return Some(SlTpReason::StopLoss);
+    }
+    if p.tp_amount.is_some_and(|tp| pnl >= tp) {
+        return Some(SlTpReason::TakeProfit);
+    }
     None
+}
+
+/// The close note, as the web's slTpNote: which leg, and whether it was an amount (a leg with no price set).
+fn sl_tp_note(p: &db::OpenPositionWithMarket, reason: &SlTpReason) -> &'static str {
+    match reason {
+        SlTpReason::StopLoss if p.sl_amount.is_some() && p.sl_price.is_none() => "Stop loss amount hit (automatic)",
+        SlTpReason::StopLoss => "Stop loss hit (automatic)",
+        SlTpReason::TakeProfit if p.tp_amount.is_some() && p.tp_price.is_none() => "Take profit amount hit (automatic)",
+        SlTpReason::TakeProfit => "Take profit hit (automatic)",
+    }
 }
 
 /// Closes every position in `state` whose SL/TP has been crossed —
@@ -273,7 +310,7 @@ async fn close_sl_tp_triggered(
     not_owner: &mut bool,
 ) -> Result<Vec<(String, &'static str)>, sqlx::Error> {
     let mut closed = Vec::new();
-    let triggered: Vec<(String, SlTpReason, Decimal, Decimal)> = state
+    let triggered: Vec<(String, SlTpReason, Decimal, Decimal, &'static str)> = state
         .positions
         .iter()
         .filter_map(|p| {
@@ -282,7 +319,8 @@ async fn close_sl_tp_triggered(
             let close_price = position_close_price(p, bid, ask);
             // booked exactly as the web books it: quote P&L x rate, 4 dp when converted (fx.rs convert_pnl)
             let pnl = crate::fx::convert_pnl(floating_pnl(p.side, p.open_price, close_price, p.contract_size, p.volume), p.fx_rate);
-            Some((p.id.clone(), reason, close_price, pnl))
+            let note = sl_tp_note(p, &reason);
+            Some((p.id.clone(), reason, close_price, pnl, note))
         })
         .collect();
 
@@ -290,14 +328,10 @@ async fn close_sl_tp_triggered(
     // order lib/risk-monitor.ts uses. Several SL/TP closes in one pass interact through negative-balance
     // protection and credit, so the order can change the final balance; this used to walk the list backwards.
     // Positions are taken out by id, so an earlier removal cannot shift a later one.
-    for (id, reason, close_price, pnl) in triggered {
+    for (id, reason, close_price, pnl, note) in triggered {
         let Some(pos_idx) = state.positions.iter().position(|p| p.id == id) else { continue };
         let position = state.positions.remove(pos_idx);
 
-        let note = match reason {
-            SlTpReason::StopLoss => "Stop loss hit (automatic)",
-            SlTpReason::TakeProfit => "Take profit hit (automatic)",
-        };
         let why = match reason {
             SlTpReason::StopLoss => book::CloseReason::StopLoss,
             SlTpReason::TakeProfit => book::CloseReason::TakeProfit,
@@ -1160,8 +1194,9 @@ mod tests {
             bid: Some(bid),
             ask: Some(ask),
             sl_price,
-            tp_price,
+            tp_price, sl_amount: None, tp_amount: None,
             fx_rate: Decimal::ONE,
+            rate_missing: false,
             hedged_margin_pct: dec!(200),
             ask_rule: None,
             quote: None,
@@ -1207,6 +1242,83 @@ mod tests {
         p.bid = None;
         p.ask = None;
         assert!(sl_tp_trigger(&p).is_none());
+    }
+
+    // ---- amount SL / TP: mirrors lib/amount-sltp.test.ts and lib/amount-sltp-money.test.ts (1 lot x 100 contract: a 1.00 move is 100.00)
+
+    fn amt(side: OrderSide, open: &str, sl: Option<&str>, tp: Option<&str>) -> db::OpenPositionWithMarket {
+        let mut p = position(side, dec!(1), dec!(1), None, None);
+        p.open_price = open.parse().unwrap();
+        p.contract_size = dec!(100);
+        p.sl_amount = sl.map(|s| s.parse().unwrap());
+        p.tp_amount = tp.map(|s| s.parse().unwrap());
+        p
+    }
+
+    /// the position closes at bid (BUY) / ask (SELL): feed one price on both sides
+    fn at(mut p: db::OpenPositionWithMarket, price: &str) -> db::OpenPositionWithMarket {
+        p.bid = Some(price.parse().unwrap());
+        p.ask = Some(price.parse().unwrap());
+        p
+    }
+
+    fn reason(p: &db::OpenPositionWithMarket) -> Option<&'static str> {
+        sl_tp_trigger(p).map(|r| match r {
+            SlTpReason::StopLoss => "stop_loss",
+            SlTpReason::TakeProfit => "take_profit",
+        })
+    }
+
+    #[test]
+    fn amount_buy_and_sell_both_directions_with_the_exact_cent_boundaries() {
+        let buy = || amt(OrderSide::Buy, "100", Some("100"), Some("200"));
+        assert_eq!(reason(&at(buy(), "99.01")), None);
+        assert_eq!(reason(&at(buy(), "99")), Some("stop_loss"), "P/L = -100.00 = -slAmount closes");
+        assert_eq!(reason(&at(buy(), "101.99")), None);
+        assert_eq!(reason(&at(buy(), "102")), Some("take_profit"), "P/L = +200.00 = +tpAmount closes");
+        let sell = || amt(OrderSide::Sell, "100", Some("100"), Some("200"));
+        assert_eq!(reason(&at(sell(), "100.99")), None);
+        assert_eq!(reason(&at(sell(), "101")), Some("stop_loss"));
+        assert_eq!(reason(&at(sell(), "98.01")), None);
+        assert_eq!(reason(&at(sell(), "98")), Some("take_profit"));
+        // neither leg set: never
+        assert_eq!(reason(&at(amt(OrderSide::Buy, "100", None, None), "1")), None);
+        // SL first when both are met
+        assert_eq!(reason(&at(amt(OrderSide::Buy, "100", Some("1"), Some("1")), "99")), Some("stop_loss"));
+    }
+
+    #[test]
+    fn amount_uses_the_account_currency_rate_and_does_not_round_the_pl() {
+        // JPY-quoted on a USD account: -100 quote-currency at rate 0.008 is -0.80 account currency (the web refuses an SL amount of 0.80 at order time because it is already reached)
+        let mut p = at(amt(OrderSide::Buy, "150", Some("0.80"), None), "149");
+        p.contract_size = dec!(100);
+        p.fx_rate = dec!(0.008);
+        assert_eq!(reason(&p), Some("stop_loss"), "-0.80 = -slAmount");
+        p.sl_amount = Some(dec!(0.81));
+        assert_eq!(reason(&p), None, "-0.80 has not fallen to -0.81 yet");
+        p.sl_amount = Some(dec!(0.79));
+        assert_eq!(reason(&p), Some("stop_loss"), "-0.80 is already past -0.79");
+        // not rounded: a P/L of -0.7999 does not reach an 0.80 stop
+        let mut q = at(amt(OrderSide::Buy, "150", Some("0.80"), None), "149");
+        q.fx_rate = dec!(0.007999);
+        assert_eq!(reason(&q), None);
+    }
+
+    #[test]
+    fn amount_price_legs_come_first_and_the_note_names_the_unit() {
+        // a price SL on the same position is judged first (the web order)
+        let mut p = at(amt(OrderSide::Buy, "100", None, Some("1")), "99");
+        p.sl_price = Some(dec!(99.5));
+        assert_eq!(reason(&p), Some("stop_loss"));
+        assert_eq!(sl_tp_note(&p, &SlTpReason::StopLoss), "Stop loss hit (automatic)", "a price leg keeps the old note");
+        let a = amt(OrderSide::Buy, "100", Some("100"), Some("200"));
+        assert_eq!(sl_tp_note(&a, &SlTpReason::StopLoss), "Stop loss amount hit (automatic)");
+        assert_eq!(sl_tp_note(&a, &SlTpReason::TakeProfit), "Take profit amount hit (automatic)");
+        // unpriced: never
+        let mut u = at(a, "99");
+        u.bid = None;
+        u.ask = None;
+        assert_eq!(reason(&u), None);
     }
 }
 
@@ -1258,7 +1370,7 @@ mod shadow_last_position_tests {
     fn pos(id: &str) -> OpenPositionWithMarket {
         OpenPositionWithMarket {
             id: id.into(), symbol: "XAUUSD".into(), side: protocol::OrderSide::Buy, volume: dec!(1), open_price: dec!(4000), contract_size: dec!(100),
-            bid: None, ask: None, sl_price: None, tp_price: None, fx_rate: Decimal::ONE, hedged_margin_pct: dec!(200), ask_rule: None, quote: None,
+            bid: None, ask: None, sl_price: None, tp_price: None, sl_amount: None, tp_amount: None, fx_rate: Decimal::ONE, rate_missing: false, hedged_margin_pct: dec!(200), ask_rule: None, quote: None,
         }
     }
 

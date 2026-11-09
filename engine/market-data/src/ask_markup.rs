@@ -99,16 +99,20 @@ fn price_floor(digits: i32) -> Decimal {
     Decimal::new(1, digits.max(0) as u32)
 }
 
-/// Half of this rule's markup in PRICE units -- what EACH side moves under the symmetric (mid-anchored) split.
-/// See lib/ask-markup.ts's module comment for the algebra: because `markup_pips_at` floors the target-mode markup at
-/// zero, `raw_ask + m/2` IS `mid + target/2` and `raw_bid - m/2` IS `mid - target/2`, and a target no wider than the
-/// live raw spread leaves the quote exactly raw. The clamps below restate that as an assertion after rounding.
-pub fn half_markup_price(rule: &AskRule, bid: Decimal, ask: Decimal) -> Decimal {
+/// What each side moves at this tick, in PRICE units: (ask part, bid part). The port of lib/group-pricing.ts `markupSplit`
+/// (owner decision 2026-11-06): the markup in whole points of the last digit, rounded up only if not whole, the ask taking
+/// the larger share, so the total spread is exactly raw + markup. `markup_pips_at` floors a target-mode markup at zero, so
+/// a target no wider than the live raw spread leaves the quote exactly raw.
+pub fn markup_parts(rule: &AskRule, bid: Decimal, ask: Decimal) -> (Decimal, Decimal) {
     let m = markup_pips_at(rule, bid, ask);
     if m.is_zero() {
-        return Decimal::ZERO;
+        return (Decimal::ZERO, Decimal::ZERO);
     }
-    m * pip_size(rule_digits(rule)) / Decimal::TWO
+    let digits = rule_digits(rule);
+    let point = price_floor(digits);
+    let total = (m * pip_size(digits) / point).ceil();
+    let ask_points = (total / Decimal::TWO).ceil();
+    (ask_points * point, (total - ask_points) * point)
 }
 
 /// A price that ALREADY carries this account's markup on its own side of the book.
@@ -132,27 +136,27 @@ impl std::fmt::Display for AccountPrice {
     }
 }
 
-/// The account's ask: raw ask + m/2, rounded AWAY FROM THE CLIENT (up) at the symbol's precision, never tighter than
-/// the raw ask. The price a BUY opens at and a SELL closes at.
+/// The account's ask: raw ask + its share of the markup, at the symbol's precision, never tighter than the raw ask. The
+/// price a BUY opens at and a SELL closes at.
 pub fn account_ask(rule: &AskRule, bid: Decimal, ask: Decimal) -> AccountPrice {
-    let half = half_markup_price(rule, bid, ask);
-    if half.is_zero() {
+    let (part, _) = markup_parts(rule, bid, ask);
+    if part.is_zero() {
         return AccountPrice(ask);
     }
     let digits = rule_digits(rule).max(0) as u32;
-    let out = (ask + half).round_dp_with_strategy(digits, RoundingStrategy::ToPositiveInfinity);
+    let out = (ask + part).round_dp_with_strategy(digits, RoundingStrategy::ToPositiveInfinity);
     AccountPrice(out.max(ask))
 }
 
-/// The account's bid: raw bid - m/2, rounded AWAY FROM THE CLIENT (down) at the symbol's precision, never tighter than
-/// the raw bid, and never at or below zero. The price a SELL opens at and a BUY closes at.
+/// The account's bid: raw bid - its share of the markup, at the symbol's precision, never tighter than the raw bid, and
+/// never at or below zero. The price a SELL opens at and a BUY closes at.
 pub fn account_bid(rule: &AskRule, bid: Decimal, ask: Decimal) -> AccountPrice {
-    let half = half_markup_price(rule, bid, ask);
-    if half.is_zero() {
+    let (_, part) = markup_parts(rule, bid, ask);
+    if part.is_zero() {
         return AccountPrice(bid);
     }
     let d = rule_digits(rule);
-    let out = (bid - half).round_dp_with_strategy(d.max(0) as u32, RoundingStrategy::ToNegativeInfinity);
+    let out = (bid - part).round_dp_with_strategy(d.max(0) as u32, RoundingStrategy::ToNegativeInfinity);
     AccountPrice(out.max(price_floor(d)).min(bid))
 }
 
@@ -406,7 +410,7 @@ mod tests {
     fn every_price_case_of_the_vectors() {
         let v = vectors();
         let cases = v["prices"].as_array().unwrap();
-        assert_eq!(cases.len(), 9, "the contract file changed: re-check the engine against it");
+        assert_eq!(cases.len(), 14, "the contract file changed: re-check the engine against it");
         for c in cases {
             let name = c["name"].as_str().unwrap();
             let digits = c["digits"].as_i64().unwrap() as i32;
@@ -419,8 +423,10 @@ mod tests {
             let (bid, ask) = (dec_opt(&c["bid"]).unwrap(), dec_opt(&c["ask"]).unwrap());
             let e = &c["expected"];
             assert_eq!(s(markup_pips_at(&rule, bid, ask)), e["markupPips"].as_str().unwrap(), "{name}: markupPips");
-            // symmetric markup: half the markup on each side, and a BUY now closes at the account's BID
-            assert_eq!(s(half_markup_price(&rule, bid, ask)), e["halfMarkup"].as_str().unwrap(), "{name}: halfMarkup");
+            // the whole-point split, and a BUY closes at the account's BID
+            let (ask_part, bid_part) = markup_parts(&rule, bid, ask);
+            assert_eq!(s(ask_part), e["askPart"].as_str().unwrap(), "{name}: askPart");
+            assert_eq!(s(bid_part), e["bidPart"].as_str().unwrap(), "{name}: bidPart");
             assert_eq!(s(account_bid(&rule, bid, ask).get()), e["accountBid"].as_str().unwrap(), "{name}: accountBid");
             assert_eq!(s(account_ask(&rule, bid, ask).get()), e["accountAsk"].as_str().unwrap(), "{name}: accountAsk");
             assert_eq!(s(close_price(OrderSide::Buy, bid, ask, &rule).get()), e["buyClose"].as_str().unwrap(), "{name}: buyClose");
@@ -441,15 +447,18 @@ mod tests {
     }
 
     #[test]
-    fn symmetric_split_rounds_away_from_the_client_and_never_crosses() {
-        // XAUUSD, digits 2 (pip 0.1), markup 1.5 pips = 0.15 -> half 0.075, which 2 digits cannot represent:
-        // the bid must round DOWN and the ask UP, so the client never gains the half point.
+    fn whole_point_split_is_exact_and_never_crosses() {
+        // XAUUSD, digits 2 (pip 0.1), markup 1.5 pips = 15 points: ask +8, bid -7, a total of exactly 15.
         let rule = AskRule::Markup { markup_pips: dec!(1.5), digits: 2 };
         let (bid, ask) = (dec!(4298.96), dec!(4299.13));
-        assert_eq!(account_bid(&rule, bid, ask).get(), dec!(4298.88));
+        assert_eq!(account_bid(&rule, bid, ask).get(), dec!(4298.89));
         assert_eq!(account_ask(&rule, bid, ask).get(), dec!(4299.21));
-        // total spread is therefore never tighter than raw + markup
-        assert!(account_ask(&rule, bid, ask).get() - account_bid(&rule, bid, ask).get() >= (ask - bid) + dec!(0.15));
+        assert_eq!(account_ask(&rule, bid, ask).get() - account_bid(&rule, bid, ask).get(), (ask - bid) + dec!(0.15));
+
+        // the case that made Pro price like Standard: 0.1 pip on 5 digits is one point, and costs one point
+        let pro = AskRule::Markup { markup_pips: dec!(0.1), digits: 5 };
+        let (b, a) = (dec!(1.12270), dec!(1.12271));
+        assert_eq!(account_ask(&pro, b, a).get() - account_bid(&pro, b, a).get(), (a - b) + dec!(0.00001));
 
         // a markup wider than the price itself degrades to the smallest quotable price, never zero or negative
         let huge = AskRule::Markup { markup_pips: dec!(600), digits: 2 };
