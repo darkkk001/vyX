@@ -119,6 +119,8 @@ export default function LpRoutingManager() {
 
   /** Saves one field of a rule; a refusal is shown on that rule's row. */
   async function patchRule(id: string, fields: { groupId?: string | null; weight?: string; enabled?: boolean }) {
+    // the row shows the change at once; the reload below puts the server's value back if it was refused
+    setRows((rs) => rs?.map((r) => (r.id === id ? { ...r, ...fields } : r)) ?? rs);
     setSavingId(id);
     setRowErrors((m) => {
       const next = { ...m };
@@ -202,7 +204,9 @@ export default function LpRoutingManager() {
             <Input type="text" inputMode="numeric" mono value={priority} onChange={(e) => setPriority(e.target.value)} className="w-20" />
           </FormField>
           <FormField label="Weight">
-            <Input type="text" inputMode="decimal" mono value={weight} onChange={(e) => setWeight(e.target.value)} className="w-20" />
+            <div className="w-24">
+              <Input type="text" inputMode="decimal" mono value={weight} onChange={(e) => setWeight(e.target.value)} />
+            </div>
           </FormField>
           <FormField label="On">
             <div className="flex h-[38px] items-center">
@@ -245,7 +249,7 @@ export default function LpRoutingManager() {
                       value={row.groupId ?? ""}
                       disabled={busy}
                       onChange={(e) => patchRule(row.id, { groupId: e.target.value || null })}
-                      className="w-40"
+                      className="w-40 min-w-[10rem]"
                       aria-label="Group"
                     >
                       <option value="">All groups</option>
@@ -263,21 +267,23 @@ export default function LpRoutingManager() {
                     {row.liquidityProviderName} <Badge tone="neutral">{row.liquidityProviderStatus}</Badge>
                   </TableCell>
                   <TableCell align="right">
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      mono
-                      value={weightDrafts[row.id] ?? row.weight}
-                      disabled={busy}
-                      onChange={(e) => setWeightDrafts((m) => ({ ...m, [row.id]: e.target.value }))}
-                      onBlur={() => saveWeight(row)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") saveWeight(row);
-                        if (e.key === "Escape") setWeightDrafts((m) => ({ ...m, [row.id]: row.weight }));
-                      }}
-                      className="w-20 text-right"
-                      aria-label="Weight"
-                    />
+                    <div className="ml-auto w-24">
+                      <Input
+                        type="text"
+                        inputMode="decimal"
+                        mono
+                        value={weightDrafts[row.id] ?? row.weight}
+                        disabled={busy}
+                        onChange={(e) => setWeightDrafts((m) => ({ ...m, [row.id]: e.target.value }))}
+                        onBlur={() => saveWeight(row)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveWeight(row);
+                          if (e.key === "Escape") setWeightDrafts((m) => ({ ...m, [row.id]: row.weight }));
+                        }}
+                        className="text-right"
+                        aria-label="Weight"
+                      />
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Checkbox
