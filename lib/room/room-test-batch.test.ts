@@ -335,3 +335,15 @@ describe("final Futurix Room batch (owner 2026-11-09)", () => {
     expect(menu).not.toMatch(/KYC verified/i);
   });
 });
+
+describe("tier popup and dashboard verification (owner 2026-11-09)", () => {
+  const read = (f: string) => fs.readFileSync(path.join(process.cwd(), f), "utf8");
+  it("the All tiers popup no longer says tier volume counts live accounts", () => {
+    expect(read("components/room/TierPanel.tsx")).not.toContain("Tier volume counts live accounts");
+  });
+  it("the dashboard Verification card shows only while KYC is not approved; Trade on fills the column otherwise", () => {
+    const page = read("app/(broker)/room/(shell)/page.tsx");
+    expect(page).toMatch(/\{data && data\.kyc\.status !== "APPROVED" \? \(\s*<div className="r-card r-pad">\s*<div[^>]*>\s*<div className="r-label">Verification<\/div>/);
+    expect(page).toContain('<div className="r-card r-pad" style={{ flex: 1 }}>');
+  });
+});

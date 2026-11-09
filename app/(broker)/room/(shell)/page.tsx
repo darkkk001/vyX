@@ -123,19 +123,22 @@ export default function RoomDashboard() {
           </div>
 
           <div style={{ flex: "1 1 280px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
-            <div className="r-card r-pad">
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-                <div className="r-label">Verification</div>
-                {data ? <StatusChip status={KYC_STATUS[data.kyc.status] ?? "Not verified"} /> : null}
+            {/* only while KYC is pending, rejected or not submitted; when approved, Trade on takes the column */}
+            {data && data.kyc.status !== "APPROVED" ? (
+              <div className="r-card r-pad">
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                  <div className="r-label">Verification</div>
+                  <StatusChip status={KYC_STATUS[data.kyc.status] ?? "Not verified"} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}><Check ok={false} />Identity document</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}><Check ok={false} />Proof of address</div>
+                </div>
+                <a href={data.kyc.status === "PENDING" ? "/room/profile" : "/room/verify"} style={{ display: "inline-block", marginTop: 14, fontSize: 12.5, fontWeight: 500 }}>
+                  {data.kyc.status === "PENDING" ? "View documents" : "Verify now"}
+                </a>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 9 }}><Check ok={data?.kyc.status === "APPROVED" || false} />Identity document</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 9 }}><Check ok={data?.kyc.status === "APPROVED" && data.kyc.address} />Proof of address</div>
-              </div>
-              <a href={data?.kyc.status === "APPROVED" || data?.kyc.status === "PENDING" ? "/room/profile" : "/room/verify"} style={{ display: "inline-block", marginTop: 14, fontSize: 12.5, fontWeight: 500 }}>
-                {data?.kyc.status === "APPROVED" || data?.kyc.status === "PENDING" ? "View documents" : "Verify now"}
-              </a>
-            </div>
+            ) : null}
             <div className="r-card r-pad" style={{ flex: 1 }}>
               <div className="r-label" style={{ marginBottom: 14 }}>Trade on</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 11, fontSize: 13 }}>
