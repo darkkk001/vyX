@@ -7,18 +7,19 @@ import WalletBalance from "./WalletBalance";
 import ThemeToggle from "./ThemeToggle";
 import { useIsMobile } from "./useIsMobile";
 
-// The client's menu at the right of the top bar: the tier card, the masked name and e-mail, the links. Sign out ends the
+// The client's menu at the right of the top bar: the tier card, the name (verified badge when KYC is approved, else a
+// Verify identity link) and client ID, the links. Sign out ends the
 // session on the server first (POST /api/portal/logout); the browser only moves on once that worked. On a phone it also
 // holds what the top bar has no room for.
 type Tier = { current: string; nextReview: string; next: { name: string; minLots: number } | null; lots90: string };
 
-const maskWord = (w: string) => (w.length <= 1 ? w : `${w[0]}${"*".repeat(Math.min(w.length - 1, 5))}`);
-export const maskName = (n: string) => n.trim().split(/\s+/).map(maskWord).join(" ");
-export function maskEmail(e: string): string {
-  const [user, domain] = e.split("@");
-  if (!domain) return maskWord(e);
-  return `${user.slice(0, 2)}${"*".repeat(Math.min(Math.max(user.length - 2, 1), 5))}@${domain}`;
-}
+// beside the name when KYC is approved; the only place verification shows outside the KYC pages
+const VerifiedBadge = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" role="img" aria-label="Verified" style={{ flexShrink: 0 }}>
+    <circle cx="7" cy="7" r="7" fill="var(--r-ok)" />
+    <path d="m4 7.2 2 2 4-4.2" fill="none" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
 
 function TierCard({ t }: { t: Tier }) {
   const days = Math.max(0, Math.ceil((new Date(t.nextReview).getTime() - Date.now()) / 86_400_000));
@@ -76,6 +77,7 @@ export default function UserMenu() {
   }
 
   if (!data) return null;
+  const verified = data.kyc.status === "APPROVED";
   return (
     <div className="r-user" ref={box}>
       <button type="button" className="r-user-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -87,8 +89,12 @@ export default function UserMenu() {
         <div className="r-user-menu" role="menu">
           {tier ? <TierCard t={tier} /> : null}
           <div style={{ padding: "8px 12px 10px", borderBottom: "1px solid var(--r-line)", marginBottom: 4 }}>
-            <div data-masked="name" style={{ fontSize: 13, fontWeight: 600 }}>{maskName(data.client.fullName)}</div>
-            <div data-masked="email" className="mono" style={{ fontSize: 11.5, color: "var(--r-muted)", marginTop: 3, overflowWrap: "anywhere" }}>{maskEmail(data.client.email)}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, overflowWrap: "anywhere" }}>
+              {data.client.fullName}
+              {verified ? <VerifiedBadge /> : null}
+            </div>
+            <div className="mono" style={{ fontSize: 11.5, color: "var(--r-muted)", marginTop: 3 }}>{data.client.clientId}</div>
+            {verified ? null : <a href="/room/verify" className="r-verify-link">Verify identity</a>}
           </div>
           {mobile ? (
             <>

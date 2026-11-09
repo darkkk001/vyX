@@ -229,8 +229,8 @@ describe("owner additions 2026-11-09", () => {
     expect(r).toContain('recentOf("LIVE"), recentOf("DEMO")');
     expect(r).toMatch(/recent: recentLive,\s+recentDemo,/);
     const page = read("app/(broker)/room/(shell)/page.tsx");
-    expect(page).toContain('useState<"LIVE" | "DEMO">("LIVE")');
-    expect(page).toContain('className="r-mini-seg"');
+    expect(page).toContain('const [mode, setMode] = useState<"LIVE" | "DEMO">("LIVE");');
+    expect(page).toContain("const recent = (mode === \"LIVE\" ? data?.recent : data?.recentDemo) ?? [];");
   });
   it("the top bar shows the funding wallet's real money, nothing account-specific; the strip sums live accounts only", () => {
     const head = read("components/room/RoomHeader.tsx");
@@ -290,5 +290,48 @@ describe("deposit / withdraw field width (owner 2026-11-09)", () => {
       const src = fs.readFileSync(path.join(process.cwd(), `app/(broker)/room/(shell)/${page}/page.tsx`), "utf8");
       for (const id of ids) expect(src, `${page} ${id}`).toMatch(new RegExp(`<div className="r-field r-field-fixed">\\s*<label htmlFor="${id}"`));
     }
+  });
+});
+
+describe("final Futurix Room batch (owner 2026-11-09)", () => {
+  const read = (f: string) => fs.readFileSync(path.join(process.cwd(), f), "utf8");
+  it("Transfer: From and To are the 260 px fields with the arrow between them", () => {
+    const t = read("app/(broker)/room/(shell)/transfer/page.tsx");
+    for (const id of ["tfrom", "tto"]) expect(t, id).toMatch(new RegExp(`<div className="r-field r-field-fixed">\\s*<label htmlFor="${id}"`));
+    expect(t.indexOf('className="r-xfer-arrow"')).toBeGreaterThan(t.indexOf('htmlFor="tfrom"'));
+    expect(t.indexOf('className="r-xfer-arrow"')).toBeLessThan(t.indexOf('htmlFor="tto"'));
+    expect(read("app/(broker)/room/room.css")).toContain(".r-xfer-arrow svg { transform: rotate(90deg); }");
+  });
+  it("tier strip: volume against the next threshold, a full bar on the top tier, a plain card", () => {
+    const p = read("components/room/TierPanel.tsx");
+    const strip = p.slice(p.indexOf("export default function TierPanel"));
+    expect(strip).not.toContain("Tier volume counts live accounts");
+    expect(strip).not.toContain("You are on the top tier");
+    expect(strip).toContain('{n1(d.lots90)} / {d.next.minLots.toLocaleString("en-US")} lots</span>');
+    expect(strip).toContain('width: "100%", height: "100%", background: "var(--r-accent)"');
+    expect(read("app/(broker)/room/room.css")).toMatch(/\.r-tier-strip \{[^}]*background: var\(--r-card\); border: 1px solid var\(--r-border\);/);
+  });
+  it("one Live / Demo toggle at My accounts drives the cards and Recent transactions; the strip stays live-only", () => {
+    const page = read("app/(broker)/room/(shell)/page.tsx");
+    expect(page.match(/className="r-mini-seg"/g)).toHaveLength(1);
+    expect(page.indexOf('className="r-mini-seg"')).toBeGreaterThan(page.indexOf(">My accounts<"));
+    expect(page.indexOf('className="r-mini-seg"')).toBeLessThan(page.indexOf(">Recent transactions<"));
+    expect(page).toContain("const cards = (data?.accounts ?? []).filter((a) => a.mode === mode);");
+    expect(page).toContain("{cards.map((a) => (");
+    expect(page).toContain("const f = data?.totals ?? null;");
+  });
+  it("sidebar foot: Refer & earn and Collapse only; the client and KYC state live in the top-right menu", () => {
+    const side = read("components/room/RoomSidebar.tsx");
+    expect(side).not.toContain("KYC VERIFIED");
+    expect(side).not.toContain('className="r-me"');
+    expect(side).not.toContain("clientId");
+    expect(side).toContain('className="r-refer"');
+    expect(side).toContain('className="r-rail-btn"');
+    const menu = read("components/room/UserMenu.tsx");
+    expect(menu).toContain('const verified = data.kyc.status === "APPROVED";');
+    expect(menu).toContain("{verified ? <VerifiedBadge /> : null}");
+    expect(menu).toContain("{data.client.clientId}</div>");
+    expect(menu).toContain('{verified ? null : <a href="/room/verify" className="r-verify-link">Verify identity</a>}');
+    expect(menu).not.toMatch(/KYC verified/i);
   });
 });

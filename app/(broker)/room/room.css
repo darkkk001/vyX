@@ -103,9 +103,7 @@
 .r-nav { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; color: var(--r-text-2) !important; font-size: 13px; font-weight: 500; }
 .r-nav[aria-current="page"] { background: var(--r-nav-active); color: var(--r-gold-text) !important; font-weight: 600; }
 .r-side-foot { margin-top: auto; padding: 14px 10px 0; border-top: 1px solid var(--r-line); display: flex; flex-direction: column; gap: 10px; }
-.r-kyc { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.8px; font-weight: 600; }
 .r-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; flex: none; }
-.r-me { display: flex; align-items: center; gap: 10px; }
 .r-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--r-avatar); color: var(--r-text); display: inline-flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 600; flex: none; }
 .r-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; }
 .r-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 15px 28px; border-bottom: 1px solid var(--r-line); }
@@ -153,6 +151,9 @@
 /* Deposit / Withdraw account + amount: about 260 px side by side, full width stacked on a phone */
 .r-field-fixed { flex: 0 1 260px; min-width: 0; }
 @media (max-width: 768px) { .r-field-fixed { flex: 1 1 100%; } }
+/* Transfer: the arrow between From and To; it points down when they stack on a phone */
+.r-xfer-arrow { display: flex; align-items: center; justify-content: center; height: 42px; color: var(--r-muted); }
+@media (max-width: 768px) { .r-xfer-arrow { flex: 1 1 100%; height: auto; } .r-xfer-arrow svg { transform: rotate(90deg); } }
 .r-field > label, .r-flabel { font-size: 10.5px; letter-spacing: 1.2px; color: var(--r-muted); font-weight: 600; text-transform: uppercase; }
 .r-input { background: var(--r-card-2); border: 1px solid var(--r-input); border-radius: 6px; color: var(--r-text); font-size: 14px; padding: 11px 13px; width: 100%; }
 .r-input.mono { font-size: 13.5px; }
@@ -169,7 +170,7 @@
 .r-user-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 170px; background: var(--r-card); border: 1px solid var(--r-border); border-radius: 8px; padding: 4px; display: flex; flex-direction: column; }
 .r-user-menu a, .r-user-menu button { display: block; width: 100%; text-align: left; background: none; border: none; border-radius: 6px; padding: 8px 12px; font-size: 13px; font-weight: 500; color: var(--r-text) !important; cursor: pointer; }
 .r-user-menu a:hover, .r-user-menu button:hover { background: var(--r-nav-active); }
-.r-tier-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; width: 100%; text-align: left; font-family: inherit; color: var(--r-text); background: var(--r-gold-tint); border: 1px solid color-mix(in srgb, var(--r-accent) 35%, transparent); border-radius: 10px; padding: 12px 18px; cursor: pointer; }
+.r-tier-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; width: 100%; text-align: left; font-family: inherit; color: var(--r-text); background: var(--r-card); border: 1px solid var(--r-border); border-radius: 10px; padding: 12px 18px; cursor: pointer; }
 .r-modal-back { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow-y: auto; }
 .r-modal { width: 100%; max-width: 760px; background: var(--r-card); border: 1px solid var(--r-border); border-radius: 10px; padding: 22px; display: flex; flex-direction: column; gap: 16px; }
 .r-method-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
@@ -276,6 +277,8 @@
 .r-apps a { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 4px; border-radius: 6px; font-size: 12px; font-weight: 500; color: var(--r-text); text-align: center; }
 .r-apps a:hover { background: var(--r-nav-active); }
 .r-user-menu { min-width: 270px; }
+.r-user-menu a.r-verify-link { display: inline-block; width: auto; padding: 0; margin-top: 6px; font-size: 11.5px; color: var(--r-gold-text) !important; }
+.r-user-menu a.r-verify-link:hover { background: none; text-decoration: underline; }
 .r-user-menu a.r-tier-mini { display: block; background: var(--r-card-2); border: 1px solid var(--r-input); border-radius: 8px; padding: 12px; margin-bottom: 6px; }
 @media (max-width: 768px) {
   .r-apps { position: fixed; top: calc(env(safe-area-inset-top) + 58px); left: 16px; right: 16px; width: auto; max-width: none; z-index: 36; }

@@ -98,13 +98,18 @@ export default function TierPanel() {
             <>
               <span style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "2px 10px", fontSize: 11.5, color: "var(--r-text-2)", marginBottom: 6 }}>
                 <span>Progress to <span style={{ color: "var(--r-text)", fontWeight: 600 }}>{d.next.name}</span></span>
-                {d.hasLiveAccount ? <span className="mono">{n1(d.lots90)} / {d.next.minLots.toLocaleString("en-US")} lots · 90d</span> : <span>Tier volume counts live accounts</span>}
+                <span className="mono">{n1(d.lots90)} / {d.next.minLots.toLocaleString("en-US")} lots</span>
               </span>
               <span role="progressbar" aria-valuemin={0} aria-valuemax={d.next.minLots} aria-valuenow={Number(d.lots90)} aria-label={`Progress to ${d.next.name}`} style={{ display: "block", height: 6, background: "var(--r-card-2)", border: "1px solid var(--r-input)", borderRadius: 3, overflow: "hidden" }}>
                 <span style={{ display: "block", width: `${pct}%`, height: "100%", background: "var(--r-accent)" }} />
               </span>
             </>
-          ) : <span style={{ fontSize: 12.5, color: "var(--r-text-2)" }}>You are on the top tier.</span>}
+          ) : (
+            // top tier: the name on the left, a full bar, no text
+            <span role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={100} aria-label={`${d.current}, top tier`} style={{ display: "block", height: 6, background: "var(--r-card-2)", border: "1px solid var(--r-input)", borderRadius: 3, overflow: "hidden" }}>
+              <span style={{ display: "block", width: "100%", height: "100%", background: "var(--r-accent)" }} />
+            </span>
+          )}
         </span>
         <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--r-gold-text)", whiteSpace: "nowrap" }}>All tiers</span>
       </button>

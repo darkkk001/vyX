@@ -3,11 +3,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import RoomBrand from "./RoomBrand";
-import { useRoom } from "./RoomData";
-import { initials } from "./format";
 
-// Trader's Room sidebar, as on every artboard: OVERVIEW / FUNDS / PERFORMANCE / PARTNER / MORE, KYC state and the
-// client at the foot. PARTNER shows only for a client the broker has flagged as an IB; Refer & earn shows for everyone.
+// Trader's Room sidebar, as on every artboard: OVERVIEW / FUNDS / PERFORMANCE / PARTNER / MORE; Refer & earn and
+// Collapse at the foot (the client and KYC state live in the top-right menu). PARTNER shows only for a client the broker has flagged as an IB; Refer & earn shows for everyone.
 // Groups collapse and the whole bar folds to an icon rail; both are kept in cookies the shell layout reads.
 // On a phone the bar is an off-canvas drawer, opened by the top bar's menu button.
 const I = (d: ReactNode) => (
@@ -37,19 +35,10 @@ const GROUPS: { title: string; items: Item[]; partner?: boolean }[] = [
   { title: "More", items: [{ href: "/room/downloads", label: "Downloads", icon: "downloads" }, { href: "/room/support", label: "Support", icon: "support" }, { href: "/room/profile", label: "Profile", icon: "profile" }] },
 ];
 
-const KYC_LINE: Record<string, { text: string; cls: string }> = {
-  APPROVED: { text: "KYC VERIFIED", cls: "r-chip-ok" },
-  PENDING: { text: "KYC UNDER REVIEW", cls: "r-chip-pending" },
-  REJECTED: { text: "KYC REJECTED", cls: "r-chip-bad" },
-  NONE: { text: "KYC NOT VERIFIED", cls: "r-chip-off" },
-};
-
 const keep = (name: string, value: string) => { document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=31536000; samesite=lax`; };
 
 export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: railAtLoad, closedGroups }: { brokerName: string; logoUrl: string | null; isPartner: boolean; rail: boolean; closedGroups: string[] }) {
   const path = usePathname() ?? "/room";
-  const { data } = useRoom();
-  const kyc = KYC_LINE[data?.kyc.status ?? "NONE"] ?? KYC_LINE.NONE;
   const [rail, setRail] = useState(railAtLoad);
   const [closed, setClosed] = useState(closedGroups);
   const [drawer, setDrawer] = useState(false);
@@ -99,16 +88,6 @@ export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: rail
           {ICONS.partner}
           <span className="r-side-text"><span className="r-refer-title">Refer &amp; earn</span><span className="r-refer-sub">Invite traders to {brokerName}</span></span>
         </a>
-        {data ? <div className={`r-kyc ${kyc.cls}`} title={kyc.text}><span className="r-dot" /><span className="r-side-text">{kyc.text}</span></div> : null}
-        {data ? (
-          <div className="r-me">
-            <span className="r-avatar">{initials(data.client.fullName)}</span>
-            <div className="r-side-text" style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{data.client.fullName}</div>
-              <div style={{ fontSize: 11, color: "var(--r-muted)" }}>Client · {data.client.clientId}</div>
-            </div>
-          </div>
-        ) : null}
         <button type="button" className="r-rail-btn" aria-pressed={rail} aria-label={rail ? "Expand menu" : "Collapse menu"} title={rail ? "Expand menu" : "Collapse menu"} onClick={toggleRail}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" style={{ transform: rail ? "rotate(180deg)" : undefined }}><path d="M2.5 2.5v11M13 8H6M9 5 6 8l3 3" /></svg>
           <span className="r-side-text">Collapse</span>
