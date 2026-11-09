@@ -23,7 +23,7 @@ describe("parseSymbolPricingPatch: negative markup", () => {
     vi.stubEnv("NEGATIVE_MARKUP_ENABLED", "true"); expect(negativeMarkupEnabled()).toBe(false);
     vi.stubEnv("NEGATIVE_MARKUP_ENABLED", "1"); expect(negativeMarkupEnabled()).toBe(true);
     vi.unstubAllEnvs();
-    expect(parseSymbolPricingPatch({ spreadMarkup: "-1.3" }, { allowNegativeMarkup: false, negativeRefusal: NEGATIVE_MARKUP_NOT_YET })).toBe("Negative markup is not available yet.");
+    expect(parseSymbolPricingPatch({ spreadMarkup: "-1.3" }, { allowNegativeMarkup: false, negativeRefusal: NEGATIVE_MARKUP_NOT_YET })).toBe("Negative markup is not live yet.");
     const route = readFileSync(path.resolve(import.meta.dirname, "..", "app", "api", "manage", "groups", "[id]", "pricing", "route.ts"), "utf8");
     expect(route).toContain("parseSymbolPricingPatch(body, { allowNegativeMarkup: negativeMarkupEnabled(), negativeRefusal: NEGATIVE_MARKUP_NOT_YET })");
   });
