@@ -204,7 +204,12 @@ describe("My tier", () => {
     expect(page.match(/<TierPanel \/>/g)).toHaveLength(1);
     expect(page.indexOf("<TierPanel />")).toBeLessThan(page.indexOf('"r-grid-tiles"'));
   });
-  it("a plan card never stretches past 340 px", () => {
-    expect(fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/(shell)/accounts/page.tsx"), "utf8")).toContain("repeat(auto-fill, minmax(240px, 340px))");
+  // Room UI batch (owner 2026-11-06): plans moved from cards on Accounts to rows in the open-account popup, one per
+  // line inside the popup's own width, so no plan card is left to stretch
+  it("plans are rows in the open-account popup, not cards on Accounts", () => {
+    const modal = fs.readFileSync(path.join(process.cwd(), "components/room/OpenAccountModal.tsx"), "utf8");
+    expect(modal).toContain('role="radiogroup" aria-label="Plan"');
+    expect(modal).toContain('className="r-plan-row"');
+    expect(fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/(shell)/accounts/page.tsx"), "utf8")).not.toContain("planSpreadFrom");
   });
 });
