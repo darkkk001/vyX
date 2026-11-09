@@ -543,7 +543,7 @@ async fn cancel_order(
         CancelOrderOutcome::NotFound => Err((StatusCode::NOT_FOUND, "order not found".to_string())),
         CancelOrderOutcome::InvalidStatus { status } => Err((
             StatusCode::CONFLICT,
-            format!("cannot cancel an order in status {status:?}"),
+            format!("cannot cancel an order in status {status}"),
         )),
     }
 }
@@ -552,8 +552,31 @@ async fn cancel_order(
 struct ModifyPositionBody {
     account_id: String,
     current_price: Decimal,
-    sl_price: Option<Decimal>,
-    tp_price: Option<Decimal>,
+    /// THREE STATES, which is why this is a double Option: serde gives `None` when the key is absent,
+    /// `Some(None)` for an explicit `null` and `Some(Some(v))` for a value. Absent means "leave this leg
+    /// alone"; before this, both absent and null arrived as `None` and a TP-only edit wiped the SL.
+    #[serde(default, deserialize_with = "double_option")]
+    sl_price: Option<Option<Decimal>>,
+    #[serde(default, deserialize_with = "double_option")]
+    tp_price: Option<Option<Decimal>>,
+}
+
+/// `null` -> `Some(None)`, a value -> `Some(Some(v))`; an absent key never reaches here (serde's
+/// `default` supplies `None`), which is exactly the distinction the three-state leg needs.
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    serde::Deserialize::deserialize(d).map(Some)
+}
+
+fn leg_of(v: Option<Option<Decimal>>) -> order_management::db::Leg {
+    match v {
+        None => order_management::db::Leg::Untouched,
+        Some(None) => order_management::db::Leg::Clear,
+        Some(Some(x)) => order_management::db::Leg::Set(x),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -581,8 +604,8 @@ async fn modify_position(
         &body.account_id,
         &position_id,
         body.current_price,
-        body.sl_price,
-        body.tp_price,
+        leg_of(body.sl_price),
+        leg_of(body.tp_price),
     )
     .await
     .map_err(|err| {

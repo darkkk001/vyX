@@ -89,6 +89,8 @@ async fn fixture(pool: &PgPool) -> Fx {
 
 fn tick(symbol: &str) -> protocol::Tick {
     protocol::Tick {
+        // the d5b5737 line added this (tick volume); the fixture predates it
+        tick_count: None,
         symbol: symbol.to_string(), bid: dec!(990), ask: dec!(990),
         t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None,
         bars: Vec::new(),

@@ -930,7 +930,9 @@ pub enum CancelOrderOutcome {
     /// order.accountId !== session.accountId`), so a wrong account_id
     /// never confirms an order's existence.
     NotFound,
-    InvalidStatus { status: OrderStatus },
+    /// The status it is actually in, as the book spells it (Prisma has PENDING, the
+    /// protocol enum does not -- see the comment on the Prisma branch in cancel_order).
+    InvalidStatus { status: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -952,6 +954,60 @@ pub async fn cancel_order(
     order_id: &str,
     account_id: &str,
 ) -> Result<CancelOrderOutcome, CancelOrderError> {
+    // THE REAL BOOK. `db::get_order` reads the engine's own lowercase `orders` -- 0 rows in production
+    // against 6,787 `"Order"` -- so every real cancel answered NotFound, i.e. HTTP 404. The same defect
+    // the close had, fixed by the same `db::configured()` branch; the legacy path below is untouched and
+    // still serves the load test and the parallel-run harness.
+    //
+    // Mirrors the web's cancel (app/api/trade/orders/[id]/route.ts deleteInner) step for step:
+    // account-scoped read, PENDING guard, status -> CANCELLED, release a queued close's lock on its
+    // position, audit row. There is deliberately NO margin step: a PENDING order reserves no margin in
+    // this system (`PENDING` appears nowhere in lib/margin.ts or lib/margin-pass.ts) and the web's own
+    // cancel has none either.
+    if matches!(db::configured(), db::Book::Prisma) {
+        let Some(order) = db::prisma_order_for_cancel(pool, order_id, account_id).await? else {
+            return Ok(CancelOrderOutcome::NotFound);
+        };
+        if order.status != "PENDING" {
+            return Ok(CancelOrderOutcome::InvalidStatus { status: order.status });
+        }
+        let mut tx = pool.begin().await?;
+        if !db::prisma_cancel_order(&mut tx, order_id).await? {
+            // lost the compare-and-set on status = PENDING: it filled or was cancelled in between.
+            // Re-read so the 409 names the status it actually ended in rather than guessing.
+            tx.rollback().await?;
+            return Ok(match db::prisma_order_for_cancel(pool, order_id, account_id).await? {
+                Some(o) => CancelOrderOutcome::InvalidStatus { status: o.status },
+                None => CancelOrderOutcome::NotFound,
+            });
+        }
+        // a queued CLOSE holds a lock on its position; withdrawing the order must release it
+        if let Some(position_id) = order.closes_position_id.as_deref() {
+            db::prisma_clear_close_pending(&mut tx, position_id, order_id).await?;
+        }
+        db::prisma_audit(
+            &mut tx,
+            &uuid::Uuid::new_v4().to_string(),
+            &order.broker_id,
+            "ORDER_CANCELLED",
+            "Order",
+            order_id,
+            &serde_json::json!({ "accountId": account_id, "status": "CANCELLED", "by": "engine" }).to_string(),
+        )
+        .await?;
+        tx.commit().await?;
+        crate::outbox::wake();
+        publish_best_effort(
+            nats,
+            &TradingEvent::OrderCancelled {
+                account_id: account_id.to_string(),
+                order_id: order_id.to_string(),
+            },
+        )
+        .await;
+        return Ok(CancelOrderOutcome::Cancelled { order_id: order_id.to_string() });
+    }
+
     let Some(order) = db::get_order(pool, order_id).await? else {
         return Ok(CancelOrderOutcome::NotFound);
     };
@@ -959,7 +1015,7 @@ pub async fn cancel_order(
         return Ok(CancelOrderOutcome::NotFound);
     }
     if order.status != OrderStatus::Accepted {
-        return Ok(CancelOrderOutcome::InvalidStatus { status: order.status });
+        return Ok(CancelOrderOutcome::InvalidStatus { status: format!("{:?}", order.status) });
     }
 
     let mut tx = pool.begin().await?;
@@ -971,7 +1027,7 @@ pub async fn cancel_order(
         tx.rollback().await?;
         let current = db::get_order(pool, order_id).await?;
         return Ok(match current {
-            Some(o) => CancelOrderOutcome::InvalidStatus { status: o.status },
+            Some(o) => CancelOrderOutcome::InvalidStatus { status: format!("{:?}", o.status) },
             None => CancelOrderOutcome::NotFound,
         });
     }
@@ -1019,9 +1075,76 @@ pub async fn modify_position_sl_tp(
     account_id: &str,
     position_id: &str,
     current_price: Decimal,
-    sl_price: Option<Decimal>,
-    tp_price: Option<Decimal>,
+    sl: db::Leg,
+    tp: db::Leg,
 ) -> Result<ModifyPositionOutcome, ModifyPositionError> {
+    // THE REAL BOOK, for the same reason as the cancel above: `db::get_position` reads the lowercase
+    // `positions` (0 rows) against 6,609 `"Position"`, so every real modify answered 404.
+    //
+    // Two correctness points that are NOT just a table swap:
+    //
+    //   * THREE-STATE LEGS. `sl` / `tp` are `db::Leg`: Untouched (absent from the request), Clear
+    //     (explicit null) or Set(v). The old signature took `Option<Decimal>`, which collapsed absent and
+    //     null into None -- so a TP-only modify silently wiped an existing SL. An Untouched leg never
+    //     reaches the statement.
+    //   * legWrite (lib/amount-sltp.ts). Writing a price leg clears its amount sibling. The amount
+    //     monitor went live 2026-11-09 and fires on `slAmount` independently of `slPrice`, so leaving
+    //     both set would arm two triggers and close on whichever was touched first -- silently wrong,
+    //     not an error.
+    //
+    // GUARD SCOPE, deliberate and documented: `risk::validate_sl_tp` only. It does cover the basic
+    // wrong-side case (BUY: SL below and TP above the reference price; SELL: the reverse). The web
+    // additionally runs refuseModify -- live-price freshness, the account's ask rule, FX conversion and
+    // amount-already-reached. Those are NOT ported here. This path is demo/ingress-scoped; they must
+    // land before any live rollout.
+    if matches!(db::configured(), db::Book::Prisma) {
+        let Some(position) = db::prisma_position_for_modify(pool, position_id, account_id).await? else {
+            return Ok(ModifyPositionOutcome::NotFound);
+        };
+        if position.status != "OPEN" {
+            return Ok(ModifyPositionOutcome::InvalidStatus { status: db::PositionStatus::Closed });
+        }
+        let side = if position.side == "BUY" { protocol::OrderSide::Buy } else { protocol::OrderSide::Sell };
+        if let Err(reason) = risk::validate_sl_tp(side, current_price, sl.price(), tp.price()) {
+            return Ok(ModifyPositionOutcome::ValidationFailed { reason: reason.to_string() });
+        }
+        let mut tx = pool.begin().await?;
+        if !db::prisma_update_position_legs(&mut tx, position_id, sl, tp).await? {
+            // the guarded UPDATE requires status OPEN and deletedAt IS NULL: it closed under us
+            tx.rollback().await?;
+            return Ok(ModifyPositionOutcome::InvalidStatus { status: db::PositionStatus::Closed });
+        }
+        db::prisma_audit(
+            &mut tx,
+            &uuid::Uuid::new_v4().to_string(),
+            &position.broker_id,
+            "POSITION_SL_TP_MODIFIED",
+            "Position",
+            position_id,
+            &serde_json::json!({
+                "accountId": account_id,
+                "slPrice": sl.price().map(|v| v.to_string()),
+                "tpPrice": tp.price().map(|v| v.to_string()),
+                "slTouched": sl.touches(),
+                "tpTouched": tp.touches(),
+                "by": "engine"
+            })
+            .to_string(),
+        )
+        .await?;
+        tx.commit().await?;
+        crate::outbox::wake();
+        publish_best_effort(
+            nats,
+            &TradingEvent::PositionModified {
+                account_id: account_id.to_string(),
+                position_id: position_id.to_string(),
+            },
+        )
+        .await;
+        return Ok(ModifyPositionOutcome::Updated { sl_price: sl.price(), tp_price: tp.price() });
+    }
+
     let Some(position) = db::get_position(pool, position_id).await? else {
         return Ok(ModifyPositionOutcome::NotFound);
     };
@@ -1032,6 +1155,8 @@ pub async fn modify_position_sl_tp(
         return Ok(ModifyPositionOutcome::InvalidStatus { status: position.status });
     }
 
+    // the legacy path keeps its old two-state behaviour; only the Prisma branch above is three-state
+    let (sl_price, tp_price) = (sl.price(), tp.price());
     if let Err(reason) = risk::validate_sl_tp(position.side, current_price, sl_price, tp_price) {
         return Ok(ModifyPositionOutcome::ValidationFailed { reason: reason.to_string() });
     }

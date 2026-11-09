@@ -98,7 +98,7 @@ fn the_engine_order_path_fills_at_exactly_the_web_price_for_every_contract_vecto
     let cases = v["prices"].as_array().expect("prices");
     // Pinned on purpose, like the resolution test in market-data: if the web regenerates the file
     // with more or fewer cases, this test must be re-read rather than quietly covering less.
-    assert_eq!(cases.len(), 9, "the contract file changed: re-check the engine order path against it");
+    assert_eq!(cases.len(), 14, "the contract file changed: re-check the engine order path against it");
 
     let mut checked = 0;
     for c in cases {
@@ -122,7 +122,7 @@ fn the_engine_order_path_fills_at_exactly_the_web_price_for_every_contract_vecto
         );
         checked += 1;
     }
-    assert_eq!(checked, 9);
+    assert_eq!(checked, 14);
 }
 
 #[test]
