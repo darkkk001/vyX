@@ -4,8 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { useRoom } from "@/components/room/RoomData";
 import { OpenAccountButton } from "@/components/room/OpenAccountModal";
-import { useFunds, amountOk, cleanAmount, readDataUrl } from "@/components/room/useFunds";
+import { useFunds, amountOk, cleanAmount, readDataUrl, useSendOnce } from "@/components/room/useFunds";
 import MethodGrid from "@/components/room/MethodGrid";
+import AmountInput from "@/components/room/AmountInput";
+import FundsDone from "@/components/room/FundsDone";
 import { money } from "@/components/room/format";
 
 // Artboard "Deposit": broker-configured methods, the broker's own receiving details with a payment reference,
@@ -33,7 +35,10 @@ export default function RoomDeposit() {
   const [amount, setAmount] = useState("");
   const [receipt, setReceipt] = useState<{ name: string; size: number; data: string } | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
+  // one request per form load; the button stays "Sending…" from the first click until the server answers
+  const send = useSendOnce();
+  const busy = send.busy;
+  const [done, setDone] = useState<{ reference: string; amount: string; currency: string; again: boolean } | null>(null);
   const [copied, setCopied] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -54,18 +59,29 @@ export default function RoomDeposit() {
   }
 
   async function submit() {
-    if (!funds || !method || busy) return;
+    if (!funds || !method) return;
     if (!amountOk(amount)) { setMsg({ ok: false, text: "Enter an amount." }); return; }
-    setBusy(true);
+    if (!send.begin()) return;
     setMsg(null);
-    const res = await fetch("/api/room/deposit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountId: funds.account.id, methodId: method.id, amount: cleanAmount(amount), reference: funds.reference, receipt: receipt?.data ?? null }) });
-    const body = await res.json().catch(() => null);
-    setBusy(false);
-    if (!res.ok) { setMsg({ ok: false, text: body?.error ?? "Could not send the request." }); return; }
-    setMsg({ ok: true, text: `Request sent. Reference ${funds.reference}.` });
+    let res: Response | null = null;
+    let body: { error?: string; reference?: string; duplicate?: boolean } | null = null;
+    try {
+      res = await fetch("/api/room/deposit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: send.key, accountId: funds.account.id, methodId: method.id, amount: cleanAmount(amount), reference: funds.reference, receipt: receipt?.data ?? null }) });
+      body = await res.json().catch(() => null);
+    } catch { /* no connection: the message below */ }
+    send.end();
+    if (!res || !res.ok) { setMsg({ ok: false, text: body?.error ?? "Could not send the request." }); return; }
+    // the form is replaced by the confirmation, so the same request cannot go twice
+    setDone({ reference: body?.reference ?? funds.reference, amount: cleanAmount(amount), currency: funds.account.currency, again: Boolean(body?.duplicate) });
+    await Promise.all([reload(), refresh()]);
+  }
+
+  function another() {
+    setDone(null);
     setAmount("");
     setReceipt(null);
-    await Promise.all([reload(), refresh()]);
+    setMsg(null);
+    send.renew();
   }
 
   const label = { fontSize: 10.5, letterSpacing: 1.2 } as const;
@@ -79,22 +95,33 @@ export default function RoomDeposit() {
           <MethodGrid methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={funds?.account.currency ?? ""} onSelect={(id) => { setMethodId(id); setMsg(null); }} />
         </div>
         <div className="r-row">
-          <div style={{ flex: "1 1 260px", minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-            {funds && open.length === 0 ? <div className="r-note">Your broker has no deposit methods open right now.</div> : null}
-            <div style={{ fontSize: 11.5, color: "var(--r-faint)", lineHeight: 1.6, padding: "6px 2px" }}>Funds are received directly by your broker. The platform does not hold client money.</div>
-          </div>
+          {funds && open.length === 0 ? (
+            <div style={{ flex: "1 1 260px", minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div className="r-note">Your broker has no deposit methods open right now.</div>
+            </div>
+          ) : null}
 
+          {done ? (
+            <div style={{ flex: "2 1 480px", minWidth: 0 }}>
+              <FundsDone title={done.again ? "This request was already sent" : "Deposit request sent"} again="New deposit request" onAgain={another}>
+                <div>Amount <span className="mono" style={{ color: "var(--r-text)" }}>{money(done.amount)} {done.currency}</span></div>
+                <div>Reference <span className="mono" style={{ color: "var(--r-gold-text)", fontWeight: 600 }}>{done.reference}</span></div>
+                <div>Your broker credits the deposit after checking the payment.</div>
+              </FundsDone>
+            </div>
+          ) : (
           <div className="r-card" style={{ flex: "2 1 480px", minWidth: 0, padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
             <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
               <div className="r-field r-field-fixed">
                 <label htmlFor="acct" style={label}>To account</label>
-                <select id="acct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setToWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
+                <select id="acct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} disabled={busy} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setToWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
                   {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`}</option>)}
                 </select>
               </div>
               <div className="r-field r-field-fixed">
-                <label htmlFor="amt" style={label}>Amount · {account?.currency ?? "USD"}</label>
-                <input id="amt" className="r-input mono" inputMode="decimal" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: "10px 12px" }} />
+                <label htmlFor="amt" style={label}>Amount</label>
+                {/* typing clears a stale "Enter an amount." (it stayed red over a typed 500 until the next click) */}
+                <AmountInput id="amt" currency={account?.currency} value={amount} onChange={(v) => { setAmount(v); if (msg && !msg.ok) setMsg(null); }} />
               </div>
             </div>
 
@@ -149,6 +176,7 @@ export default function RoomDeposit() {
             </div>
             {msg ? <div className={msg.ok ? "r-okmsg" : "r-error"} role="status">{msg.text}</div> : null}
           </div>
+          )}
         </div>
       </div>
     </>

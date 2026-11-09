@@ -3,7 +3,8 @@
 import type { FundsMethod } from "./useFunds";
 
 // The broker's payment methods as a grid (Deposit and Withdraw). A method the broker lists but has not switched on is
-// shown greyed and cannot be picked. Lines a broker has not configured are left out.
+// shown greyed and cannot be picked. Every card is the same height with its rows in fixed slots (an unset value leaves
+// its slot empty) and the "Not available" badge pinned at the bottom (room.css .r-method-grid / .r-method-chip).
 const limits = (t: { min: string; max: string | null }, ccy: string) => {
   const min = Number(t.min) > 0 ? Number(t.min).toLocaleString("en-US") : null;
   const max = t.max ? Number(t.max).toLocaleString("en-US") : null;
@@ -22,7 +23,8 @@ export default function MethodGrid({ methods, selectedId, currency, side = "depo
         return (
           <button key={m.id} type="button" className={`r-method${sel ? " is-selected" : ""}`} disabled={!m.available} aria-pressed={sel} onClick={() => onSelect(m.id)}>
             <span className="r-method-name">{m.label}</span>
-            {lines.filter(([, v]) => v).map(([k, v]) => <span key={k} className="r-method-line"><span>{k}</span><span className="mono">{v}</span></span>)}
+            {/* fixed slots in a fixed order (Processing, Fee, Limits): a value the broker has not set leaves its slot empty, so rows line up across cards */}
+            {lines.map(([k, v]) => (v ? <span key={k} className="r-method-line"><span>{k}</span><span className="mono" title={v}>{v}</span></span> : <span key={k} className="r-method-line" aria-hidden="true" />))}
             {m.available ? null : <span className="r-method-chip">Not available</span>}
           </button>
         );

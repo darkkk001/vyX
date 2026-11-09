@@ -41,7 +41,7 @@ async function addMethod(extra: object = {}) {
 }
 async function withdraw(accountId: string, extra: object = {}) {
   const { POST } = await import("@/app/api/room/withdraw/route");
-  const r = await POST(post("/api/room/withdraw", { accountId, amount: "10", ...extra }));
+  const r = await POST(post("/api/room/withdraw", { key: randomUUID(), accountId, amount: "10", ...extra }));
   return { status: r.status, body: await r.json() };
 }
 
