@@ -1320,6 +1320,220 @@ pub async fn account_mode(pool: &PgPool, account_id: &str) -> Result<Option<Stri
 /// close: when a position is not in the account's OPEN set this says whether it exists and is closed
 /// (409) or is not this account's / not there at all (404). Scoped by account so a position id cannot be
 /// used to learn about someone else's book.
+/// THE REAL BOOK, for modify and cancel. Both paths used to read the engine's own lowercase `positions`
+/// / `orders`, which hold 0 rows in production against 6,609 `"Position"` and 6,787 `"Order"` -- so every
+/// real request found nothing and answered 404. The same defect the close had, fixed the same way: these
+/// read and write Prisma's tables, and the caller picks them with `db::configured()`.
+
+/// A pending `"Order"` as the cancel path needs it, scoped to the account so another account's id cannot
+/// be used to probe. `closesPositionId` is carried because withdrawing a QUEUED CLOSE must also release
+/// the lock it holds on its position (the web's own cancel does this; the legacy engine path never knew
+/// about that column).
+#[derive(Debug, Clone)]
+pub struct PrismaOrderForCancel {
+    pub status: String,
+    pub closes_position_id: Option<String>,
+    pub broker_id: String,
+}
+
+pub async fn prisma_order_for_cancel(
+    pool: &PgPool,
+    order_id: &str,
+    account_id: &str,
+) -> Result<Option<PrismaOrderForCancel>, sqlx::Error> {
+    let row: Option<(String, Option<String>, String)> = sqlx::query_as(
+        r#"SELECT status::text, "closesPositionId", "brokerId" FROM "Order" WHERE id = $1 AND "accountId" = $2"#,
+    )
+    .bind(order_id)
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(status, closes_position_id, broker_id)| PrismaOrderForCancel {
+        status,
+        closes_position_id,
+        broker_id,
+    }))
+}
+
+/// Cancels a pending `"Order"`. COMPARE-AND-SET on `status = 'PENDING'`, so two concurrent cancels (or a
+/// cancel racing the fill) cannot both win: the loser matches no row and gets `false`, which the caller
+/// turns into the same 409 a non-pending order gets. Same shape as the close's guarded UPDATE.
+pub async fn prisma_cancel_order(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    order_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query(
+        r#"UPDATE "Order" SET status = 'CANCELLED'::"OrderStatus", "updatedAt" = now()
+            WHERE id = $1 AND status = 'PENDING'::"OrderStatus""#,
+    )
+    .bind(order_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// Releases a queued close's lock on its position. Guarded on `closePendingOrderId = $2` so it can only
+/// ever clear THIS order's lock -- never one a different order took in between.
+pub async fn prisma_clear_close_pending(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    position_id: &str,
+    order_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query(
+        r#"UPDATE "Position" SET "closePendingOrderId" = NULL
+            WHERE id = $1 AND "closePendingOrderId" = $2"#,
+    )
+    .bind(position_id)
+    .bind(order_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// A `"Position"` as the modify path needs it, scoped to the account for the same reason as above.
+#[derive(Debug, Clone)]
+pub struct PrismaPositionForModify {
+    pub side: String,
+    pub status: String,
+    pub broker_id: String,
+}
+
+pub async fn prisma_position_for_modify(
+    pool: &PgPool,
+    position_id: &str,
+    account_id: &str,
+) -> Result<Option<PrismaPositionForModify>, sqlx::Error> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        r#"SELECT side::text, status::text, "brokerId" FROM "Position"
+            WHERE id = $1 AND "accountId" = $2 AND "deletedAt" IS NULL"#,
+    )
+    .bind(position_id)
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(side, status, broker_id)| PrismaPositionForModify { side, status, broker_id }))
+}
+
+/// ONE leg of an SL/TP edit, in the three states the web distinguishes and the engine used to collapse.
+///
+/// `Option<Decimal>` conflated "the request did not mention this leg" with "clear this leg", so a
+/// TP-only modify silently wiped an existing SL. The web tells them apart (`undefined` leaves the column
+/// alone, `null` clears it) and so must this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// absent from the request: do not touch the column
+    Untouched,
+    /// explicit null: clear it
+    Clear,
+    /// a value: set it
+    Set(Decimal),
+}
+
+impl Leg {
+    pub fn price(self) -> Option<Decimal> {
+        match self {
+            Leg::Set(v) => Some(v),
+            _ => None,
+        }
+    }
+    pub fn touches(self) -> bool {
+        self != Leg::Untouched
+    }
+}
+
+/// Writes the SL/TP legs of a `"Position"`, with the web's `legWrite` rule (lib/amount-sltp.ts):
+///
+///   setting a PRICE leg clears the matching AMOUNT leg, and vice versa.
+///
+/// That mutual exclusion is not cosmetic any more. The engine's amount monitor went live on 2026-11-09
+/// (836dc22 / monitor.rs), and it fires on `sl_amount` independently of `slPrice`. A modify that wrote
+/// `slPrice` while leaving `slAmount` set would leave BOTH armed and the position would close on
+/// whichever was touched first -- a silent wrong close, not an error. So a price write always nulls its
+/// amount sibling.
+///
+/// Only the legs the request actually mentioned appear in the statement; an `Untouched` leg is absent
+/// from the SQL entirely, so its column keeps whatever it held.
+pub async fn prisma_update_position_legs(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    position_id: &str,
+    sl: Leg,
+    tp: Leg,
+) -> Result<bool, sqlx::Error> {
+    if !sl.touches() && !tp.touches() {
+        return Ok(true); // nothing asked for; the guard above already proved the position exists
+    }
+    // built positionally rather than by string interpolation of values: every price stays a bind
+    let mut sets: Vec<String> = Vec::new();
+    let mut n = 1;
+    let mut sl_bind: Option<Decimal> = None;
+    let mut tp_bind: Option<Decimal> = None;
+    if sl.touches() {
+        match sl {
+            Leg::Set(v) => {
+                sets.push(format!(r#""slPrice" = ${n}"#));
+                sl_bind = Some(v);
+                n += 1;
+            }
+            _ => sets.push(r#""slPrice" = NULL"#.to_string()),
+        }
+        // legWrite: a price write clears its amount sibling, a clear clears both legs of the pair
+        sets.push(r#""slAmount" = NULL"#.to_string());
+    }
+    if tp.touches() {
+        match tp {
+            Leg::Set(v) => {
+                sets.push(format!(r#""tpPrice" = ${n}"#));
+                tp_bind = Some(v);
+                n += 1;
+            }
+            _ => sets.push(r#""tpPrice" = NULL"#.to_string()),
+        }
+        sets.push(r#""tpAmount" = NULL"#.to_string());
+    }
+    let sql = format!(
+        // NO "updatedAt" here: "Position" has no such column (verified in production and in the test
+        // database -- information_schema says 0). "Order" does have one, which is why the cancel sets it.
+        r#"UPDATE "Position" SET {} WHERE id = ${n} AND status = 'OPEN'::"PositionStatus" AND "deletedAt" IS NULL"#,
+        sets.join(", ")
+    );
+    let mut q = sqlx::query(&sql);
+    if let Some(v) = sl_bind {
+        q = q.bind(v);
+    }
+    if let Some(v) = tp_bind {
+        q = q.bind(v);
+    }
+    let done = q.bind(position_id).execute(&mut **tx).await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// The audit row the web writes for both of these (AuditLog, actorAdminId NULL = the trader's own
+/// action, not staff's). Best-effort in the same transaction as the state change, so an audit failure
+/// rolls the change back rather than leaving an unexplained edit.
+pub async fn prisma_audit(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: &str,
+    broker_id: &str,
+    action: &str,
+    entity_type: &str,
+    entity_id: &str,
+    new_value: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"INSERT INTO "AuditLog" (id, "brokerId", action, "entityType", "entityId", "newValue", "createdAt")
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, now())"#,
+    )
+    .bind(id)
+    .bind(broker_id)
+    .bind(action)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(new_value)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 pub async fn prisma_position_status(
     pool: &PgPool,
     position_id: &str,
