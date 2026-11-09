@@ -33,7 +33,11 @@ export type DealerActivityAction =
   // an order request refused before any Order row was written (RejectedOrder, lib/rejected-orders.ts, 2026-10-23)
   | "ORDER_REJECTED"
   // the broker's liquidity bridge license expires within 30 days (owner 2026-10-23, lib/bridge-licenses.ts)
-  | "LICENSE_EXPIRING";
+  | "LICENSE_EXPIRING"
+  // the platform's Super Admin suspended / resumed / revoked the broker's bridge license (license enforcement 1.2)
+  | "LICENSE_SUSPENDED"
+  | "LICENSE_RESUMED"
+  | "LICENSE_REVOKED";
 
 // Per the feature spec: a dealer gets an actual notification (bell badge)
 // for the things they're responsible for reacting to -- placing a pending
@@ -59,6 +63,12 @@ function titleFor(action: DealerActivityAction): string {
       return "Dealing-group order refused";
     case "LICENSE_EXPIRING":
       return "Liquidity bridge license expiring";
+    case "LICENSE_SUSPENDED":
+      return "Liquidity bridge license suspended";
+    case "LICENSE_RESUMED":
+      return "Liquidity bridge license resumed";
+    case "LICENSE_REVOKED":
+      return "Liquidity bridge license revoked";
     default:
       return "Dealing-group account activity";
   }
@@ -455,10 +465,38 @@ export async function getDealerActivityFeedRows(
     })
     .filter((r): r is DealerActivityFeedRow => r !== null);
 
-  // the liquidity bridge license expiring (one entry per license, written when the 30-day window opens)
-  const expiring = await prisma.auditLog.findMany({ where: { brokerId, action: "BRIDGE_LICENSE_EXPIRING" }, orderBy: { createdAt: "desc" }, take: 5 });
-  const licenseRows: DealerActivityFeedRow[] = expiring.map((a) => {
-    const v = (a.newValue ?? {}) as { expiresAt?: string };
+  // the liquidity bridge license: expiring (one entry per license, written when the 30-day window opens), and
+  // suspended / resumed / revoked by the platform's Super Admin (license enforcement 1.2)
+  const licenseAudit = await prisma.auditLog.findMany({
+    where: { brokerId, action: { in: ["BRIDGE_LICENSE_EXPIRING", "BRIDGE_LICENSE_SUSPENDED", "BRIDGE_LICENSE_RESUMED", "BRIDGE_LICENSE_REVOKED"] } },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+  const licenseRows: DealerActivityFeedRow[] = licenseAudit.map((a) => {
+    const v = (a.newValue ?? {}) as { expiresAt?: string; reason?: string };
+    if (a.action !== "BRIDGE_LICENSE_EXPIRING") {
+      const reason = (v.reason ?? "").trim();
+      const action = a.action === "BRIDGE_LICENSE_SUSPENDED" ? "LICENSE_SUSPENDED" : a.action === "BRIDGE_LICENSE_RESUMED" ? "LICENSE_RESUMED" : "LICENSE_REVOKED";
+      const text =
+        action === "LICENSE_SUSPENDED"
+          ? `The liquidity bridge license was suspended by the platform${reason ? `: ${reason}` : ""}. No new hedges are sent; existing hedges can still be closed.`
+          : action === "LICENSE_RESUMED"
+            ? "The liquidity bridge license was resumed. Hedging continues."
+            : `The liquidity bridge license was revoked by the platform${reason ? `: ${reason}` : ""}. The bridge has stopped. Ask your platform provider for a new license.`;
+      return {
+        id: `lic:${a.id}`,
+        at: a.createdAt.toISOString(),
+        accountId: "",
+        accountNumber: "",
+        accountFullName: "",
+        isDealingGroup: true, // shown on every desk view, dealing-only included
+        action,
+        symbol: undefined,
+        side: undefined,
+        volume: undefined,
+        values: { text, ...(reason ? { reason } : {}) },
+      };
+    }
     return {
       id: `lic:${a.id}`,
       at: a.createdAt.toISOString(),

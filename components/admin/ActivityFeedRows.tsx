@@ -29,6 +29,9 @@ export const ACTIVITY_ACTION_LABEL: Record<DealerActivityAction, string> = {
   CLOSE_REQUESTED: "Close awaiting dealer",
   ORDER_REJECTED: "Order rejected",
   LICENSE_EXPIRING: "License expiring",
+  LICENSE_SUSPENDED: "License suspended",
+  LICENSE_RESUMED: "License resumed",
+  LICENSE_REVOKED: "License revoked",
 };
 
 // The only color per row now lives here, on the action label itself
@@ -45,6 +48,9 @@ export const ACTIVITY_ACTION_TONE: Record<DealerActivityAction, "accent" | "warn
   CLOSE_REQUESTED: "accent",
   ORDER_REJECTED: "danger",
   LICENSE_EXPIRING: "warning",
+  LICENSE_SUSPENDED: "warning",
+  LICENSE_RESUMED: "success",
+  LICENSE_REVOKED: "danger",
 };
 
 function fmt(v: unknown): string | null {
@@ -95,6 +101,12 @@ export function describeActivityValues(row: ActivityFeedRow): string {
       if (v.partial) parts.push("(partial)");
       return parts.join(" ");
     }
+    // the bridge license rows carry their plain-words sentence
+    case "LICENSE_EXPIRING":
+    case "LICENSE_SUSPENDED":
+    case "LICENSE_RESUMED":
+    case "LICENSE_REVOKED":
+      return fmt(v.text) ?? "";
     default:
       return "";
   }

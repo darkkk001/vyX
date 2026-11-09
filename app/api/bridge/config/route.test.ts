@@ -230,11 +230,13 @@ describe("GET /api/bridge/config: auth", () => {
     const res = await mod.GET(new NextRequest("https://bc.test.local/api/bridge/config"));
     expect(res.status).toBe(403);
   });
-  it("revoked, expired and feed-only licenses are refused", async () => {
+  it("revoked, expired and feed-only licenses are refused (license enforcement 1.2: revoked / expired carry their own reason)", async () => {
     if (!ready) return;
-    await refused({}, { status: "REVOKED" }, "license");
-    await refused({}, { expiresInDays: -1 }, "license");
-    await refused({}, { features: ["feed"] }, "license");
+    const rev = await refused({}, { status: "REVOKED" }, "revoked");
+    expect(rev.body.license?.manifest).toBeTruthy(); // the signed verdict (lib/bridge-license-enforcement.test.ts verifies it)
+    await refused({}, { expiresInDays: -1 }, "expired");
+    const feedOnly = await refused({}, { features: ["feed"] }, "license");
+    expect(feedOnly.body.license).toBeUndefined();
   });
   it("an unknown license id, and a terminal build presented as a license, are refused", async () => {
     if (!ready) return;
@@ -246,10 +248,15 @@ describe("GET /api/bridge/config: auth", () => {
     await prisma.clientBuild.create({ data: { buildId: term, brokerId: broker.id, brokerSubdomain: broker.subdomain, app: "terminal", version: "1.0.0", status: "ACTIVE", createdAt: new Date(), note: "" } });
     expect((await call({ licenseId: term, brokerId: broker.id })).body.reason).toBe("license");
   });
-  it("machine mismatch is refused, and so is a license issued before machine binding (no hash stored)", async () => {
+  it("machine mismatch is refused; a license issued before machine binding (no hash stored) binds to its first machine", async () => {
     if (!ready) return;
     await refused({ machine: "cd".repeat(32) }, {}, "machine");
-    await refused({}, { machineId: null }, "machine");
+    // license enforcement 1.2 (contract section 4): the first machine that presents it keeps it, the next is refused
+    const { broker } = await brokerWithConfig();
+    const id = await license(broker.id, broker.subdomain, { machineId: null });
+    expect((await call({ licenseId: id, brokerId: broker.id })).status).toBe(200);
+    const other = await call({ licenseId: id, brokerId: broker.id, machine: "cd".repeat(32) });
+    expect([other.status, other.body.reason]).toEqual([403, "machine"]);
   });
   it("a revoked bridge exe build is refused", async () => {
     if (!ready) return;
@@ -289,7 +296,7 @@ describe("GET /api/bridge/config: version", () => {
     const full = await call({ licenseId: id, brokerId: broker.id });
     const v = await call({ licenseId: id, brokerId: broker.id, path: "/api/bridge/config/version" });
     expect(v.status).toBe(200);
-    expect(v.body).toEqual({ version: full.body.version });
+    expect(v.body).toEqual({ version: full.body.version, license: { status: "ACTIVE", reason: "" } }); // license: enforcement 1.2
     expect((await call({ licenseId: id, brokerId: broker.id, ifNoneMatch: `"${full.body.version}"` })).status).toBe(304);
     await prisma.lpConnection.update({ where: { id: conn.id }, data: { heartbeatSecs: 45 } });
     const after = await call({ licenseId: id, brokerId: broker.id, path: "/api/bridge/config/version" });
