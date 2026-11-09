@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { StatCard, StatGrid } from "@/components/ui/StatCard";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { PageLoading, PageError } from "@/components/ui/TableExtras";
+import { BridgeStatusTile } from "@/components/admin/BridgeStatusBadge";
 
 type ActivityRow = { id: string; actionLabel: string; actorEmail: string; entityId: string; createdAtLabel: string };
 
@@ -55,7 +56,7 @@ export default function DashboardManager() {
 
   return (
     <>
-      <StatGrid columns={5}>
+      <StatGrid columns={6}>
         <StatCard
           label="Total clients"
           value={data.totalClients.toLocaleString("en-US")}
@@ -78,6 +79,7 @@ export default function DashboardManager() {
           delta={data.pendingWithdrawalCount > 0 ? `$${data.pendingWithdrawalSum.toLocaleString("en-US", { minimumFractionDigits: 2 })} total` : undefined}
           deltaTone="warn"
         />
+        <BridgeStatusTile />
       </StatGrid>
 
       <Table title="Recent activity">
