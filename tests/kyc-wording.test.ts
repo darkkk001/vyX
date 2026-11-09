@@ -17,6 +17,10 @@ const FORBIDDEN: [string, RegExp][] = [
   ["NO KYC", /"NO KYC"|>NO KYC</],
 ];
 
+// Owner-asked exceptions, by file and exact text: the Room avatar menu's "Verify identity" link (owner 2026-11-09, final
+// Futurix Room batch: "name plus a verified badge, ID under it, or a 'Verify identity' link").
+const ALLOWED: [string, string][] = [[path.join("components", "room", "UserMenu.tsx"), ">Verify identity</a>"]];
+
 function walk(dir: string, out: string[]) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (e.name === "node_modules" || e.name === ".next") continue;
@@ -36,6 +40,7 @@ describe("KYC wording (owner 2026-10-07)", () => {
         const t = line.trim();
         if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*") || t.startsWith("{/*")) return;
         const code = line.replace(/\s\/\/\s.*$/, "");
+        if (ALLOWED.some(([af, txt]) => f === af && code.includes(txt))) return;
         for (const [name, re] of FORBIDDEN) if (re.test(code)) hits.push(`${f}:${i + 1} (${name}) ${t.slice(0, 100)}`);
       });
     }
