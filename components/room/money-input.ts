@@ -17,3 +17,9 @@ export function newRequestKey(): string {
   if (c?.randomUUID) return c.randomUUID().replace(/-/g, "");
   return Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
 }
+
+/** Time left as "4:32" (the deposit countdown). */
+export function countdown(untilIso: string, now = Date.now()): string {
+  const left = Math.max(0, Math.ceil((new Date(untilIso).getTime() - now) / 1000));
+  return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+}

@@ -154,6 +154,10 @@
 .r-amount .r-input { width: 100%; }
 .r-amount-sym { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 13px; color: var(--r-muted); pointer-events: none; }
 .r-funds-done { padding: 32px 24px; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.r-method-wait { color: var(--r-pending); border-color: var(--r-pending); font-variant-numeric: tabular-nums; }
+.r-spin { display: inline-block; width: 30px; height: 30px; border-radius: 50%; border: 2.5px solid var(--r-line); border-top-color: var(--r-accent); animation: r-spin 0.9s linear infinite; }
+@keyframes r-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .r-spin { animation-duration: 2.4s; } }
 @media (max-width: 768px) { .r-field-fixed { flex: 1 1 100%; } }
 /* Transfer: the arrow between From and To; it points down when they stack on a phone */
 .r-xfer-arrow { display: flex; align-items: center; justify-content: center; height: 42px; color: var(--r-muted); }

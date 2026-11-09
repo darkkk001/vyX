@@ -75,9 +75,9 @@ describe("deposit", () => {
     const again = await call("deposit", { key: key(), accountId: a.id, methodId: bankId, amount: "500.00", reference: REF(a.accountNumber, "BBBB") });
     expect(again).toMatchObject({ status: 200, body: { id: first.body.id, reference: REF(a.accountNumber, "AAAA"), duplicate: true } });
     expect(await rows(a.id, "DEPOSIT")).toBe(1);
-    // a different amount is a different request
-    expect((await call("deposit", { key: key(), accountId: a.id, methodId: bankId, amount: "250", reference: REF(a.accountNumber, "CCCC") })).status).toBe(201);
-    expect(await rows(a.id, "DEPOSIT")).toBe(2);
+    // a different amount with the same method within 5 minutes waits (owner 2026-11-10, lib/room/deposit-status.ts)
+    expect((await call("deposit", { key: key(), accountId: a.id, methodId: bankId, amount: "250", reference: REF(a.accountNumber, "CCCC") })).body.code).toBe("DEPOSIT_COOLDOWN");
+    expect(await rows(a.id, "DEPOSIT")).toBe(1);
   });
   it("parallel forms with different keys for the same deposit still create one row", async () => {
     if (!dbReachable) return;

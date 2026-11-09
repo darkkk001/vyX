@@ -47,7 +47,7 @@ describe("one request per form load", () => {
     expect(s).toMatch(/key: send\.key/);
     expect(s).toMatch(/if \(!send\.begin\(\)\) return;/);
     expect(s).toMatch(/send\.end\(\);/);
-    expect(s).toMatch(/\{done \? \(\s*<div[^>]*>\s*<FundsDone/);
+    expect(s).toMatch(/\{(done|status) \? \(\s*<div[^>]*>\s*<(FundsDone|DepositStatus)/);
     expect(s).toMatch(/send\.renew\(\)/);
   });
   it("the lock is a ref, so a second click in the same frame is refused before React re-renders", () => {
@@ -96,5 +96,35 @@ describe("Trade on links", () => {
   });
   it("Downloads Open WebTrader: a new tab", () => {
     expect(src("app/(broker)/room/(shell)/downloads/page.tsx")).toMatch(/<a href="\/trade" target="_blank" rel="noopener"[^>]*>Open WebTrader<\/a>/);
+  });
+});
+
+describe("deposit confirmation and countdown (owner 2026-11-10)", () => {
+  const dep = () => src(DEPOSIT);
+  it("the card re-reads its request on every room event, and every 15 s while waiting", () => {
+    expect(dep()).toMatch(/useRoomEvent\(\(\) => \{ if \(status\) void loadStatus\(status\.id\);/);
+    expect(dep()).toMatch(/if \(status\?\.state !== "PENDING"\) return;\s*const t = setInterval\(\(\) => void loadStatus\(status\.id\), 15_000\);/);
+  });
+  it("coming back while it is pending shows the card again", () => {
+    expect(dep()).toMatch(/if \(resume && b\.pending && b\.pending\.id !== dismissed\) setStatus/);
+  });
+  it("the submit button and the method card count down", () => {
+    expect(dep()).toMatch(/methodWait \? `Next request in \$\{countdown\(methodWait, serverNow\)\}`/);
+    expect(src("components/room/MethodGrid.tsx")).toMatch(/>Next request in \{countdown\(waits\[m\.id\], now\)\}</);
+  });
+  it("the card's three outcomes", () => {
+    const c = src("components/room/DepositStatus.tsx");
+    for (const t of ["Waiting for confirmation", "Your deposit has been approved", "Your deposit was rejected", "New balance of", "Reason: "]) expect(c).toContain(t);
+  });
+});
+
+describe("demo Top up", () => {
+  it("on demo cards of the Dashboard and Accounts, never on live ones", () => {
+    expect(src("app/(broker)/room/(shell)/page.tsx")).toMatch(/\{a\.mode === "LIVE" \? <a [^\n]*?>Deposit<\/a> : <TopUpButton account=\{a\}/);
+    expect(src("app/(broker)/room/(shell)/accounts/page.tsx")).toMatch(/\{live \? null : <TopUpButton account=\{a\}/);
+    expect(src("components/room/TopUpButton.tsx")).toMatch(/if \(account\.mode !== "DEMO"\) return null;/);
+  });
+  it("Accounts page Trade opens the WebTrader with that account", () => {
+    expect(src("app/(broker)/room/(shell)/accounts/page.tsx")).toMatch(/href=\{`\/trade\?account=\$\{encodeURIComponent\(a\.accountNumber\)\}`\} target="_blank" rel="noopener">Trade<\/a>/);
   });
 });

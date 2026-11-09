@@ -5,6 +5,7 @@ import RoomHeader from "@/components/room/RoomHeader";
 import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import StatusChip from "@/components/room/StatusChip";
 import TierPanel from "@/components/room/TierPanel";
+import TopUpButton from "@/components/room/TopUpButton";
 import { useRoom } from "@/components/room/RoomData";
 import { money, pnlClass, dayShort, dayTime, greeting } from "@/components/room/format";
 
@@ -79,7 +80,7 @@ export default function RoomDashboard() {
                   <div><div className="r-label" style={{ fontSize: 10, letterSpacing: 1 }}>Equity</div><div className="mono" style={{ fontSize: 14.5, marginTop: 3 }}>{money(a.figures.equity)}</div></div>
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
-                  {a.mode === "LIVE" ? <a className="r-btn r-btn-sm" style={{ flex: 1 }} href={`/room/deposit?account=${a.id}`}>Deposit</a> : null}
+                  {a.mode === "LIVE" ? <a className="r-btn r-btn-sm" style={{ flex: 1 }} href={`/room/deposit?account=${a.id}`}>Deposit</a> : <TopUpButton account={a} style={{ flex: 1 }} />}
                   <a className="r-btn-ghost r-btn-sm" style={{ flex: 1 }} href={`/trade?account=${encodeURIComponent(a.accountNumber)}`} target="_blank" rel="noopener">Trade</a>
                 </div>
               </div>

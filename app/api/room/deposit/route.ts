@@ -5,10 +5,15 @@ import { createFundsRequest } from "@/lib/funds-request-create";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
-import { withRequestKey, withTwinGuard, twinSince, twinAmount } from "@/lib/room/request-key";
+import { withRequestKey, withTwinGuard, withClientLock, twinSince, twinAmount } from "@/lib/room/request-key";
+import { depositCooldowns, depositView, pendingDeposit } from "@/lib/room/deposit-status";
+import { countdown } from "@/components/room/money-input";
 
 // POST {key, accountId, methodId, amount, reference, receipt?}: a deposit request to the broker (approved in the backoffice).
-// The receipt is an image or PDF as a data URL, at most 8 MB.
+// The receipt is an image or PDF as a data URL, at most 8 MB. After a request, the same client sends no other deposit with
+// the same method for 5 minutes (lib/room/deposit-status.ts), checked under a per-client lock so parallel sends see it.
+// GET ?id=<request>: that request's state for the confirmation card. GET: the pending one to show again, and the
+// per-method countdowns.
 const MAX_RECEIPT_CHARS = Math.ceil((8 * 1024 * 1024 * 4) / 3) + 100;
 const RECEIPT = /^data:(image\/(png|jpeg|jpg|webp)|application\/pdf);base64,[A-Za-z0-9+/=]+$/;
 
@@ -54,15 +59,35 @@ export async function POST(request: NextRequest) {
       });
       if (twin) return NextResponse.json({ status: twin.status, id: twin.id, reference: twin.paymentReference, duplicate: true }, { status: 200 });
 
-      const r = await createFundsRequest({
-        brokerId: session.brokerId, accountId: account.id, type: "DEPOSIT", amount: body?.amount, paymentMethodId: body?.methodId,
-        receiptDataUrl: receipt, note: `Ref ${body.reference}`, paymentReference: body.reference,
+      if (typeof body?.methodId !== "string") return NextResponse.json({ error: "Pick a payment method." }, { status: 400 });
+      return withClientLock(session.clientId, `deposit:${body.methodId}`, async () => {
+        const until = (await depositCooldowns(session.clientId))[body.methodId];
+        if (until && new Date(until).getTime() > Date.now()) {
+          return NextResponse.json({ error: `Next request with this method in ${countdown(until)}.`, code: "DEPOSIT_COOLDOWN", until }, { status: 429 });
+        }
+        const r = await createFundsRequest({
+          brokerId: session.brokerId, accountId: account.id, type: "DEPOSIT", amount: body?.amount, paymentMethodId: body?.methodId,
+          receiptDataUrl: receipt, note: `Ref ${body.reference}`, paymentReference: body.reference,
+        });
+        if (!r.ok) return NextResponse.json({ error: friendly(r.error) }, { status: r.status });
+        await prisma.auditLog.create({ data: { brokerId: session.brokerId, clientId: session.clientId, action: "DEPOSIT_REQUESTED", entityType: "Transaction", entityId: r.created.id, newValue: { accountNumber: account.accountNumber, amount: r.created.amount, reference: body.reference, receipt: Boolean(receipt), source: "CLIENT" } } });
+        return NextResponse.json({ status: r.created.status, id: r.created.id, reference: body.reference }, { status: 201 });
       });
-      if (!r.ok) return NextResponse.json({ error: friendly(r.error) }, { status: r.status });
-      await prisma.auditLog.create({ data: { brokerId: session.brokerId, clientId: session.clientId, action: "DEPOSIT_REQUESTED", entityType: "Transaction", entityId: r.created.id, newValue: { accountNumber: account.accountNumber, amount: r.created.amount, reference: body.reference, receipt: Boolean(receipt), source: "CLIENT" } } });
-      return NextResponse.json({ status: r.created.status, id: r.created.id, reference: body.reference }, { status: 201 });
     });
   });
+}
+
+export async function GET(request: NextRequest) {
+  const ctx = await roomApiSession();
+  if ("response" in ctx) return ctx.response;
+  const { session } = ctx;
+  const id = request.nextUrl.searchParams.get("id");
+  if (id) {
+    const v = await depositView(session.clientId, id);
+    return v ? NextResponse.json(v) : NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
+  const [pending, cooldowns] = await Promise.all([pendingDeposit(session.clientId), depositCooldowns(session.clientId)]);
+  return NextResponse.json({ pending, cooldowns, now: new Date().toISOString() });
 }
 
 function decimalOrNull(v: unknown): Prisma.Decimal | null {
