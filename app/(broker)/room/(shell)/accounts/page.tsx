@@ -31,7 +31,7 @@ function sorted(list: RoomAccount[], sort: Sort): RoomAccount[] {
 function AccountCard({ a, pending, list, onSettings }: { a: RoomAccount; pending: number | null; list: boolean; onSettings: () => void }) {
   const live = a.mode === "LIVE";
   return (
-    <div className="r-card r-acct-card" data-list={list} data-account={a.accountNumber}>
+    <div className="r-card r-acct-card" id={`acct-${a.accountNumber}`} data-list={list} data-account={a.accountNumber}>
       <div style={{ minWidth: 0, flex: "1 1 200px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span className="r-plan-chip">{a.plan}</span>

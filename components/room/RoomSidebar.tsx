@@ -17,6 +17,7 @@ const ICONS: Record<string, ReactNode> = {
   deposit: I(<><rect x="2" y="7" width="12" height="7" rx="1.5" /><path d="M8 1v5M6 4.5 8 6.5l2-2" /></>),
   withdraw: I(<><rect x="2" y="2" width="12" height="7" rx="1.5" /><path d="M8 15v-5M6 11.5 8 9.5l2 2" /></>),
   transfer: I(<path d="M3 5h8M9 2l3 3-3 3M13 11H5M7 8l-3 3 3 3" />),
+  wallet: I(<><path d="M2.5 4.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-7Z" /><path d="M2.5 4.5 10.5 2.5v2" /><path d="M11 8.5h2.5" /></>),
   history: I(<><circle cx="8" cy="8" r="6" /><path d="M8 5v3l2 2" /></>),
   analytics: I(<path d="M2.5 13.5h11M4.5 13.5V8.5M8 13.5V3.5M11.5 13.5V6.5" />),
   journal: I(<><path d="M4 2h8.5v12H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 2Z" /><path d="M2.5 11.5A1.5 1.5 0 0 1 4 10h8.5M6.5 5h3.5" /></>),
@@ -29,7 +30,7 @@ const ICONS: Record<string, ReactNode> = {
 type Item = { href: string; label: string; icon: string };
 const GROUPS: { title: string; items: Item[]; partner?: boolean }[] = [
   { title: "Overview", items: [{ href: "/room", label: "Dashboard", icon: "dashboard" }, { href: "/room/accounts", label: "Accounts", icon: "accounts" }] },
-  { title: "Funds", items: [{ href: "/room/deposit", label: "Deposit", icon: "deposit" }, { href: "/room/withdraw", label: "Withdraw", icon: "withdraw" }, { href: "/room/transfer", label: "Transfer", icon: "transfer" }, { href: "/room/history", label: "History", icon: "history" }] },
+  { title: "Funds", items: [{ href: "/room/deposit", label: "Deposit", icon: "deposit" }, { href: "/room/withdraw", label: "Withdraw", icon: "withdraw" }, { href: "/room/transfer", label: "Transfer", icon: "transfer" }, { href: "/room/wallet", label: "Funding wallet", icon: "wallet" }, { href: "/room/history", label: "History", icon: "history" }] },
   { title: "Performance", items: [{ href: "/room/analytics", label: "Analytics", icon: "analytics" }, { href: "/room/journal", label: "Journal", icon: "journal" }] },
   { title: "Partner", partner: true, items: [{ href: "/room/partner", label: "IB Portal", icon: "partner" }] },
   { title: "More", items: [{ href: "/room/downloads", label: "Downloads", icon: "downloads" }, { href: "/room/support", label: "Support", icon: "support" }, { href: "/room/profile", label: "Profile", icon: "profile" }] },

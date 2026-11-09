@@ -234,7 +234,8 @@ describe("owner additions 2026-11-09", () => {
   });
   it("the top bar shows the funding wallet's real money, nothing account-specific; the strip sums live accounts only", () => {
     const head = read("components/room/RoomHeader.tsx");
-    expect(head).toContain("<WalletBalance />");
+    // owner 2026-11-10: the wallet button (overall real money by default; demo never counts) replaced the plain balance
+    expect(head).toContain("<WalletMenu />");
     expect(head).not.toContain("AccountPicker");
     expect(read("components/room/UserMenu.tsx")).not.toContain("AccountPicker");
     const route = read("app/api/room/overview/route.ts");
