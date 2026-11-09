@@ -254,3 +254,11 @@ describe("live updates reach a wallet-only client (E2E 2026-11-09)", () => {
     expect(route).not.toContain("isWallet");
   });
 });
+
+describe("payment method label (owner 2026-11-09)", () => {
+  it("a method the broker switched off says Not available, never a country reason nobody checked", () => {
+    const g = fs.readFileSync(path.join(process.cwd(), "components/room/MethodGrid.tsx"), "utf8");
+    expect(g).toContain('<span className="r-method-chip">Not available</span>');
+    expect(g).not.toContain("in your country");
+  });
+});

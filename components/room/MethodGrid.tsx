@@ -23,7 +23,7 @@ export default function MethodGrid({ methods, selectedId, currency, side = "depo
           <button key={m.id} type="button" className={`r-method${sel ? " is-selected" : ""}`} disabled={!m.available} aria-pressed={sel} onClick={() => onSelect(m.id)}>
             <span className="r-method-name">{m.label}</span>
             {lines.filter(([, v]) => v).map(([k, v]) => <span key={k} className="r-method-line"><span>{k}</span><span className="mono">{v}</span></span>)}
-            {m.available ? null : <span className="r-method-chip">Not available in your country</span>}
+            {m.available ? null : <span className="r-method-chip">Not available</span>}
           </button>
         );
       })}
