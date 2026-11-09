@@ -85,6 +85,11 @@ export const PRICE_INPUTS: PriceInput[] = [
   { name: "target below the raw spread: floored at 0 (raw ask)", rule: { mode: "target", targetPips: "1", fallbackPips: "0.5" }, digits: 2, bid: "4298.96", ask: "4299.13" },
   { name: "target equal to the raw spread: 0", rule: { mode: "target", targetPips: "1.7", fallbackPips: null }, digits: 2, bid: "4298.96", ask: "4299.13" },
   { name: "EURUSD target 0.8 over a 0.3-pip raw spread", rule: { mode: "target", targetPips: "0.8", fallbackPips: null }, digits: 5, bid: "1.15461", ask: "1.15464" },
+  // 2026-11-09 NEGATIVE markup (raw / zero-spread groups): client spread = max(0, raw + markup); at 0 or crossed both sides = the raw mid, ROUND HALF TO EVEN
+  { name: "negative: floor to 0, half-tick mid rounds half to EVEN, down (1.122705 -> 1.12270)", rule: { mode: "markup", markupPips: "-0.5" }, digits: 5, bid: "1.12270", ask: "1.12271" },
+  { name: "negative: floor to 0, half-tick mid rounds half to EVEN, up (1.122715 -> 1.12272)", rule: { mode: "markup", markupPips: "-0.5" }, digits: 5, bid: "1.12271", ask: "1.12272" },
+  { name: "negative: raw 15 points + markup -13 -> spread 2 (ask -6, bid +7)", rule: { mode: "markup", markupPips: "-1.3" }, digits: 2, bid: "4089.87", ask: "4090.02" },
+  { name: "negative: markup equal to the raw spread -> 0 at the mid (4089.935 -> 4089.94, half to even)", rule: { mode: "markup", markupPips: "-1.3" }, digits: 2, bid: "4089.87", ask: "4090.00" },
 ];
 
 export function computeAskMarkupVectors() {
@@ -96,7 +101,12 @@ export function computeAskMarkupVectors() {
       "split with the ask taking the larger share: askPart = ceil(points/2), bidPart = the rest. accountAsk = raw_ask + " +
       "askPart, accountBid = raw_bid - bidPart, so the total spread is exactly raw + markup; never tighter than raw and " +
       "never at or below zero. A BUY opens at accountAsk and CLOSES AT accountBid; a SELL opens at accountBid and closes " +
-      "at accountAsk. The wire carries askMarkup (add to the raw ask) and bidMarkup (subtract from the raw bid).",
+      "at accountAsk. The wire carries askMarkup (add to the raw ask) and bidMarkup (subtract from the raw bid). " +
+      "NEGATIVE MARKUP (2026-11-09, raw / zero-spread groups; markup >= 0 is unchanged): the same split with a negative total " +
+      "(askPart = ceil(points/2), bidPart = the rest, both <= 0), so the spread narrows by exactly the markup: candidate ask = " +
+      "raw_ask + askPart rounded up, candidate bid = raw_bid - bidPart rounded down. Client spread = max(0, raw + markup): when " +
+      "candidate bid >= candidate ask, accountBid = accountAsk = (raw_bid + raw_ask) / 2 at the symbol's precision, ROUND HALF " +
+      "TO EVEN. The wire carries the negative askMarkup / bidMarkup; a client applies the same floor.",
     resolution: RESOLUTION_INPUTS.map((i) => ({ ...i, expected: ruleJson(resolveRule(i)) })),
     prices: PRICE_INPUTS.map((p) => {
       const rule: AskRule = p.rule.mode === "markup"

@@ -44,6 +44,27 @@ export function markupSplit(markupPips: Prisma.Decimal.Value, digits: number): {
   return { ask: askPoints.mul(point), bid: total.sub(askPoints).mul(point) };
 }
 
+// NEGATIVE markup (owner 2026-11-09, raw / zero-spread groups). The same whole-point split as above, read with a negative
+// total: the spread narrows by exactly the markup (raw 15 points + -13 = 2: the ask comes down 6, the bid goes up 7). When the
+// narrowed spread would be 0 or crossed, the client spread FLOORS AT 0: bid = ask = the raw mid at the symbol's precision,
+// ROUND HALF TO EVEN (owner decision 2026-11-09). Rounding stays the broker's way on each side (ask up, bid down), the bid is
+// never at or below zero. Only ever called for a markup below 0: a markup >= 0 never reaches this (output unchanged).
+export function negativeMarkupQuote(markupPips: Prisma.Decimal.Value, digits: number, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): { bid: Prisma.Decimal; ask: Prisma.Decimal } {
+  const rawBid = new Prisma.Decimal(bid), rawAsk = new Prisma.Decimal(ask);
+  const split = markupSplit(markupPips, digits);   // both parts <= 0 for a negative markup
+  const point = new Prisma.Decimal(1).div(new Prisma.Decimal(10).pow(Math.max(digits, 0)));
+  const a = rawAsk.add(split.ask).toDecimalPlaces(digits, Prisma.Decimal.ROUND_CEIL);
+  const b = rawBid.sub(split.bid).toDecimalPlaces(digits, Prisma.Decimal.ROUND_FLOOR);
+  if (b.lt(a)) return { bid: Prisma.Decimal.max(b, point), ask: a };
+  const mid = Prisma.Decimal.max(rawBid.add(rawAsk).div(2).toDecimalPlaces(digits, Prisma.Decimal.ROUND_HALF_EVEN), point);
+  return { bid: mid, ask: mid };
+}
+
+/** True only for a markup below zero (a raw / zero-spread group); 0 and every positive markup are false. */
+export function isNegativeMarkup(markupPips: Prisma.Decimal.Value): boolean {
+  return new Prisma.Decimal(markupPips).lt(0);
+}
+
 // Moves a fill price by its side's share of the markup, away from the client. `side` is the side of the BOOK this price sits
 // on, which is what each call site already passes: an ask-side fill (a BUY open, a SELL close) goes up, a bid-side fill (a
 // SELL open, a BUY close) goes down.
@@ -56,13 +77,25 @@ export function markupSplit(markupPips: Prisma.Decimal.Value, digits: number): {
 //
 // Never returns a price at or below zero: a markup wider than the price itself degrades to the smallest quotable
 // price rather than going negative (the 60-pip hedge group on a cheap symbol).
+//
+// A NEGATIVE markup (2026-11-09) needs the other side of the same tick (`opposite`: the raw bid for a BUY-side fill, the raw
+// ask for a SELL-side one) to apply negativeMarkupQuote, so the fill equals the quote (lib/ask-markup.ts). A fill with no
+// opposite side (a dealer-typed, requoted or no-tick price) keeps the price as given: never narrower than what was typed.
 export function applySpreadMarkup(params: {
   side: OrderSide;
   price: Prisma.Decimal | number | string;
   spreadMarkup: Prisma.Decimal | number | string;
   digits: number;
+  opposite?: Prisma.Decimal | number | string | null;
 }): Prisma.Decimal {
   const price = new Prisma.Decimal(params.price);
+  if (isNegativeMarkup(params.spreadMarkup)) {
+    if (params.opposite == null) return price;
+    const q = params.side === "SELL"
+      ? negativeMarkupQuote(params.spreadMarkup, params.digits, price, params.opposite)
+      : negativeMarkupQuote(params.spreadMarkup, params.digits, params.opposite, price);
+    return params.side === "SELL" ? q.bid : q.ask;
+  }
   const split = markupSplit(params.spreadMarkup, params.digits);
   if (params.side === "SELL") {
     if (split.bid.isZero()) return price;

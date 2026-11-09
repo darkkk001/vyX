@@ -6,7 +6,7 @@ import path from "node:path";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { computeAskMarkupVectors, RESOLUTION_INPUTS, type ResolutionInput } from "@/lib/ask-markup-contract";
-import { accountClosePrice, accountQuote, loadAskRules, markedDownBid, markedUpAsk, RAW_RULE, type AskRule } from "@/lib/ask-markup";
+import { accountClosePrice, accountQuote, askRuleWire, loadAskRules, markedDownBid, markedUpAsk, RAW_RULE, type AskRule } from "@/lib/ask-markup";
 import { askRuleCacheStats, askRulesCached, invalidateAskRules } from "@/lib/ask-markup-cache";
 import { resolveFillPricing } from "@/lib/pricing-engine";
 import { applySpreadMarkup, pipSize } from "@/lib/group-pricing";
@@ -23,18 +23,58 @@ describe("ask-markup vectors", () => {
     for (const p of computeAskMarkupVectors().prices) {
       // symmetric markup (2026-10-29): applySpreadMarkup halves the markup itself, so the SAME full markup in pips
       // produces the ask-side fill from the raw ask and the bid-side fill from the raw bid
-      const buyFill = applySpreadMarkup({ side: "BUY", price: p.ask, spreadMarkup: p.expected.markupPips, digits: p.digits });
-      const sellFill = applySpreadMarkup({ side: "SELL", price: p.bid, spreadMarkup: p.expected.markupPips, digits: p.digits });
+      // the fill passes the other side of the same tick (a negative markup needs it; for a markup >= 0 it is ignored)
+      const buyFill = applySpreadMarkup({ side: "BUY", price: p.ask, spreadMarkup: p.expected.markupPips, digits: p.digits, opposite: p.bid });
+      const sellFill = applySpreadMarkup({ side: "SELL", price: p.bid, spreadMarkup: p.expected.markupPips, digits: p.digits, opposite: p.ask });
       expect(p.expected.accountAsk).toBe(buyFill.toString());
       expect(p.expected.accountBid).toBe(sellFill.toString());
       // a BUY opens at the account's ask and CLOSES at its bid; a SELL the other way round
       expect(p.expected.sellClose).toBe(p.expected.accountAsk);
       expect(p.expected.buyClose).toBe(p.expected.accountBid);
+      if (D(p.expected.markupPips).lt(0)) {
+        // a negative markup: never crossed (a zero spread at most), and never wider than raw
+        expect(D(p.expected.accountBid).lte(D(p.expected.accountAsk))).toBe(true);
+        expect(D(p.expected.accountAsk).lte(D(p.ask))).toBe(true);
+        expect(D(p.expected.accountBid).gte(D(p.bid))).toBe(true);
+        continue;
+      }
       // never tighter than raw, never crossed
       expect(D(p.expected.accountAsk).gte(D(p.ask))).toBe(true);
       expect(D(p.expected.accountBid).lte(D(p.bid))).toBe(true);
       expect(D(p.expected.accountBid).lt(D(p.expected.accountAsk))).toBe(true);
     }
+  });
+
+  it("normal groups (markup >= 0) are unchanged: the 14 whole-point cases and every fill without the other side", () => {
+    const prices = computeAskMarkupVectors().prices.filter((p) => !D(p.expected.markupPips).lt(0));
+    expect(prices).toHaveLength(14);
+    for (const p of prices) {
+      // the new `opposite` argument changes nothing for a markup >= 0
+      expect(applySpreadMarkup({ side: "BUY", price: p.ask, spreadMarkup: p.expected.markupPips, digits: p.digits }).toString()).toBe(p.expected.accountAsk);
+      expect(applySpreadMarkup({ side: "SELL", price: p.bid, spreadMarkup: p.expected.markupPips, digits: p.digits }).toString()).toBe(p.expected.accountBid);
+      expect(D(p.expected.accountBid).lt(D(p.expected.accountAsk))).toBe(true);
+    }
+  });
+
+  it("negative markup (raw / zero-spread groups): max(0, raw + markup), crossing -> the mid rounded HALF TO EVEN", () => {
+    const neg = (m: string, digits: number) => ({ mode: "markup" as const, markupPips: D(m), digits });
+    // raw 15 points + markup -13 = 2: ask down 6, bid up 7
+    expect(accountQuote(neg("-1.3", 2), "4089.87", "4090.02")).toEqual({ bid: D("4089.94"), ask: D("4089.96") });
+    // floored at 0: the half-tick mid, half to even both ways (pins the rounding mode)
+    expect(accountQuote(neg("-0.5", 5), "1.12270", "1.12271")).toEqual({ bid: D("1.1227"), ask: D("1.1227") });
+    expect(accountQuote(neg("-0.5", 5), "1.12271", "1.12272")).toEqual({ bid: D("1.12272"), ask: D("1.12272") });
+    // a markup exactly the raw spread: 0 at the mid; a far bigger one: still 0 at the mid, never crossed
+    expect(accountQuote(neg("-1.3", 2), "4089.87", "4090.00")).toEqual({ bid: D("4089.94"), ask: D("4089.94") });
+    expect(accountQuote(neg("-50", 2), "4089.87", "4090.00")).toEqual({ bid: D("4089.94"), ask: D("4089.94") });
+    // the fill follows the quote when it has the other side; without it the typed price stands
+    expect(applySpreadMarkup({ side: "BUY", price: "4090.02", opposite: "4089.87", spreadMarkup: "-1.3", digits: 2 }).toString()).toBe("4089.96");
+    expect(applySpreadMarkup({ side: "SELL", price: "4089.87", opposite: "4090.02", spreadMarkup: "-1.3", digits: 2 }).toString()).toBe("4089.94");
+    expect(applySpreadMarkup({ side: "BUY", price: "4090.02", spreadMarkup: "-1.3", digits: 2 }).toString()).toBe("4090.02");
+    // a BUY closes at the account's bid, a SELL at its ask, on the same narrowed book
+    expect(accountClosePrice("BUY", "4089.87", "4090.02", neg("-1.3", 2)).toString()).toBe("4089.94");
+    expect(accountClosePrice("SELL", "4089.87", "4090.02", neg("-1.3", 2)).toString()).toBe("4089.96");
+    // the wire carries the negative parts
+    expect(askRuleWire(neg("-1.3", 2))).toEqual({ askMarkup: "-0.06", bidMarkup: "-0.07", spreadRule: "markup" });
   });
 
   it("a zero markup leaves BOTH sides raw, and the markup is split in whole points", () => {
