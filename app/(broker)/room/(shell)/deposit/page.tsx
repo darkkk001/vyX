@@ -1,17 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
-import { useRoom } from "@/components/room/RoomData";
+import { useRoom, useRoomEvent } from "@/components/room/RoomData";
 import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import { useFunds, amountOk, cleanAmount, readDataUrl, useSendOnce } from "@/components/room/useFunds";
 import MethodGrid from "@/components/room/MethodGrid";
 import AmountInput from "@/components/room/AmountInput";
-import FundsDone from "@/components/room/FundsDone";
+import DepositStatus, { type DepositView } from "@/components/room/DepositStatus";
+import { countdown } from "@/components/room/money-input";
 import { money } from "@/components/room/format";
 
 // Artboard "Deposit": broker-configured methods, the broker's own receiving details with a payment reference,
-// receipt upload, request to the broker.
+// receipt upload, request to the broker. After a request (owner 2026-11-10): the confirmation card follows it live and comes
+// back while it is pending; the same method waits 5 minutes ("Next request in 4:32", also refused by the server).
+const DISMISSED = "room_deposit_dismissed";
 export default function RoomDeposit() {
   const { data, selected, select, refresh } = useRoom();
   // ?account=<id> from a Deposit button elsewhere picks that account once
@@ -38,7 +41,43 @@ export default function RoomDeposit() {
   // one request per form load; the button stays "Sending…" from the first click until the server answers
   const send = useSendOnce();
   const busy = send.busy;
-  const [done, setDone] = useState<{ reference: string; amount: string; currency: string; again: boolean } | null>(null);
+  // the request the confirmation card follows (null = the form)
+  const [status, setStatus] = useState<DepositView | null>(null);
+  // per method: until when the next request waits; skew = server clock minus this browser's
+  const [waits, setWaits] = useState<Record<string, string>>({});
+  const [skew, setSkew] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  const loadState = useCallback(async (resume: boolean) => {
+    const res = await fetch("/api/room/deposit", { cache: "no-store" }).catch(() => null);
+    if (!res?.ok) return;
+    const b = (await res.json()) as { pending: DepositView | null; cooldowns: Record<string, string>; now: string };
+    setWaits(b.cooldowns);
+    setSkew(new Date(b.now).getTime() - Date.now());
+    let dismissed = "";
+    try { dismissed = localStorage.getItem(DISMISSED) ?? ""; } catch { /* storage blocked */ }
+    if (resume && b.pending && b.pending.id !== dismissed) setStatus((cur) => cur ?? b.pending);
+  }, []);
+  const loadStatus = useCallback(async (id: string) => {
+    const res = await fetch(`/api/room/deposit?id=${encodeURIComponent(id)}`, { cache: "no-store" }).catch(() => null);
+    if (res?.ok) setStatus(await res.json());
+  }, []);
+  useEffect(() => { void loadState(true); }, [loadState]);
+  // live: the broker's approve / reject reaches the room socket in ~1 s; a 15 s read while waiting covers a dropped socket
+  useRoomEvent(() => { if (status) void loadStatus(status.id); void loadState(false); });
+  useEffect(() => {
+    if (status?.state !== "PENDING") return;
+    const t = setInterval(() => void loadStatus(status.id), 15_000);
+    return () => clearInterval(t);
+  }, [status?.state, status?.id, loadStatus]);
+  // the countdowns tick while any method waits
+  const waiting = Object.values(waits).some((u) => new Date(u).getTime() > now + skew);
+  useEffect(() => {
+    if (!waiting) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [waiting]);
+  const serverNow = now + skew;
+  const methodWait = method && waits[method.id] && new Date(waits[method.id]).getTime() > serverNow ? waits[method.id] : null;
   const [copied, setCopied] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -64,20 +103,23 @@ export default function RoomDeposit() {
     if (!send.begin()) return;
     setMsg(null);
     let res: Response | null = null;
-    let body: { error?: string; reference?: string; duplicate?: boolean } | null = null;
+    let body: { error?: string; code?: string; until?: string; id?: string; reference?: string; duplicate?: boolean } | null = null;
     try {
       res = await fetch("/api/room/deposit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: send.key, accountId: funds.account.id, methodId: method.id, amount: cleanAmount(amount), reference: funds.reference, receipt: receipt?.data ?? null }) });
       body = await res.json().catch(() => null);
     } catch { /* no connection: the message below */ }
     send.end();
-    if (!res || !res.ok) { setMsg({ ok: false, text: body?.error ?? "Could not send the request." }); return; }
-    // the form is replaced by the confirmation, so the same request cannot go twice
-    setDone({ reference: body?.reference ?? funds.reference, amount: cleanAmount(amount), currency: funds.account.currency, again: Boolean(body?.duplicate) });
-    await Promise.all([reload(), refresh()]);
+    if (body?.code === "DEPOSIT_COOLDOWN" && body.until) { setWaits((w) => ({ ...w, [method.id]: body!.until! })); setNow(Date.now()); }
+    if (!res || !res.ok || !body?.id) { setMsg({ ok: false, text: body?.error ?? "Could not send the request." }); return; }
+    // the form is replaced by the confirmation card, so the same request cannot go twice; it follows the request live
+    setStatus({ id: body.id, state: "PENDING", amount: cleanAmount(amount), currency: funds.account.currency, accountNumber: funds.account.accountNumber, method: method.label, reference: body.reference ?? funds.reference, sentAt: new Date().toISOString(), decidedAt: null, reason: null, balance: null });
+    await Promise.all([loadStatus(body.id), loadState(false), reload(), refresh()]);
   }
 
   function another() {
-    setDone(null);
+    if (status) { try { localStorage.setItem(DISMISSED, status.id); } catch { /* storage blocked */ } }
+    setStatus(null);
+    void loadState(false);
     setAmount("");
     setReceipt(null);
     setMsg(null);
@@ -92,7 +134,7 @@ export default function RoomDeposit() {
         {data && live.length === 0 && !wallet ? <div className="r-card r-pad r-note">Open a live account first. Demo accounts are not funded. <OpenAccountButton className="r-link-btn">Open an account</OpenAccountButton></div> : null}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="r-label" style={{ padding: "2px 2px 4px" }}>Payment method</div>
-          <MethodGrid methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={funds?.account.currency ?? ""} onSelect={(id) => { setMethodId(id); setMsg(null); }} />
+          <MethodGrid methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={funds?.account.currency ?? ""} onSelect={(id) => { setMethodId(id); setMsg(null); }} waits={waits} now={serverNow} />
         </div>
         <div className="r-row">
           {funds && open.length === 0 ? (
@@ -101,13 +143,9 @@ export default function RoomDeposit() {
             </div>
           ) : null}
 
-          {done ? (
+          {status ? (
             <div style={{ flex: "2 1 480px", minWidth: 0 }}>
-              <FundsDone title={done.again ? "This request was already sent" : "Deposit request sent"} again="New deposit request" onAgain={another}>
-                <div>Amount <span className="mono" style={{ color: "var(--r-text)" }}>{money(done.amount)} {done.currency}</span></div>
-                <div>Reference <span className="mono" style={{ color: "var(--r-gold-text)", fontWeight: 600 }}>{done.reference}</span></div>
-                <div>Your broker credits the deposit after checking the payment.</div>
-              </FundsDone>
+              <DepositStatus v={status} onAgain={another} />
             </div>
           ) : (
           <div className="r-card" style={{ flex: "2 1 480px", minWidth: 0, padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
@@ -172,7 +210,7 @@ export default function RoomDeposit() {
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
               <div style={{ fontSize: 12, color: "var(--r-muted)" }}>Your broker credits the deposit after checking the payment.</div>
-              <button type="button" className="r-btn" style={{ padding: "11px 24px" }} disabled={!funds || !method || busy || funds.account.mode !== "LIVE"} onClick={submit}>{busy ? "Sending…" : "Submit deposit request"}</button>
+              <button type="button" className="r-btn" style={{ padding: "11px 24px" }} disabled={!funds || !method || busy || funds.account.mode !== "LIVE" || methodWait != null} onClick={submit}>{busy ? "Sending…" : methodWait ? `Next request in ${countdown(methodWait, serverNow)}` : "Submit deposit request"}</button>
             </div>
             {msg ? <div className={msg.ok ? "r-okmsg" : "r-error"} role="status">{msg.text}</div> : null}
           </div>

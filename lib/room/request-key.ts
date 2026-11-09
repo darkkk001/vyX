@@ -22,7 +22,7 @@ const STEP_MS = 120;
 // an unanswered claim older than this is a crashed attempt: free to take
 const STALE_MS = 60_000;
 
-export type RequestKind = "DEPOSIT" | "WITHDRAWAL" | "TRANSFER";
+export type RequestKind = "DEPOSIT" | "WITHDRAWAL" | "TRANSFER" | "TOPUP";
 
 export async function withRequestKey(clientId: string, kind: RequestKind, key: unknown, run: () => Promise<NextResponse>): Promise<NextResponse> {
   if (typeof key !== "string" || !REQUEST_KEY.test(key)) {
@@ -83,6 +83,32 @@ async function runClaimed(clientId: string, key: string, run: () => Promise<Next
     await free();
   }
   return res;
+}
+
+/**
+ * A short per-client lock (a RoomRequestKey row named lock:<name>, deleted when done): one "check, then create" at a time,
+ * e.g. the 5-minute deposit rule, so two parallel deposits both see the first one. No connection is held while waiting.
+ */
+export async function withClientLock<T>(clientId: string, name: string, run: () => Promise<T>): Promise<T> {
+  const key = `lock:${name}`;
+  const deadline = Date.now() + WAIT_MS;
+  for (;;) {
+    try {
+      await prisma.roomRequestKey.create({ data: { clientId, key, kind: "LOCK" } });
+      break;
+    } catch (e) {
+      if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
+    }
+    const row = await prisma.roomRequestKey.findUnique({ where: { clientId_key: { clientId, key } }, select: { id: true, createdAt: true } });
+    if (row && Date.now() - row.createdAt.getTime() > STALE_MS) await prisma.roomRequestKey.deleteMany({ where: { id: row.id, createdAt: row.createdAt } });
+    else if (Date.now() > deadline) throw new Error("client lock wait timed out");
+    else await new Promise((r) => setTimeout(r, STEP_MS));
+  }
+  try {
+    return await run();
+  } finally {
+    await prisma.roomRequestKey.deleteMany({ where: { clientId, key } }).catch(() => {});
+  }
 }
 
 export const twinSince = () => new Date(Date.now() - TWIN_SECONDS * 1000);

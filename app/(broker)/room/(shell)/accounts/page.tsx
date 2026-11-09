@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { useRoom, useRoomEvent, type RoomAccount } from "@/components/room/RoomData";
+import TopUpButton from "@/components/room/TopUpButton";
 import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import AccountDrawer, { type LevRow } from "@/components/room/AccountDrawer";
 import WalletPanel from "@/components/room/WalletPanel";
@@ -46,7 +47,8 @@ function AccountCard({ a, pending, list, onSettings }: { a: RoomAccount; pending
         <div style={{ fontSize: 11.5, color: "var(--r-muted)", marginTop: 3 }}>Opened {day(a.openedAt)}</div>
       </div>
       <div className="r-acct-actions">
-        <a className="r-btn r-btn-sm" href="/trade" target="_blank" rel="noopener">Trade</a>
+        <a className="r-btn r-btn-sm" href={`/trade?account=${encodeURIComponent(a.accountNumber)}`} target="_blank" rel="noopener">Trade</a>
+        {live ? null : <TopUpButton account={a} className="r-btn-ghost r-btn-sm" />}
         {live ? <a className="r-btn-ghost r-btn-sm" href={`/room/deposit?account=${a.id}`}>Deposit</a> : null}
         {live ? <a className="r-btn-ghost r-btn-sm" href={`/room/withdraw?account=${a.id}`}>Withdraw</a> : null}
         <a className="r-btn-ghost r-btn-sm" href={`/room/transfer?from=${a.id}`}>Transfer</a>
