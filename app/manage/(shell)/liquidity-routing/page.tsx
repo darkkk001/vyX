@@ -20,7 +20,7 @@ export default async function ManagerLpRoutingPage() {
     <main className="mx-auto max-w-[1200px]">
       <PageHeader
         title="LP routing rules"
-        description="Intended routing, recorded before the real integration exists. No execution path reads this yet."
+        description="Routing rules per group. QoreBridge reads these rules to route orders to your liquidity providers."
       />
       <LpRoutingManager />
     </main>
