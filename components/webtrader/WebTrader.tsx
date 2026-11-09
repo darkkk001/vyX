@@ -38,7 +38,7 @@ import KLineChartPanel, {
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
-import { SLTP_UNITS, amountRefusalText, formatAmount, legForModify, legForOrder, pipSizeOf, plainPositive, type SlTpUnit } from "./sltp-units";
+import { AMOUNT_SETTING_OFF, SLTP_UNITS, amountRefusalText, formatAmount, legForModify, legForOrder, pipSizeOf, plainPositive, type SlTpUnit } from "./sltp-units";
 import ChartCell from "./ChartCell";
 import SettingsDialog from "./SettingsDialog";
 import KeyboardShortcutsDialog from "./KeyboardShortcutsDialog";
@@ -5298,8 +5298,14 @@ export default function WebTrader({
                       role="radio"
                       aria-checked={slTpUnit === u.key}
                       className={slTpUnit === u.key ? "active" : ""}
-                      title={u.key === "amount" ? `Closes when the profit or loss reaches the amount, in ${accountCcy}` : u.key === "pips" ? "Distance from the order price, in pips" : "A price level"}
-                      onClick={() => { if (slTpUnit === u.key) return; setSlTpUnit(u.key); setSlInput(""); setTpInput(""); setRiskPct(""); setTicketSltpError(null); }}
+                      aria-disabled={u.key === "amount" && AMOUNT_SETTING_OFF !== "" ? true : undefined}
+                      style={u.key === "amount" && AMOUNT_SETTING_OFF !== "" ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                      title={u.key === "amount" ? (AMOUNT_SETTING_OFF || `Closes when the profit or loss reaches the amount, in ${accountCcy}`) : u.key === "pips" ? "Distance from the order price, in pips" : "A price level"}
+                      onClick={() => {
+                        // owner 2026-11-09: Amount is switched off; the click says why instead of doing nothing
+                        if (u.key === "amount" && AMOUNT_SETTING_OFF !== "") { setTicketSltpError(AMOUNT_SETTING_OFF); return; }
+                        if (slTpUnit === u.key) return; setSlTpUnit(u.key); setSlInput(""); setTpInput(""); setRiskPct(""); setTicketSltpError(null);
+                      }}
                     >
                       {u.label}
                     </button>
@@ -5693,7 +5699,14 @@ export default function WebTrader({
               <div className="sltp-edit-unit">
                 <span className="stm-seg" role="radiogroup" aria-label="Stop loss and take profit unit">
                   {SLTP_UNITS.map((u) => (
-                    <button key={u.key} type="button" role="radio" aria-checked={sltpEdit.unit === u.key} className={sltpEdit.unit === u.key ? "active" : ""} onClick={() => changeSltpUnit(u.key)}>{u.label}</button>
+                    <button
+                      key={u.key} type="button" role="radio" aria-checked={sltpEdit.unit === u.key} className={sltpEdit.unit === u.key ? "active" : ""}
+                      aria-disabled={u.key === "amount" && AMOUNT_SETTING_OFF !== "" ? true : undefined}
+                      style={u.key === "amount" && AMOUNT_SETTING_OFF !== "" ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                      title={u.key === "amount" && AMOUNT_SETTING_OFF !== "" ? AMOUNT_SETTING_OFF : undefined}
+                      // owner 2026-11-09: Amount is switched off; the click says why (an amount the position already has stays shown and can be removed)
+                      onClick={() => (u.key === "amount" && AMOUNT_SETTING_OFF !== "" ? setSltpEdit((cur) => (cur ? { ...cur, error: AMOUNT_SETTING_OFF } : cur)) : changeSltpUnit(u.key))}
+                    >{u.label}</button>
                   ))}
                 </span>
                 <span className="sltp-edit-unit-hint">{sltpEdit.unit === "amount" ? `Closes at the profit or loss, in ${accountCcy}` : sltpEdit.unit === "pips" ? "Distance from the current price" : ""}</span>

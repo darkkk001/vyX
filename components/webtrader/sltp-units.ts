@@ -11,6 +11,12 @@ export const SLTP_UNITS: { key: SlTpUnit; label: string }[] = [
   { key: "pips", label: "Pips" },
   { key: "amount", label: "Amount" },
 ];
+/**
+ * Owner 2026-11-09: setting an amount SL / TP from the screen is switched OFF. The engine does not enforce amount legs yet, so an amount set
+ * now would never fire. Non-empty = off: the Amount option is shown disabled with this as its reason, a new or changed amount is refused with
+ * it, an unchanged amount is left alone and an emptied one can still be removed. Price and pips are unchanged. Set to "" to switch it back on.
+ */
+export const AMOUNT_SETTING_OFF: string = "Amount stop loss / take profit is not available yet";
 export const AMOUNT_MAX = 1_000_000_000;
 
 /** One pip in price units, the server's rule (lib/group-pricing.ts pipSize): 10^-(digits-1), so 0.0001 on a 5-digit pair, 0.1 on a 2-digit metal. */
@@ -45,8 +51,10 @@ export function amountInputError(raw: string): string | null {
 export type LegWire = { price?: number | null; amount?: string | null };
 
 /** What one leg of a NEW order sends. Empty = no leg (price null, exactly as before). Price and pips send a price, amount sends the amount and no price. */
-export function legForOrder(o: { unit: SlTpUnit; raw: string; kind: "sl" | "tp"; side: "BUY" | "SELL"; ref: number; digits: number }): { ok: true; wire: LegWire } | { ok: false; error: string } {
+export function legForOrder(o: { unit: SlTpUnit; raw: string; kind: "sl" | "tp"; side: "BUY" | "SELL"; ref: number; digits: number; amountOff?: string }): { ok: true; wire: LegWire } | { ok: false; error: string } {
   const raw = o.raw.trim();
+  // switched off: an amount typed anyway is refused with the reason (`amountOff` is for tests; the screen uses AMOUNT_SETTING_OFF)
+  if (o.unit === "amount" && raw !== "" && (o.amountOff ?? AMOUNT_SETTING_OFF) !== "") return { ok: false, error: o.amountOff ?? AMOUNT_SETTING_OFF };
   const label = o.kind === "sl" ? "Stop loss" : "Take profit";
   if (raw === "") return { ok: true, wire: { price: null } };
   if (o.unit === "price") {
@@ -69,7 +77,7 @@ export function legForOrder(o: { unit: SlTpUnit; raw: string; kind: "sl" | "tp";
  * blank for positions that differ) leaves every empty field alone, as that modal always did.
  */
 export function legForModify(o: {
-  unit: SlTpUnit; raw: string; kind: "sl" | "tp"; side: "BUY" | "SELL"; ref: number; digits: number; existingAmount: string | null; keepWhenEmpty?: boolean;
+  unit: SlTpUnit; raw: string; kind: "sl" | "tp"; side: "BUY" | "SELL"; ref: number; digits: number; existingAmount: string | null; keepWhenEmpty?: boolean; amountOff?: string;
 }): { ok: true; wire: LegWire } | { ok: false; error: string } {
   const raw = o.raw.trim();
   if (raw === "") {
@@ -78,6 +86,8 @@ export function legForModify(o: {
     if (o.unit === "amount" && o.existingAmount != null) return { ok: true, wire: { amount: null } };
     return { ok: true, wire: {} };
   }
+  // switched off: an amount left exactly as it was is no change, so the other leg can still be edited
+  if (o.unit === "amount" && (o.amountOff ?? AMOUNT_SETTING_OFF) !== "" && o.existingAmount != null && Number(raw) === Number(o.existingAmount)) return { ok: true, wire: {} };
   return legForOrder(o);
 }
 

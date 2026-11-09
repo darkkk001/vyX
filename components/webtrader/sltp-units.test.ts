@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { amountInputError, amountRefusalText, amountRowText, formatAmount, legForModify, legForOrder, pipSizeOf, pipsToPrice, plainPositive } from "./sltp-units";
+import { AMOUNT_SETTING_OFF, amountInputError, amountRefusalText, amountRowText, formatAmount, legForModify, legForOrder, pipSizeOf, pipsToPrice, plainPositive } from "./sltp-units";
 
 describe("pips", () => {
   it("one pip follows the server's rule: 10^-(digits-1)", () => {
@@ -46,11 +46,19 @@ describe("a new order's legs", () => {
     expect(legForOrder({ ...base, unit: "pips", raw: "-3" })).toEqual({ ok: false, error: "Enter stop loss pips above 0" });
     expect(legForOrder({ ...base, kind: "tp", unit: "pips", raw: "10" })).toEqual({ ok: true, wire: { price: 101.1 } });
   });
-  it("amount sends the amount text and no price", () => {
-    expect(legForOrder({ ...base, unit: "amount", raw: "250.50" })).toEqual({ ok: true, wire: { amount: "250.50" } });
+  it("amount (switched on) sends the amount text and no price", () => {
+    const on = { ...base, amountOff: "" };
+    expect(legForOrder({ ...on, unit: "amount", raw: "250.50" })).toEqual({ ok: true, wire: { amount: "250.50" } });
+    expect(legForOrder({ ...on, unit: "amount", raw: "" })).toEqual({ ok: true, wire: { price: null } });
+    expect(legForOrder({ ...on, unit: "amount", raw: "1e3" }).ok).toBe(false);
+    expect(legForOrder({ ...on, unit: "amount", raw: "0" }).ok).toBe(false);
+  });
+  it("amount is switched off (owner 2026-11-09): a typed amount is refused with the reason; price and pips are unchanged", () => {
+    expect(AMOUNT_SETTING_OFF).toBe("Amount stop loss / take profit is not available yet");
+    expect(legForOrder({ ...base, unit: "amount", raw: "250.50" })).toEqual({ ok: false, error: AMOUNT_SETTING_OFF });
     expect(legForOrder({ ...base, unit: "amount", raw: "" })).toEqual({ ok: true, wire: { price: null } });
-    expect(legForOrder({ ...base, unit: "amount", raw: "1e3" }).ok).toBe(false);
-    expect(legForOrder({ ...base, unit: "amount", raw: "0" }).ok).toBe(false);
+    expect(legForOrder({ ...base, unit: "price", raw: "99.5" })).toEqual({ ok: true, wire: { price: 99.5 } });
+    expect(legForOrder({ ...base, unit: "pips", raw: "10" })).toEqual({ ok: true, wire: { price: 99.1 } });
   });
 });
 
@@ -69,7 +77,14 @@ describe("an existing position's legs", () => {
   });
   it("a typed value is the same as an order's", () => {
     expect(legForModify({ ...base, unit: "pips", raw: "5", existingAmount: null })).toEqual({ ok: true, wire: { price: 99.5 } });
-    expect(legForModify({ ...base, unit: "amount", raw: "75", existingAmount: null })).toEqual({ ok: true, wire: { amount: "75" } });
+    expect(legForModify({ ...base, unit: "amount", raw: "75", existingAmount: null, amountOff: "" })).toEqual({ ok: true, wire: { amount: "75" } });
+  });
+  it("amount switched off: a new or changed amount is refused, an unchanged one is left alone, an emptied one is still removed", () => {
+    expect(legForModify({ ...base, unit: "amount", raw: "75", existingAmount: null })).toEqual({ ok: false, error: AMOUNT_SETTING_OFF });
+    expect(legForModify({ ...base, unit: "amount", raw: "350", existingAmount: "300" })).toEqual({ ok: false, error: AMOUNT_SETTING_OFF });
+    expect(legForModify({ ...base, unit: "amount", raw: "300.00", existingAmount: "300" })).toEqual({ ok: true, wire: {} });
+    expect(legForModify({ ...base, unit: "amount", raw: "", existingAmount: "300" })).toEqual({ ok: true, wire: { amount: null } });
+    expect(legForModify({ ...base, unit: "price", raw: "98", existingAmount: "300" })).toEqual({ ok: true, wire: { price: 98 } });
   });
 });
 
