@@ -246,22 +246,25 @@ async fn the_margin_trigger_book_carries_the_rule_and_values_the_sell_at_the_acc
 // per-account override, target mode, and a coverage account.
 
 /// Every shape, as (label, pricing, expected account bid, expected account ask) off raw 4298.96 / 4299.13
-/// (digits 2, pip 0.1, raw spread 1.7 pips). Half the markup each side, rounded AWAY from the client.
+/// (digits 2, pip 0.1, raw spread 1.7 pips). The WHOLE-POINT split (836dc22): the markup is counted in whole
+/// points of the last digit, the ask takes ceil(total/2) and the bid the rest, so the total spread is exactly
+/// raw + markup. Before that it was half each side rounded away from the client, which is what the stale
+/// broker-1.5-pips bid below used to encode -- 15 points is ODD, so the bid moved 7 points, not 8.
 /// The same four numbers the web pins in tests/pentest/markup-leak.test.ts.
 fn shapes() -> Vec<(&'static str, Pricing, Decimal, Decimal)> {
     vec![
-        ("broker 1.5 pips", Pricing { broker_markup: dec!(1.5), ..Default::default() }, dec!(4298.88), dec!(4299.21)),
+        ("broker 1.5 pips", Pricing { broker_markup: dec!(1.5), ..Default::default() }, dec!(4298.89), dec!(4299.21)),
         ("group 2 pips over a broker default", Pricing { broker_markup: dec!(1.5), group_markup: Some(dec!(2)), ..Default::default() }, dec!(4298.86), dec!(4299.23)),
         (
             "pricing engine: a per-account override beats the group",
             Pricing { engine: true, broker_markup: dec!(1.5), group_markup: Some(dec!(2)), account_symbol_markup: Some(dec!(0.7)), ..Default::default() },
-            dec!(4298.92),
+            dec!(4298.93),
             dec!(4299.17),
         ),
         (
             "pricing engine: group target 5 pips over a 1.7-pip raw spread",
             Pricing { engine: true, broker_markup: dec!(1.5), group_target: Some(dec!(5)), ..Default::default() },
-            dec!(4298.79),
+            dec!(4298.80),
             dec!(4299.30),
         ),
         ("a coverage group prices raw", Pricing { coverage_group: true, broker_markup: dec!(3), ..Default::default() }, dec!(4298.96), dec!(4299.13)),

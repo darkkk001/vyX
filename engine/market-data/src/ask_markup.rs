@@ -51,11 +51,23 @@ pub struct AskLevels {
     pub account_symbol: Level,
 }
 
-fn level_rule(l: &Level, digits: i32) -> Option<AskRule> {
+/// ONLY A GROUP MAY GO NEGATIVE (owner decision 2026-11-09). A negative markup is a deliberate
+/// raw / zero-spread product, configured on a group through the group-pricing PATCH. Every other level --
+/// `BrokerSymbol.spreadMarkup` and the per-account / per-account-type override -- still refuses one and is
+/// clamped to zero here, so a hostile or fat-fingered value on those levels stays the no-op it has been
+/// since 2026-10-29. Clamping at RESOLUTION rather than in the pricing maths is what keeps that promise in
+/// one readable place: by the time a rule exists, its sign is already legitimate for the level it came from.
+fn clamp_non_negative(v: Option<Decimal>) -> Option<Decimal> {
+    v.map(|x| if x.is_sign_negative() { Decimal::ZERO } else { x })
+}
+
+fn level_rule(l: &Level, digits: i32, allow_negative: bool) -> Option<AskRule> {
+    let markup = if allow_negative { l.markup } else { clamp_non_negative(l.markup) };
     if let Some(target_pips) = l.target {
-        return Some(AskRule::Target { target_pips, fallback_pips: l.markup, digits });
+        // a target spread is an absolute width, never negative; its fallback follows the level's own rule
+        return Some(AskRule::Target { target_pips, fallback_pips: markup, digits });
     }
-    l.markup.map(|markup_pips| AskRule::Markup { markup_pips, digits })
+    markup.map(|markup_pips| AskRule::Markup { markup_pips, digits })
 }
 
 /// The rule, or None (the raw ask) when the broker does not carry the symbol.
@@ -65,17 +77,24 @@ pub fn resolve(l: &AskLevels) -> Option<AskRule> {
     if l.coverage {
         return Some(AskRule::Markup { markup_pips: Decimal::ZERO, digits });
     }
+    // the broker-symbol value may never be negative (see `level_rule`); only the group may
+    let broker_nn = if broker.is_sign_negative() { Decimal::ZERO } else { broker };
     if !l.pricing_engine {
-        return Some(AskRule::Markup { markup_pips: l.group.markup.unwrap_or(broker), digits });
+        return Some(AskRule::Markup { markup_pips: l.group.markup.unwrap_or(broker_nn), digits });
     }
     Some(
-        level_rule(&l.account_symbol, digits)
-            .or_else(|| level_rule(&l.group, digits))
-            .unwrap_or(AskRule::Markup { markup_pips: broker, digits }),
+        level_rule(&l.account_symbol, digits, false)
+            .or_else(|| level_rule(&l.group, digits, true))
+            .unwrap_or(AskRule::Markup { markup_pips: broker_nn, digits }),
     )
 }
 
 /// The markup in pips this rule applies at this tick (lib/pricing-engine.ts resolveEffectiveSpreadMarkup).
+///
+/// A MARKUP-mode rule passes its value through unchanged, negative included -- that is what makes a raw / zero-spread
+/// group expressible. A TARGET-mode rule keeps its own floor at zero (a target no wider than the live raw spread
+/// leaves the quote raw, contract cases "target below the raw spread" and "target equal to the raw spread"): a target
+/// spread is an absolute width, so a negative difference means "no markup", not "narrow the book".
 pub fn markup_pips_at(rule: &AskRule, bid: Decimal, ask: Decimal) -> Decimal {
     match *rule {
         AskRule::Markup { markup_pips, .. } => markup_pips,
@@ -103,6 +122,10 @@ fn price_floor(digits: i32) -> Decimal {
 /// (owner decision 2026-11-06): the markup in whole points of the last digit, rounded up only if not whole, the ask taking
 /// the larger share, so the total spread is exactly raw + markup. `markup_pips_at` floors a target-mode markup at zero, so
 /// a target no wider than the live raw spread leaves the quote exactly raw.
+///
+/// Unchanged for a NEGATIVE total (2026-11-09): `ceil` moves toward zero, so `askPart = ceil(total/2)` is the smaller
+/// magnitude and the bid takes the rest -- e.g. -5 points splits as ask -2, bid -3 (contract case "negative: floor to
+/// 0, half-tick mid ..."). The zero-spread floor lives in `account_pair`, not here; this function only splits.
 pub fn markup_parts(rule: &AskRule, bid: Decimal, ask: Decimal) -> (Decimal, Decimal) {
     let m = markup_pips_at(rule, bid, ask);
     if m.is_zero() {
@@ -136,28 +159,77 @@ impl std::fmt::Display for AccountPrice {
     }
 }
 
+/// Both account-side prices for one tick, with the ZERO-SPREAD FLOOR applied -- the one place the two sides are
+/// decided together, so the cross check and the collapse cannot disagree with each other.
+///
+/// NEGATIVE MARKUP (owner decision 2026-11-09, raw / zero-spread groups). A negative markup narrows the spread instead
+/// of widening it. `markup_parts` already yields the right halves for a negative total without change: the split is
+/// `askPart = ceil(total/2)`, `bidPart = the rest`, and on a negative total `ceil` moves toward zero, so the BID takes
+/// the larger magnitude -- the mirror of the positive case, from the same formula. What had to change is the two
+/// CLAMPS: `account_ask` ended with `.max(ask)` and `account_bid` with `.min(bid)`, each of which exists to stop a
+/// positive markup from ever quoting tighter than raw, and each of which would silently undo a negative markup
+/// entirely. The clamp therefore moves from a markup floor to a SPREAD floor:
+///
+///   client spread = max(0, raw_spread + markup)
+///
+/// and when the candidates meet or cross, both sides collapse to the mid at the symbol's precision, ROUND HALF TO
+/// EVEN. Half-to-even is not the convention the rest of this file uses (the ask rounds up and the bid down, both away
+/// from the client); it is neutral by design, because at a zero spread there is no "away from the client" to round
+/// towards. The two half-tick ties are pinned by the contract rather than inferred:
+///   1.12270 / 1.12271 -> mid 1.122705 -> 1.12270   (down, to the even last digit)
+///   1.12271 / 1.12272 -> mid 1.122715 -> 1.12272   (up, to the even last digit)
+///
+/// MARKUP >= 0 IS BYTE-FOR-BYTE UNCHANGED, and that is why the non-negative case is a separate early branch holding
+/// the previous expressions verbatim rather than a unified formula: a normal group cannot be moved by one point by a
+/// refactor it was never meant to be part of.
+fn account_pair(rule: &AskRule, bid: Decimal, ask: Decimal) -> (Decimal, Decimal) {
+    let (ask_part, bid_part) = markup_parts(rule, bid, ask);
+    let d = rule_digits(rule);
+    let du = d.max(0) as u32;
+
+    // ---- markup >= 0: exactly as before -------------------------------------------------------------
+    if ask_part + bid_part >= Decimal::ZERO {
+        let a = if ask_part.is_zero() {
+            ask
+        } else {
+            (ask + ask_part).round_dp_with_strategy(du, RoundingStrategy::ToPositiveInfinity).max(ask)
+        };
+        let b = if bid_part.is_zero() {
+            bid
+        } else {
+            (bid - bid_part)
+                .round_dp_with_strategy(du, RoundingStrategy::ToNegativeInfinity)
+                .max(price_floor(d))
+                .min(bid)
+        };
+        return (b, a);
+    }
+
+    // ---- markup < 0: the spread narrows ------------------------------------------------------------
+    // Same rounding directions as above (ask up, bid down); the clamps are deliberately absent, since
+    // they are what a negative markup has to get past.
+    let ca = (ask + ask_part).round_dp_with_strategy(du, RoundingStrategy::ToPositiveInfinity);
+    let cb = (bid - bid_part).round_dp_with_strategy(du, RoundingStrategy::ToNegativeInfinity);
+    if cb < ca {
+        return (cb.max(price_floor(d)), ca);
+    }
+    // met or crossed: the floor bites and both sides become the mid, half to even
+    let mid = ((bid + ask) / Decimal::TWO)
+        .round_dp_with_strategy(du, RoundingStrategy::MidpointNearestEven)
+        .max(price_floor(d));
+    (mid, mid)
+}
+
 /// The account's ask: raw ask + its share of the markup, at the symbol's precision, never tighter than the raw ask. The
 /// price a BUY opens at and a SELL closes at.
 pub fn account_ask(rule: &AskRule, bid: Decimal, ask: Decimal) -> AccountPrice {
-    let (part, _) = markup_parts(rule, bid, ask);
-    if part.is_zero() {
-        return AccountPrice(ask);
-    }
-    let digits = rule_digits(rule).max(0) as u32;
-    let out = (ask + part).round_dp_with_strategy(digits, RoundingStrategy::ToPositiveInfinity);
-    AccountPrice(out.max(ask))
+    AccountPrice(account_pair(rule, bid, ask).1)
 }
 
 /// The account's bid: raw bid - its share of the markup, at the symbol's precision, never tighter than the raw bid, and
 /// never at or below zero. The price a SELL opens at and a BUY closes at.
 pub fn account_bid(rule: &AskRule, bid: Decimal, ask: Decimal) -> AccountPrice {
-    let (_, part) = markup_parts(rule, bid, ask);
-    if part.is_zero() {
-        return AccountPrice(bid);
-    }
-    let d = rule_digits(rule);
-    let out = (bid - part).round_dp_with_strategy(d.max(0) as u32, RoundingStrategy::ToNegativeInfinity);
-    AccountPrice(out.max(price_floor(d)).min(bid))
+    AccountPrice(account_pair(rule, bid, ask).0)
 }
 
 /// Both account-side prices for one tick, with the crossed-book invariant checked. `None` when the quote would cross
@@ -165,7 +237,10 @@ pub fn account_bid(rule: &AskRule, bid: Decimal, ask: Decimal) -> AccountPrice {
 /// act on it (the engine's risk paths must not panic on a bad configuration).
 pub fn account_quote(rule: &AskRule, bid: Decimal, ask: Decimal) -> Option<(AccountPrice, AccountPrice)> {
     let (b, a) = (account_bid(rule, bid, ask), account_ask(rule, bid, ask));
-    if b.get() < a.get() { Some((b, a)) } else { None }
+    // `<=`, not `<`: a zero-spread quote is legitimate under a negative markup (both sides sit on the
+    // mid). A genuinely INVERTED quote -- which the floor can no longer produce, but a bad raw tick
+    // still can -- is refused exactly as before.
+    if b.get() <= a.get() { Some((b, a)) } else { None }
 }
 
 /// The price an open position closes at for its account: a BUY at the account's BID, a SELL at the account's ask.
@@ -410,7 +485,7 @@ mod tests {
     fn every_price_case_of_the_vectors() {
         let v = vectors();
         let cases = v["prices"].as_array().unwrap();
-        assert_eq!(cases.len(), 14, "the contract file changed: re-check the engine against it");
+        assert_eq!(cases.len(), 18, "the contract file changed: re-check the engine against it");
         for c in cases {
             let name = c["name"].as_str().unwrap();
             let digits = c["digits"].as_i64().unwrap() as i32;
@@ -431,9 +506,14 @@ mod tests {
             assert_eq!(s(account_ask(&rule, bid, ask).get()), e["accountAsk"].as_str().unwrap(), "{name}: accountAsk");
             assert_eq!(s(close_price(OrderSide::Buy, bid, ask, &rule).get()), e["buyClose"].as_str().unwrap(), "{name}: buyClose");
             assert_eq!(s(close_price(OrderSide::Sell, bid, ask, &rule).get()), e["sellClose"].as_str().unwrap(), "{name}: sellClose");
-            // the book must never cross, on any vector
-            let (b, a) = account_quote(&rule, bid, ask).expect("account quote must not cross");
-            assert!(b.get() < a.get(), "{name}: crossed account book");
+            // The book must never INVERT, on any vector. A zero spread (b == a) became legitimate with the
+            // negative markup -- it is the floor working -- so the strict `<` only still holds where the
+            // markup is non-negative, and that narrower guarantee is asserted rather than dropped.
+            let (b, a) = account_quote(&rule, bid, ask).expect("account quote must not invert");
+            assert!(b.get() <= a.get(), "{name}: inverted account book");
+            if !markup_pips_at(&rule, bid, ask).is_sign_negative() {
+                assert!(b.get() < a.get(), "{name}: a non-negative markup must never quote a zero spread");
+            }
         }
     }
 

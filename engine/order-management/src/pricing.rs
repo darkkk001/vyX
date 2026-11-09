@@ -98,10 +98,18 @@ mod tests {
         assert_eq!(quoted.bid + quoted.ask, raw.bid + raw.ask, "the mid is preserved");
     }
 
+    /// Re-scoped 2026-11-09 (owner decision), from "can never tighten" to "can never tighten PAST THE
+    /// MID". A negative markup is now a deliberate raw / zero-spread product; the zero-spread floor is
+    /// what keeps it bounded, and only a group may configure one. The 2026-10-29 finding this guarded --
+    /// an unbounded discount from a fat-fingered or hostile value -- is still closed, and the full audit
+    /// note lives on its pentest twin, `held_pentest_negative_spread_markup_cannot_improve_past_the_mid`.
     #[test]
-    fn a_negative_markup_can_never_tighten_the_book() {
+    fn a_negative_markup_can_never_tighten_past_the_mid() {
         let raw = tick();
+        let mid = (raw.bid + raw.ask) / Decimal::TWO;
         let quoted = quoted_tick(&raw, Some(&AskRule::Markup { markup_pips: dec!(-500), digits: 5 }));
-        assert!(quoted.bid <= raw.bid && quoted.ask >= raw.ask, "neither side may move in the client's favour");
+        assert!(quoted.ask >= mid, "the ask may not fall below the mid ({} < {mid})", quoted.ask);
+        assert!(quoted.bid <= mid, "the bid may not rise above the mid ({} > {mid})", quoted.bid);
+        assert!(quoted.bid <= quoted.ask, "and the book may never invert");
     }
 }

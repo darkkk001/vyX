@@ -98,7 +98,7 @@ fn the_engine_order_path_fills_at_exactly_the_web_price_for_every_contract_vecto
     let cases = v["prices"].as_array().expect("prices");
     // Pinned on purpose, like the resolution test in market-data: if the web regenerates the file
     // with more or fewer cases, this test must be re-read rather than quietly covering less.
-    assert_eq!(cases.len(), 9, "the contract file changed: re-check the engine order path against it");
+    assert_eq!(cases.len(), 18, "the contract file changed: re-check the engine order path against it");
 
     let mut checked = 0;
     for c in cases {
@@ -122,7 +122,7 @@ fn the_engine_order_path_fills_at_exactly_the_web_price_for_every_contract_vecto
         );
         checked += 1;
     }
-    assert_eq!(checked, 9);
+    assert_eq!(checked, 18);
 }
 
 #[test]
@@ -138,9 +138,30 @@ fn the_fill_never_moves_in_the_clients_favour_against_the_raw_tick() {
 
         let buy = engine_fill(&raw, &rule, OrderSide::Buy);
         let sell = engine_fill(&raw, &rule, OrderSide::Sell);
-        assert!(buy >= raw.ask, "{name}: a BUY filled BELOW the raw ask ({buy} < {})", raw.ask);
-        assert!(sell <= raw.bid, "{name}: a SELL filled ABOVE the raw bid ({sell} > {})", raw.bid);
-        assert!(buy > sell, "{name}: the quote crossed ({buy} <= {sell})");
+        let markup = market_data::ask_markup::markup_pips_at(&rule, raw.bid, raw.ask);
+        if !markup.is_sign_negative() {
+            // unchanged: a non-negative markup may only ever WIDEN the book
+            assert!(buy >= raw.ask, "{name}: a BUY filled BELOW the raw ask ({buy} < {})", raw.ask);
+            assert!(sell <= raw.bid, "{name}: a SELL filled ABOVE the raw bid ({sell} > {})", raw.bid);
+            assert!(buy > sell, "{name}: the quote crossed ({buy} <= {sell})");
+        } else {
+            // A NEGATIVE markup narrows the book on purpose, so "never in the client's favour" cannot
+            // hold against the raw tick. The bound that still does -- and that keeps this test's whole
+            // reason for existing, catching a sign error or a rounding mode flipped the wrong way -- is
+            // the MID: the floor collapses both sides onto it, so the mid is the tightest price the
+            // client can ever be given. A negative applied to the wrong side would push a BUY below the
+            // mid or a SELL above it, and would still be caught here.
+            // ONE TICK of tolerance around the exact mid, not the rounded mid: the floor quantises to the
+            // symbol's precision and half-to-even is entitled to round DOWN, which puts a BUY a half-tick
+            // under the exact mid (1.122705 -> 1.12270). Allowing one tick keeps this check independent of
+            // the implementation's rounding choice while still being nowhere near wide enough to hide a
+            // sign error, which would be off by the whole markup.
+            let mid = (raw.bid + raw.ask) / rust_decimal::Decimal::TWO;
+            let tick = rust_decimal::Decimal::new(1, digits.max(0) as u32);
+            assert!(buy >= mid - tick, "{name}: a BUY filled below the mid ({buy} < {mid} - {tick})");
+            assert!(sell <= mid + tick, "{name}: a SELL filled above the mid ({sell} > {mid} + {tick})");
+            assert!(buy >= sell, "{name}: the quote inverted ({buy} < {sell})");
+        }
     }
 }
 
