@@ -276,7 +276,7 @@ describe("LP connections: change, delete, guards", () => {
     await create(session(fx, { dialect: "CSERVER", resetSeqOnLogon: true, symbols: [{ symbolId: fx.gold.id, venueId: "41", contractSize: "100", minUnits: "1", stepUnits: "1" }] }));
     const { buildBridgeConfig } = await import("@/lib/bridge-config");
     const cfg = await buildBridgeConfig(fx.broker.id);
-    expect(cfg.lps).toEqual([expect.objectContaining({ id: fx.lp.id, dialect: "CSERVER", enabled: true, resetSeqOnLogon: true, ackTimeoutMs: null, symbols: [{ engine: fx.gold.name, venueId: "41", contractSize: "100", minUnits: "1", stepUnits: "1" }] })]);
+    expect(cfg.lps).toEqual([expect.objectContaining({ id: fx.lp.id, dialect: "CSERVER", enabled: true, resetSeqOnLogon: true, ackTimeoutMs: null, symbols: [expect.objectContaining({ engine: fx.gold.name, venueId: "41", contractSize: "100", minUnits: "1", stepUnits: "1", sessionsSource: "default" })] })]);
   });
 });
 

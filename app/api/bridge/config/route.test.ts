@@ -5,6 +5,7 @@ import { NextRequest } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
+import { resolveTradingWindows } from "@/lib/bridge-sessions";
 
 // Platform API bridge config, A.1.2 (owner decisions 2026-11-03): GET /api/bridge/config and /version. Real routes,
 // scratch DB, test Redis. Every refusal the auth promises (lib/bridge-auth.ts) is exercised, plus broker scoping and
@@ -46,6 +47,8 @@ afterAll(async () => {
     await prisma.clientBuild.deleteMany({ where: { buildId: { in: builds } } });
     await prisma.lpRoutingRule.deleteMany({ where: { brokerId: { in: brokers } } });
     await prisma.lpConnection.deleteMany({ where: { brokerId: { in: brokers } } });
+    await prisma.tradingSession.deleteMany({ where: { brokerSymbol: { brokerId: { in: brokers } } } });
+    await prisma.brokerSymbol.deleteMany({ where: { brokerId: { in: brokers } } });
     await prisma.liquidityProvider.deleteMany({ where: { brokerId: { in: brokers } } });
     await prisma.symbol.deleteMany({ where: { id: { in: symbols } } });
     await prisma.auditLog.deleteMany({ where: { brokerId: { in: brokers } } });
@@ -119,6 +122,62 @@ const refused = async (req: Omit<Req, "licenseId" | "brokerId"> & Partial<Pick<R
   return r;
 };
 
+describe("GET /api/bridge/config: trading windows (auto-reconnect phase 2)", () => {
+  it("serves the broker's own TradingSession rows as same-day windows, and the version follows every edit", async () => {
+    if (!ready) return;
+    const { broker, sym } = await brokerWithConfig();
+    const id = await license(broker.id, broker.subdomain);
+    const before = await call({ licenseId: id, brokerId: broker.id });
+    expect(before.body.lps[0].symbols[0].sessionsSource).toBe("default");
+
+    const bs = await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: sym.id } });
+    await prisma.tradingSession.createMany({
+      data: [
+        { brokerSymbolId: bs.id, dayOfWeek: 1, openTime: "08:00", closeTime: "17:00" },
+        { brokerSymbolId: bs.id, dayOfWeek: 2, openTime: "22:00", closeTime: "02:00" }, // crosses midnight
+        { brokerSymbolId: bs.id, dayOfWeek: 4, openTime: "00:00", closeTime: "24:00", kind: "QUOTE" }, // not trading
+      ],
+    });
+    const after = await call({ licenseId: id, brokerId: broker.id });
+    expect(after.status).toBe(200);
+    expect(after.body.lps[0].symbols[0]).toMatchObject({
+      sessionsSource: "configured",
+      sessions: [
+        { dayOfWeek: 1, openUtc: "08:00", closeUtc: "17:00" },
+        { dayOfWeek: 2, openUtc: "22:00", closeUtc: "24:00" },
+        { dayOfWeek: 3, openUtc: "00:00", closeUtc: "02:00" },
+      ],
+    });
+    // the windows are part of the version: ETag and /version both move, a stale If-None-Match gets the new body
+    expect(after.body.version).not.toBe(before.body.version);
+    expect(after.etag).toBe(`"${after.body.version}"`);
+    const v = await call({ path: "/api/bridge/config/version", licenseId: id, brokerId: broker.id });
+    expect(v.body.version).toBe(after.body.version);
+    expect((await call({ licenseId: id, brokerId: broker.id, ifNoneMatch: before.etag! })).status).toBe(200);
+    expect((await call({ licenseId: id, brokerId: broker.id, ifNoneMatch: after.etag! })).status).toBe(304);
+
+    // one more edit moves it again
+    await prisma.tradingSession.updateMany({ where: { brokerSymbolId: bs.id, dayOfWeek: 1 }, data: { closeTime: "18:00" } });
+    const edited = await call({ licenseId: id, brokerId: broker.id });
+    expect(edited.body.lps[0].symbols[0].sessions[0]).toEqual({ dayOfWeek: 1, openUtc: "08:00", closeUtc: "18:00" });
+    expect(edited.body.version).not.toBe(after.body.version);
+  });
+
+  it("another broker's TradingSession rows on the same symbol never reach this bridge", async () => {
+    if (!ready) return;
+    const a = await brokerWithConfig();
+    const s = randomUUID().replace(/-/g, "").slice(0, 8);
+    const other = await prisma.broker.create({ data: { name: `BC other ${s}`, subdomain: `bco-${s}` } });
+    brokers.push(other.id);
+    const obs = await prisma.brokerSymbol.create({ data: { brokerId: other.id, symbolId: a.sym.id } });
+    await prisma.tradingSession.create({ data: { brokerSymbolId: obs.id, dayOfWeek: 3, openTime: "10:00", closeTime: "11:00" } });
+    const id = await license(a.broker.id, a.broker.subdomain);
+    const r = await call({ licenseId: id, brokerId: a.broker.id });
+    expect(r.body.lps[0].symbols[0].sessionsSource).toBe("default");
+    expect(r.text).not.toContain("10:00");
+  });
+});
+
 describe("GET /api/bridge/config: auth", () => {
   it("the right license on its own broker's host gets its config", async () => {
     if (!ready) return;
@@ -129,7 +188,11 @@ describe("GET /api/bridge/config: auth", () => {
     expect(r.body.brokerId).toBe(broker.id);
     expect(r.body.lps).toHaveLength(1);
     expect(r.body.lps[0]).toMatchObject({ id: lp.id, role: "TRADE", enabled: true, host: "demo.cfixapi.com", port: 5212, targetCompId: "cServer", tls: "WEBPKI", dialect: "CSERVER", heartbeatSecs: 30, resetSeqOnLogon: true, ackTimeoutMs: null });
-    expect(r.body.lps[0].symbols).toEqual([{ engine: sym.name, venueId: "1", contractSize: "100000", minUnits: "1000", stepUnits: "1000" }]);
+    // no TradingSession rows: the platform's default FX week, resolved for this week
+    expect(r.body.lps[0].symbols).toEqual([
+      { engine: sym.name, venueId: "1", contractSize: "100000", minUnits: "1000", stepUnits: "1000", ...resolveTradingWindows([], "FOREX", sym.name, new Date()) },
+    ]);
+    expect(r.body.lps[0].symbols[0].sessionsSource).toBe("default");
     expect(r.body.routing).toEqual([expect.objectContaining({ lpId: lp.id, symbol: sym.name, priority: 1, weight: "0.5", enabled: true })]);
     expect(r.etag).toBe(`"${r.body.version}"`);
     // no secret of any kind
