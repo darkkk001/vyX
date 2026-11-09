@@ -22,9 +22,11 @@ export default function RoomDashboard() {
   // the strip: live accounts only, summed by the server (demo never counts; no live account = 0.00)
   const f = data?.totals ?? null;
   const firstName = data?.client.fullName.split(/\s+/)[0] ?? "";
-  // Recent transactions: live accounts by default, demo on the toggle (owner 2026-11-09); History is unchanged
-  const [txMode, setTxMode] = useState<"LIVE" | "DEMO">("LIVE");
-  const recent = (txMode === "LIVE" ? data?.recent : data?.recentDemo) ?? [];
+  // one Live / Demo toggle at My accounts drives the account cards and Recent transactions, live by default
+  // (owner 2026-11-09); the strip above stays live-only and History is unchanged
+  const [mode, setMode] = useState<"LIVE" | "DEMO">("LIVE");
+  const cards = (data?.accounts ?? []).filter((a) => a.mode === mode);
+  const recent = (mode === "LIVE" ? data?.recent : data?.recentDemo) ?? [];
   return (
     <>
       <RoomHeader title="Dashboard" />
@@ -54,11 +56,18 @@ export default function RoomDashboard() {
 
         <div>
           <div className="r-sec-head">
-            <div className="r-label">My accounts</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <div className="r-label">My accounts</div>
+              <div className="r-mini-seg" role="group" aria-label="Accounts">
+                {(["LIVE", "DEMO"] as const).map((m) => (
+                  <button key={m} type="button" aria-pressed={mode === m} onClick={() => setMode(m)}>{m === "LIVE" ? "Live" : "Demo"}</button>
+                ))}
+              </div>
+            </div>
             <a href="/room/accounts">Manage accounts</a>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 14 }}>
-            {(data?.accounts ?? []).map((a) => (
+            {cards.map((a) => (
               <div key={a.id} className="r-card r-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span className={`r-mode ${a.mode === "LIVE" ? "r-mode-live" : "r-mode-demo"}`}><span className="r-dot" />{a.mode}</span>
@@ -85,14 +94,7 @@ export default function RoomDashboard() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "stretch" }}>
           <div className="r-card r-pad" style={{ flex: "2 1 480px", minWidth: 0 }}>
             <div className="r-sec-head" style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                <div className="r-label">Recent transactions</div>
-                <div className="r-mini-seg" role="group" aria-label="Accounts">
-                  {(["LIVE", "DEMO"] as const).map((m) => (
-                    <button key={m} type="button" aria-pressed={txMode === m} onClick={() => setTxMode(m)}>{m === "LIVE" ? "Live" : "Demo"}</button>
-                  ))}
-                </div>
-              </div>
+              <div className="r-label">Recent transactions</div>
               <a href="/room/history" style={{ whiteSpace: "nowrap" }}>View all</a>
             </div>
             <div className="r-table-wrap">
@@ -116,7 +118,7 @@ export default function RoomDashboard() {
                   ))}
                 </tbody>
               </table>
-              {data && recent.length === 0 ? <div className="r-empty">{txMode === "LIVE" ? "No live transactions yet." : "No demo transactions yet."}</div> : null}
+              {data && recent.length === 0 ? <div className="r-empty">{mode === "LIVE" ? "No live transactions yet." : "No demo transactions yet."}</div> : null}
             </div>
           </div>
 

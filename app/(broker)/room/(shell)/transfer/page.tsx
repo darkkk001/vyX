@@ -42,7 +42,7 @@ export default function RoomTransfer() {
     await Promise.all([reload(), refresh()]);
   }
 
-  const opt = (a: (typeof accounts)[number]) => `${a.accountNumber} · ${a.mode === "DEMO" ? "Demo" : a.plan} · ${money(a.figures.balance)} ${a.currency}`;
+  const opt = (a: (typeof accounts)[number]) => `${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`;
   const label = { fontSize: 10.5, letterSpacing: 1.2 } as const;
   return (
     <>
@@ -50,13 +50,16 @@ export default function RoomTransfer() {
       <div className="r-body" style={{ flexDirection: "row", flexWrap: "wrap", gap: 20, alignItems: "flex-start" }}>
         <div className="r-card" style={{ flex: "2 1 460px", minWidth: 0, padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <div className="r-field" style={{ flex: "1 1 200px" }}>
+            <div className="r-field r-field-fixed">
               <label htmlFor="tfrom" style={label}>From</label>
               <select id="tfrom" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={from?.id ?? ""} onChange={(e) => { setFromId(e.target.value); setToId(""); setMsg(null); }}>
                 {accounts.map((a) => <option key={a.id} value={a.id}>{opt(a)}</option>)}
               </select>
             </div>
-            <div className="r-field" style={{ flex: "1 1 200px" }}>
+            <span className="r-xfer-arrow" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M3 8h10M9 4l4 4-4 4" /></svg>
+            </span>
+            <div className="r-field r-field-fixed">
               <label htmlFor="tto" style={label}>To</label>
               <select id="tto" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={to?.id ?? ""} onChange={(e) => { setToId(e.target.value); setMsg(null); }} disabled={targets.length === 0}>
                 {targets.map((a) => <option key={a.id} value={a.id}>{opt(a)}</option>)}

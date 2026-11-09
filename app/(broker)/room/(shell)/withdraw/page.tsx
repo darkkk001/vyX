@@ -88,7 +88,8 @@ export default function RoomWithdraw() {
     setForm({ type: form.type, bank: "", account: "", swift: "", address: "" });
   }
 
-  const kyc = KYC_CARD[funds?.kyc ?? data?.kyc.status ?? "NONE"] ?? KYC_CARD.NONE;
+  const kycStatus = funds?.kyc ?? data?.kyc.status ?? "NONE";
+  const kyc = KYC_CARD[kycStatus] ?? KYC_CARD.NONE;
   const minW = method && Number(method.withdraw.min) > 0 ? Number(method.withdraw.min) : null;
   const fee = funds?.methods.find((m) => m.feeLine)?.feeLine ?? "0.00";
   const ccy = account?.currency ?? "USD";
@@ -99,14 +100,14 @@ export default function RoomWithdraw() {
       <div className="r-body" style={{ flexDirection: "row", flexWrap: "wrap", gap: 20, alignItems: "flex-start" }}>
         <div className="r-card" style={{ flex: "2 1 480px", minWidth: 0, padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-            <div className="r-field" style={{ flex: "1 1 200px" }}>
+            <div className="r-field r-field-fixed">
               <label htmlFor="wacct" style={label}>From account</label>
               <select id="wacct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setFromWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
-                {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${a.plan}`}</option>)}
+                {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`}</option>)}
               </select>
               <div style={{ fontSize: 11.5, color: "var(--r-muted)" }}>Available for withdrawal: <span className="mono" style={{ color: "var(--r-text)" }}>{funds ? `${money(funds.available)} ${ccy}` : "0.00"}</span></div>
             </div>
-            <div className="r-field" style={{ flex: "1 1 200px" }}>
+            <div className="r-field r-field-fixed">
               <label htmlFor="wamt" style={label}>Amount · {ccy}</label>
               <input id="wamt" className="r-input mono" inputMode="decimal" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: "10px 12px" }} />
               <button type="button" onClick={() => funds && setAmount(funds.available)} style={{ alignSelf: "flex-start", background: "none", border: "none", color: "var(--r-gold-text)", fontSize: 12, fontWeight: 500, padding: 0, cursor: "pointer" }}>Withdraw maximum</button>
@@ -174,13 +175,15 @@ export default function RoomWithdraw() {
         </div>
 
         <div style={{ flex: "1 1 280px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
-          <div className="r-card r-pad">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-              <div className="r-label">Verification</div>
-              <StatusChip status={kyc.status} />
+          {kycStatus !== "APPROVED" ? (
+            <div className="r-card r-pad">
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div className="r-label">Verification</div>
+                <StatusChip status={kyc.status} />
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--r-text-2)", lineHeight: 1.6 }}>{kyc.text}{funds && funds.kyc !== "APPROVED" && funds.kyc !== "PENDING" ? <> <a href="/room/verify">Verify now</a></> : null}</div>
             </div>
-            <div style={{ fontSize: 12.5, color: "var(--r-text-2)", lineHeight: 1.6 }}>{kyc.text}{funds && funds.kyc !== "APPROVED" && funds.kyc !== "PENDING" ? <> <a href="/room/verify">Verify now</a></> : null}</div>
-          </div>
+          ) : null}
           <div className="r-card r-pad">
             <div className="r-label" style={{ marginBottom: 14 }}>Processing</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 12.5, color: "var(--r-text-2)" }}>
