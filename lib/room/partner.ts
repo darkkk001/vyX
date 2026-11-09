@@ -61,6 +61,22 @@ export function maskAccount(n: string): string {
 
 const ZERO = new Prisma.Decimal(0);
 
+/**
+ * The partner wallet of the top-bar money menu (owner 2026-11-10): the unpaid commission, by the same rule as
+ * partnerSummary's stats.unpaid (computePendingCommission over every link of the partner account), without the rest of
+ * the summary. null = the client is no IB.
+ */
+export async function partnerUnpaid(brokerId: string, clientId: string): Promise<{ accountNumber: string; unpaid: Prisma.Decimal } | null> {
+  const partner = await partnerAccountOf(prisma, clientId);
+  if (!partner) return null;
+  const rels = await prisma.ibRelationship.findMany({
+    where: { brokerId, ibAccountId: partner.id },
+    select: { id: true, clientAccountId: true, ibAccountId: true, commissionType: true, commissionRate: true, lastPayoutAt: true, accruedUnpaid: true, accruedThrough: true, createdAt: true },
+  });
+  const unpaid = (await Promise.all(rels.map((r) => computePendingCommission(prisma, r)))).reduce((s, x) => s.add(x), ZERO);
+  return { accountNumber: partner.accountNumber, unpaid };
+}
+
 export async function partnerSummary(brokerId: string, clientId: string, month: Date) {
   const partner = await partnerAccountOf(prisma, clientId);
   if (!partner) return null;
