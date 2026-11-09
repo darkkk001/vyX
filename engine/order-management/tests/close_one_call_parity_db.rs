@@ -103,7 +103,7 @@ fn tick(symbol: &str, bid: Decimal, ask: Decimal) -> protocol::Tick {
         tick_count: None,
         symbol: symbol.to_string(), bid, ask,
         t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None,
-        bars: Vec::new(), tick_count: None,
+        bars: Vec::new(),
     }
 }
 
