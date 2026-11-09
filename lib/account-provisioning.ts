@@ -14,16 +14,22 @@ import { attachReferredAccount } from "@/lib/room/partner";
 // app/api/manage/live-account-requests/[id]/route.ts) instead of three
 // drifting copies of "create an Account safely."
 
-// Numeric MAX via a raw cast, not `orderBy: { accountNumber: "desc" }` --
-// accountNumber is a Prisma String column, so that `desc` sort is
-// lexicographic, not numeric -- see the original route's own comment for
-// the real incident this avoids.
+// Never the same number twice (owner 2026-11-10: 50005728 went to three accounts, each after the previous one was
+// deleted, because the next number was MAX(existing) + 1). NumberCounter "account" keeps the highest number ever issued;
+// one UPDATE moves it to GREATEST(counter, highest existing number) + 1 and returns it, so a deleted account's number is
+// never issued again, and an account numbered outside this function still moves the counter past it. The row lock
+// serialises concurrent allocations. Numeric MAX via a raw cast: accountNumber is a String column, a text sort would be
+// lexicographic. The guest range (lib/demo.ts, 48xxxxxx) has its own allocator.
 export async function allocateAccountNumber(): Promise<string> {
-  const rows = await prisma.$queryRaw<{ max: bigint | null }[]>`
-    SELECT MAX("accountNumber"::bigint) as max FROM "Account" WHERE "accountNumber" ~ '^[0-9]+$'
+  const rows = await prisma.$queryRaw<{ last: bigint }[]>`
+    INSERT INTO "NumberCounter" ("id", "last") VALUES ('account', 50000999)
+    ON CONFLICT ("id") DO UPDATE SET "last" = GREATEST(
+      "NumberCounter"."last",
+      COALESCE((SELECT MAX("accountNumber"::bigint) FROM "Account" WHERE "accountNumber" ~ '^[0-9]{1,15}$'), 0)
+    ) + 1
+    RETURNING "last"
   `;
-  const base = rows[0]?.max != null ? Number(rows[0].max) : 50000999;
-  return String((Number.isFinite(base) ? base : 50000999) + 1).padStart(8, "0");
+  return String(rows[0].last).padStart(8, "0");
 }
 
 export type ProvisionAccountParams = {

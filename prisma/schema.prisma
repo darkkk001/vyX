@@ -1529,6 +1529,14 @@ model Client {
   roomRequestKeys RoomRequestKey[]
 }
 
+// The highest account number ever issued (owner 2026-11-10: 50005728 was issued three times after deletes). One row,
+// id "account". lib/account-provisioning.ts allocateAccountNumber() moves it forward in one UPDATE, so a number is never
+// issued twice, even after its account is deleted.
+model NumberCounter {
+  id   String @id
+  last BigInt
+}
+
 // Trader's Room money forms (owner 2026-11-09, duplicate deposits from repeated clicks): every Deposit / Withdraw /
 // Transfer form load carries one key. The first POST with a key claims this row; a repeat or a parallel POST with the
 // same key gets the first one's answer and never creates a second request (lib/room/request-key.ts).
