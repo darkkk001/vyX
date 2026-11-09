@@ -3,6 +3,8 @@
 //   NODE_OPTIONS=--conditions=react-server npx tsx --tsconfig tsconfig.json scripts/contracts/gen-ask-markup-vectors.ts
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+// the contract describes the feature ON (lib/negative-markup-flag.ts): the engine and the clients implement the rule; the flag only decides when it is live
+process.env.NEGATIVE_MARKUP_ENABLED = "1";
 import { computeAskMarkupVectors } from "../../lib/ask-markup-contract";
 
 const out = computeAskMarkupVectors();

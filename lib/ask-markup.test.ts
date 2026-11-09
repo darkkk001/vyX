@@ -1,6 +1,6 @@
 // lib/ask-markup.ts: the vectors file matches the server, and the batched resolver equals the FILL path's own resolver
 // (lib/pricing-engine.ts resolveFillPricing) for every precedence case, on the scratch DB.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Prisma } from "@prisma/client";
@@ -12,6 +12,10 @@ import { resolveFillPricing } from "@/lib/pricing-engine";
 import { applySpreadMarkup, pipSize } from "@/lib/group-pricing";
 
 const D = (v: string | number) => new Prisma.Decimal(v);
+
+// the vectors are the contract with the feature ON (NEGATIVE_MARKUP_ENABLED, lib/negative-markup-flag.ts); the OFF case is pinned below
+beforeAll(() => { vi.stubEnv("NEGATIVE_MARKUP_ENABLED", "1"); });
+afterAll(() => { vi.unstubAllEnvs(); });
 
 describe("ask-markup vectors", () => {
   it("docs/contracts/ask-markup-vectors.json is exactly what the server computes", () => {
@@ -75,6 +79,17 @@ describe("ask-markup vectors", () => {
     expect(accountClosePrice("SELL", "4089.87", "4090.02", neg("-1.3", 2)).toString()).toBe("4089.96");
     // the wire carries the negative parts
     expect(askRuleWire(neg("-1.3", 2))).toEqual({ askMarkup: "-0.06", bidMarkup: "-0.07", spreadRule: "markup" });
+  });
+
+  it("flag OFF (the default until the engine and gateway are live): a negative markup prices exactly as before, raw on both sides", () => {
+    vi.stubEnv("NEGATIVE_MARKUP_ENABLED", "");
+    try {
+      const neg = { mode: "markup" as const, markupPips: D("-1.3"), digits: 2 };
+      expect(accountQuote(neg, "4089.87", "4090.02")).toEqual({ bid: D("4089.87"), ask: D("4090.02") });
+      expect(accountQuote({ ...neg, markupPips: D("-50") }, "4089.87", "4090.00")).toEqual({ bid: D("4089.87"), ask: D("4090.00") });
+      expect(applySpreadMarkup({ side: "BUY", price: "4090.02", opposite: "4089.87", spreadMarkup: "-1.3", digits: 2 }).toString()).toBe("4090.02");
+      expect(applySpreadMarkup({ side: "SELL", price: "4089.87", opposite: "4090.02", spreadMarkup: "-1.3", digits: 2 }).toString()).toBe("4089.87");
+    } finally { vi.stubEnv("NEGATIVE_MARKUP_ENABLED", "1"); }
   });
 
   it("a zero markup leaves BOTH sides raw, and the markup is split in whole points", () => {

@@ -5,6 +5,7 @@ import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/pe
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { parseSymbolPricingPatch, decimalOrNull, isEmptyPricingPatch } from "@/lib/pricing-editor-shared";
+import { negativeMarkupEnabled, NEGATIVE_MARKUP_NOT_YET } from "@/lib/negative-markup-flag";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -118,8 +119,9 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "symbol not enabled for this broker" }, { status: 400 });
   }
 
-  // owner 2026-11-09: a group may set a NEGATIVE markup (raw / zero-spread group); the quote floors the client spread at 0
-  const parsed = parseSymbolPricingPatch(body, { allowNegativeMarkup: true });
+  // owner 2026-11-09: a group may set a NEGATIVE markup (raw / zero-spread group); the quote floors the client spread at 0. Owner 2026-11-10: only while
+  // NEGATIVE_MARKUP_ENABLED is on (lib/negative-markup-flag.ts, OFF by default until the engine and gateway support it live)
+  const parsed = parseSymbolPricingPatch(body, { allowNegativeMarkup: negativeMarkupEnabled(), negativeRefusal: NEGATIVE_MARKUP_NOT_YET });
   if (typeof parsed === "string") {
     return NextResponse.json({ error: parsed }, { status: 400 });
   }

@@ -1,6 +1,7 @@
 import { Prisma, RoutingCategory, BookType } from "@prisma/client";
 import type { OrderSide } from "@/lib/trading";
 import { lockAccountBalance } from "@/lib/account-lock";
+import { negativeMarkupEnabled } from "@/lib/negative-markup-flag";
 
 type Tx = Prisma.TransactionClient;
 
@@ -60,9 +61,10 @@ export function negativeMarkupQuote(markupPips: Prisma.Decimal.Value, digits: nu
   return { bid: mid, ask: mid };
 }
 
-/** True only for a markup below zero (a raw / zero-spread group); 0 and every positive markup are false. */
+/** True only for a markup below zero (a raw / zero-spread group) while NEGATIVE_MARKUP_ENABLED is on (lib/negative-markup-flag.ts); 0, every positive
+ *  markup, and any negative value while the flag is off are false: the price then takes the pre-feature path (clamped to raw, never tighter). */
 export function isNegativeMarkup(markupPips: Prisma.Decimal.Value): boolean {
-  return new Prisma.Decimal(markupPips).lt(0);
+  return new Prisma.Decimal(markupPips).lt(0) && negativeMarkupEnabled();
 }
 
 // Moves a fill price by its side's share of the markup, away from the client. `side` is the side of the BOOK this price sits
