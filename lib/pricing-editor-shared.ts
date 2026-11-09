@@ -39,7 +39,11 @@ export type ParsedSymbolPricingPatch = {
 // this is the actual enforcement point (app-level, not a DB constraint,
 // matching this codebase's existing convention for cross-field
 // invariants -- see GroupSymbolConfig's own schema comment).
-export function parseSymbolPricingPatch(body: Record<string, unknown> | null): ParsedSymbolPricingPatch | string {
+//
+// opts.allowNegativeMarkup (owner 2026-11-09): only the GROUP per-symbol editor may store a negative spreadMarkup (a raw /
+// zero-spread group: client spread = max(0, raw + markup), lib/group-pricing.ts negativeMarkupQuote). Every other caller
+// (account, account type) still refuses it. A target and a commission are never negative.
+export function parseSymbolPricingPatch(body: Record<string, unknown> | null, opts: { allowNegativeMarkup?: boolean } = {}): ParsedSymbolPricingPatch | string {
   const spreadMarkup = parseNullableDecimal(body?.spreadMarkup);
   const targetTotalSpreadPips = parseNullableDecimal(body?.targetTotalSpreadPips);
   const commissionPerLot = parseNullableDecimal(body?.commissionPerLot);
@@ -51,7 +55,7 @@ export function parseSymbolPricingPatch(body: Record<string, unknown> | null): P
   if (spreadMarkup.value !== null && targetTotalSpreadPips.value !== null) {
     return "set either spreadMarkup or targetTotalSpreadPips, not both";
   }
-  if (spreadMarkup.value !== null && spreadMarkup.value.lt(0)) return "spreadMarkup must not be negative";
+  if (spreadMarkup.value !== null && spreadMarkup.value.lt(0) && !opts.allowNegativeMarkup) return "spreadMarkup must not be negative";
   if (targetTotalSpreadPips.value !== null && targetTotalSpreadPips.value.lt(0)) return "targetTotalSpreadPips must not be negative";
   if (commissionPerLot.value !== null && commissionPerLot.value.lt(0)) return "commissionPerLot must not be negative";
   return {

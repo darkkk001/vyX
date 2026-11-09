@@ -270,7 +270,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
   });
   logSpreadWarning({ accountId: account.id, symbolId: order.symbolId, brokerId: order.brokerId }, pricing.warning);
   const serverRef = livePrice ? (order.side === "BUY" ? livePrice.ask : livePrice.bid) : new Prisma.Decimal(triggerPrice);
-  const fillPrice = applySpreadMarkup({ side: order.side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+  const fillPrice = applySpreadMarkup({ side: order.side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits, opposite: livePrice ? (order.side === "BUY" ? livePrice.bid : livePrice.ask) : null });
   const slippageError = checkSlippage({ clientReferencePrice: triggerPrice, serverFillPrice: fillPrice, maxSlippagePoints: PENDING_TRIGGER_MAX_SLIPPAGE_POINTS, digits: brokerSymbol.symbol.digits });
   if (slippageError) {
     // the market jumped past the entry: MT5 fills at the next price; here the order waits for the next pass

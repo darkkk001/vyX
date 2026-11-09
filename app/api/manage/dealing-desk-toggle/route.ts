@@ -259,7 +259,7 @@ async function flushDealingQueueToMarket(
     });
     logSpreadWarning({ accountId: order.accountId, symbolId: order.symbolId, brokerId }, pricing.warning);
     const liveRef = order.side === "BUY" ? livePrice.ask : livePrice.bid;
-    const fillPrice = applySpreadMarkup({ side: order.side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
+    const fillPrice = applySpreadMarkup({ side: order.side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits, opposite: order.side === "BUY" ? livePrice.bid : livePrice.ask });
     // Audit 2026-09-24 (money): the same pre-trade margin gate as a direct fill; an order that fails it is left in
     // the queue (skipped, with the reason), the same as a risk-battery failure above.
     const marginError = await checkAccountPreTradeMargin(prisma, {

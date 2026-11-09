@@ -118,7 +118,8 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "symbol not enabled for this broker" }, { status: 400 });
   }
 
-  const parsed = parseSymbolPricingPatch(body);
+  // owner 2026-11-09: a group may set a NEGATIVE markup (raw / zero-spread group); the quote floors the client spread at 0
+  const parsed = parseSymbolPricingPatch(body, { allowNegativeMarkup: true });
   if (typeof parsed === "string") {
     return NextResponse.json({ error: parsed }, { status: 400 });
   }
