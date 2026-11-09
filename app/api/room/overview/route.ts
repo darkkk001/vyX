@@ -48,9 +48,14 @@ export async function GET() {
   const live = withFigures.filter((a) => a.mode === "LIVE");
   const currencies = new Set(live.map((a) => a.currency));
   const sum = (k: "balance" | "equity" | "freeMargin" | "floating") => live.reduce((s, a) => s + Number(a.figures[k]), 0).toFixed(2);
-  const totals = live.length > 0 && currencies.size === 1
-    ? { currency: [...currencies][0], balance: sum("balance"), equity: sum("equity"), freeMargin: sum("freeMargin"), floating: sum("floating") }
-    : null;
+  // the dashboard strip (owner 2026-11-09): live trading accounts only, summed; demo never counts; no live account = 0.00
+  const totals = live.length === 0
+    ? { currency: "USD", balance: "0.00", equity: "0.00", freeMargin: "0.00", floating: "0.00" }
+    : currencies.size === 1
+      ? { currency: [...currencies][0], balance: sum("balance"), equity: sum("equity"), freeMargin: sum("freeMargin"), floating: sum("floating") }
+      : null;
+  // the top bar's money: the funding wallet (real money), 0.00 until it exists
+  const realFunds = { amount: wallet ? wallet.figures.balance : "0.00", currency: wallet?.currency ?? "USD" };
 
   const ownNumbers = new Set(accounts.map((a) => a.accountNumber));
   // Recent transactions, live and demo apart (owner 2026-11-09: the dashboard shows live by default, a toggle shows demo);
@@ -70,6 +75,7 @@ export async function GET() {
     accounts: withFigures,
     wallet,
     totals,
+    realFunds,
     recent: recentLive,
     recentDemo,
   });

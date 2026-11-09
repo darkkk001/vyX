@@ -21,7 +21,8 @@ export type RoomOverview = {
   kyc: { status: "NONE" | "PENDING" | "APPROVED" | "REJECTED"; identity: boolean; address: boolean; rejectionReason: string | null };
   accounts: RoomAccount[];
   wallet: RoomAccount | null;
-  totals: { currency: string; balance: string; equity: string; freeMargin: string; floating: string } | null;
+  totals: { currency: string; balance: string; equity: string; freeMargin: string; floating: string } | null; // live accounts summed; null = mixed currencies
+  realFunds: { amount: string; currency: string }; // the funding wallet, 0.00 until it exists
   recent: RoomTx[]; // live accounts (and the funding wallet)
   recentDemo: RoomTx[];
 };

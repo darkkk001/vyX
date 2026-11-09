@@ -232,4 +232,15 @@ describe("owner additions 2026-11-09", () => {
     expect(page).toContain('useState<"LIVE" | "DEMO">("LIVE")');
     expect(page).toContain('className="r-mini-seg"');
   });
+  it("the top bar shows the funding wallet's real money, nothing account-specific; the strip sums live accounts only", () => {
+    const head = read("components/room/RoomHeader.tsx");
+    expect(head).toContain("<WalletBalance />");
+    expect(head).not.toContain("AccountPicker");
+    expect(read("components/room/UserMenu.tsx")).not.toContain("AccountPicker");
+    const route = read("app/api/room/overview/route.ts");
+    expect(route).toContain('const realFunds = { amount: wallet ? wallet.figures.balance : "0.00", currency: wallet?.currency ?? "USD" }');
+    expect(route).toMatch(/live\.length === 0\s+\? \{ currency: "USD", balance: "0\.00", equity: "0\.00", freeMargin: "0\.00", floating: "0\.00" \}/);
+    expect(route).toContain('const live = withFigures.filter((a) => a.mode === "LIVE")');
+    expect(read("app/(broker)/room/(shell)/page.tsx")).toContain("const f = data?.totals ?? null;");
+  });
 });

@@ -3,8 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRoom } from "./RoomData";
 import { initials } from "./format";
-import { money } from "./format";
-import AccountPicker from "./AccountPicker";
+import WalletBalance from "./WalletBalance";
 import ThemeToggle from "./ThemeToggle";
 import { useIsMobile } from "./useIsMobile";
 
@@ -38,7 +37,7 @@ function TierCard({ t }: { t: Tier }) {
   );
 }
 export default function UserMenu() {
-  const { data, selected } = useRoom();
+  const { data } = useRoom();
   const mobile = useIsMobile();
   const [tier, setTier] = useState<Tier | null>(null);
   const [open, setOpen] = useState(false);
@@ -93,8 +92,7 @@ export default function UserMenu() {
           </div>
           {mobile ? (
             <>
-              <div style={{ padding: "6px 8px 8px" }}><AccountPicker /></div>
-              {selected ? <div className="r-user-row"><span>Balance</span><span className="mono">{money(selected.figures.balance)} {selected.currency}</span></div> : null}
+              <WalletBalance row />
               <div className="r-user-row"><span>Theme</span><ThemeToggle /></div>
             </>
           ) : null}

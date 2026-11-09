@@ -113,6 +113,7 @@
 .r-head-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .r-acct-select { display: flex; align-items: center; gap: 8px; background: var(--r-card); border: 1px solid var(--r-input); border-radius: 6px; color: var(--r-text); font-family: var(--r-mono); font-size: 12px; padding: 8px 12px; }
 .r-head-bal { font-family: var(--r-mono); font-size: 13px; font-weight: 600; }
+.room .r-head-wallet, .r-head-wallet { display: inline-flex; align-items: center; gap: 8px; color: var(--r-text); text-decoration: none; }
 .r-icon-btn { background: none; border: 1px solid var(--r-btn); border-radius: 6px; color: var(--r-text-2); width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .r-body { padding: 26px 28px; max-width: 1180px; width: 100%; display: flex; flex-direction: column; gap: 26px; }
 

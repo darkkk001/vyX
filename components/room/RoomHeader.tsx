@@ -6,16 +6,16 @@ import NotificationBell from "./NotificationBell";
 import ThemeToggle from "./ThemeToggle";
 import AppSwitcher from "./AppSwitcher";
 import UserMenu from "./UserMenu";
-import AccountPicker from "./AccountPicker";
+import WalletBalance from "./WalletBalance";
 import { useIsMobile } from "./useIsMobile";
-import { money } from "./format";
 
-// The page header on every Trader's Room screen: title, the account picker, its balance, then theme, bell, apps, avatar.
+// The page header on every Trader's Room screen: title, the funding wallet's balance (nothing account-specific), then
+// theme, bell, apps, avatar.
 // `right` replaces the picker on screens whose artboard shows something else there (Support's "New ticket").
 // On a phone the bar is one row: menu, title, bell, apps, avatar. The picker, the balance and the theme move into the
 // avatar menu, and `right` (a screen's own controls) sits just under the bar.
 export default function RoomHeader({ title, right, picker = true }: { title: string; right?: ReactNode; picker?: boolean }) {
-  const { data, selected } = useRoom();
+  const { data } = useRoom();
   const mobile = useIsMobile();
   if (mobile) {
     return (
@@ -38,14 +38,7 @@ export default function RoomHeader({ title, right, picker = true }: { title: str
       <h1>{title}</h1>
       <div className="r-head-right">
         {right}
-        {picker && data && data.accounts.length > 0 ? (
-          <>
-            <AccountPicker />
-            {selected ? (
-              <span className="r-head-bal">{money(selected.figures.balance)} <span style={{ color: "var(--r-muted)", fontWeight: 400 }}>{selected.currency}</span></span>
-            ) : null}
-          </>
-        ) : null}
+        {picker && data ? <WalletBalance /> : null}
         <ThemeToggle />
         <NotificationBell />
         <AppSwitcher />

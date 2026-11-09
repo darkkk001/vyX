@@ -19,7 +19,8 @@ const Check = ({ ok }: { ok: boolean }) => (
 
 export default function RoomDashboard() {
   const { data, error, selected } = useRoom();
-  const f = selected?.figures;
+  // the strip: live accounts only, summed by the server (demo never counts; no live account = 0.00)
+  const f = data?.totals ?? null;
   const firstName = data?.client.fullName.split(/\s+/)[0] ?? "";
   // Recent transactions: live accounts by default, demo on the toggle (owner 2026-11-09); History is unchanged
   const [txMode, setTxMode] = useState<"LIVE" | "DEMO">("LIVE");
