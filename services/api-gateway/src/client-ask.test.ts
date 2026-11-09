@@ -26,7 +26,14 @@ test("every price vector: the stream's BOTH sides equal the web's account bid an
     assert.equal(clientAsk(rule, c.bid, c.ask).toString(), new Decimal(c.expected.accountAsk).toString(), `${c.name}: ask`);
     // symmetric markup (2026-10-29): the bid is marked DOWN by the same half, so it is pinned by the contract too
     assert.equal(clientBid(rule, c.bid, c.ask).toString(), new Decimal(c.expected.accountBid).toString(), `${c.name}: bid`);
-    assert.ok(clientBid(rule, c.bid, c.ask).lt(clientAsk(rule, c.bid, c.ask)), `${c.name}: must not cross`);
+    // A zero spread became legitimate with the negative markup (both sides sit on the mid), so the strict
+    // `<` only still holds where the markup is non-negative -- asserted separately rather than dropped, so
+    // a normal group still cannot be given a zero spread by a sign error.
+    const negative = c.rule.mode === "markup" && new Decimal(c.rule.markupPips).isNegative();
+    assert.ok(clientBid(rule, c.bid, c.ask).lte(clientAsk(rule, c.bid, c.ask)), `${c.name}: must not invert`);
+    if (!negative) {
+      assert.ok(clientBid(rule, c.bid, c.ask).lt(clientAsk(rule, c.bid, c.ask)), `${c.name}: must not cross`);
+    }
   }
 });
 

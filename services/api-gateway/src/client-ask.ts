@@ -61,24 +61,56 @@ function markupParts(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): { a
   return { ask: askPoints.mul(point), bid: total.sub(askPoints).mul(point) };
 }
 
+/** BOTH sides for one tick, with the ZERO-SPREAD FLOOR -- the mirror of engine ask_markup.rs `account_pair`, decided in
+ *  one place so the two sides and the cross check cannot disagree.
+ *
+ *  NEGATIVE MARKUP (owner decision 2026-11-09, raw / zero-spread groups). A negative markup narrows the spread.
+ *  `markupParts` needs no change: `askPoints = ceil(total/2)` with a negative total puts the larger magnitude on the
+ *  BID, the mirror of the positive case, from the same formula. What changes is the two CLAMPS -- `Decimal.max(..., a)`
+ *  on the ask and `Decimal.min(..., b)` on the bid -- which exist to stop a positive markup quoting tighter than raw
+ *  and would silently cancel a negative one. The clamp becomes a SPREAD floor:
+ *
+ *      client spread = max(0, raw_spread + markup)
+ *
+ *  and when the candidates meet or cross, both collapse to the mid at the symbol's precision, ROUND HALF TO EVEN. The
+ *  two half-tick ties are pinned by docs/contracts/ask-markup-vectors.json, not inferred:
+ *      1.12270 / 1.12271 -> mid 1.122705 -> 1.12270      1.12271 / 1.12272 -> mid 1.122715 -> 1.12272
+ *
+ *  A markup >= 0 keeps the previous expressions verbatim in its own early branch, so a normal group is byte-for-byte
+ *  unchanged by this. */
+function clientPair(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): { bid: Decimal; ask: Decimal } {
+  const a = new Decimal(ask);
+  const b = new Decimal(bid);
+  const parts = markupParts(rule, bid, ask);
+  const floor = new Decimal(1).div(new Decimal(10).pow(Math.max(rule.digits, 0)));
+
+  if (parts.ask.add(parts.bid).gte(0)) {
+    return {
+      ask: parts.ask.isZero() ? a : Decimal.max(a.add(parts.ask).toDecimalPlaces(rule.digits, Decimal.ROUND_CEIL), a),
+      bid: parts.bid.isZero()
+        ? b
+        : Decimal.min(Decimal.max(b.sub(parts.bid).toDecimalPlaces(rule.digits, Decimal.ROUND_FLOOR), floor), b),
+    };
+  }
+
+  // markup < 0: same rounding directions, clamps deliberately absent
+  const ca = a.add(parts.ask).toDecimalPlaces(rule.digits, Decimal.ROUND_CEIL);
+  const cb = b.sub(parts.bid).toDecimalPlaces(rule.digits, Decimal.ROUND_FLOOR);
+  if (cb.lt(ca)) return { bid: Decimal.max(cb, floor), ask: ca };
+  const mid = Decimal.max(b.add(a).div(2).toDecimalPlaces(rule.digits, Decimal.ROUND_HALF_EVEN), floor);
+  return { bid: mid, ask: mid };
+}
+
 /** The account's ask at this tick: raw ask + its share of the markup, at the symbol's precision, never tighter than the raw
  *  ask. The price a BUY opens at / a SELL closes at. */
 export function clientAsk(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
-  const a = new Decimal(ask);
-  const part = markupParts(rule, bid, ask).ask;
-  if (part.isZero()) return a;
-  return Decimal.max(a.add(part).toDecimalPlaces(rule.digits, Decimal.ROUND_CEIL), a);
+  return clientPair(rule, bid, ask).ask;
 }
 
 /** The account's bid at this tick: raw bid - its share of the markup, never tighter than the raw bid and never at or below
  *  zero. The price a SELL opens at / a BUY closes at. */
 export function clientBid(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): Decimal {
-  const b = new Decimal(bid);
-  const part = markupParts(rule, bid, ask).bid;
-  if (part.isZero()) return b;
-  const floor = new Decimal(1).div(new Decimal(10).pow(Math.max(rule.digits, 0)));
-  const out = b.sub(part).toDecimalPlaces(rule.digits, Decimal.ROUND_FLOOR);
-  return Decimal.min(Decimal.max(out, floor), b);
+  return clientPair(rule, bid, ask).bid;
 }
 
 /** The tick a trader socket receives: the same JSON with BOTH sides replaced by this account's prices (same JSON type).
@@ -91,7 +123,9 @@ export function rewriteTick(tick: Record<string, unknown>, rule: AskRule): strin
   const bid = tick.bid as string | number;
   const a = clientAsk(rule, bid, ask);
   const b = clientBid(rule, bid, ask);
-  if (!b.lt(a)) return JSON.stringify(tick);
+  // `b.gt(a)`, not `!b.lt(a)`: a zero-spread tick is legitimate under a negative markup (both sides on
+  // the mid) and must go out as marked. Only a genuinely INVERTED result falls back to the raw tick.
+  if (b.gt(a)) return JSON.stringify(tick);
   return JSON.stringify({
     ...tick,
     ask: typeof ask === "number" ? a.toNumber() : a.toString(),
