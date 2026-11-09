@@ -36,7 +36,7 @@ import { GET as pactGET } from "@/app/api/manage/position-action-requests/route"
 const D = (v: number | string) => new Prisma.Decimal(v);
 const sfx = randomUUID().replace(/-/g, "").slice(0, 8);
 type Role = "BROKER_ADMIN" | "MANAGER" | "SUPPORT";
-type Badges = { deal: number | null; apr: number | null; rdr: number | null; kyc: number | null; lar: number | null; dep: number | null; unread: number; computedAt: string };
+type Badges = { deal: number | null; apr: number | null; rdr: number | null; kyc: number | null; lar: number | null; dep: number | null; lev: number | null; ipr: number | null; unread: number; computedAt: string };
 
 let seq = 0;
 let symbolId = "";
@@ -176,8 +176,10 @@ describe("GET /api/manage/badges", () => {
   it("BROKER_ADMIN: every count equals what the old list endpoints gave the backoffice", async () => {
     const { status, body } = await badges(A, "owner", "BROKER_ADMIN");
     expect(status).toBe(200);
-    const { computedAt, ...counts } = body;
+    const { computedAt, lev, ipr, ...counts } = body;
     expect(new Date(computedAt).toISOString()).toBe(computedAt);
+    // the CRM queues need the broker's CRM module (off for this broker): no badge
+    expect([lev, ipr]).toEqual([null, null]);
     expect(counts).toEqual(await oldCounts(A));
     // and the seeded numbers themselves (n = 2): pending MARKET 4, APR 2 + 2, RDR 1 flagged + 1 cluster, KYC 1 + 2,
     // LAR 2, DEP 2 deposits + 2 withdrawals, unread 3 staff rows (one more is read by this owner)
@@ -186,8 +188,9 @@ describe("GET /api/manage/badges", () => {
 
   it("the second broker sees only its own queues (broker isolation)", async () => {
     const { body } = await badges(B, "owner", "BROKER_ADMIN");
-    const { computedAt, ...counts } = body;
+    const { computedAt, lev, ipr, ...counts } = body;
     expect(typeof computedAt).toBe("string");
+    expect([lev, ipr]).toEqual([null, null]);
     expect(counts).toEqual(await oldCounts(B));
     expect(counts).toEqual({ deal: 2, apr: 2, rdr: 2, kyc: 2, lar: 1, dep: 2, unread: 2 });
   });
@@ -256,5 +259,44 @@ describe("GET /api/manage/badges", () => {
     expect(after.deal).toBe(before.deal! + 1);
     // the other broker is untouched
     expect((await badges(B, "owner", "BROKER_ADMIN")).body).toMatchObject({ deal: 2, dep: 2 });
+  });
+});
+
+// Backoffice Client requests / Partners tabs (owner 2026-11-10): the CRM queues' pending counts.
+describe("GET /api/manage/badges: leverage and IB payout requests", () => {
+  let C: { brokerId: string; owner: string; plain: string; finance: string; payouts: string; support: string };
+  beforeAll(async () => {
+    const broker = await prisma.broker.create({ data: { name: `Badges crm ${sfx}`, subdomain: `badges-crm-${sfx}`, crmEnabled: true } });
+    const brokerId = broker.id;
+    const group = await prisma.group.create({ data: { brokerId, name: "g", leverage: 100 } });
+    const mk = (k: string, role: Role, extraPermissions: string[] = []) =>
+      prisma.adminUser.create({ data: { brokerId, email: `badges-crm-${k}-${sfx}@test.local`, passwordHash: "x", role, status: "ACTIVE", twoFactorEnabled: true, extraPermissions } }).then((a) => a.id);
+    C = { brokerId, owner: await mk("owner", "BROKER_ADMIN"), plain: await mk("plain", "MANAGER"), finance: await mk("finance", "MANAGER", ["ACCOUNT_FINANCE"]), payouts: await mk("payouts", "MANAGER", ["IB_PAYOUTS"]), support: await mk("support", "SUPPORT") };
+    const client = await prisma.client.create({ data: { brokerId, email: `crm-client-${sfx}@x.local`, passwordHash: "x", fullName: "crm client" } });
+    seq++;
+    const acc = await prisma.account.create({ data: { brokerId, clientId: client.id, accountNumber: `6${Date.now() % 1_000_000}${seq}`, email: client.email, passwordHash: "x", fullName: "crm", accountMode: "LIVE", groupId: group.id, leverage: 100 } });
+    // 3 pending leverage requests + 1 decided; 2 pending payout requests + 1 paid
+    for (const status of ["PENDING", "PENDING", "PENDING", "APPROVED"] as const) await prisma.leverageChangeRequest.create({ data: { brokerId, accountId: acc.id, clientId: client.id, fromLeverage: 100, toLeverage: 200, status } });
+    for (const status of ["PENDING", "PENDING", "APPROVED"] as const) await prisma.ibPayoutRequest.create({ data: { brokerId, clientId: client.id, ibAccountId: acc.id, amount: D(10), status } });
+  }, 60_000);
+  const get = async (adminId: string, role: Role) => {
+    vi.mocked(getAdminSession).mockResolvedValue({ adminId, brokerId: C.brokerId, role } as never);
+    return (await (await badgesGET()).json()) as Badges;
+  };
+  it("BROKER_ADMIN on a CRM broker: the pending counts", async () => {
+    expect(await get(C.owner, "BROKER_ADMIN")).toMatchObject({ lev: 3, ipr: 2 });
+  });
+  it("a MANAGER gets only the queues its permissions open (ACCOUNT_FINANCE: leverage, IB_PAYOUTS: payouts)", async () => {
+    expect(await get(C.plain, "MANAGER")).toMatchObject({ lev: null, ipr: null });
+    expect(await get(C.finance, "MANAGER")).toMatchObject({ lev: 3, ipr: null });
+    expect(await get(C.payouts, "MANAGER")).toMatchObject({ lev: null, ipr: 2 });
+  });
+  it("SUPPORT never gets them", async () => {
+    expect(await get(C.support, "SUPPORT")).toMatchObject({ lev: null, ipr: null });
+  });
+  it("the module switched off hides them at once", async () => {
+    await prisma.broker.update({ where: { id: C.brokerId }, data: { crmEnabled: false } });
+    expect(await get(C.owner, "BROKER_ADMIN")).toMatchObject({ lev: null, ipr: null });
+    await prisma.broker.update({ where: { id: C.brokerId }, data: { crmEnabled: true } });
   });
 });

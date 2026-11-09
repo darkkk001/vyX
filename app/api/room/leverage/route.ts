@@ -4,6 +4,7 @@ import { roomApiSession, ownAccount } from "@/lib/room/context";
 import { parseLeverage } from "@/lib/leverage";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications";
+import { publishTradingEvent } from "@/lib/nats";
 import { checkLeverageChange, applyLeverageChange, LeverageChangeError } from "@/lib/room/leverage-change";
 
 // POST {accountId, leverage}: the client's own leverage change (lib/room/leverage-change.ts). Live and demo accounts
@@ -44,6 +45,7 @@ export async function POST(request: NextRequest) {
       brokerId: session.brokerId, type: "LEVERAGE_CHANGE_REQUESTED", title: "Leverage change request",
       body: `${account.accountNumber}: 1:${check.from} to 1:${to}`, entityType: "LeverageChangeRequest", entityId: req.id,
     });
+    await publishTradingEvent("LeverageRequested", { broker_id: session.brokerId, request_id: req.id }).catch(() => {});
     return NextResponse.json({ status: "pending", leverage: check.from, requested: to });
   }
 

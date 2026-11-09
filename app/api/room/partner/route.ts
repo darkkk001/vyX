@@ -5,6 +5,7 @@ import { roomApiSession } from "@/lib/room/context";
 import { partnerSummary, referralCodeOf, partnerAccountOf } from "@/lib/room/partner";
 import { computePendingCommission } from "@/lib/commission";
 import { createNotification } from "@/lib/notifications";
+import { publishTradingEvent } from "@/lib/nats";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { Prisma } from "@prisma/client";
 import { requestOrigin } from "@/lib/request-origin";
@@ -41,6 +42,7 @@ export async function POST() {
   if (unpaid.lte(0)) return NextResponse.json({ error: "Nothing to pay out yet." }, { status: 400 });
   const req = await prisma.ibPayoutRequest.create({ data: { brokerId: session.brokerId, clientId: session.clientId, ibAccountId: partner.id, amount: unpaid.toDecimalPlaces(2) } });
   await createNotification(prisma, { brokerId: session.brokerId, type: "IB_PAYOUT_REQUESTED", title: "Partner payout request", body: `${partner.accountNumber}: ${unpaid.toFixed(2)}`, entityType: "IbPayoutRequest", entityId: req.id });
+  await publishTradingEvent("IbPayoutRequested", { broker_id: session.brokerId, request_id: req.id }).catch(() => {});
   await prisma.auditLog.create({ data: { brokerId: session.brokerId, clientId: session.clientId, action: "IB_PAYOUT_REQUESTED", entityType: "Account", entityId: partner.id, newValue: { amount: unpaid.toFixed(2), requestId: req.id, source: "CLIENT" } } });
   return NextResponse.json({ status: "requested", amount: unpaid.toFixed(2) }, { status: 201 });
 }

@@ -92,6 +92,11 @@ const SUBJECTS = {
   // refetches its KYC / LAR queue and badge.
   KycSubmitted: "dealing.kyc_submitted",
   LiveAccountRequested: "dealing.live_account_requested",
+  // Backoffice Client requests / Partners (owner 2026-11-10): a client asked for a leverage change / an IB payout. Same
+  // rules as the two above (dealing.>, admin stream only, ids only): the backoffice re-reads its badges, and the bell
+  // rings for the new staff notification at once instead of on the 60 s safety read.
+  LeverageRequested: "dealing.leverage_requested",
+  IbPayoutRequested: "dealing.ib_payout_requested",
   // Rejected-order trace (2026-10-23): an order request refused before any Order row (lib/rejected-orders.ts).
   // Backoffice-only under dealing.>: the trader stream never subscribes it, so the trader's terminal does not refetch.
   OrderRejectedPreTrade: "dealing.order_rejected",
