@@ -1,5 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { markupSplit, pipSize } from "@/lib/group-pricing";
+import { isNegativeMarkup, markupSplit, negativeMarkupQuote, pipSize } from "@/lib/group-pricing";
 import { resolvePricingV2, resolveEffectiveSpreadMarkup, type ResolvedSpread } from "@/lib/pricing-engine";
 
 // Owner decision (2026-10-29): the markup is SYMMETRIC -- divided between the two sides around the mid, instead of
@@ -67,6 +67,9 @@ function priceFloor(digits: number): Prisma.Decimal {
 
 /** The account's ask: raw ask + its share of the markup, at the symbol's own precision, never tighter than the raw ask. */
 export function markedUpAsk(rule: AskRule, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): Prisma.Decimal {
+  // 2026-11-09: a negative markup (raw / zero-spread group) narrows the spread, floored at 0 at the half-even mid (group-pricing.ts)
+  const m = markupPipsAt(rule, bid, ask);
+  if (isNegativeMarkup(m)) return negativeMarkupQuote(m, rule.digits, bid, ask).ask;
   const raw = new Prisma.Decimal(ask);
   const part = markupParts(rule, bid, ask).ask;
   if (part.isZero()) return raw;
@@ -77,6 +80,8 @@ export function markedUpAsk(rule: AskRule, bid: Prisma.Decimal.Value, ask: Prism
  *  and never at or below zero -- a markup wider than the price itself (the 60-pip hedge group on a
  *  cheap symbol) must degrade to the smallest quotable price, not to a zero or negative bid. */
 export function markedDownBid(rule: AskRule, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): Prisma.Decimal {
+  const m = markupPipsAt(rule, bid, ask);
+  if (isNegativeMarkup(m)) return negativeMarkupQuote(m, rule.digits, bid, ask).bid;
   const raw = new Prisma.Decimal(bid);
   const part = markupParts(rule, bid, ask).bid;
   if (part.isZero()) return raw;
@@ -88,7 +93,9 @@ export function markedDownBid(rule: AskRule, bid: Prisma.Decimal.Value, ask: Pri
  *  crossed book: such a quote is never safe to fill or value against. */
 export function accountQuote(rule: AskRule, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): { bid: Prisma.Decimal; ask: Prisma.Decimal } {
   const out = { bid: markedDownBid(rule, bid, ask), ask: markedUpAsk(rule, bid, ask) };
-  if (!out.bid.lt(out.ask)) {
+  // a negative-markup (zero-spread) group may quote bid == ask (floored at 0); never crossed, and a markup >= 0 still needs bid < ask
+  const zeroSpreadOk = isNegativeMarkup(markupPipsAt(rule, bid, ask)) && out.bid.eq(out.ask);
+  if (!out.bid.lt(out.ask) && !zeroSpreadOk) {
     throw new Error(
       `crossed account book: bid ${out.bid.toString()} >= ask ${out.ask.toString()} ` +
         `(raw ${new Prisma.Decimal(bid).toString()}/${new Prisma.Decimal(ask).toString()}, digits ${rule.digits})`
