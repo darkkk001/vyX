@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { notCoverageAccount } from "@/lib/client-accounts";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { formatCsvNumber } from "@/lib/format";
@@ -14,9 +15,10 @@ export async function GET() {
   const brokerId = session!.brokerId!;
   const thirtyDaysAgo = new Date(Date.now() - 30 * DAY_MS);
 
+  const cov = (await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } })).coverageAccountId;   // the hedge account is not client money (lib/client-accounts.ts)
   const transactions = await prisma.transaction.findMany({
     // LIVE accounts only, to reconcile with the summary tiles (which are LIVE-only); demo movements were inflating the table
-    where: { brokerId, createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
+    where: { brokerId, createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false, ...notCoverageAccount(cov) } },
     include: { account: { select: { accountNumber: true } } },
     orderBy: { createdAt: "desc" },
   });

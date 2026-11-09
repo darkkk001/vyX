@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { notCoverageAccount } from "@/lib/client-accounts";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { bookPnlRealized, currencyAmountsJson } from "@/lib/book-pnl";
 
@@ -39,27 +40,28 @@ export async function GET(req: Request) {
   // Reporting v2 module -- this is intentionally narrow.
   // lots traded in the window: an OPEN position is its remaining volume plus what was already closed; a closed one is
   // its cumulative closedVolume (volume is only the last piece), or volume for rows closed before closedVolume existed
-  const volWhere = { brokerId, openedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" as const, isInternal: false } };
+  const cov = (await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } })).coverageAccountId;   // the hedge account is not client money (lib/client-accounts.ts)
+  const client = { accountMode: "LIVE" as const, isInternal: false, ...notCoverageAccount(cov) };
+  const volWhere = { brokerId, openedAt: { gte: thirtyDaysAgo }, account: client };
   const [volOpen, volDoneNew, volDoneOld, commissionAgg, depositsAgg, withdrawalsAgg, newClients] = await Promise.all([
     prisma.position.aggregate({ where: { ...volWhere, status: "OPEN" }, _sum: { volume: true, closedVolume: true } }),
     prisma.position.aggregate({ where: { ...volWhere, status: { not: "OPEN" }, closedVolume: { not: null } }, _sum: { closedVolume: true } }),
     prisma.position.aggregate({ where: { ...volWhere, status: { not: "OPEN" }, closedVolume: null }, _sum: { volume: true } }),
     prisma.position.aggregate({
-      where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
+      where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: client },
       _sum: { commission: true },
     }),
     prisma.transaction.aggregate({
-      where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
+      where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: client },
       _sum: { amount: true },
     }),
     prisma.transaction.aggregate({
-      where: { brokerId, type: "WITHDRAWAL", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
+      where: { brokerId, type: "WITHDRAWAL", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: client },
       _sum: { amount: true },
     }),
-    prisma.account.count({ where: { brokerId, accountMode: "LIVE", isInternal: false, createdAt: { gte: thirtyDaysAgo } } }),
+    prisma.account.count({ where: { brokerId, ...client, createdAt: { gte: thirtyDaysAgo } } }),
   ]);
-  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
-  const bookPnl = await bookPnlRealized(prisma, { brokerId, coverageAccountId: broker.coverageAccountId }, from, to);
+  const bookPnl = await bookPnlRealized(prisma, { brokerId, coverageAccountId: cov }, from, to);
 
   const netDeposits = (depositsAgg._sum.amount?.toNumber() ?? 0) - Math.abs(withdrawalsAgg._sum.amount?.toNumber() ?? 0);
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { notCoverageAccount, notCoverageSql } from "@/lib/client-accounts";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { formatCsvNumber, viewAmount } from "@/lib/format";
@@ -15,11 +16,12 @@ export async function GET() {
   }
   const brokerId = session!.brokerId!;
   const thirtyDaysAgo = new Date(Date.now() - 30 * DAY_MS);
-  if (dealReads("reports_trading")) return dealsCsv(brokerId, thirtyDaysAgo);
+  const cov = (await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } })).coverageAccountId;   // the hedge account is not client money (lib/client-accounts.ts)
+  if (dealReads("reports_trading")) return dealsCsv(brokerId, thirtyDaysAgo, cov);
 
   const positions = await prisma.position.findMany({
     // LIVE accounts only, to reconcile with the summary tiles (which are LIVE-only); demo trades were inflating the table
-    where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+    where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", ...notCoverageAccount(cov) } },
     include: { account: { select: { accountNumber: true } }, symbol: { select: { name: true, digits: true } } },
     orderBy: { closedAt: "desc" },
   });
@@ -62,7 +64,7 @@ export async function GET() {
 // (OUT / OUT_BY with its TRADE_PNL row, the rows lib/book-pnl.ts bookPnlRealizedFromDeals sums). Voided trades are left
 // out. Side is the deal's direction (a close of a BUY is a SELL). Commission is charged on the IN deal (ledger sign,
 // shown in the broker view like the positions report); the Profit column adds up to the realised P/L of the range.
-async function dealsCsv(brokerId: string, since: Date) {
+async function dealsCsv(brokerId: string, since: Date, cov: string | null = null) {
   const deals = await prisma.$queryRaw<{
     executedAt: Date; accountNumber: string; symbol: string; digits: number; side: string; entry: string; volume: Prisma.Decimal;
     price: Prisma.Decimal; commission: Prisma.Decimal; swap: Prisma.Decimal; profit: Prisma.Decimal; position: number; deal: bigint;
@@ -70,7 +72,7 @@ async function dealsCsv(brokerId: string, since: Date) {
     SELECT d."executedAt", a."accountNumber", s.name AS symbol, s.digits, d.side::text AS side, d.entry::text AS entry, d.volume,
            d.price, d.commission, d.swap, d.profit, p.ticket AS position, d.ticket AS deal
       FROM "Deal" d JOIN "Position" p ON p.id = d."positionId" JOIN "Account" a ON a.id = d."accountId" JOIN "Symbol" s ON s.id = d."symbolId"
-     WHERE d."brokerId" = ${brokerId} AND a."accountMode" = 'LIVE' AND p.status IN ('OPEN', 'CLOSED') AND d."voidedAt" IS NULL
+     WHERE d."brokerId" = ${brokerId} AND a."accountMode" = 'LIVE' AND ${notCoverageSql(cov)} AND p.status IN ('OPEN', 'CLOSED') AND d."voidedAt" IS NULL
        AND d."executedAt" >= ${since}
        AND ((d.entry = 'IN' AND d."orderId" IS NOT NULL) OR (d.entry IN ('OUT', 'OUT_BY') AND d."transactionId" IS NOT NULL))
      ORDER BY d."executedAt" DESC, d.ticket DESC`;

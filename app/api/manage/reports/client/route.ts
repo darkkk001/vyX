@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { notCoverageAccount } from "@/lib/client-accounts";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { formatCsvNumber } from "@/lib/format";
@@ -12,8 +13,10 @@ export async function GET() {
   const brokerId = session!.brokerId!;
 
   // owner 2026-10-05: internal (test / staff) accounts are not clients of the broker
+  const cov = (await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } })).coverageAccountId;   // the hedge account is not client money (lib/client-accounts.ts)
+  // 2026-11-09: nor is the broker's own hedge account
   const accounts = await prisma.account.findMany({
-    where: { brokerId, isInternal: false },
+    where: { brokerId, isInternal: false, ...notCoverageAccount(cov) },
     include: { group: { select: { name: true } } },
     orderBy: { accountNumber: "asc" },
   });
