@@ -17,7 +17,7 @@ staff role (BROKER_ADMIN, MANAGER, SUPPORT), scoped to the session's broker. No 
 
 ```
 200 { "deal": int|null, "apr": int|null, "rdr": int|null, "kyc": int|null, "lar": int|null, "dep": int|null,
-      "unread": int, "computedAt": ISO-8601 }
+      "lev": int|null, "ipr": int|null, "unread": int, "computedAt": ISO-8601 }
 ```
 
 | Field | Screen | Counts (exactly what that screen's own list shows) |
@@ -28,6 +28,8 @@ staff role (BROKER_ADMIN, MANAGER, SUPPORT), scoped to the session's broker. No 
 | `kyc` | KYC | PENDING account KYC records + PENDING client KYC records |
 | `lar` | LAR | PENDING live-account requests |
 | `dep` | DEP | PENDING DEPOSIT and WITHDRAWAL transactions (funds-requests) |
+| `lev` | CRV | PENDING leverage change requests (crm/leverage-requests). Added 2026-11-10 |
+| `ipr` | CRP | PENDING IB payout requests (crm/ib-payout-requests). Added 2026-11-10 |
 | `unread` | NTF | the signed-in person's unread staff notifications, the same number as shell-info's `unreadNotifications` |
 | `computedAt` | | when the response was built (UTC) |
 
@@ -35,6 +37,11 @@ staff role (BROKER_ADMIN, MANAGER, SUPPORT), scoped to the session's broker. No 
   (lib/backoffice-screens.ts: role + delegated permissions, read fresh on every call), so a badge is null exactly when
   its screen is not in the menu. Today: MANAGER without KYC_REVIEW gets `kyc` / `lar` null, without FUNDS_APPROVAL
   `dep` null; SUPPORT gets `deal`, `apr`, `rdr` and `lar` null. Show no badge for null; do not show 0.
+- `lev` / `ipr` are null unless the CRM screens are in the menu (the CRM right), the broker's CRM module is on, and the
+  queue's own route would answer: BROKER_ADMIN, or a MANAGER with ACCOUNT_FINANCE (`lev`) / IB_PAYOUTS (`ipr`).
+  An older backoffice ignores the two fields.
+- A new leverage request publishes `dealing.leverage_requested`, a new IB payout request `dealing.ib_payout_requested`
+  (ids only, admin stream): like every dealing.* event they make the backoffice re-read this endpoint.
 - Counts are uncapped. The old lists cap some queues at 200 rows; these are the true queue lengths.
 - `deal`, `apr`, `kyc`, `lar`, `dep` and `unread` are live on every call. `rdr` comes from the risk radar's 5-minute
   server cache (lib/risk-radar-cache.ts, the same cache `GET /api/manage/risk-radar` serves), so it can lag by up to

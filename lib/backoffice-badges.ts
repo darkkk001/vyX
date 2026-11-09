@@ -25,6 +25,10 @@ import { loadRiskMarks, riskRadarBadgeCountWithMarks } from "@/lib/risk-marks";
 //   lar    PENDING live-account requests
 //   dep    PENDING DEPOSIT / WITHDRAWAL transactions   (funds-requests)
 //   unread unread staff notifications for this person (shell-info's unreadNotifications)
+//   lev    PENDING leverage change requests            (crm/leverage-requests; CRM module on, BROKER_ADMIN or ACCOUNT_FINANCE)
+//   ipr    PENDING IB payout requests                  (crm/ib-payout-requests; CRM module on, BROKER_ADMIN or IB_PAYOUTS)
+// lev / ipr (owner 2026-11-10, backoffice Client requests / Partners tabs): null unless the CRM screens are in this
+// person's menu (the CRM right and the broker's CRM module) AND the queue's own route would answer them.
 // The old list endpoints cap some lists at 200 rows; these counts are uncapped (the true queue length).
 
 export type BadgeCounts = {
@@ -34,6 +38,8 @@ export type BadgeCounts = {
   kyc: number | null;
   lar: number | null;
   dep: number | null;
+  lev: number | null;
+  ipr: number | null;
   unread: number;
   computedAt: string;
 };
@@ -61,6 +67,9 @@ type Row = {
   ckyc: number | null;
   lar: number | null;
   dep: number | null;
+  crm: boolean | null;
+  lev: number | null;
+  ipr: number | null;
   unread: number;
 };
 
@@ -79,6 +88,9 @@ export async function computeBadges(viewer: BadgeViewer): Promise<BadgeCounts> {
       ${count("KYC", Prisma.sql`SELECT count(*) FROM "ClientKycRecord" k JOIN "Client" c ON c.id = k."clientId" WHERE c."brokerId" = ${brokerId} AND k.status = 'PENDING'`)} AS ckyc,
       ${count("LAR", Prisma.sql`SELECT count(*) FROM "LiveAccountRequest" WHERE "brokerId" = ${brokerId} AND status = 'PENDING'`)} AS lar,
       ${count("DEP", Prisma.sql`SELECT count(*) FROM "Transaction" WHERE "brokerId" = ${brokerId} AND type IN ('DEPOSIT', 'WITHDRAWAL') AND status = 'PENDING'`)} AS dep,
+      (SELECT "crmEnabled" FROM "Broker" WHERE id = ${brokerId}) AS crm,
+      ${role === "SUPPORT" ? Prisma.sql`NULL::int` : Prisma.sql`(SELECT count(*) FROM "LeverageChangeRequest" WHERE "brokerId" = ${brokerId} AND status = 'PENDING')::int`} AS lev,
+      ${role === "SUPPORT" ? Prisma.sql`NULL::int` : Prisma.sql`(SELECT count(*) FROM "IbPayoutRequest" WHERE "brokerId" = ${brokerId} AND status = 'PENDING')::int`} AS ipr,
       (SELECT count(*) FROM "Notification" n
         WHERE n."brokerId" = ${brokerId} AND n."accountId" IS NULL AND n."clientId" IS NULL AND n."readAt" IS NULL
           AND NOT EXISTS (SELECT 1 FROM "NotificationRead" r WHERE r."notificationId" = n.id AND r."adminId" = ${adminId}))::int AS unread`;
@@ -88,6 +100,10 @@ export async function computeBadges(viewer: BadgeViewer): Promise<BadgeCounts> {
   // the exact menu rule shell-info hands the backoffice (role + delegated permissions)
   const allowed = new Set(allowedBackofficeScreens(role, role === "MANAGER" ? (row.perms ?? []) : []));
   const gate = (screen: BadgeScreen, n: number | null) => (allowed.has(screen) && n != null ? n : null);
+  // the CRM queues: the CRM screens in this person's menu, the module on, and the queue route's own permission
+  const perms = role === "MANAGER" ? (row.perms ?? []) : [];
+  const crmQueue = (perm: string, n: number | null) =>
+    allowed.has("CRM") && row.crm === true && n != null && (role === "BROKER_ADMIN" || perms.includes(perm)) ? n : null;
 
   return {
     deal: gate("DEAL", row.deal),
@@ -96,6 +112,8 @@ export async function computeBadges(viewer: BadgeViewer): Promise<BadgeCounts> {
     kyc: gate("KYC", row.kyc != null && row.ckyc != null ? row.kyc + row.ckyc : null),
     lar: gate("LAR", row.lar),
     dep: gate("DEP", row.dep),
+    lev: crmQueue("ACCOUNT_FINANCE", row.lev),
+    ipr: crmQueue("IB_PAYOUTS", row.ipr),
     unread: row.unread,
     computedAt: new Date().toISOString(),
   };
