@@ -5,7 +5,9 @@ import RoomHeader from "@/components/room/RoomHeader";
 import StatusChip from "@/components/room/StatusChip";
 import { useRoom } from "@/components/room/RoomData";
 import MethodGrid from "@/components/room/MethodGrid";
-import { useFunds, amountOk, cleanAmount } from "@/components/room/useFunds";
+import { useFunds, amountOk, cleanAmount, useSendOnce } from "@/components/room/useFunds";
+import AmountInput from "@/components/room/AmountInput";
+import FundsDone from "@/components/room/FundsDone";
 import { money, dayTime } from "@/components/room/format";
 
 // Artboard "Withdraw": from-account + available amount, saved own-name payout methods, request to the broker,
@@ -48,7 +50,10 @@ export default function RoomWithdraw() {
   const saved = useMemo(() => funds?.payoutMethods.filter((p) => p.type === method?.type) ?? [], [funds, method]);
   const payout = saved.find((p) => p.id === payoutId) ?? saved[0] ?? null;
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
+  // one request per form load; the button stays "Sending…" from the first click until the server answers
+  const send = useSendOnce();
+  const busy = send.busy;
+  const [done, setDone] = useState<{ amount: string; currency: string; approved: boolean; again: boolean } | null>(null);
   const [needCode, setNeedCode] = useState(false);
   const [code, setCode] = useState("");
   const [adding, setAdding] = useState(false);
@@ -59,19 +64,30 @@ export default function RoomWithdraw() {
   const canAdd = Boolean(method && NETWORKS.some((n) => n.type === method.type));
 
   async function submit() {
-    if (!funds || !payout || busy) return;
+    if (!funds || !payout) return;
     if (!amountOk(amount)) { setMsg({ ok: false, text: "Enter an amount." }); return; }
-    setBusy(true);
+    if (!send.begin()) return;
     setMsg(null);
-    const res = await fetch("/api/room/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountId: funds.account.id, payoutMethodId: payout.id, amount: cleanAmount(amount), ...(needCode ? { code } : {}) }) });
-    const body = await res.json().catch(() => null);
-    setBusy(false);
+    let res: Response | null = null;
+    let body: { error?: string; code?: string; status?: string; duplicate?: boolean } | null = null;
+    try {
+      res = await fetch("/api/room/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: send.key, accountId: funds.account.id, payoutMethodId: payout.id, amount: cleanAmount(amount), ...(needCode ? { code } : {}) }) });
+      body = await res.json().catch(() => null);
+    } catch { /* no connection: the message below */ }
+    send.end();
     if (body?.code === "TWO_FACTOR_REQUIRED") { setNeedCode(true); setMsg({ ok: false, text: "Enter the code from your authenticator app." }); return; }
-    if (!res.ok) { setMsg({ ok: false, text: body?.error ?? "Could not send the request." }); return; }
+    if (!res || !res.ok) { setMsg({ ok: false, text: body?.error ?? "Could not send the request." }); return; }
     setCode("");
-    setMsg({ ok: true, text: body.status === "COMPLETED" ? "Withdrawal approved." : "Request sent to your broker." });
-    setAmount("");
+    // the form is replaced by the confirmation, so the same request cannot go twice
+    setDone({ amount: cleanAmount(amount), currency: funds.account.currency, approved: body?.status === "COMPLETED", again: Boolean(body?.duplicate) });
     await Promise.all([reload(), refresh()]);
+  }
+
+  function another() {
+    setDone(null);
+    setAmount("");
+    setMsg(null);
+    send.renew();
   }
 
   async function addMethod() {
@@ -98,19 +114,28 @@ export default function RoomWithdraw() {
     <>
       <RoomHeader title="Withdraw" />
       <div className="r-body" style={{ flexDirection: "row", flexWrap: "wrap", gap: 20, alignItems: "flex-start" }}>
+        {done ? (
+          <div style={{ flex: "2 1 480px", minWidth: 0 }}>
+            <FundsDone title={done.again ? "This request was already sent" : done.approved ? "Withdrawal approved" : "Withdrawal request sent"} again="New withdrawal request" onAgain={another}>
+              <div>Amount <span className="mono" style={{ color: "var(--r-text)" }}>{money(done.amount)} {done.currency}</span></div>
+              <div>{done.approved ? "Your broker pays it out to your saved method." : "Your broker reviews it before payout."}</div>
+            </FundsDone>
+          </div>
+        ) : (
         <div className="r-card" style={{ flex: "2 1 480px", minWidth: 0, padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
             <div className="r-field r-field-fixed">
               <label htmlFor="wacct" style={label}>From account</label>
-              <select id="wacct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setFromWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
+              <select id="wacct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} disabled={busy} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setFromWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
                 {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`}</option>)}
               </select>
               <div style={{ fontSize: 11.5, color: "var(--r-muted)" }}>Available for withdrawal: <span className="mono" style={{ color: "var(--r-text)" }}>{funds ? `${money(funds.available)} ${ccy}` : "0.00"}</span></div>
             </div>
             <div className="r-field r-field-fixed">
-              <label htmlFor="wamt" style={label}>Amount · {ccy}</label>
-              <input id="wamt" className="r-input mono" inputMode="decimal" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: "10px 12px" }} />
-              <button type="button" onClick={() => funds && setAmount(funds.available)} style={{ alignSelf: "flex-start", background: "none", border: "none", color: "var(--r-gold-text)", fontSize: 12, fontWeight: 500, padding: 0, cursor: "pointer" }}>Withdraw maximum</button>
+              <label htmlFor="wamt" style={label}>Amount</label>
+              {/* typing clears a stale "Enter an amount." */}
+              <AmountInput id="wamt" currency={ccy} value={amount} onChange={(v) => { setAmount(v); if (msg && !msg.ok) setMsg(null); }} />
+              <button type="button" onClick={() => { if (funds) { setAmount(funds.available); if (msg && !msg.ok) setMsg(null); } }} style={{ alignSelf: "flex-start", background: "none", border: "none", color: "var(--r-gold-text)", fontSize: 12, fontWeight: 500, padding: 0, cursor: "pointer" }}>Withdraw maximum</button>
             </div>
           </div>
 
@@ -173,6 +198,7 @@ export default function RoomWithdraw() {
           </div>
           {msg ? <div className={msg.ok ? "r-okmsg" : "r-error"} role="status">{msg.text}</div> : null}
         </div>
+        )}
 
         <div style={{ flex: "1 1 280px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
           {kycStatus !== "APPROVED" ? (

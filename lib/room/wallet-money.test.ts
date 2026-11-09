@@ -50,7 +50,7 @@ async function wallet() {
 }
 async function transfer(fromId: string, toId: string, amount: string) {
   const { POST } = await import("@/app/api/room/transfer/route");
-  const r = await POST(req("/api/room/transfer", "POST", { fromId, toId, amount }));
+  const r = await POST(req("/api/room/transfer", "POST", { key: randomUUID(), fromId, toId, amount }));
   return { status: r.status, body: await r.json() };
 }
 async function settings(id: string, body: object) {
@@ -114,7 +114,8 @@ describe("money between an account and the wallet", () => {
     const { account } = await client("100");
     const w = (await wallet()).body.id as string;
     const results = await Promise.all(Array.from({ length: 20 }, (_, i) => (i % 2 ? transfer(w, account.id, "30") : transfer(account.id, w, "30"))));
-    expect(results.every((r) => r.status === 201 || r.status === 400)).toBe(true);
+    // 200 = the same transfer again within 60 s, answered with the first one (lib/room/request-key.ts)
+    expect(results.every((r) => r.status === 201 || r.status === 200 || r.status === 400)).toBe(true);
     const [a, b] = [await balance(account.id), await balance(w)];
     expect(a.add(b).toFixed(2)).toBe("100.00");
     expect(a.gte(0) && b.gte(0)).toBe(true);

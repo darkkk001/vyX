@@ -80,7 +80,7 @@ export default function RoomDashboard() {
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
                   {a.mode === "LIVE" ? <a className="r-btn r-btn-sm" style={{ flex: 1 }} href={`/room/deposit?account=${a.id}`}>Deposit</a> : null}
-                  <a className="r-btn-ghost r-btn-sm" style={{ flex: 1 }} href="/room/downloads">Trade</a>
+                  <a className="r-btn-ghost r-btn-sm" style={{ flex: 1 }} href={`/trade?account=${encodeURIComponent(a.accountNumber)}`} target="_blank" rel="noopener">Trade</a>
                 </div>
               </div>
             ))}
@@ -142,8 +142,10 @@ export default function RoomDashboard() {
             <div className="r-card r-pad" style={{ flex: 1 }}>
               <div className="r-label" style={{ marginBottom: 14 }}>Trade on</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 11, fontSize: 13 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>Desktop terminal</span><a href="/room/downloads" style={{ fontSize: 12.5, fontWeight: 500 }}>Download</a></div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>WebTrader</span><a href="/room/downloads" style={{ fontSize: 12.5, fontWeight: 500 }}>Open</a></div>
+                {/* the installer itself: a full page load, never a client-side navigation */}
+                {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>Desktop terminal</span><a href="/download/terminal/installer" style={{ fontSize: 12.5, fontWeight: 500 }}>Download</a></div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>WebTrader</span><a href="/trade" target="_blank" rel="noopener" style={{ fontSize: 12.5, fontWeight: 500 }}>Open</a></div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>Mobile app</span><a href="/room/downloads" style={{ fontSize: 12.5, fontWeight: 500 }}>Get the app</a></div>
               </div>
             </div>

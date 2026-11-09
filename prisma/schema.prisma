@@ -1526,6 +1526,25 @@ model Client {
   payoutMethods ClientPayoutMethod[]
   supportTickets SupportTicket[]
   notifications Notification[]
+  roomRequestKeys RoomRequestKey[]
+}
+
+// Trader's Room money forms (owner 2026-11-09, duplicate deposits from repeated clicks): every Deposit / Withdraw /
+// Transfer form load carries one key. The first POST with a key claims this row; a repeat or a parallel POST with the
+// same key gets the first one's answer and never creates a second request (lib/room/request-key.ts).
+model RoomRequestKey {
+  id        String   @id @default(cuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  key       String
+  kind      String
+  // the first request's answer, stored once it succeeded; null while it is still running
+  status    Int?
+  response  Json?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([clientId, key])
+  @@index([createdAt])
 }
 
 // One KYC submission per CLIENT (the person), not per account -- real

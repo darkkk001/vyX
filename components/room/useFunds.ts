@@ -1,7 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRoomEvent, type RoomTx } from "./RoomData";
+import { newRequestKey } from "./money-input";
+
+export { currencySymbol, newRequestKey } from "./money-input";
 
 // GET /api/room/funds?account= for the Deposit / Withdraw / Transfer screens.
 export type FundsMethod = {
@@ -49,4 +52,22 @@ export function readDataUrl(file: File): Promise<string> {
     r.onerror = () => reject(r.error);
     r.readAsDataURL(file);
   });
+}
+
+/** The money forms' send guard: the key of this form load, and a lock that holds from the first click until the
+ * server answers (a ref, so a second click in the same frame is refused before React re-renders the button). */
+export function useSendOnce() {
+  const [key, setKey] = useState(newRequestKey);
+  const sending = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const begin = useCallback(() => {
+    if (sending.current) return false;
+    sending.current = true;
+    setBusy(true);
+    return true;
+  }, []);
+  const end = useCallback(() => { sending.current = false; setBusy(false); }, []);
+  /** a new form: a new key */
+  const renew = useCallback(() => setKey(newRequestKey()), []);
+  return { key, busy, begin, end, renew };
 }
