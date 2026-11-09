@@ -23,6 +23,7 @@ export async function GET() {
       status: true,
       tradingRights: true,
       fullName: true,
+      nickname: true,   // owner 2026-11-10: the terminal shows the account's nickname when set, else fullName
       twoFactorEnabled: true,
       // 2026-09-05 P0 fix -- WebTrader's own margin-call banner/toast used
       // to hardcode 100% rather than reading this account's real
