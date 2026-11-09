@@ -10,6 +10,7 @@ import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 import { runAfterResponse } from "@/lib/after-response";
 import { prisma } from "@/lib/prisma";
+import { positionRef } from "@/lib/sltp-refusal-text";
 
 // The rules for changing an open position's SL / TP, shared by the single modify (PATCH /api/trade/positions/[id])
 // and the bulk modify (POST /api/trade/positions/modify-bulk) so the two can never drift apart.
@@ -72,7 +73,8 @@ export function refuseModify(input: {
     digits: brokerSymbol?.symbol.digits,
     stopLevel: brokerSymbol?.stopLevel ?? undefined,
   });
-  if (validationError) return { status: 400, body: { error: validationError } };
+  // owner 2026-11-10: the price the level was checked against goes with the refusal, so the client is told the reason (lib/sltp-refusal-text.ts)
+  if (validationError) return { status: 400, body: { error: validationError, sltpRef: positionRef(position.side, serverClosePrice) } };
   if (input.slAmount != null || input.tpAmount != null) {
     if (!input.fxRate || !brokerSymbol) return { status: 400, body: amountRefusalBody("NO_CONVERSION_RATE", AMOUNT_NO_RATE_TEXT) };
     const reached = amountsReachedError(

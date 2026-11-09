@@ -144,14 +144,16 @@ describe("close: price age per category, never 'market closed' for an open marke
 });
 
 describe("modify refusals", () => {
-  it("a wrong-side SL: INVALID_SLTP to the client, traced as MODIFY with the internal text", async () => {
+  it("a wrong-side SL: INVALID_SLTP to the client with the real reason (owner 2026-11-10), traced as MODIFY with the internal text", async () => {
     if (!dbReachable) return;
     const { position } = await fixture("FOREX", 0);
     const { PATCH } = await import("@/app/api/trade/positions/[id]/route");
     const res = await PATCH(new NextRequest(`https://t.local/api/trade/positions/${position.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ slPrice: "150" }) }), { params: Promise.resolve({ id: position.id }) });
     const body = await res.json();
     expect(res.status).toBe(400);
-    expect(body).toMatchObject({ clientReason: "INVALID_SLTP", error: "Invalid SL or TP" });
+    expect(body.clientReason).toBe("INVALID_SLTP");
+    expect(body.error).toMatch(/^Stop loss must be (below your bid|above your ask) \([0-9.]+\) for a (BUY|SELL)$/);
+    expect(body.message).toBe(body.error);
     clientOnly(body);
     const row = (await traced(position.id))[0];
     expect(row).toMatchObject({ kind: "MODIFY", clientReason: "INVALID_SLTP" });

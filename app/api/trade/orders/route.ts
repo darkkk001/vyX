@@ -60,6 +60,7 @@ import { withClientRefusals } from "@/lib/client-reason";
 import { firstRefusalOfEpisode, ORDER_RATE_LIMITED_MESSAGE, orderLimitsFor, takeOrderToken } from "@/lib/order-rate-limit";
 import { requestMeta } from "@/lib/order-execution";
 import { offerExpiresAt } from "@/lib/order-expiry";
+import { orderRef } from "@/lib/sltp-refusal-text";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
   await prisma.auditLog.create({
@@ -409,7 +410,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
   // entry" once wired -- exactly what was missing, not a new rule.
   const validationError = validateSlTp({ side, referencePrice: price, slPrice, tpPrice, digits: brokerSymbol.symbol.digits, stopLevel: brokerSymbol.stopLevel });
   if (validationError) {
-    return NextResponse.json({ error: validationError }, { status: 400 });
+    return NextResponse.json({ error: validationError, sltpRef: orderRef(String(price)) }, { status: 400 });   // owner 2026-11-10: the reason reaches the client
   }
   // amount SL / TP: the account's conversion rate must be known (an amount is account money), and an SL amount inside the spread cost of
   // opening would close the position at once, so it is refused here (the amount counterpart of validateSlTp's wrong-side check)
