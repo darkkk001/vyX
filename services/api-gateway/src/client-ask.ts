@@ -54,7 +54,9 @@ export function markupPipsAt(rule: AskRule, bid: Decimal.Value, ask: Decimal.Val
 
 /** What each side moves at this tick, in PRICE units. Mirrors lib/group-pricing.ts markupSplit: the markup in whole points of
  *  the last digit, rounded up only if not whole, the ask taking the larger share. The total is exactly the markup. */
-function markupParts(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): { ask: Decimal; bid: Decimal } {
+// Exported for the property test only (src/client-ask.test.ts): the test must not re-derive the
+// pip-vs-point conversion, or it becomes a second implementation of the thing it is checking.
+export function markupParts(rule: AskRule, bid: Decimal.Value, ask: Decimal.Value): { ask: Decimal; bid: Decimal } {
   const point = new Decimal(1).div(new Decimal(10).pow(Math.max(rule.digits, 0)));
   const total = markupPipsAt(rule, bid, ask).mul(pipSize(rule.digits)).div(point).ceil();
   const askPoints = total.div(2).ceil();

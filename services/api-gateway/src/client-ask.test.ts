@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Decimal } from "decimal.js";
-import { resolveRule, clientAsk, clientBid, rewriteTick, type AskRule } from "./client-ask.js";
+import { resolveRule, clientAsk, clientBid, rewriteTick, markupParts, type AskRule } from "./client-ask.js";
 
 const v = JSON.parse(readFileSync(new URL("../../../docs/contracts/ask-markup-vectors.json", import.meta.url), "utf-8"));
 const D = (x: unknown) => (x == null ? null : new Decimal(String(x)));
@@ -162,4 +162,111 @@ test("sockets are ref-counted per account: the last close drops the rules, a rec
   reg.addSocket("a1", "b1");
   await flush();
   assert.equal(calls.length, 2);
+});
+
+// ── the negative-markup property tests, aligned with the web twin (65cd69de) and the engine twin ──
+//
+// THREE implementations now compute this one rule: the web's lib/ask-markup.ts, the engine's
+// market-data/src/ask_markup.rs, and this file. This one is the only one that prices the ticks
+// futurixglobal's clients actually see (its clientAskServerSideAt is SET, so the stream is rewritten
+// server-side here, not in the terminal), so it carries the same hostile property test as the other
+// two -- same linear congruential generator, same seed (20261110), same digit set, same ranges, so a
+// disagreement between any two of the three lands on the same numbered case.
+//
+// The five invariants are the web's, in its order: never crossed; never wider than raw; exactly the
+// half-even mid when floored; otherwise each side still on its own side of the raw mid; and the fill
+// equal to the quote.
+test("negative markup: 3000 hostile cases tighten the book but never past the mid", () => {
+  let seed = 20261110;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  let collapsed = 0, tightened = 0;
+  for (let i = 0; i < 3000; i++) {
+    const digits = [1, 2, 3, 5][Math.floor(rnd() * 4)];
+    const point = new Decimal(1).div(new Decimal(10).pow(digits));
+    const bid = new Decimal(Math.floor(1000 + rnd() * 100000)).mul(point);
+    const ask = bid.add(point.mul(Math.floor(rnd() * 60)));                  // raw spread 0..59 points
+    const markupPips = new Decimal(-(Math.floor(rnd() * 4000) + 1)).div(10); // -0.1 .. -400 pips
+    const rule: AskRule = { mode: "markup", markupPips, digits };
+    const qa = clientAsk(rule, bid, ask);
+    const qb = clientBid(rule, bid, ask);
+    const rawMid = bid.add(ask).div(2);
+    const midHe = rawMid.toDecimalPlaces(digits, Decimal.ROUND_HALF_EVEN);
+    const where = `case ${i} (raw ${bid}/${ask}, ${markupPips} pips, ${digits} digits)`;
+    assert.ok(qb.lte(qa), `crossed book ${qb}/${qa} -- ${where}`);
+    assert.ok(qb.gte(bid) && qa.lte(ask), `wider than raw ${qb}/${qa} -- ${where}`);
+    if (qb.eq(qa)) {
+      collapsed++;
+      assert.ok(qb.eq(midHe), `collapsed to ${qb}, not the half-even mid ${midHe} -- ${where}`);
+    } else {
+      tightened++;
+      assert.ok(qb.lte(rawMid) && qa.gte(rawMid), `a side passed the mid: ${qb}/${qa} around ${rawMid} -- ${where}`);
+    }
+  }
+  // Coverage, measured: these shared ranges put the markup far above the raw spread on almost every
+  // draw, so the collapsed branch dominates and the tightened one -- the branch the 2026-10-29 pentest
+  // finding actually lived in -- gets only a handful of cases. Same on all three sides, since the
+  // ranges are shared. The next test is what covers it properly here.
+  assert.ok(collapsed > 2000, `expected the collapsed branch to dominate, got ${collapsed}`);
+  assert.ok(tightened >= 10, `the tightened branch must still be exercised, got ${tightened}`);
+
+  // the web's worked example, identical: -500 pips on 2000.00 / 2000.30 collapses to the mid, not 1950
+  const r: AskRule = { mode: "markup", markupPips: new Decimal(-500), digits: 2 };
+  assert.equal(clientAsk(r, "2000.00", "2000.30").toString(), "2000.15");
+  assert.equal(clientBid(r, "2000.00", "2000.30").toString(), "2000.15");
+});
+
+// The tightened branch, covered properly: the markup is drawn to be strictly SMALLER than the raw
+// spread, so every case narrows the book without reaching the mid. It also pins exactness -- the
+// client spread must come out at raw + markup to the point, which is the contract with max() not yet
+// binding -- and that the BID takes the larger share of an odd total (ceil moves toward zero).
+test("negative markup: tightening is exact, and the bid takes the larger half", () => {
+  let seed = 20261110;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  let kept = 0, attempts = 0;
+  while (kept < 3000 && attempts < 200000) {
+    attempts++;
+    const digits = [1, 2, 3, 5][Math.floor(rnd() * 4)];
+    const point = new Decimal(1).div(new Decimal(10).pow(digits));
+    const bid = new Decimal(Math.floor(1000 + rnd() * 100000)).mul(point);
+    const spreadPoints = 2 + Math.floor(rnd() * 58);
+    const ask = bid.add(point.mul(spreadPoints));
+    const markupPips = new Decimal(-(Math.floor(rnd() * 60) + 1)).div(10); // -0.1 .. -6.0 pips
+    const rule: AskRule = { mode: "markup", markupPips, digits };
+    const parts = markupParts(rule, bid, ask);
+    const totalPoints = parts.ask.add(parts.bid).div(point).neg();
+    if (totalPoints.lt(1) || totalPoints.gte(spreadPoints)) continue; // collapses: the other test's job
+    kept++;
+
+    const qa = clientAsk(rule, bid, ask);
+    const qb = clientBid(rule, bid, ask);
+    const rawMid = bid.add(ask).div(2);
+    const where = `case ${kept} (raw spread ${spreadPoints} pts, markup -${totalPoints} pts, ${digits} digits)`;
+    assert.ok(qb.lt(qa), `collapsed although the markup is narrower than the spread -- ${where}`);
+    assert.ok(qb.lte(rawMid) && qa.gte(rawMid), `a side passed the mid: ${qb}/${qa} -- ${where}`);
+    assert.ok(qb.gte(bid) && qa.lte(ask), `wider than raw: ${qb}/${qa} -- ${where}`);
+    assert.equal(qa.sub(qb).div(point).toString(), new Decimal(spreadPoints).sub(totalPoints).toString(),
+      `client spread must be raw + markup exactly -- ${where}`);
+    const up = qb.sub(bid).div(point);
+    const down = ask.sub(qa).div(point);
+    assert.equal(up.add(down).toString(), totalPoints.toString(), `the two sides must account for the whole markup -- ${where}`);
+    assert.ok(up.gte(down), `on a negative total the BID takes the larger share, got bid +${up} / ask -${down} -- ${where}`);
+  }
+  assert.equal(kept, 3000, `only ${kept} tightening cases found in ${attempts} attempts`);
+});
+
+// The other half of the pair (seed 7, 2000 cases): a markup of zero or more still never tightens.
+// The regression guard for every NORMAL group -- the whole-point split is untouched by the negative branch.
+test("a markup of 0 or more never tightens either side (2000 cases)", () => {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (let i = 0; i < 2000; i++) {
+    const digits = [1, 2, 3, 5][Math.floor(rnd() * 4)];
+    const point = new Decimal(1).div(new Decimal(10).pow(digits));
+    const bid = new Decimal(Math.floor(1000 + rnd() * 100000)).mul(point);
+    const ask = bid.add(point.mul(1 + Math.floor(rnd() * 60)));
+    const rule: AskRule = { mode: "markup", markupPips: new Decimal(Math.floor(rnd() * 300)).div(10), digits };
+    const qa = clientAsk(rule, bid, ask);
+    const qb = clientBid(rule, bid, ask);
+    assert.ok(qa.gte(ask) && qb.lte(bid) && qb.lt(qa), `case ${i}: a non-negative markup tightened the book -- ${qb}/${qa} vs raw ${bid}/${ask}`);
+  }
 });
