@@ -2387,6 +2387,9 @@ export default function WebTrader({
   }, [positions, market, account, rateFor, askMarkupBySymbol]);
   // Stage 2 F1 (credit Model A): equity = balance + credit + floating, the same figure the server's risk monitor uses
   const equity = account ? parseFloat(account.balance) + parseFloat(account.credit ?? "0") + floatingPnl : 0;
+  // owner 2026-11-10: the credit (bonus) on its own line under the balance, never added to it; shown while it is not 0 (as the terminal)
+  const accountCredit = account ? parseFloat(account.credit ?? "0") || 0 : 0;
+  const showCredit = Math.abs(accountCredit) >= 0.005;
   const freeMargin = equity - usedMargin;
   const marginLevel = usedMargin > 0 ? (equity / usedMargin) * 100 : Infinity;
 
@@ -3936,6 +3939,7 @@ export default function WebTrader({
   const renderAccountRows = () => (
   <div className="nt-rows">
     <div className="nt-row"><span className="nt-row-label">Balance</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : account ? formatMoney(account.balance) : ""}</span><span className="nt-ccy">{accountCcy}</span></span></div>
+    {showCredit ? <div className="nt-row"><span className="nt-row-label">Credit</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(accountCredit)}</span><span className="nt-ccy">{accountCcy}</span></span></div> : null}
     <div className="nt-row"><span className="nt-row-label">Equity</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(equity)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
     <div className="nt-row"><span className="nt-row-label">Open P/L</span><span className="nt-row-value"><span className="mono nt-strong" style={{ color: WT_TONE_COLOR[tone(floatingPnl)] }}>{balanceHidden ? "••••" : formatSigned(floatingPnl)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
     <div className="nt-row"><span className="nt-row-label">Margin used</span><span className="nt-row-value"><span className="mono nt-strong">{balanceHidden ? "••••••" : formatMoney(usedMargin)}</span><span className="nt-ccy">{accountCcy}</span></span></div>
@@ -5466,7 +5470,7 @@ export default function WebTrader({
             ccy={accountCcy}
             leverage={account?.leverage ?? null}
             hidden={balanceHidden}
-            figures={account ? { balance: parseFloat(account.balance), equity, margin: usedMargin, freeMargin, marginLevel, pnl: floatingPnl, marginCall } : null}
+            figures={account ? { balance: parseFloat(account.balance), equity, margin: usedMargin, freeMargin, marginLevel, pnl: floatingPnl, marginCall, credit: accountCredit } : null}
             positions={acctPositions.map((p) => {
               const q = market[p.symbol.name];
               return {
@@ -5583,6 +5587,7 @@ export default function WebTrader({
               </span>
             </div>
             <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? formatMoney(account.balance) : ""}</span></div>
+            {showCredit ? <div className="status-item"><span className="status-label">Credit</span><span className="status-value mono">{balanceHidden ? "••••••" : formatMoney(accountCredit)}</span></div> : null}
             <div className="status-item">
               <span className="status-label">Equity</span><span className="status-value mono">{balanceHidden ? "••••••" : formatMoney(equity)}</span>
               <canvas ref={sparklineRef} width={70} height={20} className="equity-spark" />

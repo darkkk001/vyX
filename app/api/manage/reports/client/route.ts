@@ -26,6 +26,8 @@ export async function GET() {
       accountMode: a.accountMode,
       currency: a.currency,
       balance: formatCsvNumber(a.balance.toString()),
+      // owner 2026-11-10: the credit (bonus) beside the balance, never added to it
+      credit: formatCsvNumber(a.credit.toString()),
       group: a.group?.name ?? "",
       status: a.status,
       createdAt: a.createdAt.toISOString(),
@@ -37,6 +39,7 @@ export async function GET() {
       { key: "accountMode", label: "Mode" },
       { key: "currency", label: "Currency" },
       { key: "balance", label: "Balance" },
+      { key: "credit", label: "Credit" },
       { key: "group", label: "Group" },
       { key: "status", label: "Status" },
       { key: "createdAt", label: "Created At" },
