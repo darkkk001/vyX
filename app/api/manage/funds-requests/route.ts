@@ -7,6 +7,7 @@ import { paymentMethodName, STAFF_PSP_ADAPTER } from "@/lib/staff-funds";
 import { bookedBalanceAfter } from "@/lib/balance-after";
 import { parseDashRange, rangeJson, type DashRange } from "@/lib/dash-range";
 import { tradingDayStart } from "@/lib/trading-day";
+import { notCoverageAccount, notCoverageSql } from "@/lib/client-accounts";
 
 // BROKER_ADMIN by default -- same finance carve-out as balance
 // adjustment/leverage edits (AdminRole.MANAGER's own schema comment: "not
@@ -39,11 +40,13 @@ export async function GET(request: NextRequest) {
     take: accountId ? 1000 : 200,
   });
 
-  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! }, select: { withdrawalApproval: true } });
+  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! }, select: { withdrawalApproval: true, coverageAccountId: true } });
+  // 2026-11-09: the tiles and cards are client money: the broker's hedge account is left out of them (the list above still shows its requests)
+  const cov = broker.coverageAccountId;
   const [kpis, kpisByCurrency, cards, booked] = await Promise.all([
-    fundsKpis(brokerId),
-    fundsKpisByCurrency(brokerId),
-    fundsCardsInRange(brokerId, range),
+    fundsKpis(brokerId, cov),
+    fundsKpisByCurrency(brokerId, cov),
+    fundsCardsInRange(brokerId, range, cov),
     bookedBalanceAfter(requests.map((t) => t.id)),
   ]);
   return NextResponse.json({
@@ -86,14 +89,16 @@ export async function GET(request: NextRequest) {
 // Phase 2 batch 8 (issue 110): the deposits screen's tiles, computed over ALL of the broker's requests (they came from
 // the latest 200 rows before). Amounts are money moved: a withdrawal is stored negative, reported positive. The 30-day
 // window is on the request's createdAt, as the screen always counted.
-async function fundsKpis(brokerId: string) {
+async function fundsKpis(brokerId: string, cov: string | null = null) {
   const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const base = { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] as ("DEPOSIT" | "WITHDRAWAL")[] } };
+  // money moved (completed / rejected) is client money only; PENDING stays whole, it is staff work to do
+  const money = { ...base, account: notCoverageAccount(cov) };
   const [pending, marked, done30, rejected] = await Promise.all([
     prisma.transaction.groupBy({ by: ["type"], where: { ...base, status: "PENDING" }, _count: { _all: true }, _sum: { amount: true } }),
     prisma.transaction.count({ where: { brokerId, type: "WITHDRAWAL", status: "PENDING", markedByAdminId: { not: null } } }),
-    prisma.transaction.groupBy({ by: ["type"], where: { ...base, status: "COMPLETED", createdAt: { gte: since30 } }, _count: { _all: true }, _sum: { amount: true } }),
-    prisma.transaction.count({ where: { ...base, status: "REJECTED" } }),
+    prisma.transaction.groupBy({ by: ["type"], where: { ...money, status: "COMPLETED", createdAt: { gte: since30 } }, _count: { _all: true }, _sum: { amount: true } }),
+    prisma.transaction.count({ where: { ...money, status: "REJECTED" } }),
   ]);
   const pick = (rows: typeof pending, type: "DEPOSIT" | "WITHDRAWAL") => {
     const r = rows.find((x) => x.type === type);
@@ -114,13 +119,14 @@ async function fundsKpis(brokerId: string) {
 // Step 2 (owner 2026-09-30): fundsKpis split by the account's currency. Transaction has no currency of its own; its
 // amount is in the account's currency, so the split joins Account. Same windows and sign rule as fundsKpis.
 type CcyRow = { currency: string; type: "DEPOSIT" | "WITHDRAWAL"; status: string; recent: boolean; n: bigint; total: Prisma.Decimal | null };
-async function fundsKpisByCurrency(brokerId: string) {
+async function fundsKpisByCurrency(brokerId: string, cov: string | null = null) {
   const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const rows = await prisma.$queryRaw<CcyRow[]>`
     SELECT a.currency, t.type::text AS type, t.status::text AS status, (t."createdAt" >= ${since30}) AS recent,
            COUNT(*)::bigint AS n, SUM(t.amount) AS total
     FROM "Transaction" t JOIN "Account" a ON a.id = t."accountId"
     WHERE t."brokerId" = ${brokerId} AND t.type IN ('DEPOSIT', 'WITHDRAWAL') AND t.status IN ('PENDING', 'COMPLETED')
+      AND (t.status = 'PENDING' OR (${notCoverageSql(cov)}))
     GROUP BY 1, 2, 3, 4`;
   const out = new Map<string, { count: number; sum: Prisma.Decimal }[]>();
   const slot = (ccy: string) => {
@@ -154,13 +160,14 @@ async function fundsKpisByCurrency(brokerId: string) {
 // decided (updatedAt). Withdrawals and rejected amounts are reported positive (money moved / refused); net is signed
 // (deposits - withdrawals). Per account currency, never summed across currencies.
 type CardRow = { currency: string; type: "DEPOSIT" | "WITHDRAWAL"; status: string; n: bigint; total: Prisma.Decimal | null };
-async function fundsCardsInRange(brokerId: string, range: DashRange) {
+async function fundsCardsInRange(brokerId: string, range: DashRange, cov: string | null = null) {
   const to = range.to ?? new Date("9999-12-31T00:00:00Z");
   const rows = await prisma.$queryRaw<CardRow[]>`
     SELECT a.currency, t.type::text AS type, t.status::text AS status, COUNT(*)::bigint AS n, SUM(t.amount) AS total
     FROM "Transaction" t JOIN "Account" a ON a.id = t."accountId"
     WHERE t."brokerId" = ${brokerId} AND t.type IN ('DEPOSIT', 'WITHDRAWAL') AND t.status IN ('COMPLETED', 'REJECTED')
       AND t."updatedAt" >= ${range.from} AND t."updatedAt" < ${to}
+      AND ${notCoverageSql(cov)}
     GROUP BY 1, 2, 3`;
   const zero = () => ({ count: 0, sum: new Prisma.Decimal(0) });
   const out = new Map<string, { deposits: ReturnType<typeof zero>; withdrawals: ReturnType<typeof zero>; rejected: ReturnType<typeof zero> }>();
