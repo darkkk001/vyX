@@ -8,6 +8,7 @@ import { useFunds, amountOk, cleanAmount, readDataUrl, useSendOnce } from "@/com
 import MethodGrid from "@/components/room/MethodGrid";
 import AmountInput from "@/components/room/AmountInput";
 import DepositStatus, { type DepositView } from "@/components/room/DepositStatus";
+import { maxProcessingSeconds } from "@/lib/room/processing-time";
 import { countdown } from "@/components/room/money-input";
 import { money } from "@/components/room/format";
 
@@ -112,7 +113,7 @@ export default function RoomDeposit() {
     if (body?.code === "DEPOSIT_COOLDOWN" && body.until) { setWaits((w) => ({ ...w, [method.id]: body!.until! })); setNow(Date.now()); }
     if (!res || !res.ok || !body?.id) { setMsg({ ok: false, text: body?.error ?? "Could not send the request." }); return; }
     // the form is replaced by the confirmation card, so the same request cannot go twice; it follows the request live
-    setStatus({ id: body.id, state: "PENDING", amount: cleanAmount(amount), currency: funds.account.currency, accountNumber: funds.account.accountNumber, method: method.label, reference: body.reference ?? funds.reference, sentAt: new Date().toISOString(), decidedAt: null, reason: null, balance: null });
+    setStatus({ id: body.id, state: "PENDING", amount: cleanAmount(amount), currency: funds.account.currency, accountNumber: funds.account.accountNumber, method: method.label, reference: body.reference ?? funds.reference, sentAt: new Date().toISOString(), decidedAt: null, reason: null, balance: null, maxSeconds: maxProcessingSeconds(method.processing) });
     await Promise.all([loadStatus(body.id), loadState(false), reload(), refresh()]);
   }
 
@@ -139,7 +140,7 @@ export default function RoomDeposit() {
         <div className="r-row">
           {funds && open.length === 0 ? (
             <div style={{ flex: "1 1 260px", minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-              <div className="r-note">Your broker has no deposit methods open right now.</div>
+              <div className="r-note">No deposit methods are open right now.</div>
             </div>
           ) : null}
 
@@ -209,7 +210,6 @@ export default function RoomDeposit() {
             </div>
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 12, color: "var(--r-muted)" }}>Your broker credits the deposit after checking the payment.</div>
               <button type="button" className="r-btn" style={{ padding: "11px 24px" }} disabled={!funds || !method || busy || funds.account.mode !== "LIVE" || methodWait != null} onClick={submit}>{busy ? "Sending…" : methodWait ? `Next request in ${countdown(methodWait, serverNow)}` : "Submit deposit request"}</button>
             </div>
             {msg ? <div className={msg.ok ? "r-okmsg" : "r-error"} role="status">{msg.text}</div> : null}

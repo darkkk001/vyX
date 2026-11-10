@@ -11,7 +11,7 @@ export default function SignInCard() {
         <div className="r-label" style={{ marginBottom: 7 }}>Sign-in details</div>
         <div style={{ fontSize: 12.5, color: "var(--r-text-2)" }}>
           {selected ? (
-            <>Account <span className="mono" style={{ color: "var(--r-text)" }}>{selected.accountNumber}</span> · {selected.portalPassword ? "your portal password works on every platform." : "use the password your broker sent for it. A password change here sets one password on all your accounts."}</>
+            <>Account <span className="mono" style={{ color: "var(--r-text)" }}>{selected.accountNumber}</span> · {selected.portalPassword ? "your portal password works on every platform." : "use the password sent to your email. A password change here sets one password on all your accounts."}</>
           ) : "Open an account to sign in to the platforms."}
         </div>
       </div>

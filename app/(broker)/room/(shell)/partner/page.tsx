@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
-import { useRoomEvent } from "@/components/room/RoomData";
+import { useRoom, useRoomEvent } from "@/components/room/RoomData";
 import { money, day } from "@/components/room/format";
 
 // Artboard "Partner (IB) portal": referral link + QR, stats, the month's commission per masked client, the broker's
@@ -21,6 +21,7 @@ const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct
 const ym = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 
 export default function RoomPartner() {
+  const brand = useRoom().data?.platform?.name ?? null; // the tenant speaks (owner 2026-11-10)
   const [d, setD] = useState<Data | null>(null);
   const [missing, setMissing] = useState(false);
   const [month, setMonth] = useState(ym(new Date()));
@@ -59,7 +60,7 @@ export default function RoomPartner() {
     return (
       <>
         <RoomHeader title="Partner portal" picker={false} />
-        <div className="r-body"><div className="r-card r-pad r-note">The partner portal opens once your broker makes you a partner.</div></div>
+        <div className="r-body"><div className="r-card r-pad r-note">The partner portal opens once your partner account is set up.</div></div>
       </>
     );
   }
@@ -122,7 +123,7 @@ export default function RoomPartner() {
               </table>
               {d && d.perClient.length === 0 ? <div className="r-empty">No commission in this month yet.</div> : null}
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--r-faint)", marginTop: 12 }}>Client identities are masked. Commission accrues per closed lot and is paid to your account {d?.partnerAccount ?? ""} by your broker.</div>
+            <div style={{ fontSize: 11.5, color: "var(--r-faint)", marginTop: 12 }}>Client identities are masked. Commission accrues per closed lot and is paid to your account {d?.partnerAccount ?? ""}.</div>
           </div>
 
           <div style={{ flex: "1 1 280px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -132,7 +133,7 @@ export default function RoomPartner() {
                 {(d?.rates ?? []).map((r) => (
                   <div key={r.plan} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}><span>{r.plan} accounts</span><span className="mono" style={{ color: "var(--r-text)" }}>{money(r.perLot)} / lot</span></div>
                 ))}
-                {d && d.rates.length === 0 ? <span>Your broker sets the rate for each plan.</span> : null}
+                {d && d.rates.length === 0 ? <span>{brand ? `${brand} sets the rate for each plan.` : "The rate is set for each plan."}</span> : null}
               </div>
             </div>
             <div className="r-card r-pad">

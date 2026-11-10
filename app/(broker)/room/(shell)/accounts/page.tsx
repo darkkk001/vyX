@@ -90,7 +90,7 @@ export default function RoomAccounts() {
                 </button>
               </div>
             </div>
-            {tab === "LIVE" && meta?.liveRequest ? <div className="r-note">Your real account request is with your broker.</div> : null}
+            {tab === "LIVE" && meta?.liveRequest ? <div className="r-note">Your real account request is under review.</div> : null}
             <div className={view === "grid" ? "r-acct-grid" : "r-acct-list"}>
               {shown.map((a) => <AccountCard key={a.id} a={a} pending={levOf(a.id)?.pending?.to ?? null} list={view === "list"} onSettings={() => setDrawerId(a.id)} />)}
             </div>

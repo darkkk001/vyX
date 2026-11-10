@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Complete KYC before opening a live account.", code: "KYC_REQUIRED" }, { status: 403 });
   }
   const existing = await prisma.liveAccountRequest.findFirst({ where: { clientId: client.id, status: "PENDING" }, select: { id: true } });
-  if (existing) return NextResponse.json({ error: "Your live account request is already with your broker." }, { status: 409 });
+  if (existing) return NextResponse.json({ error: "Your live account request is already under review." }, { status: 409 });
   const created = await prisma.liveAccountRequest.create({
     data: { brokerId: session.brokerId, clientId: client.id, accountTypeId: null, status: "PENDING", requestedGroupId: plan.groupId, requestedLeverage: leverage, requestedNickname: nickname, requestedPasswordHash: await hashPassword(body.password), requestedCurrency: currency },
   });

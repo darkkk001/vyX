@@ -161,7 +161,7 @@ export default function AccountDrawer({ account, lev, onClose, onChanged }: { ac
               </>
             ) : null}
           </div>
-          {lev?.pending ? <div className="r-chip-pending" style={{ fontSize: 12.5 }}>1:{lev.pending.to} is pending broker approval.</div> : null}
+          {lev?.pending ? <div className="r-chip-pending" style={{ fontSize: 12.5 }}>1:{lev.pending.to} is pending approval.</div> : null}
           <Note msg={levMsg} />
         </Row>
         <Row label="Read-only access">

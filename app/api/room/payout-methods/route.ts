@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
   const type = TYPES.find((t) => t === body?.type);
   if (!type) return NextResponse.json({ error: "Pick a method." }, { status: 400 });
   const open = await prisma.paymentMethod.findFirst({ where: { brokerId: session.brokerId, type, enabled: true }, select: { id: true } });
-  if (!open) return NextResponse.json({ error: "Your broker does not pay out to this method right now." }, { status: 400 });
+  if (!open) return NextResponse.json({ error: "Payouts to this method are not available right now." }, { status: 400 });
   const client = await prisma.client.findUniqueOrThrow({ where: { id: session.clientId }, select: { fullName: true, twoFactorEnabled: true, twoFactorSecret: true } });
   const count = await prisma.clientPayoutMethod.count({ where: { clientId: session.clientId, removedAt: null } });
   if (count >= 10) return NextResponse.json({ error: "Remove a method first (10 at most)." }, { status: 409 });

@@ -76,7 +76,7 @@ describe("what a client can do", () => {
   it("a client saves their own BEP20 address; a bad one and a closed method are refused", async () => {
     if (!dbReachable) return;
     expect((await addPayout({ type: "USDT_BEP20", address: "not-an-address" })).status).toBe(400);
-    expect((await addPayout({ type: "USDT_TRC20", address: "TQ5NnXyXyXyXyXyXyXyXyXyXyXyXyXyXyX" })).body.error).toBe("Your broker does not pay out to this method right now.");
+    expect((await addPayout({ type: "USDT_TRC20", address: "TQ5NnXyXyXyXyXyXyXyXyXyXyXyXyXyXyX" })).body.error).toBe("Payouts to this method are not available right now.");
     expect((await addPayout({ type: "USDT_BEP20", address: "0x1111111111111111111111111111111111111111" })).status).toBe(201);
   });
 });

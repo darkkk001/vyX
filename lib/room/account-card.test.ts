@@ -15,7 +15,7 @@ describe("account card", () => {
     expect(card).toMatch(/r-plat-chip" title=\{platform\.name\}>\{platform\.short\}<\/span>[^\n]*\n\s*<span className="r-plan-chip">\{a\.plan\}<\/span>\s*<span className="mono r-acct-no">#\{a\.accountNumber\}<\/span>\s*\{a\.nickname \?[^\n]*\n\s*\{pending \? <span className="r-chip-pending"[^>]*>1:\{pending\} pending<\/span>/);
     expect(card).not.toContain("a.leverage");
     for (const p of ["app/(broker)/room/(shell)/page.tsx", "app/(broker)/room/(shell)/accounts/page.tsx"]) expect(read(p), p).toContain("pending={levOf(a.id)?.pending?.to ?? null}");
-    expect(drawer).toContain("is pending broker approval.");
+    expect(drawer).toContain("is pending approval.");
   });
   it("the platform is the tenant's brand (owner 2026-11-10), never the technology's name", () => {
     expect(platformBrand("Futurix Global")).toEqual({ name: "Futurix Global", short: "Futurix" });

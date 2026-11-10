@@ -55,7 +55,7 @@ export default function LoginForm({ notice }: { notice: { ok: boolean; text: str
     <form ref={form} className="r-auth-box" onSubmit={submit}>
       <div>
         <h1>Sign in</h1>
-        <div style={{ fontSize: 13, color: "var(--r-muted)", marginTop: 6 }}>Use the email registered with your broker.</div>
+        <div style={{ fontSize: 13, color: "var(--r-muted)", marginTop: 6 }}>Use the email you registered with.</div>
       </div>
       {notice ? <div className={notice.ok ? "r-okmsg" : "r-error"} role="status">{notice.text}</div> : null}
       <div className="r-field">
