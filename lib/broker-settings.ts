@@ -13,6 +13,7 @@ export type NewSettings = {
   autoApproveWithdrawalMax?: Prisma.Decimal | null;
   hedgingAllowed?: boolean;
   passwordMaxAgeDays?: number | null;
+  voidCreditOnWithdrawal?: boolean;
 };
 export type ParseResult = { ok: true; data: NewSettings } | { ok: false; error: string };
 
@@ -70,6 +71,11 @@ export function parseNewSettings(body: Record<string, unknown> | null): ParseRes
   if ("hedgingAllowed" in body) {
     if (typeof body.hedgingAllowed !== "boolean") return { ok: false, error: "hedgingAllowed must be true or false" };
     data.hedgingAllowed = body.hedgingAllowed;
+  }
+  // owner 2026-11-10: a completed withdrawal removes the account's credit (bonus); on by default
+  if ("voidCreditOnWithdrawal" in body) {
+    if (typeof body.voidCreditOnWithdrawal !== "boolean") return { ok: false, error: "voidCreditOnWithdrawal must be true or false" };
+    data.voidCreditOnWithdrawal = body.voidCreditOnWithdrawal;
   }
   return { ok: true, data };
 }

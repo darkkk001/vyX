@@ -47,7 +47,7 @@ export type MHistRow =
 export type MSummary = { profit: number; deposit: number; swap: number; commission: number; balance: number; trades: number; winRate: string; credit: number } | null;
 export type MLinked = { accountNumber: string; accountMode: "DEMO" | "LIVE"; balance: string; currency: string };
 export type MAccount = { number: string; name: string; mode: "DEMO" | "LIVE"; plan: string; currency: string; leverage: number; balance: number };
-export type MFigures = { balance: number; equity: number; margin: number; freeMargin: number; marginLevel: number; pnl: number; marginCall: boolean };
+export type MFigures = { balance: number; equity: number; margin: number; freeMargin: number; marginLevel: number; pnl: number; marginCall: boolean; credit?: number };
 
 // money as the native app writes it: thousands commas, 2 dp, a true minus, no plus; the colour carries the sign
 export function mMoney(v: number) {
@@ -242,6 +242,8 @@ function AccountCard({ f, brokerName, mode, ccy, leverage, hidden }: { f: MFigur
       <div className="m-rule" />
       <div className="m-grid">
         <div><span className="m-micro">BALANCE</span><b>{h(mMoney(f.balance))}</b></div>
+        {/* owner 2026-11-10: the credit (bonus) on its own, never added to the balance; shown while it is not 0 */}
+        {f.credit != null && Math.abs(f.credit) >= 0.005 ? <div><span className="m-micro">CREDIT</span><b>{h(mMoney(f.credit))}</b></div> : null}
         <div><span className="m-micro">EQUITY</span><b>{h(mMoney(f.equity))}</b></div>
         <div><span className="m-micro">MARGIN USED</span><b>{h(mMoney(f.margin))}</b></div>
         <div><span className="m-micro">FREE MARGIN</span><b>{h(mMoney(f.freeMargin))}</b></div>

@@ -377,3 +377,109 @@ describe("LIMIT / STOP placement runs the margin gate", () => {
     expect(r2.status).toBe(201);
   });
 });
+
+// owner 2026-11-10: a completed client withdrawal voids the account's credit (bonus), per broker, on by default.
+describe("credit-out on withdrawal (Broker.voidCreditOnWithdrawal)", () => {
+  const creditOf = async (id: string) => (await prisma.account.findUniqueOrThrow({ where: { id } })).credit.toString();
+  const withCredit = async (fx: Fx, balance: number, credit: number) => {
+    const a = await account(fx, balance);
+    return prisma.account.update({ where: { id: a.id }, data: { credit: D(credit) } });
+  };
+  const approve = async (fx: Fx, adminId: string, txId: string) => {
+    await as(fx, { id: adminId, role: "BROKER_ADMIN" });
+    const { PATCH } = await import("@/app/api/manage/funds-requests/[id]/route");
+    return call(PATCH, `/api/manage/funds-requests/${txId}`, "PATCH", { action: "APPROVE" }, { id: txId });
+  };
+
+  it("default on: the payout voids the whole credit with a CREDIT_OUT row and a CREDIT_REMOVED audit row; the balance moves by the withdrawal only", async () => {
+    if (!dbReachable) return;
+    const fx = await broker("SINGLE");
+    expect((await prisma.broker.findUniqueOrThrow({ where: { id: fx.brokerId } })).voidCreditOnWithdrawal).toBe(true);
+    const ba = await admin(fx, "BROKER_ADMIN");
+    const acc = await withCredit(fx, 1000, 200);
+    const w = await withdrawal(fx, acc.id, 300);
+    const r = await approve(fx, ba.id, w.id);
+    expect(r.status).toBe(200);
+    expect(await balanceOf(acc.id)).toBe("700");
+    expect(await creditOf(acc.id)).toBe("0");
+    const out = await prisma.transaction.findFirstOrThrow({ where: { accountId: acc.id, type: "CREDIT_OUT" } });
+    expect(out.amount.toString()).toBe("-200");
+    expect([out.balanceBefore.toString(), out.balanceAfter.toString()]).toEqual(["700", "700"]);
+    expect([out.status, out.referenceType, out.referenceId, out.createdByAdminId]).toEqual(["COMPLETED", "Transaction", w.id, ba.id]);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityId: acc.id, action: "CREDIT_REMOVED" } });
+    expect(audit.actorAdminId).toBe(ba.id);
+    expect(audit.oldValue).toEqual({ credit: "200" });
+    expect(audit.newValue).toMatchObject({ credit: "0", amount: "-200", reason: "WITHDRAWAL", withdrawalTransactionId: w.id, transactionId: out.id });
+  });
+
+  it("toggle off: the credit stays and no CREDIT_OUT is written; an account without credit writes none either", async () => {
+    if (!dbReachable) return;
+    const fx = await broker("SINGLE");
+    await prisma.broker.update({ where: { id: fx.brokerId }, data: { voidCreditOnWithdrawal: false } });
+    const ba = await admin(fx, "BROKER_ADMIN");
+    const acc = await withCredit(fx, 1000, 200);
+    expect((await approve(fx, ba.id, (await withdrawal(fx, acc.id, 300)).id)).status).toBe(200);
+    expect([await balanceOf(acc.id), await creditOf(acc.id)]).toEqual(["700", "200"]);
+    await prisma.broker.update({ where: { id: fx.brokerId }, data: { voidCreditOnWithdrawal: true } });
+    const none = await account(fx, 500);
+    expect((await approve(fx, ba.id, (await withdrawal(fx, none.id, 100)).id)).status).toBe(200);
+    expect(await prisma.transaction.count({ where: { accountId: { in: [acc.id, none.id] }, type: "CREDIT_OUT" } })).toBe(0);
+  });
+
+  it("the margin check counts the credit the payout removes: refused (nothing moves) with the credit named; with the toggle off the same payout completes", async () => {
+    if (!dbReachable) return;
+    const fx = await broker("SINGLE");
+    const ba = await admin(fx, "BROKER_ADMIN");
+    const acc = await withCredit(fx, 1000, 300);
+    await openPosition(fx, acc.id, 5); // ~500 margin, ~-50 floating: equity ~1250 with the credit
+    const w = await withdrawal(fx, acc.id, 500); // without the credit void: ~750 (150%); with it: ~450 (90%) -> under the 100% line
+    const r = await approve(fx, ba.id, w.id);
+    expect(r.status).toBe(409);
+    expect(String(r.json.error)).toMatch(/margin.*also removes the 300\.00 credit/);
+    expect([await balanceOf(acc.id), await creditOf(acc.id)]).toEqual(["1000", "300"]);
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: w.id } })).status).toBe("PENDING");
+    await prisma.broker.update({ where: { id: fx.brokerId }, data: { voidCreditOnWithdrawal: false } });
+    expect((await approve(fx, ba.id, w.id)).status).toBe(200);
+    expect([await balanceOf(acc.id), await creditOf(acc.id)]).toEqual(["500", "300"]);
+  });
+
+  it("a deposit never touches the credit", async () => {
+    if (!dbReachable) return;
+    const fx = await broker("SINGLE");
+    const ba = await admin(fx, "BROKER_ADMIN");
+    const acc = await withCredit(fx, 1000, 200);
+    const dep = await prisma.transaction.create({ data: { brokerId: fx.brokerId, accountId: acc.id, type: "DEPOSIT", status: "PENDING", amount: D(100), balanceBefore: D(1000), balanceAfter: D(1100) } });
+    expect((await approve(fx, ba.id, dep.id)).status).toBe(200);
+    expect([await balanceOf(acc.id), await creditOf(acc.id)]).toEqual(["1100", "200"]);
+  });
+
+  it("the client-report CSV has a Credit column beside Balance, never added to it", async () => {
+    if (!dbReachable) return;
+    const fx = await broker();
+    const ba = await admin(fx, "BROKER_ADMIN");
+    const acc = await withCredit(fx, 1000, 250);
+    await as(fx, { id: ba.id, role: "BROKER_ADMIN" });
+    const { GET } = await import("@/app/api/manage/reports/client/route");
+    const lines = (await (await (GET as () => Promise<Response>)()).text()).trim().split("\n").map((l) => l.replace("\r", ""));
+    const head = lines[0].split(",");
+    const row = lines.find((l) => l.startsWith(acc.accountNumber))!.split(",");
+    expect(head.indexOf("Credit")).toBe(head.indexOf("Balance") + 1);
+    expect(row[head.indexOf("Balance")]).toBe("1000.00");
+    expect(row[head.indexOf("Credit")]).toBe("250.00");
+  });
+
+  it("the setting: a broker admin turns it off and on (audited); anything but true / false is refused", async () => {
+    if (!dbReachable) return;
+    const fx = await broker();
+    const ba = await admin(fx, "BROKER_ADMIN");
+    await as(fx, { id: ba.id, role: "BROKER_ADMIN" });
+    const { PATCH, GET } = await import("@/app/api/manage/settings/route");
+    expect((await call(PATCH, "/api/manage/settings", "PATCH", { voidCreditOnWithdrawal: "no" })).status).toBe(400);
+    const off = await call(PATCH, "/api/manage/settings", "PATCH", { voidCreditOnWithdrawal: false });
+    expect(off.status).toBe(200);
+    expect(off.json.voidCreditOnWithdrawal).toBe(false);
+    expect((await (await (GET as () => Promise<Response>)()).json()).voidCreditOnWithdrawal).toBe(false);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { brokerId: fx.brokerId, action: "BROKER_SETTINGS_UPDATED" } });
+    expect([audit.oldValue, audit.newValue]).toEqual([{ voidCreditOnWithdrawal: true }, { voidCreditOnWithdrawal: false }]);
+  });
+});

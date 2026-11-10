@@ -62,6 +62,56 @@ export async function checkCreditRemoval(
   return evaluateCreditRemoval({ creditAfter, equityAfter, usedMargin: state.usedMargin, marginCallLevel: acc.group?.marginCallLevel ?? new Prisma.Decimal(100) });
 }
 
+/**
+ * Credit-out on withdrawal (owner 2026-11-10): the credit a completed CLIENT withdrawal removes -- the whole credit when the
+ * broker's voidCreditOnWithdrawal is on (the default) and the account has any, else zero. Read on the LOCKED row (the
+ * caller holds the account lock). Losses beyond balance consuming credit (lib/position-close.ts) are unaffected.
+ */
+export async function creditVoidedByWithdrawal(tx: Tx, params: { accountId: string; brokerId: string }): Promise<Prisma.Decimal> {
+  const [broker, acc] = await Promise.all([
+    tx.broker.findUniqueOrThrow({ where: { id: params.brokerId }, select: { voidCreditOnWithdrawal: true } }),
+    tx.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { credit: true } }),
+  ]);
+  return broker.voidCreditOnWithdrawal && acc.credit.gt(0) ? acc.credit : new Prisma.Decimal(0);
+}
+
+/** Writes the void: credit -> 0, a CREDIT_OUT ledger row and a CREDIT_REMOVED audit row, exactly as a manual removal writes
+ *  them, naming the withdrawal. The balance is not moved (balanceBefore = balanceAfter = the balance after the payout). */
+export async function voidCreditForWithdrawal(
+  tx: Tx,
+  params: { accountId: string; brokerId: string; credit: Prisma.Decimal; balance: Prisma.Decimal; adminId: string | null; withdrawalTransactionId: string }
+): Promise<{ transactionId: string }> {
+  const note = "Credit removed: withdrawal";
+  await tx.account.update({ where: { id: params.accountId }, data: { credit: 0 } });
+  const transaction = await tx.transaction.create({
+    data: {
+      brokerId: params.brokerId,
+      accountId: params.accountId,
+      type: "CREDIT_OUT",
+      status: "COMPLETED",
+      amount: params.credit.neg(),
+      balanceBefore: params.balance,
+      balanceAfter: params.balance,
+      note,
+      createdByAdminId: params.adminId,
+      referenceType: "Transaction",
+      referenceId: params.withdrawalTransactionId,
+    },
+  });
+  await tx.auditLog.create({
+    data: {
+      brokerId: params.brokerId,
+      actorAdminId: params.adminId,
+      action: "CREDIT_REMOVED",
+      entityType: "Account",
+      entityId: params.accountId,
+      oldValue: { credit: params.credit.toString() },
+      newValue: { credit: "0", amount: params.credit.neg().toString(), note, transactionId: transaction.id, reason: "WITHDRAWAL", withdrawalTransactionId: params.withdrawalTransactionId },
+    },
+  });
+  return { transactionId: transaction.id };
+}
+
 export async function applyCreditAdjustment(
   tx: Tx,
   params: { accountId: string; brokerId: string; amount: Prisma.Decimal; note: string; adminId: string; requestId?: string }
