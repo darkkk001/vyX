@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+// owner 2026-11-10: Liquidity providers is a delegatable permission (BROKER_ADMIN, or a MANAGER holding LIQUIDITY_PROVIDERS)
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { LpConnectionInputError, symbolDefaults } from "@/lib/lp-connection-input";
 
 // GET ?symbolId=: the pre-fill for a new symbol row on an LP connection: the platform's contract size, and the
@@ -8,7 +10,7 @@ import { LpConnectionInputError, symbolDefaults } from "@/lib/lp-connection-inpu
 // grid differs). BROKER_ADMIN.
 export async function GET(request: NextRequest) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (await forbidUnlessBrokerAdminOrPermission(session, "LIQUIDITY_PROVIDERS")) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const symbolId = request.nextUrl.searchParams.get("symbolId") ?? "";
   try {
     return NextResponse.json(await symbolDefaults(prisma, session!.brokerId!, symbolId));

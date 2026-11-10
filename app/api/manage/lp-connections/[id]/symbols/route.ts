@@ -2,7 +2,9 @@ import { withConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+// owner 2026-11-10: Liquidity providers is a delegatable permission (BROKER_ADMIN, or a MANAGER holding LIQUIDITY_PROVIDERS)
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { checkSymbolRow, LpConnectionInputError, parseSymbolFields, symbolSnapshot } from "@/lib/lp-connection-input";
 import { connectionView, loadConnection } from "@/lib/lp-connections";
 
@@ -10,7 +12,7 @@ import { connectionView, loadConnection } from "@/lib/lp-connections";
 // minimum and step in units. BROKER_ADMIN; audited LP_CONNECTION_SYMBOL_ADDED. Answers the whole connection.
 async function postHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (await forbidUnlessBrokerAdminOrPermission(session, "LIQUIDITY_PROVIDERS")) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const brokerId = session!.brokerId!;
   const { id } = await params;
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;

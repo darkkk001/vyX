@@ -30,7 +30,9 @@ export type PermKey =
   | "REPORTS"
   | "GROUPS_SYMBOLS"
   | "STAFF_MANAGE"
-  | "CLIENT_PASSWORD_RESET";
+  | "CLIENT_PASSWORD_RESET"
+  // owner 2026-11-10
+  | "LIQUIDITY_PROVIDERS";
 
 export type PersonaKey = "readonly" | "dealer" | "finance" | "support";
 
@@ -116,7 +118,7 @@ export const MANIFEST: Row[] = [
   { mod: "admins/[id]/sign-ins/route", method: "GET", perm: "BROKER_ADMIN_ONLY", needsId: true },
   { mod: "emergency/sign-out-clients/route", method: "POST", perm: "BROKER_ADMIN_ONLY", body: {} },
   { mod: "mirror-rules/[id]/route", method: "DELETE", perm: "MIRROR_MANAGE", needsId: true },
-  { mod: "liquidity-providers/[id]/route", method: "DELETE", perm: "BROKER_ADMIN_ONLY", needsId: true },
+  { mod: "liquidity-providers/[id]/route", method: "DELETE", perm: "LIQUIDITY_PROVIDERS", needsId: true },
   { mod: "ib-partners/[id]/suspend/route", method: "POST", perm: "IB_PAYOUTS", needsId: true, body: {} },
   { mod: "ib-partners/[id]/resume/route", method: "POST", perm: "IB_PAYOUTS", needsId: true, body: {} },
   { mod: "ib-partners/[id]/release-owed/route", method: "POST", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
@@ -174,16 +176,18 @@ export const MANIFEST: Row[] = [
   { mod: "leads/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "leads/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "leads/assignees/route", method: "GET", perm: "ANY_MANAGER" }, // web3 (owner 2026-09-30); SUPPORT 403
-  { mod: "liquidity-providers/[id]/route", method: "PATCH", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
-  { mod: "liquidity-providers/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
-  { mod: "liquidity/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
+  { mod: "liquidity-providers/[id]/route", method: "PATCH", perm: "LIQUIDITY_PROVIDERS", needsId: true, body: {} },
+  { mod: "liquidity-providers/route", method: "GET", perm: "LIQUIDITY_PROVIDERS" },
+  { mod: "liquidity/route", method: "GET", perm: "LIQUIDITY_PROVIDERS" },
   // the Liquidity screen's CONNECTED badge (owner 2026-10-23): any staff of the broker, SUPPORT included (plain words only)
   { mod: "liquidity/status/route", method: "GET", perm: "ANY_ADMIN", supportRead: true },
   { mod: "live-account-requests/[id]/route", method: "PATCH", perm: "KYC_REVIEW", needsId: true, body: {} },
   { mod: "live-account-requests/route", method: "GET", perm: "KYC_REVIEW" },
   { mod: "live-activity/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "lp-routing/[id]/route", method: "DELETE", perm: "BROKER_ADMIN_ONLY", needsId: true },
-  { mod: "lp-routing/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
+  { mod: "lp-routing/[id]/route", method: "DELETE", perm: "LIQUIDITY_PROVIDERS", needsId: true },
+  { mod: "lp-routing/route", method: "GET", perm: "LIQUIDITY_PROVIDERS" },
+  { mod: "lp-connections/route", method: "GET", perm: "LIQUIDITY_PROVIDERS" },
+  { mod: "lp-connections/symbol-defaults/route", method: "GET", perm: "LIQUIDITY_PROVIDERS" },
   { mod: "margin/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "mirror-rules/[id]/route", method: "GET", perm: "MIRROR_MANAGE", needsId: true },
   { mod: "mirror-rules/route", method: "GET", perm: "MIRROR_MANAGE" },
