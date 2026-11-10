@@ -89,7 +89,9 @@ describe("Trade on links", () => {
     expect(dash()).toMatch(/<span>Mobile app<\/span><a href="\/room\/downloads"/);
   });
   it("an account card's Trade: the WebTrader in a new tab with that account", () => {
-    expect(dash()).toMatch(/href=\{`\/trade\?account=\$\{encodeURIComponent\(a\.accountNumber\)\}`\} target="_blank" rel="noopener">Trade<\/a>/);
+    // Dashboard and Accounts share one card (owner 2026-11-10)
+    expect(dash()).toContain("<AccountCard key={a.id} a={a}");
+    expect(src("components/room/AccountCard.tsx")).toMatch(/href=\{`\/trade\?account=\$\{encodeURIComponent\(a\.accountNumber\)\}`\} target="_blank" rel="noopener">Trade<\/a>/);
     const trade = src("app/(broker)/trade/page.tsx");
     expect(trade).toMatch(/const toLogin = wanted \? `\/trade\/login\?account=\$\{wanted\}` : "\/trade\/login";/);
     expect(trade).toMatch(/if \(current\?\.accountNumber !== wanted\) redirect\(toLogin\);/);
@@ -120,11 +122,13 @@ describe("deposit confirmation and countdown (owner 2026-11-10)", () => {
 
 describe("demo Top up", () => {
   it("on demo cards of the Dashboard and Accounts, never on live ones", () => {
-    expect(src("app/(broker)/room/(shell)/page.tsx")).toMatch(/\{a\.mode === "LIVE" \? <a [^\n]*?>Deposit<\/a> : <TopUpButton account=\{a\}/);
-    expect(src("app/(broker)/room/(shell)/accounts/page.tsx")).toMatch(/\{live \? null : <TopUpButton account=\{a\}/);
+    for (const p of ["app/(broker)/room/(shell)/page.tsx", "app/(broker)/room/(shell)/accounts/page.tsx"]) expect(src(p), p).toContain("<AccountCard key={a.id} a={a}");
+    const card = src("components/room/AccountCard.tsx");
+    expect(card).toMatch(/\) : <TopUpButton account=\{a\}/);
+    expect(card).toMatch(/\{live \? \(\s*<>\s*<a [^\n]*>Deposit<\/a>\s*<a [^\n]*>Withdraw<\/a>\s*<a [^\n]*>Transfer<\/a>/);
     expect(src("components/room/TopUpButton.tsx")).toMatch(/if \(account\.mode !== "DEMO"\) return null;/);
   });
   it("Accounts page Trade opens the WebTrader with that account", () => {
-    expect(src("app/(broker)/room/(shell)/accounts/page.tsx")).toMatch(/href=\{`\/trade\?account=\$\{encodeURIComponent\(a\.accountNumber\)\}`\} target="_blank" rel="noopener">Trade<\/a>/);
+    expect(src("components/room/AccountCard.tsx")).toMatch(/href=\{`\/trade\?account=\$\{encodeURIComponent\(a\.accountNumber\)\}`\} target="_blank" rel="noopener">Trade<\/a>/);
   });
 });

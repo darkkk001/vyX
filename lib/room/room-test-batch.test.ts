@@ -266,7 +266,11 @@ describe("payment method label (owner 2026-11-09)", () => {
 
 describe("account dropdowns (owner 2026-11-09)", () => {
   it("Transfer, Deposit and Withdraw list each account as number · balance currency, never the plan name", () => {
-    for (const page of ["transfer", "deposit", "withdraw"]) {
+    // Transfer builds its list in components/room/transfer-items.ts, the funding wallet included (owner 2026-11-10)
+    const items = fs.readFileSync(path.join(process.cwd(), "components/room/transfer-items.ts"), "utf8");
+    expect(items).toContain('`${i.isWallet ? "Funding wallet" : i.accountNumber} · ${money(i.balance)} ${i.currency}`');
+    expect(items).not.toContain(".plan");
+    for (const page of ["deposit", "withdraw"]) {
       const src = fs.readFileSync(path.join(process.cwd(), `app/(broker)/room/(shell)/${page}/page.tsx`), "utf8");
       expect(src, page).toContain("`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`");
       expect(src, page).not.toContain("a.plan");
@@ -318,7 +322,7 @@ describe("final Futurix Room batch (owner 2026-11-09)", () => {
     expect(page.indexOf('className="r-mini-seg"')).toBeGreaterThan(page.indexOf(">My accounts<"));
     expect(page.indexOf('className="r-mini-seg"')).toBeLessThan(page.indexOf(">Recent transactions<"));
     expect(page).toContain("const cards = (data?.accounts ?? []).filter((a) => a.mode === mode);");
-    expect(page).toContain("{cards.map((a) => (");
+    expect(page).toContain("{cards.map((a) => <AccountCard key={a.id} a={a}");
     expect(page).toContain("const f = data?.totals ?? null;");
   });
   it("sidebar foot: Refer & earn and Collapse only; the client and KYC state live in the top-right menu", () => {

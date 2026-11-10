@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { OpenAccountButton } from "@/components/room/OpenAccountModal";
 import StatusChip from "@/components/room/StatusChip";
 import TierPanel from "@/components/room/TierPanel";
-import TopUpButton from "@/components/room/TopUpButton";
+import AccountCard, { useAccountsMeta } from "@/components/room/AccountCard";
+import AccountDrawer from "@/components/room/AccountDrawer";
 import { useRoom } from "@/components/room/RoomData";
 import { money, pnlClass, dayShort, dayTime, greeting } from "@/components/room/format";
 
@@ -19,7 +20,12 @@ const Check = ({ ok }: { ok: boolean }) => (
 );
 
 export default function RoomDashboard() {
-  const { data, error, selected } = useRoom();
+  const { data, error, selected, refresh } = useRoom();
+  // the card's three-dot opens the same Settings drawer as on Accounts
+  const { load, levOf } = useAccountsMeta();
+  const [drawerId, setDrawerId] = useState("");
+  const drawer = (data?.accounts ?? []).find((a) => a.id === drawerId) ?? null;
+  const changed = useCallback(async () => { await Promise.all([refresh(), load()]); }, [refresh, load]);
   // the strip: live accounts only, summed by the server (demo never counts; no live account = 0.00)
   const f = data?.totals ?? null;
   const firstName = data?.client.fullName.split(/\s+/)[0] ?? "";
@@ -67,24 +73,8 @@ export default function RoomDashboard() {
             </div>
             <a href="/room/accounts">Manage accounts</a>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 14 }}>
-            {cards.map((a) => (
-              <div key={a.id} className="r-card r-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span className={`r-mode ${a.mode === "LIVE" ? "r-mode-live" : "r-mode-demo"}`}><span className="r-dot" />{a.mode}</span>
-                  <span style={{ color: "var(--r-muted)", fontSize: 12 }}>{a.plan} · 1:{a.leverage}</span>
-                </div>
-                <div className="mono" style={{ fontSize: 19, fontWeight: 600 }}>{a.accountNumber}</div>
-                <div style={{ display: "flex", gap: 20 }}>
-                  <div><div className="r-label" style={{ fontSize: 10, letterSpacing: 1 }}>Balance</div><div className="mono" style={{ fontSize: 14.5, marginTop: 3 }}>{money(a.figures.balance)}</div></div>
-                  <div><div className="r-label" style={{ fontSize: 10, letterSpacing: 1 }}>Equity</div><div className="mono" style={{ fontSize: 14.5, marginTop: 3 }}>{money(a.figures.equity)}</div></div>
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
-                  {a.mode === "LIVE" ? <a className="r-btn r-btn-sm" style={{ flex: 1 }} href={`/room/deposit?account=${a.id}`}>Deposit</a> : <TopUpButton account={a} style={{ flex: 1 }} />}
-                  <a className="r-btn-ghost r-btn-sm" style={{ flex: 1 }} href={`/trade?account=${encodeURIComponent(a.accountNumber)}`} target="_blank" rel="noopener">Trade</a>
-                </div>
-              </div>
-            ))}
+          <div className="r-acct-grid">
+            {cards.map((a) => <AccountCard key={a.id} a={a} onSettings={() => setDrawerId(a.id)} />)}
             <OpenAccountButton style={{ background: "none", cursor: "pointer", font: "inherit",  border: "1px dashed var(--r-dash)", borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--r-text-2)", minHeight: 150 }}>
               <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M11 4v14M4 11h14" /></svg>
               <span style={{ fontSize: 13, fontWeight: 500 }}>Open new account</span>
@@ -153,6 +143,7 @@ export default function RoomDashboard() {
           </div>
         </div>
       </div>
+      {drawer ? <AccountDrawer key={drawer.id} account={drawer} lev={levOf(drawer.id)} onClose={() => setDrawerId("")} onChanged={changed} /> : null}
     </>
   );
 }
