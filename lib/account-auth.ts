@@ -341,8 +341,8 @@ export async function authenticateAccountDetailed(
 export function inactiveAccountMessage(status: "SUSPENDED" | "CLOSED" | "ARCHIVED"): string {
   if (status === "ARCHIVED") return "This account is archived. Restore it in your client portal.";
   return status === "SUSPENDED"
-    ? "This account is suspended. Contact your broker's support."
-    : "This account is closed. Contact your broker's support.";
+    ? "This account is suspended. Contact support."
+    : "This account is closed. Contact support.";
 }
 
 // What a read-only session may still do besides reading. Anything else that is not a read is refused, and so is a

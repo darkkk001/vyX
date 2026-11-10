@@ -41,7 +41,7 @@ function lotsIn(ctx: Ctx): string | null {
 /** Machine code -> sentence. A function gets the context (amounts, symbols, audience). */
 const CODES: Record<string, string | ((c: Ctx) => string)> = {
   LP_NOT_CONNECTED: (c) =>
-    c.audience === "staff" ? "Not filled: the liquidity provider is disconnected." : "Orders can't be placed on this account right now. Contact your broker.",
+    c.audience === "staff" ? "Not filled: the liquidity provider is disconnected." : "Orders can't be placed on this account right now. Contact support.",
   SYSTEM_ACCOUNT: (c) => (c.audience === "staff" ? "This is the coverage account: client orders can't be placed on it." : "Orders can't be placed on this account."),
   INSUFFICIENT_MARGIN: (c) => {
     const req = bodyStr(c.body, "required");

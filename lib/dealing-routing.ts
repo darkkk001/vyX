@@ -26,7 +26,7 @@ export type OrderRoute = "FILL" | "QUEUE" | "SYSTEM";
 // `error` is the sentence a client shows as-is; `code` is what a client keys on (the same { error, code } shape the
 // volume refusals use).
 export const LP_NOT_CONNECTED = {
-  error: "Orders can't be placed yet: this account's group is routed to a liquidity provider and none is connected. Contact your broker.",
+  error: "Orders can't be placed yet: this account's group is routed to a liquidity provider and none is connected. Contact support.",
   code: "LP_NOT_CONNECTED",
 } as const;
 export const SYSTEM_ACCOUNT_ORDER = {
