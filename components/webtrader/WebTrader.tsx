@@ -60,6 +60,7 @@ import { DEMO_BANNER_TEXT } from "@/lib/demo-policy";
 import { wtColors } from "./wt-colors";
 import { DEMO_SYMBOLS, demoBucketStart, demoCandleOf, gridTime } from "@/lib/demo-prices";
 import { demoTicksAt, noteDemoTick } from "@/lib/demo-client";
+import { clientError } from "@/lib/client-log";
 // WebTrader colour classes per tone (lib/format.ts): profit blue, loss red, zero neutral (platform colour rule)
 const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
 // inline colour per tone in the WebTrader's own money tokens (webtrader.css); lib/format.ts TONE_COLOR stays on the web
@@ -1085,7 +1086,7 @@ export default function WebTrader({
   const handleOrderError = useCallback((err: unknown, retry?: () => void) => {
     playSound("error", chartSettingsRef.current);
     if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
-      console.error("[trade-error]", JSON.stringify({ status: err.status, code: "MARKET_CLOSED", message: err.message }));
+      clientError("[trade-error]", JSON.stringify({ status: err.status, code: "MARKET_CLOSED", message: err.message }));
       const info = err.body as { nextOpenAt?: string } | null;
       pushToast(formatMarketClosedMessage(activeSymbol, info?.nextOpenAt));
       return;
@@ -1129,7 +1130,7 @@ export default function WebTrader({
       // leaves the last-known account state on screen; the next poll tries
       // again.
       if (err instanceof ApiError && err.status === 401) sessionExpiredRef.current();
-      else console.error("refreshAccount failed", err);
+      else clientError("refreshAccount failed", err);
     }
   }, []);
   // Terminal sounds need the live bid/ask at the moment a position
@@ -1233,7 +1234,7 @@ export default function WebTrader({
       }
       setActiveSymbol((current) => (defs.some((d) => d.name === current) ? current : (watchlistRes.symbols[0]?.name ?? defs[0]?.name ?? current)));
     } catch (err) {
-      console.error("refreshSymbolsAndWatchlist failed", err);
+      clientError("refreshSymbolsAndWatchlist failed", err);
     }
   }, []);
   // Fetches both the Pending Orders view and the full-lifecycle Orders
@@ -3439,7 +3440,7 @@ export default function WebTrader({
         // Server-persisted (not localStorage) -- fire-and-forget; a
         // failed reorder just means the next reload shows the
         // previous server-side order, not a broken watchlist.
-        tradeApi.reorderWatchlist(next).catch((err) => console.error("reorderWatchlist failed", err));
+        tradeApi.reorderWatchlist(next).catch((err) => clientError("reorderWatchlist failed", err));
       },
     };
   }
@@ -3491,7 +3492,7 @@ export default function WebTrader({
 
   function persistCollapsedCategories(next: Set<SymbolCategory>) {
     setCollapsedCategories(next);
-    tradeApi.saveWatchlistCollapsed([...next]).catch((err) => console.error("saveWatchlistCollapsed failed", err));
+    tradeApi.saveWatchlistCollapsed([...next]).catch((err) => clientError("saveWatchlistCollapsed failed", err));
   }
 
   function toggleCategoryCollapsed(category: SymbolCategory) {

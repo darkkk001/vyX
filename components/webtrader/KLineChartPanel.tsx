@@ -7,6 +7,7 @@ import type { ChartSettings } from "@/lib/chart-settings";
 import { computeSessionBands, isIntradayTimeframe, SESSION_COLORS, type SessionName } from "@/lib/session-map";
 import { INDICATOR_DEFS, type ActiveIndicator, type IndicatorKey } from "@/lib/chart-indicators";
 import { WT_COLORS, wtColors } from "./wt-colors";
+import { clientError } from "@/lib/client-log";
 
 export type ChartLine = {
   id: string;
@@ -1050,7 +1051,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       const periodMs = lastHistory - candles[candles.length - 2].t;
       const drift = Math.abs(latestBar.t - lastHistory);
       if (periodMs > 0 && drift > periodMs) {
-        console.error(
+        clientError(
           `[chart] history/tick timestamp drift: last history bar ${new Date(lastHistory).toISOString()}, ` +
             `tick bucket ${new Date(latestBar.t).toISOString()}, drift ${(drift / 3_600_000).toFixed(2)}h ` +
             `(more than one ${periodMs / 60_000}m period). The last candle will appear frozen. ` +
