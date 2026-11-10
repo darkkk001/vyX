@@ -14,6 +14,7 @@ import { getLivePriceRow } from "@/lib/live-price";
 import { toClientShape } from "@/lib/client-execution";
 import { AMOUNT_NO_RATE_TEXT, amountRefusalBody, legWrite, parseAmountLegs, setsAnAmount } from "@/lib/amount-sltp";
 import { loadAmountContext } from "@/lib/position-modify";
+import { orderRef } from "@/lib/sltp-refusal-text";
 
 // Edit a resting PENDING order's own entry price and/or its SL/TP -- the
 // chart's draggable entry-price line (LIMIT/STOP only) and, since broker
@@ -146,7 +147,7 @@ async function patchInner(
       stopLevel: brokerSymbol?.stopLevel,
     });
     if (slTpError) {
-      return NextResponse.json({ error: slTpError }, { status: 400 });
+      return NextResponse.json({ error: slTpError, sltpRef: orderRef(String(effectiveEntryPrice)) }, { status: 400 });   // owner 2026-11-10: the reason reaches the client
     }
   }
 

@@ -1,3 +1,5 @@
+import { isSlTpRef, slTpRefusalText } from "@/lib/sltp-refusal-text";
+
 // Refusal reasons, two of them (owner 2026-10-23). `reason` is the internal code with full detail: it goes to the
 // RejectedOrder trace and the backoffice FEED. `clientReason` is what a client is told, exactly one of the eleven below (owner: 9, then TOO_MANY_REQUESTS and CLOSE_PENDING).
 // The order, close and modify routes answer a refusal with clientReason (+ a plain sentence) only; the internal text
@@ -83,7 +85,9 @@ export function clientRefusal(internal: Record<string, unknown>): Record<string,
   }
   const clientReason = clientReasonFor(internal);
   // the rate limit's own sentence is already plain and says when to try again
-  const message = CLIENT_REASON_TEXT[clientReason];
+  // owner 2026-11-10: a client's SL / TP refused by the side / distance rule says why (the level, the price it was checked against); the rule is unchanged
+  const sltpText = clientReason === "INVALID_SLTP" ? slTpRefusalText(internal.error, isSlTpRef(internal.sltpRef) ? internal.sltpRef : null) : null;
+  const message = sltpText ?? CLIENT_REASON_TEXT[clientReason];
   const out: Record<string, unknown> = {
     // MARKET_CLOSED keeps its code: installed terminals turn it (+ nextOpenAt) into "Market closed, opens ..."
     error: clientReason === "MARKET_CLOSED" ? "MARKET_CLOSED" : message,
