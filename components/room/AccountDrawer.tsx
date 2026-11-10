@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { RoomAccount } from "./RoomData";
 import { tradingPasswordRules } from "@/lib/room/password-rules";
+import { PLATFORM } from "./AccountCard";
 
 // Settings of one account, in a panel from the right (the three-dot on an account card). Every change goes through
 // PATCH /api/room/accounts/[id] or /api/room/leverage, and each refusal shows where it was pressed.
@@ -28,7 +29,11 @@ function Copy({ label, value }: { label: string; value: string }) {
     <Row label={label}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
         <span className="mono" style={{ fontSize: 13.5, minWidth: 0, overflowWrap: "anywhere" }}>{value}</span>
-        <button type="button" className="r-btn-ghost r-btn-sm" aria-label={`Copy ${label.toLowerCase()}`} style={{ padding: "5px 10px", flexShrink: 0 }} onClick={copy}>{done ? "Copied" : "Copy"}</button>
+        <button type="button" className="r-icon-btn r-copy-btn" aria-label={done ? "Copied" : `Copy ${label.toLowerCase()}`} title={done ? "Copied" : "Copy"} data-done={done} onClick={copy}>
+          {done
+            ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="var(--r-ok)" strokeWidth="1.8" aria-hidden="true"><path d="m2.5 7.5 3 3 6-6" /></svg>
+            : <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true"><rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1.2" /><path d="M9.5 4.5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v5.5a1 1 0 0 0 1 1h1.5" /></svg>}
+        </button>
       </div>
     </Row>
   );
@@ -129,10 +134,14 @@ export default function AccountDrawer({ account, lev, onClose, onChanged }: { ac
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 2 8 8M10 2l-8 8" /></svg>
           </button>
         </div>
+        <Copy label="Platform" value={PLATFORM.name} />
         <Copy label="Server" value={account.server} />
         <Copy label="Login" value={account.accountNumber} />
         <Row label="Plan">
-          <div style={{ fontSize: 13.5 }}>{account.plan} · {account.mode === "LIVE" ? "Real" : "Demo"}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
+            {account.plan} account
+            <span className={`r-mode ${account.mode === "LIVE" ? "r-mode-live" : "r-mode-demo"}`}><span className="r-dot" />{account.mode === "LIVE" ? "Real" : "Demo"}</span>
+          </div>
         </Row>
         <Row label="Trading password">
           {panel === "trading"
@@ -154,7 +163,7 @@ export default function AccountDrawer({ account, lev, onClose, onChanged }: { ac
           {lev?.pending ? <div className="r-chip-pending" style={{ fontSize: 12.5 }}>1:{lev.pending.to} is pending broker approval.</div> : null}
           <Note msg={levMsg} />
         </Row>
-        <Row label="Read-only (investor) password">
+        <Row label="Read-only access">
           <div className="r-note">Lets someone view this account without trading.</div>
           {panel === "investor"
             ? <PasswordForm action="investor-password" label="Read-only password" patch={patch} onDone={saved} />
@@ -171,7 +180,7 @@ export default function AccountDrawer({ account, lev, onClose, onChanged }: { ac
             )}
         </Row>
         <Note msg={msg} />
-        <Row label="Nickname">
+        <Row label="Nickname (optional)">
           <div style={{ display: "flex", gap: 8 }}>
             <input className="r-input" aria-label="Nickname" style={{ flex: 1, minWidth: 0, padding: "7px 10px", fontSize: 13 }} maxLength={30} value={nick} onChange={(e) => { setNick(e.target.value); setNickMsg(null); }} />
             <button type="button" className="r-btn-ghost r-btn-sm" onClick={saveNick}>Save</button>

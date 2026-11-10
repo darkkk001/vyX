@@ -8,11 +8,13 @@ import { useFunds, amountOk, cleanAmount, useSendOnce } from "@/components/room/
 import AmountInput from "@/components/room/AmountInput";
 import FundsDone from "@/components/room/FundsDone";
 import { money, dayTime } from "@/components/room/format";
+import { transferItems, transferTargets, itemLabel, WALLET_KEY, type TransferItem as Item } from "@/components/room/transfer-items";
 
 // Artboard "Internal transfer": between the client's own accounts, instant, free-margin check on the server.
 export default function RoomTransfer() {
   const { data, refresh } = useRoom();
-  const accounts = useMemo(() => [...(data?.accounts ?? []), ...(data?.wallet ? [data.wallet] : [])], [data]);
+  const items = useMemo(() => transferItems(data?.accounts ?? [], data?.wallet ?? null, data?.walletCurrency ?? "USD"), [data]);
+  const hasLive = items.some((i) => i.mode === "LIVE");
   const [fromId, setFromId] = useState("");
   const [toId, setToId] = useState("");
   // ?from=<id> / ?to=<id> from an account card or the wallet
@@ -21,11 +23,13 @@ export default function RoomTransfer() {
     setFromId(q.get("from") ?? "");
     setToId(q.get("to") ?? "");
   }, []);
-  const from = accounts.find((a) => a.id === fromId) ?? accounts.find((a) => a.mode === "LIVE") ?? accounts[0] ?? null;
-  const targets = accounts.filter((a) => a.id !== from?.id && a.mode === from?.mode && a.currency === from?.currency);
-  const to = targets.find((a) => a.id === toId) ?? targets[0] ?? null;
-  useEffect(() => { if (to && toId !== to.id) setToId(to.id); }, [to, toId]);
-  const { funds, reload } = useFunds(from?.id);
+  // ?from= / ?to= may carry the wallet's account id: that is the wallet item
+  const pick = (list: Item[], k: string) => list.find((i) => i.key === k || (i.id !== null && i.id === k));
+  const from = pick(items, fromId) ?? items.find((i) => i.mode === "LIVE" && !i.isWallet) ?? items.find((i) => i.mode === "LIVE") ?? items[0] ?? null;
+  const targets = transferTargets(items, from);
+  const to = pick(targets, toId) ?? targets[0] ?? null;
+  useEffect(() => { if (to && toId !== to.key) setToId(to.key); }, [to, toId]);
+  const { funds, reload } = useFunds(from?.id ?? undefined);
   const [amount, setAmount] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // one transfer per form load; the button stays "Moving…" from the first click until the server answers
@@ -41,14 +45,16 @@ export default function RoomTransfer() {
     let res: Response | null = null;
     let body: { error?: string; duplicate?: boolean } | null = null;
     try {
-      res = await fetch("/api/room/transfer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: send.key, fromId: from.id, toId: to.id, amount: cleanAmount(amount) }) });
+      res = await fetch("/api/room/transfer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: send.key, fromId: from.id ?? WALLET_KEY, toId: to.id ?? WALLET_KEY, amount: cleanAmount(amount) }) });
       body = await res.json().catch(() => null);
     } catch { /* no connection: the message below */ }
     send.end();
     if (!res || !res.ok) { setMsg({ ok: false, text: body?.error ?? "Transfer failed." }); return; }
     // the form is replaced by the confirmation, so the same transfer cannot go twice
-    setDone({ amount: cleanAmount(amount), currency: from.currency, to: to.accountNumber, again: Boolean(body?.duplicate) });
+    setDone({ amount: cleanAmount(amount), currency: from.currency, to: to.isWallet ? "Funding wallet" : to.accountNumber, again: Boolean(body?.duplicate) });
     await Promise.all([reload(), refresh()]);
+    // the top-bar money menu and any other list on screen reload now, not on the next socket event
+    window.dispatchEvent(new CustomEvent("room:changed", { detail: { type: "TransferDone" } }));
   }
 
   function another() {
@@ -58,7 +64,6 @@ export default function RoomTransfer() {
     send.renew();
   }
 
-  const opt = (a: (typeof accounts)[number]) => `${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`;
   const label = { fontSize: 10.5, letterSpacing: 1.2 } as const;
   return (
     <>
@@ -75,8 +80,8 @@ export default function RoomTransfer() {
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
             <div className="r-field r-field-fixed">
               <label htmlFor="tfrom" style={label}>From</label>
-              <select id="tfrom" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={from?.id ?? ""} onChange={(e) => { setFromId(e.target.value); setToId(""); setMsg(null); }}>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{opt(a)}</option>)}
+              <select id="tfrom" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={from?.key ?? ""} onChange={(e) => { setFromId(e.target.value); setToId(""); setMsg(null); }}>
+                {items.map((i) => <option key={i.key} value={i.key}>{itemLabel(i)}</option>)}
               </select>
             </div>
             <span className="r-xfer-arrow" aria-hidden="true">
@@ -84,8 +89,8 @@ export default function RoomTransfer() {
             </span>
             <div className="r-field r-field-fixed">
               <label htmlFor="tto" style={label}>To</label>
-              <select id="tto" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={to?.id ?? ""} onChange={(e) => { setToId(e.target.value); setMsg(null); }} disabled={targets.length === 0}>
-                {targets.map((a) => <option key={a.id} value={a.id}>{opt(a)}</option>)}
+              <select id="tto" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={to?.key ?? ""} onChange={(e) => { setToId(e.target.value); setMsg(null); }} disabled={targets.length === 0}>
+                {targets.map((i) => <option key={i.key} value={i.key}>{itemLabel(i)}</option>)}
               </select>
             </div>
           </div>
@@ -95,7 +100,7 @@ export default function RoomTransfer() {
             <AmountInput id="tamt" currency={from?.currency} value={amount} onChange={(v) => { setAmount(v); if (msg && !msg.ok) setMsg(null); }} />
             {funds ? <div style={{ fontSize: 11.5, color: "var(--r-muted)" }}>Free to move: <span className="mono" style={{ color: "var(--r-text)" }}>{money(funds.available)} {from?.currency}</span></div> : null}
           </div>
-          {targets.length === 0 && from ? <div className="r-note">You need a second {from.mode === "LIVE" ? "live" : "demo"} account in {from.currency} to transfer. <OpenAccountButton className="r-link-btn">Open an account</OpenAccountButton></div> : null}
+          {data && !hasLive ? <div className="r-note">Open a live account to transfer. <OpenAccountButton className="r-link-btn">Open an account</OpenAccountButton></div> : null}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", borderTop: "1px solid var(--r-line)", paddingTop: 18 }}>
             <div style={{ fontSize: 12, color: "var(--r-muted)", maxWidth: 420, lineHeight: 1.6 }}>Transfers between your own accounts are instant and free. Free margin on the source account must cover the amount.</div>
             <button type="button" className="r-btn" style={{ padding: "11px 24px" }} disabled={!from || !to || busy} onClick={submit}>{busy ? "Moving…" : "Transfer"}</button>
