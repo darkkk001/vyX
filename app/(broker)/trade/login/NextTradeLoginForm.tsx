@@ -45,7 +45,7 @@ function NextTradeLoginFormInner({
       initialAccountNumber={searchParams.get("account") ?? ""}
       initialError={
         searchParams.get("error") === "2"
-          ? `This account is ${searchParams.get("status") === "CLOSED" ? "closed" : "suspended"}. Contact your broker's support.`
+          ? `This account is ${searchParams.get("status") === "CLOSED" ? "closed" : "suspended"}. Contact support.`
           : searchParams.get("error")
             ? "Invalid account number or password"
             : null

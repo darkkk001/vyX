@@ -30,7 +30,7 @@ describe("the 13 server strings", () => {
     ["8 database being updated", "trading is temporarily unavailable (the database is being updated); please try again shortly", PLAIN.tradingBrief],
     ["9 price feed not configured", "price feed not configured", PLAIN.pricesUnavailable],
     ["10 internal error", "internal error", PLAIN.notProcessed],
-    ["11a LP_NOT_CONNECTED", "LP_NOT_CONNECTED", "Orders can't be placed on this account right now. Contact your broker."],
+    ["11a LP_NOT_CONNECTED", "LP_NOT_CONNECTED", "Orders can't be placed on this account right now. Contact support."],
     ["11b SYSTEM_ACCOUNT", { error: SYSTEM_ACCOUNT_ORDER.error, code: SYSTEM_ACCOUNT_ORDER.code }, "Orders can't be placed on this account."],
     ["11c INSUFFICIENT_MARGIN", "INSUFFICIENT_MARGIN", "Not enough free margin for this order."],
     ["11d NO_LIVE_FEED", "NO_LIVE_FEED", "No live price for this symbol right now. Try again shortly."],
