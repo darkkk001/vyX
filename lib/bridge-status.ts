@@ -23,7 +23,87 @@ export type BridgeReport = {
   feed: "ok" | "degraded" | "off";
   /** The license's expiry (ms), when known: within 30 days the badge is Degraded with the date. */
   licenseExpiresAt?: number | null;
+  /** Phase 2.1 #4: the v2 status-console fields (qorebridge docs/bridge-status-report.md), null / absent from a v1 bridge. */
+  detail?: BridgeDetail | null;
 };
+
+// ---- v2: the status console (qorebridge repo docs/bridge-status-report.md, branch feat/bridge-status-console) ----
+
+export const LANE_STATES = ["ready", "connecting", "reconciling", "disconnected", "logging_out", "maintenance", "market_closed", "halted", "auth_halted", "stopped"] as const;
+export type LaneState = (typeof LANE_STATES)[number];
+export const HOLD_REASONS = ["market_closed", "lp_reconnecting", "no_lp_up", "db_error", "lane_stopped", "license_suspended"] as const;
+export type HoldReason = (typeof HOLD_REASONS)[number];
+export const LICENSE_STATES = ["active", "grace", "suspended", "stopped", "holding"] as const;
+export type BridgeLicenseState = (typeof LICENSE_STATES)[number];
+
+export type BridgeLane = {
+  id: string;
+  /** "unknown" for a state this platform does not know yet (a newer bridge): shown as such, never dropped. */
+  state: LaneState | "unknown";
+  inFlight: number;
+  /** Kept for completeness; a netting / FIX 4.4 LP always reports 0, so the console does not show it. */
+  openPositions: number;
+  delivered: number;
+  completedSinceStart: number;
+  logonRejects: number;
+  maintenanceRefusals: number;
+};
+export type BridgeDetail = {
+  v: number;
+  health: "ok" | "degraded" | "down";
+  hedging: boolean;
+  /** graceUntil in ms (the bridge sends Unix seconds). */
+  license: { state: BridgeLicenseState | "unknown"; reason: string | null; graceUntil: number | null };
+  lanes: BridgeLane[];
+  held: { total: number; byReason: Record<HoldReason, number> };
+};
+
+const MAX_LANES = 32;
+const count = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(Math.floor(v), 1_000_000_000) : 0);
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** The v2 fields of a report body, or null when the bridge sent none (v1: no `v`) or they are not the documented shape. A reader ignores keys it
+ *  does not know; counts are whole and never negative; strings are bounded. A v1 body (only the badge keys) is null: the badge never depends on this. */
+export function parseBridgeDetail(body: unknown): BridgeDetail | null {
+  if (!isObj(body) || typeof body.v !== "number" || !Number.isInteger(body.v) || body.v < 2) return null;
+  const health = body.health === "ok" || body.health === "degraded" || body.health === "down" ? body.health : null;
+  if (!health || !isObj(body.license) || !Array.isArray(body.lanes) || !isObj(body.held)) return null;
+  const lic = body.license;
+  const licState = (LICENSE_STATES as readonly string[]).includes(lic.state as string) ? (lic.state as BridgeLicenseState) : "unknown";
+  const graceUntil = licState === "grace" && typeof lic.graceUntil === "number" && Number.isFinite(lic.graceUntil) && lic.graceUntil > 0 ? Math.floor(lic.graceUntil) * 1000 : null;
+  const reason = typeof lic.reason === "string" && lic.reason.trim() !== "" ? lic.reason.trim().slice(0, 200) : null;
+  const lanes: BridgeLane[] = [];
+  for (const l of body.lanes.slice(0, MAX_LANES)) {
+    if (!isObj(l) || typeof l.id !== "string" || l.id.trim() === "") continue;
+    lanes.push({
+      id: l.id.trim().slice(0, 64),
+      state: (LANE_STATES as readonly string[]).includes(l.state as string) ? (l.state as LaneState) : "unknown",
+      inFlight: count(l.inFlight),
+      openPositions: count(l.openPositions),
+      delivered: count(l.delivered),
+      completedSinceStart: count(l.completedSinceStart),
+      logonRejects: count(l.logonRejects),
+      maintenanceRefusals: count(l.maintenanceRefusals),
+    });
+  }
+  const by = isObj(body.held.byReason) ? body.held.byReason : {};
+  const byReason = Object.fromEntries(HOLD_REASONS.map((k) => [k, count(by[k])])) as Record<HoldReason, number>;
+  return { v: body.v, health, hedging: body.hedging === true, license: { state: licState, reason, graceUntil }, lanes, held: { total: count(body.held.total), byReason } };
+}
+
+/** The console as the backoffice shows it: the v2 detail of a FRESH report with each lane's LP name (the web's; the bridge sends only the id), or
+ *  null when the bridge reports no v2 fields (an older bridge) or has stopped reporting. */
+export type BridgeConsole = Omit<BridgeDetail, "lanes"> & { lanes: (BridgeLane & { name: string | null })[]; reportedAt: string };
+export async function bridgeConsole(
+  brokerId: string,
+  lpNames: (ids: string[]) => Promise<Map<string, string>>,
+  now = Date.now()
+): Promise<BridgeConsole | null> {
+  const r = await readBridgeReport(brokerId);
+  if (!r?.detail || now - r.receivedAt > BRIDGE_REPORT_FRESH_MS) return null;
+  const names = r.detail.lanes.length > 0 ? await lpNames(r.detail.lanes.map((l) => l.id)) : new Map<string, string>();
+  return { ...r.detail, lanes: r.detail.lanes.map((l) => ({ ...l, name: names.get(l.id) ?? null })), reportedAt: new Date(r.receivedAt).toISOString() };
+}
 
 const EXPIRY_WARNING_MS = 30 * 86_400_000;
 const expiring = (r: BridgeReport, now: number) => r.licenseExpiresAt != null && r.licenseExpiresAt - now <= EXPIRY_WARNING_MS;

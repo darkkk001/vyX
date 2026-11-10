@@ -15,12 +15,25 @@ import { formatDateTime } from "@/lib/format";
 
 export type BridgeBadgeState = "CONNECTED" | "DEGRADED" | "NOT_CONNECTED";
 
+/** Phase 2.1 #4: the bridge's v2 detail as GET liquidity/status returns it to staff who may open the Liquidity screen (lib/bridge-status.ts BridgeConsole). */
+export type BridgeConsoleView = {
+  v: number;
+  health: "ok" | "degraded" | "down";
+  hedging: boolean;
+  license: { state: string; reason: string | null; graceUntil: number | null };
+  lanes: { id: string; name: string | null; state: string; inFlight: number; openPositions: number; delivered: number; completedSinceStart: number; logonRejects: number; maintenanceRefusals: number }[];
+  held: { total: number; byReason: Record<string, number> };
+  reportedAt: string;
+};
+
 export type BridgeStatus = {
   badge: BridgeBadgeState;
   text: string;
   since: string | null;
   lastReportAt: string | null;
   licenseExpiresAt: string | null;
+  /** absent for staff without the Liquidity screen; null = no v2 detail (an older bridge) or not reporting */
+  console?: BridgeConsoleView | null;
 };
 
 const POLL_MS = 15_000;
