@@ -362,6 +362,11 @@ pub struct OpenSnapshot {
     /// The account's own ask-rule levels for it, READ FRESH -- see `get_ask_levels` on why these are
     /// deliberately not served from the pricing cache.
     pub ask_levels: market_data::ask_markup::AskLevels,
+    /// The same three levels for the per-lot COMMISSION, from the same row (2026-11-10). Separate from
+    /// `ask_levels` because the two hierarchies are resolved by different rules -- a group may carry a
+    /// negative markup but a commission is never negative -- and `crate::commission::resolve_per_lot`
+    /// owns the second one.
+    pub commission: crate::commission::CommissionLevels,
     pub exposure: SymbolExposure,
     pub max_open_positions: Option<i32>,
     /// Funds and priced open positions -- what `calc::load_book_state` returned, from the same
@@ -424,6 +429,13 @@ pub async fn get_open_snapshot(
                COALESCE(bs."lotStep", 0.01) AS cfg_lot_step,
                bs."maxExposure" AS cfg_max_exposure,
                COALESCE(bs."commissionPerLot", 0) AS cfg_commission_per_lot,
+               -- commission RESOLUTION levels (2026-11-10). NOT COALESCEd, unlike the broker row above:
+               -- a NULL has to stay distinguishable from an explicit 0, because the contract falls a null
+               -- through (even when the row exists) and honours a 0 as a real zero. Both tables are already
+               -- joined below for the markup levels, so this costs no extra round trip -- the whole point of
+               -- the depth cut.
+               gsc."commissionPerLot" AS lv_group_commission,
+               acs."commissionPerLot" AS lv_account_commission,
                COALESCE(bs."swapLong", 0) AS cfg_swap_long,
                COALESCE(bs."swapShort", 0) AS cfg_swap_short,
                -- get_ask_levels (read fresh: a markup edit must never be stale on a fill)
@@ -564,6 +576,12 @@ pub async fn get_open_snapshot(
             target: first.try_get("lv_account_target")?,
         },
     };
+    let commission = crate::commission::CommissionLevels {
+        pricing_engine: first.try_get("lv_pricing_engine")?,
+        account_symbol: first.try_get("lv_account_commission")?,
+        group: first.try_get("lv_group_commission")?,
+        broker: first.try_get("cfg_commission_per_lot")?,
+    };
     let exposure = SymbolExposure {
         open_volume: first.try_get("acct_symbol_volume")?,
         open_position_count: first.try_get("acct_open_positions")?,
@@ -590,6 +608,7 @@ pub async fn get_open_snapshot(
     };
 
     Ok(OpenSnapshotResult::Found(Box::new(OpenSnapshot {
+        commission,
         gates,
         symbol: symbol_config,
         ask_levels,
@@ -1935,9 +1954,13 @@ pub struct BrokerSymbolConfig {
     // with no limit set — both mean "no limit" to risk::check_symbol_exposure,
     // so no COALESCE needed here unlike the other columns above.
     pub max_exposure: Option<Decimal>,
-    // Flat fee per lot, charged once at position open — see swap.rs's
-    // module doc and lib.rs's place_market_order for where this actually
-    // gets applied.
+    // Flat fee per lot at the BROKER-SYMBOL level only -- the bottom of the
+    // hierarchy, not the rate a fill is charged at. Since 2026-11-10 every
+    // charge goes through `crate::commission::resolve_per_lot`, which puts
+    // AccountSymbolConfig and GroupSymbolConfig above this (see that module);
+    // reading this field directly is what undercharged every commission-priced
+    // group. Kept, and kept broker-only, because it IS the broker level and
+    // `get_broker_symbol_config`'s name should stay honest.
     pub commission_per_lot: Decimal,
     // Account-currency per lot per day, applied by the daily rollover job
     // (swap.rs) — see BrokerSymbol.swapLong/swapShort's schema comment
@@ -1968,6 +1991,58 @@ pub async fn get_symbol_trading_mode(pool: &PgPool, broker_id: &str, symbol: &st
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| r.0).unwrap_or_else(|| "BOTH".to_string()))
+}
+
+/// The per-lot commission for one (account, symbol), resolved across all three levels.
+///
+/// For the paths that have NO open snapshot and so cannot get this for free:
+///   * `pending_orders::trigger_order` -- a resting order filling. It reads `get_broker_symbol_config`
+///     for the exposure limit and used to take the commission from the same answer, which is the
+///     broker level and nothing else.
+///   * `place_market_order`'s degraded branch, where `snapshot` is `None`.
+///
+/// ONE extra round trip on the pending-fill path, which is the deliberate trade (owner decision,
+/// option 1 of three): the alternative was to move `trigger_order` onto `get_open_snapshot` -- free,
+/// but it rewires far more of the pending path -- or to make `get_broker_symbol_config` itself
+/// account-aware, which would make its name a lie and force an account id on its two callers that
+/// have nothing to do with commission (`place_pending_order`, `swap::charge_one`).
+///
+/// A missing `Broker` row yields `None`, the same benign "no config" case `get_broker_symbol_config`
+/// returns `None` for; the caller charges nothing.
+pub async fn resolve_commission_per_lot(
+    pool: &PgPool,
+    broker_id: &str,
+    account_id: &str,
+    symbol_id: &str,
+) -> Result<Option<Decimal>, sqlx::Error> {
+    // The same four levels, the same joins and the same NULL-vs-0 care as the cfg CTE in
+    // `get_open_snapshot`; only the broker row is COALESCEd, because it is the bottom of the hierarchy.
+    let row: Option<(bool, Option<Decimal>, Option<Decimal>, Decimal)> = sqlx::query_as(
+        r#"SELECT COALESCE(b."pricingEngineEnabled", false),
+                  acs."commissionPerLot",
+                  gsc."commissionPerLot",
+                  COALESCE(bs."commissionPerLot", 0)
+             FROM "Broker" b
+             LEFT JOIN "Account" a ON a.id = $2
+             LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = $3 AND bs."brokerId" = $1
+             LEFT JOIN "GroupSymbolConfig" gsc ON gsc."symbolId" = $3 AND gsc."groupId" = a."groupId"
+             LEFT JOIN "AccountSymbolConfig" acs ON acs."symbolId" = $3 AND acs."accountId" = $2
+            WHERE b.id = $1"#,
+    )
+    .bind(broker_id)
+    .bind(account_id)
+    .bind(symbol_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(pricing_engine, account_symbol, group, broker)| {
+        crate::commission::resolve_per_lot(&crate::commission::CommissionLevels {
+            pricing_engine,
+            account_symbol,
+            group,
+            broker,
+        })
+    }))
 }
 
 pub async fn get_broker_symbol_config(

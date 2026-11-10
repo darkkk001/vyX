@@ -9,6 +9,7 @@
 pub mod authority;
 pub mod book;
 pub mod calc;
+pub mod commission;
 pub mod db;
 pub mod events;
 pub mod fx;
@@ -545,7 +546,16 @@ pub async fn place_market_order(
     // Flat per-lot commission, charged once at open (round-turn, not split between open/close) -- see
     // BrokerSymbolConfig's doc comment. On the Prisma book this DEBITS THE BALANCE, which the legacy
     // path never did.
-    let commission_per_lot = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot);
+    //
+    // RESOLVED ACROSS ALL THREE LEVELS since 2026-11-10, not read off the broker row: see
+    // `crate::commission`. From the snapshot this is free (the levels came back in the same row); the
+    // `None` branch is the degraded path that took no snapshot and pays one extra query for it.
+    let commission_per_lot = match &snapshot {
+        Some(snap) => crate::commission::resolve_per_lot(&snap.commission),
+        None => db::resolve_commission_per_lot(pool, &req.broker_id, &req.account_id, &symbol_id)
+            .await?
+            .unwrap_or(Decimal::ZERO),
+    };
 
     // L2 Step 2 (DEPTH-CUT): THE WHOLE WRITE IN ONE ROUND TRIP, on the Prisma book.
     //

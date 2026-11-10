@@ -183,7 +183,17 @@ async fn trigger_order(
 
     // Same one-time open commission as place_market_order — see
     // BrokerSymbolConfig's doc comment and db.rs's record_commission.
-    let commission_per_lot = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot);
+    //
+    // 2026-11-10: resolved across account-symbol / group / broker instead of taken from
+    // `symbol_config`, which is the BROKER level only. This path has no open snapshot, so it pays one
+    // extra query for it -- see `db::resolve_commission_per_lot` for why that trade was chosen over
+    // the two alternatives.
+    let commission_per_lot = match symbol_config.as_ref() {
+        Some(cfg) => db::resolve_commission_per_lot(pool, &order.broker_id, &order.account_id, &cfg.symbol_id)
+            .await?
+            .unwrap_or(Decimal::ZERO),
+        None => Decimal::ZERO,
+    };
     db::record_commission(&mut tx, book, &order.broker_id, &order.account_id, &position_id, commission_per_lot, fill.volume).await?;
 
     // The IN deal, after the commission it sums (see db::write_open_deal). CLIENT: a resting order the
