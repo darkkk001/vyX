@@ -26,6 +26,8 @@ export const PERMISSIONS = [
   "GROUPS_SYMBOLS",
   "STAFF_MANAGE",
   "CLIENT_PASSWORD_RESET",
+  // owner 2026-11-10: the Liquidity providers screen (providers, routing rules, LP connections and their symbols), broker-admin only before
+  "LIQUIDITY_PROVIDERS",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -45,6 +47,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   GROUPS_SYMBOLS: "Edit groups / symbols",
   STAFF_MANAGE: "Manage staff",
   CLIENT_PASSWORD_RESET: "Reset client passwords",
+  LIQUIDITY_PROVIDERS: "Liquidity providers (providers, routing rules, LP connections)",
 };
 
 /** The Staff page / Assign checklist (owner 2026-10-29): this list, these labels, this order, in the Super Admin dialog and the backoffice

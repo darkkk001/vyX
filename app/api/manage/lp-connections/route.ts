@@ -2,7 +2,9 @@ import { withConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+// owner 2026-11-10: Liquidity providers is a delegatable permission (BROKER_ADMIN, or a MANAGER holding LIQUIDITY_PROVIDERS)
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import {
   checkCserverHasSymbols,
   checkSymbolRow,
@@ -22,7 +24,7 @@ import { CONNECTION_INCLUDE, connectionView } from "@/lib/lp-connections";
 
 async function brokerAdmin() {
   const session = await getAdminSession();
-  return requireAdminRole(session, ["BROKER_ADMIN"]) && session!.brokerId ? session! : null;
+  return (await forbidUnlessBrokerAdminOrPermission(session, "LIQUIDITY_PROVIDERS")) ? null : session!;
 }
 
 export async function GET() {

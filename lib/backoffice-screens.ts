@@ -53,8 +53,9 @@ export const BACKOFFICE_SCREENS: readonly BackofficeScreen[] = [
   { code: "EMG", rule: { kind: "riskOrEmergency" }, support: false, routes: ["risk/route GET", "groups/route GET", "symbols/route GET"] },
   { code: "MRG", rule: { kind: "manager" }, support: false, routes: ["margin/route GET", "positions/route GET"] },
   // LIQUIDITY
-  { code: "LP", rule: { kind: "brokerAdmin" }, support: false, routes: ["liquidity/route GET", "liquidity-providers/route GET", "lp-routing/route GET"] },
-  { code: "ROUTE", rule: { kind: "brokerAdmin" }, support: false, routes: ["lp-routing/route GET"] },
+  // owner 2026-11-10: BROKER_ADMIN, or a MANAGER holding LIQUIDITY_PROVIDERS (broker-admin only before)
+  { code: "LP", rule: { kind: "permission", permission: "LIQUIDITY_PROVIDERS" }, support: false, routes: ["liquidity/route GET", "liquidity-providers/route GET", "lp-routing/route GET", "lp-connections/route GET"] },
+  { code: "ROUTE", rule: { kind: "permission", permission: "LIQUIDITY_PROVIDERS" }, support: false, routes: ["lp-routing/route GET"] },
   { code: "FEED", rule: { kind: "manager" }, support: false, routes: ["feed-health/route GET"] },
   // CLIENTS
   {

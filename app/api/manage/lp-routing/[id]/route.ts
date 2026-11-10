@@ -1,14 +1,16 @@
 import { withConfigEvent } from "@/lib/config-events";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+// owner 2026-11-10: Liquidity providers is a delegatable permission (BROKER_ADMIN, or a MANAGER holding LIQUIDITY_PROVIDERS)
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { parseRuleFields, ruleSnapshot, RuleInputError } from "@/lib/lp-routing-input";
 
 /** PATCH: change a rule (provider, group, symbol, failover level, weight, on / off, notes); absent fields stay. Audited
  *  as LP_ROUTING_RULE_CHANGED with the old and new rule; a request that changes nothing writes nothing. */
 async function patchHandler(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "LIQUIDITY_PROVIDERS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
@@ -39,7 +41,7 @@ async function patchHandler(request: Request, { params }: { params: Promise<{ id
 
 async function deleteHandler(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "LIQUIDITY_PROVIDERS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const { id } = await params;
