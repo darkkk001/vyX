@@ -246,3 +246,102 @@ describe("license expiry (owner 2026-10-23)", () => {
     expect((await manifest(b.subdomain, json.licenseId)).status).toBe("EXPIRED");
   });
 });
+
+// Phase 2.1 #4: the v2 report fields (qorebridge docs/bridge-status-report.md) for the Liquidity page's status console.
+describe("the status console (v2 report)", () => {
+  const report = async (licenseId: string, body: Record<string, unknown> | string) => {
+    const raw = typeof body === "string" ? body : JSON.stringify(body);
+    const k = createHmac("sha256", "report-secret-for-tests").update(`bridge-report:${licenseId}`).digest();
+    const sig = createHmac("sha256", k).update(raw).digest("hex");
+    const { POST } = await import("@/app/api/internal/bridge-status/route");
+    return POST(new NextRequest("https://t/api/internal/bridge-status", { method: "POST", headers: { "x-bridge-license": licenseId, "x-bridge-signature": sig }, body: raw }));
+  };
+  const status = async (brokerId: string, role: "BROKER_ADMIN" | "MANAGER" | "SUPPORT") => {
+    const { getAdminSession } = await import("@/lib/auth");
+    vi.mocked(getAdminSession).mockResolvedValue({ adminId: "x1", role, brokerId } as never);
+    const { GET } = await import("@/app/api/manage/liquidity/status/route");
+    return (await GET()).json();
+  };
+  const v1 = { lps: [{ id: "lp", status: "Ready" }], intake: "ok", feed: "off", machine: MACHINE };
+  const v2 = (laneId: string, extra: Record<string, unknown> = {}) => ({
+    ...v1,
+    lps: [{ id: laneId, status: "Ready" }],
+    v: 2,
+    health: "degraded",
+    hedging: true,
+    held: { byReason: { db_error: 0, lane_stopped: 0, license_suspended: 1, lp_reconnecting: 0, market_closed: 2, no_lp_up: 0 }, total: 3 },
+    lanes: [
+      { completedSinceStart: 12, delivered: 40, id: laneId, inFlight: 1, logonRejects: 0, maintenanceRefusals: 3, openPositions: 0, state: "ready" },
+      { completedSinceStart: 0, delivered: 0, id: "not-a-known-lp", inFlight: 0, logonRejects: 2, maintenanceRefusals: 0, openPositions: 0, state: "brand_new_state" },
+    ],
+    license: { graceUntil: null, reason: null, state: "active" },
+    newerKeyThePlatformDoesNotKnow: { x: 1 },
+    ...extra,
+  });
+
+  it("v2 fields are stored and returned to a broker admin with LP names joined; a manager / support get the badge only, as before", async () => {
+    if (!ready) return;
+    const b = await broker();
+    const { json } = await issue(b.subdomain);
+    const lp = await prisma.liquidityProvider.create({ data: { brokerId: b.id, name: "Prime LP One" } });
+    expect((await report(json.licenseId, v2(lp.id))).status).toBe(200);
+    const admin = await status(b.id, "BROKER_ADMIN");
+    expect(admin.badge).toBe("CONNECTED"); // the badge reads the v1 keys only: unchanged
+    expect(admin.console).toMatchObject({
+      v: 2, health: "degraded", hedging: true,
+      license: { state: "active", reason: null, graceUntil: null },
+      held: { total: 3, byReason: { market_closed: 2, license_suspended: 1, lp_reconnecting: 0, no_lp_up: 0, db_error: 0, lane_stopped: 0 } },
+    });
+    expect(admin.console.lanes).toEqual([
+      { id: lp.id, name: "Prime LP One", state: "ready", inFlight: 1, openPositions: 0, delivered: 40, completedSinceStart: 12, logonRejects: 0, maintenanceRefusals: 3 },
+      { id: "not-a-known-lp", name: null, state: "unknown", inFlight: 0, openPositions: 0, delivered: 0, completedSinceStart: 0, logonRejects: 2, maintenanceRefusals: 0 },
+    ]);
+    expect(JSON.stringify(admin.console)).not.toContain("newerKeyThePlatformDoesNotKnow");
+    for (const role of ["MANAGER", "SUPPORT"] as const) {
+      const s = await status(b.id, role);
+      expect(s.console).toBeUndefined();
+      expect(JSON.stringify(s)).not.toContain(lp.id); // no LP ids or names for staff without the Liquidity screen
+    }
+    await prisma.liquidityProvider.delete({ where: { id: lp.id } });
+  });
+
+  it("an older bridge (v1 keys only) keeps its badge and has no console detail; a stale report shows none either", async () => {
+    if (!ready) return;
+    const b = await broker();
+    const { json } = await issue(b.subdomain);
+    expect((await report(json.licenseId, v1)).status).toBe(200);
+    const s = await status(b.id, "BROKER_ADMIN");
+    expect(s.badge).toBe("CONNECTED");
+    expect(s.console).toBeNull();
+    await report(json.licenseId, v2("lane-x"));
+    const { bridgeConsole } = await import("@/lib/bridge-status");
+    const none = async () => new Map<string, string>();
+    expect(await bridgeConsole(b.id, none)).not.toBeNull();
+    expect(await bridgeConsole(b.id, none, Date.now() + 50_000)).toBeNull(); // stopped reporting: no detail
+  });
+
+  it("grace: the deadline comes through in ms; a suspend reason is kept; malformed v2 fields are dropped, never break the badge", async () => {
+    if (!ready) return;
+    const b = await broker();
+    const { json } = await issue(b.subdomain);
+    await report(json.licenseId, v2("l1", { license: { state: "grace", reason: null, graceUntil: 1_900_000_000 } }));
+    expect((await status(b.id, "BROKER_ADMIN")).console.license).toEqual({ state: "grace", reason: null, graceUntil: 1_900_000_000_000 });
+    await report(json.licenseId, v2("l1", { lanes: [{ id: "l1", state: "ready", inFlight: -4, completedSinceStart: "12", logonRejects: 2.7 }] }));
+    expect((await status(b.id, "BROKER_ADMIN")).console.lanes[0]).toMatchObject({ inFlight: 0, completedSinceStart: 0, logonRejects: 2 });
+    const broken = await report(json.licenseId, v2("l1", { health: "fine", lanes: "nope" }));
+    expect(broken.status).toBe(200);
+    const s = await status(b.id, "BROKER_ADMIN");
+    expect(s.badge).toBe("CONNECTED");
+    expect(s.console).toBeNull();
+  });
+
+  it("the 8,192-byte cap is unchanged: a bigger body is refused and changes nothing", async () => {
+    if (!ready) return;
+    const b = await broker();
+    const { json } = await issue(b.subdomain);
+    const big = JSON.stringify({ ...v2("l1"), pad: "x".repeat(8_200) });
+    expect(big.length).toBeGreaterThan(8_192);
+    expect((await report(json.licenseId, big)).status).toBe(403);
+    expect((await status(b.id, "BROKER_ADMIN")).badge).toBe("NOT_CONNECTED");
+  });
+});

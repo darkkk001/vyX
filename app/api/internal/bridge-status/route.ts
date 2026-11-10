@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { bridgeReportSignatureOk, expiryState } from "@/lib/bridge-licenses";
 import { evaluateBridgeLicense, loadBridgeLicense, normalizeMachine, recordLicenseReport, trySignBridgeVerdict } from "@/lib/bridge-license-state";
 import { prisma } from "@/lib/prisma";
-import { storeBridgeReport, type BridgeReport } from "@/lib/bridge-status";
+import { parseBridgeDetail, storeBridgeReport, type BridgeReport } from "@/lib/bridge-status";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkRateLimit } from "@/lib/rate-limit";
 
@@ -10,6 +10,9 @@ import { checkRateLimit } from "@/lib/rate-limit";
 // (owner 2026-10-23). Auth: x-bridge-license (the licenseId) + x-bridge-signature (hex HMAC-SHA256 of the raw body
 // with the license's report key). The broker is the license's, never the body's.
 // Body: { at, lps: [{ id, status }], intake, feed, machine }. Liveness only.
+// v2 (Phase 2.1 #4, qorebridge docs/bridge-status-report.md): `v: 2` plus health, hedging, license, lanes, held for the
+// status console, stored beside the badge fields (lib/bridge-status.ts parseBridgeDetail). A v1 body has none of them and
+// works exactly as before (no console detail); the 8,192-byte cap is unchanged.
 //
 // License enforcement 1.2 (C:\vyx\handoff\license-enforcement-contract.md 2c + 4), after the HMAC check:
 //   ACTIVE (and machine ok)                      200 as before, plus license: { status: "ACTIVE", reason: "" }
@@ -55,6 +58,7 @@ export async function POST(request: NextRequest) {
     intake: pick(body.intake, ["ok", "degraded", "down", "off"] as const, "off"),
     feed: pick(body.feed, ["ok", "degraded", "off"] as const, "off"),
     licenseExpiresAt: verdict.facts?.expiresAt ?? null,
+    detail: parseBridgeDetail(body),
   };
   // 30 days before expiry: one dealer FEED entry per license (the badge says it on every report)
   if (expiryState(report.licenseExpiresAt) === "expiring") {

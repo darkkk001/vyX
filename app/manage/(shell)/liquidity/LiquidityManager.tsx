@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { BridgeStatusBadge } from "@/components/admin/BridgeStatusBadge";
+import { BridgeStatusConsole } from "@/components/admin/BridgeStatusConsole";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
@@ -112,7 +112,7 @@ export default function LiquidityManager() {
 
   return (
     <div className="flex flex-col gap-4">
-      <BridgeStatusBadge />
+      <BridgeStatusConsole />
 
       <Card title="Current book exposure">
         <p className="mb-3 text-sm text-[var(--text-3)]">
