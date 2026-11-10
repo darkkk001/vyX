@@ -222,6 +222,53 @@ describe("trader modify: both units, hostile input, already reached, clearing", 
     expect(swapped.tpAmount?.toFixed(2)).toBe("700.00");
   });
 
+  it("2026-11-10: an EMPTY amount is refused (400), never a silent clear; whitespace, non-numeric and negative too; null still removes", async () => {
+    if (!dbReachable) return;
+    const w = await world();
+    const p = await open(w, "BUY", "100");
+    expect((await modify(p.id, { slAmount: "100", tpAmount: "500" })).status).toBe(200);
+    for (const v of ["", " ", "abc", "-5"]) {
+      for (const field of ["slAmount", "tpAmount"]) {
+        const r = await modify(p.id, { [field]: v });
+        expect(r.status, `${field}=${JSON.stringify(v)}`).toBe(400);
+        expect(r.json.amountCode, `${field}=${JSON.stringify(v)}`).toBe("AMOUNT_INVALID");
+        expect(r.json.clientReason).toBe("INVALID_SLTP");
+      }
+    }
+    const empty = await modify(p.id, { slAmount: "" });
+    expect(String(empty.json.message ?? empty.json.error)).toContain("SL amount is empty");
+    const kept = await row(p.id);
+    expect([kept.slAmount?.toFixed(2), kept.tpAmount?.toFixed(2)]).toEqual(["100.00", "500.00"]); // nothing was cleared
+    expect((await modify(p.id, { slAmount: null })).status).toBe(200);
+    expect((await row(p.id)).slAmount).toBeNull();
+  });
+
+  it("2026-11-10: arming, changing and removing an amount leg each write one audit row (old / new levels); a price-only edit writes none", async () => {
+    if (!dbReachable) return;
+    const w = await world();
+    const p = await open(w, "SELL", "100");
+    const rows = () => prisma.auditLog.findMany({ where: { brokerId: w.brokerId, entityType: "Position", entityId: p.id, action: "TRADER_AMOUNT_SLTP_MODIFIED" }, orderBy: { createdAt: "asc" } });
+    expect((await modify(p.id, { slAmount: "75", tpAmount: "40" })).status).toBe(200);
+    let a = await rows();
+    expect(a).toHaveLength(1);
+    expect(a[0].actorAdminId).toBeNull();
+    expect(a[0].oldValue).toEqual({ slPrice: null, tpPrice: null, slAmount: null, tpAmount: null });
+    expect(a[0].newValue).toMatchObject({ slPrice: null, tpPrice: null, slAmount: "75", tpAmount: "40", accountId: w.accountId, symbol: w.symbol, side: "SELL", volume: "1", currency: "USD", by: "CLIENT" });
+    expect((await modify(p.id, { tpAmount: "60" })).status).toBe(200);
+    expect((await modify(p.id, { slAmount: null })).status).toBe(200);
+    a = await rows();
+    expect(a).toHaveLength(3);
+    expect(a[1].oldValue).toMatchObject({ tpAmount: "40" });
+    expect(a[1].newValue).toMatchObject({ tpAmount: "60", slAmount: "75" });
+    expect(a[2].newValue).toMatchObject({ slAmount: null, tpAmount: "60" });
+    // a price-only edit: no amount row (unchanged behaviour)
+    expect((await modify(p.id, { slPrice: "110" })).status).toBe(200);
+    expect(await rows()).toHaveLength(3);
+    // a refused amount writes nothing
+    expect((await modify(p.id, { tpAmount: "" })).status).toBe(400);
+    expect(await rows()).toHaveLength(3);
+  });
+
   it("price and pips legs behave exactly as before (no amount fields: untouched, the wrong-side rule still refuses)", async () => {
     if (!dbReachable) return;
     const w = await world();

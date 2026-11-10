@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { withClientRefusals } from "@/lib/client-reason";
 import { traceCloseOrModifyRefusals } from "@/lib/rejected-orders";
 import { toClientShape } from "@/lib/client-execution";
@@ -8,7 +9,7 @@ import { getLivePriceRow } from "@/lib/live-price";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { announcePositionModified, loadAmountContext, refuseModify } from "@/lib/position-modify";
-import { amountRefusalBody, legWrite, parseAmountLegs, setsAnAmount } from "@/lib/amount-sltp";
+import { amountRefusalBody, legWrite, parseAmountLegs, setsAnAmount, sltpAuditLevels } from "@/lib/amount-sltp";
 
 // Inline SL/TP edit on an open position — side-aware validated against the
 // client-reported current price, same rule as order placement.
@@ -31,7 +32,8 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
 
   const body = await request.json().catch(() => null);
   // amount SL / TP (lib/amount-sltp.ts): a leg is a price OR an amount; setting one unit clears the other
-  const amountLegs = parseAmountLegs(body);
+  // an empty slAmount / tpAmount is refused here (400), never read as "remove": null removes (2026-11-10)
+  const amountLegs = parseAmountLegs(body, { emptyRefused: true });
   if (!amountLegs.ok) return NextResponse.json(amountRefusalBody(amountLegs.code, amountLegs.error), { status: 400 });
   const slLeg = legWrite(body?.slPrice !== undefined ? (body.slPrice == null ? null : String(body.slPrice)) : undefined, amountLegs.slAmount);
   const tpLeg = legWrite(body?.tpPrice !== undefined ? (body.tpPrice == null ? null : String(body.tpPrice)) : undefined, amountLegs.tpAmount);
@@ -72,7 +74,7 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
   const refused = refuseModify({ position, brokerSymbol, symbolName: brokerSymbol?.symbol.name ?? null, live, askRuleFor, slPrice, tpPrice, slAmount, tpAmount, fxRate: amountCtx?.fxRate, accountCurrency: amountCtx?.currency });
   if (refused) return NextResponse.json(refused.body, { status: refused.status });
 
-  const updated = await prisma.position.update({
+  const update = {
     where: { id },
     data: {
       ...(slPrice !== undefined ? { slPrice } : {}),
@@ -80,7 +82,36 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
       ...(slAmount !== undefined ? { slAmount } : {}),
       ...(tpAmount !== undefined ? { tpAmount } : {}),
     },
-  });
+  };
+  // 2026-11-10: an amount leg set, changed or removed (a price replacing an armed amount included) writes one audit row with
+  // the update (the engine's trigger close names the same position id, so arm -> fire can be traced). An edit that leaves
+  // both amounts as they were stays a single write, as before.
+  const changes = (next: Prisma.Decimal | null | undefined, prev: Prisma.Decimal | null) => next !== undefined && (next == null ? prev != null : prev == null || !next.eq(prev));
+  const touchesAmount = changes(slAmount, position.slAmount) || changes(tpAmount, position.tpAmount);
+  const updated = !touchesAmount
+    ? await prisma.position.update(update)
+    : await prisma.$transaction(async (tx) => {
+        const u = await tx.position.update(update);
+        await tx.auditLog.create({
+          data: {
+            brokerId: session.brokerId,
+            action: "TRADER_AMOUNT_SLTP_MODIFIED",
+            entityType: "Position",
+            entityId: id,
+            oldValue: sltpAuditLevels(position),
+            newValue: {
+              ...sltpAuditLevels(u),
+              accountId: position.accountId,
+              symbol: symbol!.name,
+              side: position.side,
+              volume: position.volume.toString(),
+              currency: amountCtx?.currency ?? null,
+              by: "CLIENT",
+            },
+          },
+        });
+        return u;
+      });
   const row = { ...updated, symbol: { name: symbol!.name, digits: symbol!.digits, contractSize: symbol!.contractSize } };
   await announcePositionModified({ session, before: position, row, symbolName: symbol!.name, slPrice, tpPrice, slAmount, tpAmount });
   return NextResponse.json(toClientShape(row)); // client allow-list (lib/client-execution.ts)

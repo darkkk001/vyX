@@ -14,8 +14,11 @@ export type AmountParse = { ok: true; value: Prisma.Decimal | null | undefined }
 
 /** One amount field from a request body: undefined = not sent (leave as is), null / "" = clear, else a positive finite number of at most
  *  1,000,000,000 rounded to the cent. Hostile input (NaN, Infinity, hex, exponents beyond the cap) is refused, never stored. */
-export function parseAmount(raw: unknown, leg: "SL" | "TP"): AmountParse {
+export function parseAmount(raw: unknown, leg: "SL" | "TP", opts: { emptyRefused?: boolean } = {}): AmountParse {
   if (raw === undefined) return { ok: true, value: undefined };
+  // 2026-11-10 (amount SL / TP re-enable): on the client arming route an empty string is refused, not read as "remove":
+  // a terminal that sent "" would show the leg as set while nothing was armed. null is the one way to remove an amount.
+  if (raw === "" && opts.emptyRefused) return { ok: false, error: `${leg} amount is empty: send a number above 0, or null to remove it` };
   if (raw === null || raw === "") return { ok: true, value: null };
   if (typeof raw !== "number" && typeof raw !== "string") return { ok: false, error: `${leg} amount must be a number` };
   const s = String(raw).trim();
@@ -97,14 +100,19 @@ export type AmountLegs = { slAmount: Prisma.Decimal | null | undefined; tpAmount
 
 /** slAmount / tpAmount from a request body, with the one-unit-per-leg rule against the same body's slPrice / tpPrice.
  *  undefined = not sent (leave), null = clear, Decimal = set. */
-export function parseAmountLegs(body: { slPrice?: unknown; tpPrice?: unknown; slAmount?: unknown; tpAmount?: unknown } | null | undefined): ({ ok: true } & AmountLegs) | { ok: false; code: AmountCode; error: string } {
+export function parseAmountLegs(body: { slPrice?: unknown; tpPrice?: unknown; slAmount?: unknown; tpAmount?: unknown } | null | undefined, opts: { emptyRefused?: boolean } = {}): ({ ok: true } & AmountLegs) | { ok: false; code: AmountCode; error: string } {
   const both = bothUnitsError(body?.slPrice, body?.slAmount, "SL") ?? bothUnitsError(body?.tpPrice, body?.tpAmount, "TP");
   if (both) return { ok: false, code: "AMOUNT_BOTH_UNITS", error: both };
-  const sl = parseAmount(body?.slAmount, "SL");
+  const sl = parseAmount(body?.slAmount, "SL", opts);
   if (!sl.ok) return { ok: false, code: "AMOUNT_INVALID", error: sl.error };
-  const tp = parseAmount(body?.tpAmount, "TP");
+  const tp = parseAmount(body?.tpAmount, "TP", opts);
   if (!tp.ok) return { ok: false, code: "AMOUNT_INVALID", error: tp.error };
   return { ok: true, slAmount: sl.value, tpAmount: tp.value };
+}
+
+/** The four levels of a position as an audit row records them (null = not set). */
+export function sltpAuditLevels(p: { slPrice: Prisma.Decimal | null; tpPrice: Prisma.Decimal | null; slAmount: Prisma.Decimal | null; tpAmount: Prisma.Decimal | null }) {
+  return { slPrice: p.slPrice?.toString() ?? null, tpPrice: p.tpPrice?.toString() ?? null, slAmount: p.slAmount?.toString() ?? null, tpAmount: p.tpAmount?.toString() ?? null };
 }
 
 /** True when a request sets (not clears) an amount: the only thing the RUST-authority refusal and the reached / FX checks apply to. */
