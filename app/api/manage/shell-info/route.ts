@@ -33,7 +33,7 @@ export async function GET() {
   const brokerId = session!.brokerId!;
 
   const [broker, admin] = await Promise.all([
-    prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true, primaryColor: true, subdomain: true, customDomain: true, requireAdmin2fa: true } }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true, primaryColor: true, subdomain: true, customDomain: true, requireAdmin2fa: true, crmEnabled: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, theme: true, extraPermissions: true, twoFactorEnabled: true } }),
   ]);
   const identity = {
@@ -56,6 +56,9 @@ export async function GET() {
     // the broker's staff 2FA policy (Super Admin setting; Required unless explicitly Optional)
     twoFactorRequired: staffTwoFactorRequired(broker),
     readOnly: session!.role === "SUPPORT",
+    // owner 2026-11-10: the broker's CRM module switch, for every role. The backoffice read it from GET crm/settings, which
+    // now needs the CRM permission; the leverage / IB payout queues (their own permissions) follow the module too.
+    crmEnabled: broker?.crmEnabled === true,
   };
 
   if (session!.twoFactorSetupRequired || !admin || (!admin.twoFactorEnabled && identity.twoFactorRequired)) {

@@ -74,6 +74,9 @@ export const BACKOFFICE_SCREENS: readonly BackofficeScreen[] = [
     ],
   },
   { code: "CRM", rule: { kind: "manager" }, support: false, routes: ["leads/route GET"] },
+  // owner 2026-11-10: the CRM module's screens (Leads pipeline CRL, Clients 360 CRC, Support tickets CRT): BROKER_ADMIN,
+  // or a MANAGER holding CRM. The backoffice shows them when this code is listed and the module is on (shell-info crmEnabled).
+  { code: "CRL", rule: { kind: "permission", permission: "CRM" }, support: false, routes: ["crm/leads/route GET", "crm/clients/route GET", "crm/tickets/route GET", "crm/settings/route GET", "crm/notes/route POST"] },
   { code: "IB", rule: { kind: "permission", permission: "IB_PAYOUTS" }, support: false, routes: ["ib-relationships/route GET"] },
   {
     code: "KYC",

@@ -28,6 +28,9 @@ export const PERMISSIONS = [
   "CLIENT_PASSWORD_RESET",
   // owner 2026-11-10: the Liquidity providers screen (providers, routing rules, LP connections and their symbols), broker-admin only before
   "LIQUIDITY_PROVIDERS",
+  // owner 2026-11-10: the CRM screens (every route behind lib/crm/core.ts crmStaff), any manager before; the migration
+  // 20261110120000_crm_permission granted it to every manager that existed, so it is a toggle for new / changed staff only
+  "CRM",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -48,6 +51,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   STAFF_MANAGE: "Manage staff",
   CLIENT_PASSWORD_RESET: "Reset client passwords",
   LIQUIDITY_PROVIDERS: "Liquidity providers (providers, routing rules, LP connections)",
+  CRM: "CRM (leads pipeline, clients 360, support tickets)",
 };
 
 /** The Staff page / Assign checklist (owner 2026-10-29): this list, these labels, this order, in the Super Admin dialog and the backoffice

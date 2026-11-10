@@ -32,7 +32,8 @@ export type PermKey =
   | "STAFF_MANAGE"
   | "CLIENT_PASSWORD_RESET"
   // owner 2026-11-10
-  | "LIQUIDITY_PROVIDERS";
+  | "LIQUIDITY_PROVIDERS"
+  | "CRM";
 
 export type PersonaKey = "readonly" | "dealer" | "finance" | "support";
 
@@ -80,14 +81,16 @@ export const MANIFEST: Row[] = [
   { mod: "account-types/route", method: "GET", perm: "ANY_MANAGER" },
   // Registrations tab (portal sign-ups) and the CRM tab (2026-11-03): reads open to SUPPORT like the other client screens
   { mod: "clients/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
-  { mod: "crm/leads/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
-  { mod: "crm/leads/[id]/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
-  { mod: "crm/clients/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
-  { mod: "crm/clients/[id]/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
-  { mod: "crm/tasks/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
-  { mod: "crm/tickets/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
-  { mod: "crm/tickets/[id]/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
-  { mod: "crm/settings/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
+  { mod: "crm/leads/route", method: "GET", perm: "CRM", supportRead: true },
+  { mod: "crm/leads/[id]/route", method: "GET", perm: "CRM", needsId: true, supportRead: true },
+  { mod: "crm/clients/route", method: "GET", perm: "CRM", supportRead: true },
+  { mod: "crm/clients/[id]/route", method: "GET", perm: "CRM", needsId: true, supportRead: true },
+  { mod: "crm/tasks/route", method: "GET", perm: "CRM", supportRead: true },
+  { mod: "crm/tickets/route", method: "GET", perm: "CRM", supportRead: true },
+  { mod: "crm/tickets/[id]/route", method: "GET", perm: "CRM", needsId: true, supportRead: true },
+  { mod: "crm/settings/route", method: "GET", perm: "CRM", supportRead: true },
+  // the CRM screens write notes (owner 2026-11-10: CRM permission); SUPPORT never writes
+  { mod: "crm/notes/route", method: "POST", perm: "CRM", body: {} },
   { mod: "accounts/[id]/activity/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/funds-history/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/adjust-balance/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
