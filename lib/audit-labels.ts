@@ -73,6 +73,7 @@ const LABELS: Record<string, string> = {
   BROKER_SSO_SECRET_GENERATED: "Generated WebTrader SSO secret",
   BROKER_SSO_SECRET_ROTATED: "Rotated WebTrader SSO secret",
   BROKER_SSO_SECRET_REVOKED: "Revoked WebTrader SSO secret",
+  TRADER_AMOUNT_SLTP_MODIFIED: "Set amount stop loss / take profit",
   WEBTRADER_SSO_LOGIN: "Logged in via broker SSO handoff",
   WEBTRADER_ACCOUNT_SWITCH: "Switched WebTrader account",
   WEBTRADER_2FA_ENABLED: "Enabled two-factor authentication",
