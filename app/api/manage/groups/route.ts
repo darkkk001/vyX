@@ -62,6 +62,21 @@ export async function GET() {
     ).map((r) => [r.groupId, r._count._all])
   );
 
+  // owner 2026-11-10: the PRICING column names the kind of each group's own pricing, so the rows are counted by what they
+  // set: a fixed spread (targetTotalSpreadPips; it wins over a markup on the same row), a spread markup, or commission /
+  // swaps only (no spread of its own). One read of three columns for the listed groups.
+  const pricingKinds = new Map<string, { markup: number; fixed: number; fees: number }>();
+  for (const r of await prisma.groupSymbolConfig.findMany({
+    where: { groupId: { in: groups.map((g) => g.id) } },
+    select: { groupId: true, spreadMarkup: true, targetTotalSpreadPips: true },
+  })) {
+    const k = pricingKinds.get(r.groupId) ?? { markup: 0, fixed: 0, fees: 0 };
+    if (r.targetTotalSpreadPips != null) k.fixed++;
+    else if (r.spreadMarkup != null) k.markup++;
+    else k.fees++;
+    pricingKinds.set(r.groupId, k);
+  }
+
   // Groups screen SYMBOLS column (owner 2026-10-05, contract docs/contracts/groups-symbol-counts.md): how many of the
   // broker's enabled symbols each group trades. Synthetic v* symbols are hidden exactly as GET /api/manage/symbols
   // hides them from every broker but the shadow-bot tenant. Two queries in total, not one per group.
@@ -119,6 +134,7 @@ export async function GET() {
       category: g.category,
       modeRestriction: g.modeRestriction,
       symbolConfigCount: overrideCounts.get(g.id) ?? 0,
+      symbolConfigKinds: pricingKinds.get(g.id) ?? { markup: 0, fixed: 0, fees: 0 },
       // Derived, not the stored shadow column, so a 1.0.9 backoffice sees
       // the same thing a 1.0.10 one does even for a group whose category
       // was last written by the new UI.
