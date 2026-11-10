@@ -21,11 +21,36 @@ export type ResolutionInput = {
   // with the D8 engine work. No live account type sets a spread (checked 2026-09-30).
   accountSymbol: Lvl; // AccountSymbolConfig
 };
+// Commission resolution (2026-11-10, engine / web parity): which level's commissionPerLot a fill charges, and the charge.
+// The same precedence as the spread, per FIELD (a level whose commission is null falls through even when the row exists):
+//   pricing engine off (lib/group-pricing.ts resolveSymbolPricing):  GroupSymbolConfig > BrokerSymbol (an account row is ignored)
+//   pricing engine on  (lib/pricing-engine.ts resolvePricingV2):     AccountSymbolConfig > GroupSymbolConfig > BrokerSymbol
+// D4: no account-type level (AccountType.commissionPerLot is read-only history; nothing resolves it).
+// charge = commissionPerLot x volume, unrounded (lib/group-pricing.ts chargeCommission); a charge <= 0 writes nothing.
+type CommLvl = { commissionPerLot: string | null } | null;
+export type CommissionInput = { name: string; pricingEngineEnabled: boolean; broker: string; group: CommLvl; accountSymbol: CommLvl; volume: string };
 export type PriceInput = { name: string; rule: { mode: "markup"; markupPips: string } | { mode: "target"; targetPips: string; fallbackPips: string | null }; digits: number; bid: string; ask: string };
 
 const D = (v: string) => new Prisma.Decimal(v);
 const lvl = (l: Lvl) =>
   l ? { spreadMarkup: l.spreadMarkup == null ? null : D(l.spreadMarkup), targetTotalSpreadPips: l.targetTotalSpreadPips == null ? null : D(l.targetTotalSpreadPips), commissionPerLot: null, swapLong: null, swapShort: null } : null;
+
+/** The commission a fill charges per lot, as lib/pricing-engine.ts resolveFillPricing resolves it (the DB-free core). */
+export function resolveCommission(i: CommissionInput): Prisma.Decimal {
+  const c = (l: CommLvl) => (l?.commissionPerLot == null ? null : D(l.commissionPerLot));
+  if (!i.pricingEngineEnabled) return c(i.group) ?? D(i.broker);
+  const lv = (l: CommLvl) => (l ? { spreadMarkup: null, targetTotalSpreadPips: null, commissionPerLot: c(l), swapLong: null, swapShort: null } : null);
+  return resolvePricingV2({
+    accountSymbolConfig: lv(i.accountSymbol),
+    groupSymbolConfig: lv(i.group),
+    brokerSpreadMarkup: D("0"),
+    brokerCommissionPerLot: D(i.broker),
+    brokerSwapLong: D("0"),
+    brokerSwapShort: D("0"),
+    accountSwapFree: null,
+    groupSwapFree: null,
+  }).commissionPerLot;
+}
 
 /** The resolution rule, as lib/ask-markup.ts loadAskRules applies it to one pair (the DB-free core). */
 export function resolveRule(i: ResolutionInput): AskRule {
@@ -70,6 +95,25 @@ export const RESOLUTION_INPUTS: ResolutionInput[] = [
   { ...base, name: "5-digit FX group markup", pricingEngineEnabled: false, digits: 5, broker: "0", group: m("1.2") },
 ];
 
+const cl = (x: string | null): CommLvl => ({ commissionPerLot: x });
+const cbase = { broker: "7", group: null as CommLvl, accountSymbol: null as CommLvl, volume: "0.01" };
+// mirrors lib/pricing-engine.test.ts's commission fallthrough coverage, for both engine-flag states
+export const COMMISSION_INPUTS: CommissionInput[] = [
+  { ...cbase, name: "commission, engine off: broker only", pricingEngineEnabled: false },
+  { ...cbase, name: "commission, engine off: group overrides broker (the 0.10 case: 10 per lot x 0.01)", pricingEngineEnabled: false, broker: "0", group: cl("10") },
+  { ...cbase, name: "commission, engine off: group row with a null commission falls through to the broker", pricingEngineEnabled: false, group: cl(null) },
+  { ...cbase, name: "commission, engine off: an explicit 0 on the group is honoured (not unset)", pricingEngineEnabled: false, group: cl("0") },
+  { ...cbase, name: "commission, engine off: account-symbol config is ignored", pricingEngineEnabled: false, group: cl("2.5"), accountSymbol: cl("1") },
+  { ...cbase, name: "commission, engine on: broker only", pricingEngineEnabled: true },
+  { ...cbase, name: "commission, engine on: group overrides broker", pricingEngineEnabled: true, group: cl("2.5") },
+  { ...cbase, name: "commission, engine on: group row with a null commission falls through to the broker", pricingEngineEnabled: true, group: cl(null) },
+  { ...cbase, name: "commission, engine on: account-symbol overrides group", pricingEngineEnabled: true, group: cl("2.5"), accountSymbol: cl("1") },
+  { ...cbase, name: "commission, engine on: account-symbol null falls through to the group", pricingEngineEnabled: true, group: cl("2.5"), accountSymbol: cl(null) },
+  { ...cbase, name: "commission, engine on: account-symbol null and group null fall through to the broker", pricingEngineEnabled: true, group: cl(null), accountSymbol: cl(null) },
+  { ...cbase, name: "commission, engine on: an explicit 0 on the account-symbol beats the group (VIP zero, not unset)", pricingEngineEnabled: true, group: cl("2"), accountSymbol: cl("0") },
+  { ...cbase, name: "commission, engine on: account-symbol over broker with no group row", pricingEngineEnabled: true, accountSymbol: cl("3.5"), volume: "1.25" },
+];
+
 export const PRICE_INPUTS: PriceInput[] = [
   { name: "EURUSD +0.1 pips (Futurix Pro): one point, ask only", rule: { mode: "markup", markupPips: "0.1" }, digits: 5, bid: "1.12270", ask: "1.12271" },
   { name: "EURUSD +0.2 pips (Futurix Standard): one point each side", rule: { mode: "markup", markupPips: "0.2" }, digits: 5, bid: "1.12270", ask: "1.12271" },
@@ -106,8 +150,16 @@ export function computeAskMarkupVectors() {
       "(askPart = ceil(points/2), bidPart = the rest, both <= 0), so the spread narrows by exactly the markup: candidate ask = " +
       "raw_ask + askPart rounded up, candidate bid = raw_bid - bidPart rounded down. Client spread = max(0, raw + markup): when " +
       "candidate bid >= candidate ask, accountBid = accountAsk = (raw_bid + raw_ask) / 2 at the symbol's precision, ROUND HALF " +
-      "TO EVEN. The wire carries the negative askMarkup / bidMarkup; a client applies the same floor.",
+      "TO EVEN. The wire carries the negative askMarkup / bidMarkup; a client applies the same floor. " +
+      "COMMISSION RESOLUTION (2026-11-10): per field, a null falls through even when the row exists. Pricing engine OFF: " +
+      "GroupSymbolConfig.commissionPerLot > BrokerSymbol.commissionPerLot (an AccountSymbolConfig row is ignored). Pricing " +
+      "engine ON: AccountSymbolConfig > GroupSymbolConfig > BrokerSymbol. An explicit 0 is a real zero. No account-type level " +
+      "(D4: AccountType.commissionPerLot is not resolved). charge = commissionPerLot x volume, unrounded; a charge <= 0 is not written.",
     resolution: RESOLUTION_INPUTS.map((i) => ({ ...i, expected: ruleJson(resolveRule(i)) })),
+    commissionResolution: COMMISSION_INPUTS.map((i) => {
+      const perLot = resolveCommission(i);
+      return { ...i, expected: { commissionPerLot: perLot.toString(), charge: perLot.mul(D(i.volume)).toString() } };
+    }),
     prices: PRICE_INPUTS.map((p) => {
       const rule: AskRule = p.rule.mode === "markup"
         ? { mode: "markup", markupPips: D(p.rule.markupPips), digits: p.digits }

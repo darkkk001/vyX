@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { computeAskMarkupVectors, RESOLUTION_INPUTS, type ResolutionInput } from "@/lib/ask-markup-contract";
+import { COMMISSION_INPUTS, computeAskMarkupVectors, RESOLUTION_INPUTS, type CommissionInput, type ResolutionInput } from "@/lib/ask-markup-contract";
 import { accountClosePrice, accountQuote, askRuleWire, loadAskRules, markedDownBid, markedUpAsk, RAW_RULE, type AskRule } from "@/lib/ask-markup";
 import { askRuleCacheStats, askRulesCached, invalidateAskRules } from "@/lib/ask-markup-cache";
 import { resolveFillPricing } from "@/lib/pricing-engine";
@@ -114,6 +114,7 @@ describe("ask-markup vectors", () => {
 // One broker per engine-flag state, one account per resolution case, the case's levels written as real rows.
 const SUB = { off: "zz-askm-off", on: "zz-askm-on" };
 const made: { input: ResolutionInput; accountId: string; symbolId: string; brokerId: string; groupId: string; accountTypeId: string | null }[] = [];
+const madeComm: { input: CommissionInput; accountId: string; symbolId: string; brokerId: string; groupId: string }[] = [];
 
 async function wipe() {
   for (const sub of Object.values(SUB)) {
@@ -151,6 +152,21 @@ beforeAll(async () => {
     if (input.accountSymbol) await prisma.accountSymbolConfig.create({ data: { accountId: account.id, symbolId: sym.id, ...lvl(input.accountSymbol) } });
     made.push({ input, accountId: account.id, symbolId: sym.id, brokerId: broker.id, groupId: group.id, accountTypeId });
   }
+  // commission resolution: each case's levels as real rows (a level present with a null commission is a row with a null column)
+  for (const input of COMMISSION_INPUTS) {
+    n++;
+    const broker = input.pricingEngineEnabled ? brokers.on : brokers.off;
+    const sym = await prisma.symbol.upsert({ where: { name: `ZASKM${n}` }, update: {}, create: { name: `ZASKM${n}`, baseCurrency: "ZZZ", quoteCurrency: "USD", digits: 2, contractSize: D(1), category: "CRYPTO" } });
+    await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: sym.id, commissionPerLot: D(input.broker) } });
+    const group = await prisma.group.create({ data: { brokerId: broker.id, name: `g${n}`, category: "B_BOOK" } });
+    const c = (l: CommissionInput["group"]) => ({ commissionPerLot: l?.commissionPerLot == null ? null : D(l.commissionPerLot) });
+    if (input.group) await prisma.groupSymbolConfig.create({ data: { groupId: group.id, symbolId: sym.id, ...c(input.group) } });
+    // a stray account-type commission must change nothing (D4): every commission case's account sits on a type that sets one
+    const type = await prisma.accountType.create({ data: { brokerId: broker.id, name: `t${n}`, commissionPerLot: D("99") } });
+    const account = await prisma.account.create({ data: { brokerId: broker.id, accountNumber: `4667${String(Date.now() % 10000).padStart(4, "0")}${n}`, email: `c${n}@x.local`, passwordHash: "x", fullName: "c", accountMode: "LIVE", groupId: group.id, accountTypeId: type.id } });
+    if (input.accountSymbol) await prisma.accountSymbolConfig.create({ data: { accountId: account.id, symbolId: sym.id, ...c(input.accountSymbol) } });
+    madeComm.push({ input, accountId: account.id, symbolId: sym.id, brokerId: broker.id, groupId: group.id });
+  }
 }, 120_000);
 afterAll(async () => {
   await wipe();
@@ -182,6 +198,22 @@ describe("loadAskRules (scratch DB)", () => {
       });
       const buyOpen = applySpreadMarkup({ side: "BUY", price: ask, spreadMarkup: fill.spreadMarkup, digits });
       expect(markedUpAsk(rules.get(m.accountId, m.symbolId)!, bid, ask).toString(), m.input.name).toBe(buyOpen.toString());
+    }
+  });
+
+  it("commission: every commissionResolution vector is what the FILL path (resolveFillPricing) charges, on real rows", async () => {
+    const vectors = computeAskMarkupVectors().commissionResolution;
+    expect(vectors.length).toBe(COMMISSION_INPUTS.length);
+    for (const m of madeComm) {
+      const bs = await prisma.brokerSymbol.findFirstOrThrow({ where: { brokerId: m.brokerId, symbolId: m.symbolId } });
+      const fill = await resolveFillPricing(prisma, {
+        pricingEngineEnabled: m.input.pricingEngineEnabled, accountId: m.accountId, groupId: m.groupId, symbolId: m.symbolId,
+        brokerSpreadMarkup: bs.spreadMarkup, brokerCommissionPerLot: bs.commissionPerLot, brokerSwapLong: bs.swapLong, brokerSwapShort: bs.swapShort,
+        liveBaseSpreadPips: null,
+      });
+      const v = vectors.find((x) => x.name === m.input.name)!.expected;
+      expect(fill.commissionPerLot.toString(), m.input.name).toBe(v.commissionPerLot);
+      expect(fill.commissionPerLot.mul(D(m.input.volume)).toString(), m.input.name).toBe(v.charge);
     }
   });
 
