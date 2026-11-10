@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { RoomAccount } from "./RoomData";
 import { tradingPasswordRules } from "@/lib/room/password-rules";
-import { PLATFORM } from "./AccountCard";
+import { useRoom } from "./RoomData";
 
 // Settings of one account, in a panel from the right (the three-dot on an account card). Every change goes through
 // PATCH /api/room/accounts/[id] or /api/room/leverage, and each refusal shows where it was pressed.
@@ -69,6 +69,7 @@ function PasswordForm({ action, label, onDone, patch }: { action: string; label:
 
 export default function AccountDrawer({ account, lev, onClose, onChanged }: { account: RoomAccount; lev: LevRow | null; onClose: () => void; onChanged: () => Promise<void> | void }) {
   const close = useRef<HTMLButtonElement>(null);
+  const platform = useRoom().data?.platform; // the broker's brand, never the technology's name
   const [panel, setPanel] = useState<"" | "trading" | "investor">("");
   const [msg, setMsg] = useState<Msg>(null);
   const [nick, setNick] = useState(account.nickname ?? "");
@@ -134,7 +135,7 @@ export default function AccountDrawer({ account, lev, onClose, onChanged }: { ac
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 2 8 8M10 2l-8 8" /></svg>
           </button>
         </div>
-        <Copy label="Platform" value={PLATFORM.name} />
+        {platform ? <Copy label="Platform" value={platform.name} /> : null}
         <Copy label="Server" value={account.server} />
         <Copy label="Login" value={account.accountNumber} />
         <Row label="Plan">

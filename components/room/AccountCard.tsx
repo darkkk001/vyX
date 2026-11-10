@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRoomEvent, type RoomAccount } from "./RoomData";
+import { useRoom, useRoomEvent, type RoomAccount } from "./RoomData";
 import TopUpButton from "./TopUpButton";
 import type { LevRow } from "./AccountDrawer";
 import { money } from "./format";
@@ -9,18 +9,19 @@ import { money } from "./format";
 // One account card, the same on the Dashboard and on Accounts (owner 2026-11-10, Exness-style): chips for the platform
 // and the plan, "#number" and the nickname; balance and equity; Trade (accent), Deposit, Withdraw, Transfer and the
 // three-dot that opens the account's Settings drawer (components/room/AccountDrawer.tsx). Demo: Trade, Top up, three-dot.
-// Leverage is no longer on the card: it is in Settings.
-export const PLATFORM = { chip: "QT", name: "QoreTrader" };
-
-export default function AccountCard({ a, list = false, onSettings }: { a: RoomAccount; list?: boolean; onSettings: () => void }) {
+// Leverage is in Settings; a pending leverage change shows as a chip in the header and in Settings. The platform chip is the
+// broker's own short brand, from the server (lib/room/platform-brand.ts): never the technology's name.
+export default function AccountCard({ a, list = false, pending = null, onSettings }: { a: RoomAccount; list?: boolean; pending?: number | null; onSettings: () => void }) {
   const live = a.mode === "LIVE";
+  const platform = useRoom().data?.platform;
   return (
     <div className="r-card r-acct-card" id={`acct-${a.accountNumber}`} data-list={list} data-account={a.accountNumber}>
       <div className="r-acct-head">
-        <span className="r-plan-chip r-plat-chip" title={PLATFORM.name}>{PLATFORM.chip}</span>
+        {platform ? <span className="r-plan-chip r-plat-chip" title={platform.name}>{platform.short}</span> : null}
         <span className="r-plan-chip">{a.plan}</span>
         <span className="mono r-acct-no">#{a.accountNumber}</span>
         {a.nickname ? <span className="r-acct-nick">{a.nickname}</span> : null}
+        {pending ? <span className="r-chip-pending" style={{ fontSize: 11 }}>1:{pending} pending</span> : null}
       </div>
       <div className="r-acct-figs">
         <div>
