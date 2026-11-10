@@ -56,6 +56,8 @@ export async function GET() {
       : null;
   // the top bar's money: the funding wallet (real money), 0.00 until it exists
   const realFunds = { amount: wallet ? wallet.figures.balance : "0.00", currency: wallet?.currency ?? "USD" };
+  // the wallet's currency also before it exists (it is created in the broker's default account currency, lib/room/wallet.ts)
+  const walletCurrency = wallet?.currency ?? (await prisma.broker.findUnique({ where: { id: session.brokerId }, select: { defaultAccountCurrency: true } }))?.defaultAccountCurrency ?? "USD";
 
   const ownNumbers = new Set(accounts.map((a) => a.accountNumber));
   // Recent transactions, live and demo apart (owner 2026-11-09: the dashboard shows live by default, a toggle shows demo);
@@ -74,6 +76,7 @@ export async function GET() {
       : { status: "NONE", identity: false, address: false, rejectionReason: null },
     accounts: withFigures,
     wallet,
+    walletCurrency,
     totals,
     realFunds,
     recent: recentLive,
