@@ -372,7 +372,11 @@ export default function LpConnectionModal({
                 <Input value={draft.username} onChange={(e) => edit({ username: e.target.value })} mono aria-label="Username" />
               </FormField>
               <FormField label="Password">
-                <p className="flex h-[38px] items-center text-xs text-[var(--text-3)]">Set on your QoreBridge server, never stored here</p>
+                {/* the bridge reads this provider's password from lp_secret."<provider id>" in its own config; only the id is shown */}
+                <p className="flex min-h-[38px] flex-col justify-center text-xs text-[var(--text-3)]">
+                  <span>Set on your QoreBridge server under key:</span>
+                  <span className="select-all break-all font-mono text-[var(--text-2)]">{provider?.id}</span>
+                </p>
               </FormField>
               <FormField label="TLS">
                 <Select value={draft.tls} onChange={(e) => edit({ tls: e.target.value as LpTls })} aria-label="TLS">
