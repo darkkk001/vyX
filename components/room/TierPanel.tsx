@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRoomEvent } from "@/components/room/RoomData";
+import { useRoom, useRoomEvent } from "@/components/room/RoomData";
 
 // The Dashboard's tier strip: the active tier and the progress to the next (GET /api/room/tier). Pressing it opens every
 // tier with its threshold and benefits, the client's own marked.
@@ -26,6 +26,7 @@ const Medal = ({ size }: { size: number }) => (
 );
 
 function TierList({ d, onClose }: { d: Data; onClose: () => void }) {
+  const brand = useRoom().data?.platform?.name ?? "us"; // the tenant's own name (owner 2026-11-10)
   const close = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     close.current?.focus();
@@ -66,7 +67,7 @@ function TierList({ d, onClose }: { d: Data; onClose: () => void }) {
           })}
         </div>
         <div className="mono" style={{ fontSize: 11.5, color: "var(--r-muted)" }}>{n1(d.lots90)} lots · 90 days / {n1(d.lotsMonth)} this month / {n1(d.lotsAll)} all time</div>
-        <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>Reviewed monthly on 90-day traded volume. Thresholds and benefits are set by your broker and may change with notice.</div>
+        <div style={{ fontSize: 11.5, color: "var(--r-faint)" }}>Reviewed monthly on 90-day traded volume. Thresholds and benefits are set by {brand} and may change with notice.</div>
       </div>
     </div>
   );

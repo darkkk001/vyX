@@ -88,7 +88,7 @@ export default function OpenAccountModal() {
   const ccy = currency || meta?.currencies[0] || "USD";
   useEffect(() => { if (plan) setLeverage((l) => (plan.leverageOptions.includes(l) ? l : plan.leverageOptions[0])); }, [plan]);
   const rules = tradingPasswordRules(password);
-  const blocked = mode === "LIVE" && meta ? (!meta.kycApproved ? "Complete KYC before opening a real account." : meta.liveRequest ? "Your real account request is with your broker." : "") : "";
+  const blocked = mode === "LIVE" && meta ? (!meta.kycApproved ? "Complete KYC before opening a real account." : meta.liveRequest ? "Your real account request is under review." : "") : "";
   const startValue = start || String(meta?.demoBalance.default ?? "");
 
   async function create() {
@@ -105,7 +105,7 @@ export default function OpenAccountModal() {
     if (!res.ok) { setMsg({ ok: false, text: body?.error ?? "Could not open the account." }); return; }
     setPassword("");
     setDone(true);
-    setMsg({ ok: true, text: body.status === "created" ? `Demo account ${body.accountNumber} is ready.` : "Request sent. Your broker opens the account after review." });
+    setMsg({ ok: true, text: body.status === "created" ? `Demo account ${body.accountNumber} is ready.` : "Request sent. The account opens after review." });
     window.dispatchEvent(new Event("room:accounts-changed"));
     await refresh();
   }

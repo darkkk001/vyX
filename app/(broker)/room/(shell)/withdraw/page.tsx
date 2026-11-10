@@ -14,7 +14,7 @@ import { money, dayTime } from "@/components/room/format";
 // verification card, processing card, pending requests.
 const KYC_CARD: Record<string, { status: string; text: string }> = {
   APPROVED: { status: "Approved", text: "Your account is verified. Withdrawal requests go straight to processing." },
-  PENDING: { status: "Under review", text: "Your documents are with your broker. Withdrawals open once they are approved." },
+  PENDING: { status: "Under review", text: "Your documents are under review. Withdrawals open once they are approved." },
   REJECTED: { status: "Rejected", text: "Your documents were not accepted. Upload new ones to withdraw." },
   NONE: { status: "Not verified", text: "Complete KYC before your first withdrawal." },
 };
@@ -118,7 +118,7 @@ export default function RoomWithdraw() {
           <div style={{ flex: "2 1 480px", minWidth: 0 }}>
             <FundsDone title={done.again ? "This request was already sent" : done.approved ? "Withdrawal approved" : "Withdrawal request sent"} again="New withdrawal request" onAgain={another}>
               <div>Amount <span className="mono" style={{ color: "var(--r-text)" }}>{money(done.amount)} {done.currency}</span></div>
-              <div>{done.approved ? "Your broker pays it out to your saved method." : "Your broker reviews it before payout."}</div>
+              <div>{done.approved ? "It is paid out to your saved method." : "It is reviewed before payout."}</div>
             </FundsDone>
           </div>
         ) : (
@@ -193,7 +193,7 @@ export default function RoomWithdraw() {
             </div>
           ) : null}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", borderTop: "1px solid var(--r-line)", paddingTop: 18 }}>
-            <div style={{ fontSize: 12, color: "var(--r-muted)", maxWidth: 380, lineHeight: 1.6 }}>Withdrawals are paid only to accounts in your own name and are reviewed by your broker before payout.</div>
+            <div style={{ fontSize: 12, color: "var(--r-muted)", maxWidth: 380, lineHeight: 1.6 }}>Withdrawals are paid only to accounts in your own name and are reviewed before payout.</div>
             <button type="button" className="r-btn" style={{ padding: "11px 24px" }} disabled={!funds || !payout || busy || funds.kyc !== "APPROVED"} onClick={submit}>{busy ? "Sending…" : "Request withdrawal"}</button>
           </div>
           {msg ? <div className={msg.ok ? "r-okmsg" : "r-error"} role="status">{msg.text}</div> : null}

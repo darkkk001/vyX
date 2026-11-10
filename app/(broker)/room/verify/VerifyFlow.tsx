@@ -87,7 +87,7 @@ export default function VerifyFlow({ initial, kyc, rejectionReason, countries }:
         <OnboardingSteps step={3} />
         <div>
           <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Fund your account</h1>
-          <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>{kyc === "APPROVED" ? "Your documents are approved." : "Your documents are with your broker for review."} Open a live account, then make your first deposit.</div>
+          <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>{kyc === "APPROVED" ? "Your documents are approved." : "Your documents are under review."} Open a live account, then make your first deposit.</div>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <a className="r-btn" href="/room?open=1">Open a real account</a>
@@ -104,7 +104,7 @@ export default function VerifyFlow({ initial, kyc, rejectionReason, countries }:
         <OnboardingSteps step={1} />
         <div>
           <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Personal details</h1>
-          <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>Your broker needs these before it can review your documents.</div>
+          <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>We need these before we can review your documents.</div>
         </div>
         <div className="r-card" style={card}>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
@@ -147,7 +147,7 @@ export default function VerifyFlow({ initial, kyc, rejectionReason, countries }:
       <OnboardingSteps step={2} />
       <div>
         <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Upload your KYC documents</h1>
-        <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>Upload a government-issued ID and a recent proof of address. Your broker reviews documents within 24 hours.</div>
+        <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>Upload a government-issued ID and a recent proof of address. Documents are reviewed within 24 hours.</div>
       </div>
       <div className="r-card" style={card}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>

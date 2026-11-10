@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRoomEvent } from "./RoomData";
+import { useRoom, useRoomEvent } from "./RoomData";
 import { money } from "./format";
 
 // The Funding wallet tab. The balance is the server's; a first Deposit, Withdraw or Transfer creates the wallet, then the
@@ -14,6 +14,7 @@ const STEPS = [
 ];
 
 export default function WalletPanel() {
+  const brand = useRoom().data?.platform?.name ?? "us"; // the tenant's own name (owner 2026-11-10)
   const [w, setW] = useState<Wallet | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -61,7 +62,7 @@ export default function WalletPanel() {
             </div>
           </div>
         ))}
-        <div className="r-note">Your funds stay with your broker. The wallet does not trade.</div>
+        <div className="r-note">Your funds stay with {brand}. The wallet does not trade.</div>
       </div>
     </div>
   );

@@ -34,9 +34,9 @@ export async function POST() {
   if (!allowed) return NextResponse.json({ error: "Too many requests. Try again later." }, { status: 429 });
   const partner = await partnerAccountOf(prisma, session.clientId);
   if (!partner) return NextResponse.json({ error: "Not a partner." }, { status: 404 });
-  if (partner.ibSuspendedAt) return NextResponse.json({ error: "Your partner account is on hold. Contact your broker." }, { status: 409 });
+  if (partner.ibSuspendedAt) return NextResponse.json({ error: "Your partner account is on hold. Contact support." }, { status: 409 });
   const pending = await prisma.ibPayoutRequest.findFirst({ where: { clientId: session.clientId, status: "PENDING" }, select: { id: true } });
-  if (pending) return NextResponse.json({ error: "A payout request is already with your broker." }, { status: 409 });
+  if (pending) return NextResponse.json({ error: "A payout request is already under review." }, { status: 409 });
   const rels = await prisma.ibRelationship.findMany({ where: { brokerId: session.brokerId, ibAccountId: partner.id } });
   const unpaid = (await Promise.all(rels.map((r) => computePendingCommission(prisma, r)))).reduce((s, x) => s.add(x), new Prisma.Decimal(0));
   if (unpaid.lte(0)) return NextResponse.json({ error: "Nothing to pay out yet." }, { status: 400 });

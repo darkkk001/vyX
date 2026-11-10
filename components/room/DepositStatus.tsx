@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { money } from "./format";
+import { clock, durationWords } from "@/lib/room/processing-time";
 
 // The Deposit confirmation card (owner 2026-11-10): replaces the form after a request is sent and follows it live. Waiting
 // (spinner, time since it was sent), approved (green check, amount, the account's new balance), rejected (red mark, the
@@ -9,6 +10,7 @@ import { money } from "./format";
 export type DepositView = {
   id: string; state: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED"; amount: string; currency: string; accountNumber: string;
   method: string; reference: string | null; sentAt: string; decidedAt: string | null; reason: string | null; balance: string | null;
+  maxSeconds: number | null; // the method's maximum processing time: the waiting card counts down from sentAt
 };
 
 export function sentAgo(iso: string, now = Date.now()): string {
@@ -32,9 +34,11 @@ export default function DepositStatus({ v, onAgain }: { v: DepositView; onAgain:
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (v.state !== "PENDING") return;
-    const t = setInterval(() => setNow(Date.now()), 15_000);
+    const t = setInterval(() => setNow(Date.now()), v.maxSeconds ? 1000 : 15_000);
     return () => clearInterval(t);
-  }, [v.state]);
+  }, [v.state, v.maxSeconds]);
+  // owner 2026-11-10: a live countdown to the method's maximum processing time, from when the request was sent
+  const left = v.maxSeconds ? v.maxSeconds - (now - new Date(v.sentAt).getTime()) / 1000 : null;
   const amount = <span className="mono" style={{ color: "var(--r-text)" }}>{money(v.amount)} {v.currency}</span>;
   return (
     <div className="r-card r-funds-done" role="status" aria-live="polite" data-state={v.state}>
@@ -45,7 +49,12 @@ export default function DepositStatus({ v, onAgain }: { v: DepositView; onAgain:
       <div style={{ fontSize: 13, color: "var(--r-text-2)", lineHeight: 1.7 }}>
         <div>Amount {amount}{v.method ? ` · ${v.method}` : ""}</div>
         {v.reference ? <div>Reference <span className="mono" style={{ color: "var(--r-gold-text)", fontWeight: 600 }}>{v.reference}</span></div> : null}
-        {v.state === "PENDING" ? <div>{sentAgo(v.sentAt, now)}. Your broker credits the deposit after checking the payment.</div> : null}
+        {v.state === "PENDING" && left !== null ? (
+          left > 0
+            ? <div data-countdown><span className="mono r-deposit-clock" aria-label="Time left">{clock(left)}</span><div>Usually confirmed within {durationWords(v.maxSeconds!)}.</div></div>
+            : <div data-countdown="over">Taking a little longer than usual. This page updates as soon as it&apos;s confirmed.</div>
+        ) : null}
+        {v.state === "PENDING" && left === null ? <div>{sentAgo(v.sentAt, now)}.</div> : null}
         {v.state === "APPROVED" && v.balance != null ? <div>New balance of {v.accountNumber} <span className="mono" style={{ color: "var(--r-text)", fontWeight: 600 }}>{money(v.balance)} {v.currency}</span></div> : null}
         {v.state === "REJECTED" && v.reason ? <div>Reason: <span style={{ color: "var(--r-text)" }}>{v.reason}</span></div> : null}
       </div>

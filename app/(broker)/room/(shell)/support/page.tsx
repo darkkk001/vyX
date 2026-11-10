@@ -87,7 +87,7 @@ export default function RoomSupport() {
               </button>
             );
           })}
-          {tickets && tickets.length === 0 && !composing ? <div className="r-note">No tickets yet. Use New ticket to reach your broker.</div> : null}
+          {tickets && tickets.length === 0 && !composing ? <div className="r-note">No tickets yet. Use New ticket to contact support.</div> : null}
         </div>
 
         <div className="r-card" style={{ flex: "2 1 460px", minWidth: 0, display: "flex", flexDirection: "column" }}>

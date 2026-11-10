@@ -73,7 +73,7 @@ describe("require 2FA for withdrawals (per broker)", () => {
     if (!dbReachable) return;
     await setBroker(true);
     const { account } = await client(false);
-    expect(await withdraw(account.id)).toEqual({ status: 403, body: { error: "Your broker requires 2FA for withdrawals. Turn it on in Profile.", code: "TWO_FACTOR_SETUP_REQUIRED" } });
+    expect(await withdraw(account.id)).toEqual({ status: 403, body: { error: "Withdrawals require 2FA. Turn it on in Profile.", code: "TWO_FACTOR_SETUP_REQUIRED" } });
     expect(await prisma.transaction.count({ where: { accountId: account.id } })).toBe(0);
     await setBroker(false);
   });

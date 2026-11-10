@@ -350,3 +350,4 @@
   .r-panel { width: 100vw; border-left: none; }
   .r-head-m .r-bell-btn { padding: 6px; }
 }
+.r-deposit-clock { display: block; font-size: 28px; font-weight: 600; color: var(--r-text); letter-spacing: 1px; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }

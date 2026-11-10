@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
       prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { requireWithdrawal2fa: true } }),
     ]);
     if (broker.requireWithdrawal2fa && !(tf.twoFactorEnabled && tf.twoFactorSecret)) {
-      return NextResponse.json({ error: "Your broker requires 2FA for withdrawals. Turn it on in Profile.", code: "TWO_FACTOR_SETUP_REQUIRED" }, { status: 403 });
+      return NextResponse.json({ error: "Withdrawals require 2FA. Turn it on in Profile.", code: "TWO_FACTOR_SETUP_REQUIRED" }, { status: 403 });
     }
     if (tf.twoFactorEnabled && tf.twoFactorSecret) {
       const code = typeof body?.code === "string" ? body.code.replace(/\s+/g, "") : "";
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
       : null;
     if (!payout) return NextResponse.json({ error: "Pick a payout method." }, { status: 400 });
     const method = await prisma.paymentMethod.findFirst({ where: { brokerId: session.brokerId, type: payout.type, enabled: true }, select: { id: true } });
-    if (!method) return NextResponse.json({ error: "Your broker does not pay out to this method right now." }, { status: 400 });
+    if (!method) return NextResponse.json({ error: "Payouts to this method are not available right now." }, { status: 400 });
 
     let amount: Prisma.Decimal;
     try { amount = new Prisma.Decimal(String(body?.amount ?? "")); } catch { return NextResponse.json({ error: "Enter an amount." }, { status: 400 }); }

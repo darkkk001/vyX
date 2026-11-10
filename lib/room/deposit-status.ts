@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { METHOD_LABEL } from "@/lib/room/funds";
+import { maxProcessingSeconds } from "@/lib/room/processing-time";
 
 // The Room Deposit confirmation (owner 2026-11-10): after a deposit request is sent, the same client sends no other deposit
 // with the same payment method for 5 minutes (enforced here and in POST /api/room/deposit, shown as a countdown in the
@@ -24,15 +25,17 @@ export type DepositView = {
   reason: string | null;
   // the account balance after the approval (null until approved)
   balance: string | null;
+  // the method's maximum processing time in seconds ("Instant–15 min" = 900), for the waiting card's countdown from sentAt
+  maxSeconds: number | null;
 };
 
 const select = {
   id: true, status: true, amount: true, paymentReference: true, reviewNote: true, createdAt: true, updatedAt: true,
-  paymentMethod: { select: { type: true } },
+  paymentMethod: { select: { type: true, processingTime: true } },
   account: { select: { accountNumber: true, currency: true, balance: true } },
 } as const;
 
-type Row = { id: string; status: string; amount: { toFixed(n: number): string }; paymentReference: string | null; reviewNote: string | null; createdAt: Date; updatedAt: Date; paymentMethod: { type: keyof typeof METHOD_LABEL } | null; account: { accountNumber: string; currency: string; balance: { toFixed(n: number): string } } };
+type Row = { id: string; status: string; amount: { toFixed(n: number): string }; paymentReference: string | null; reviewNote: string | null; createdAt: Date; updatedAt: Date; paymentMethod: { type: keyof typeof METHOD_LABEL; processingTime: string | null } | null; account: { accountNumber: string; currency: string; balance: { toFixed(n: number): string } } };
 
 function view(r: Row): DepositView {
   const state = r.status === "COMPLETED" ? "APPROVED" : r.status === "REJECTED" ? "REJECTED" : r.status === "CANCELLED" ? "CANCELLED" : "PENDING";
@@ -48,6 +51,7 @@ function view(r: Row): DepositView {
     decidedAt: state === "PENDING" ? null : r.updatedAt.toISOString(),
     reason: state === "REJECTED" ? r.reviewNote?.trim() || null : null,
     balance: state === "APPROVED" ? r.account.balance.toFixed(2) : null,
+    maxSeconds: maxProcessingSeconds(r.paymentMethod?.processingTime),
   };
 }
 
