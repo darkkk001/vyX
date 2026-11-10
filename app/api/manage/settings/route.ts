@@ -42,7 +42,6 @@ export async function GET() {
     auditRetentionDays: broker.auditRetentionDays,
     autoApproveWithdrawalMax: broker.autoApproveWithdrawalMax?.toString() ?? null,
     hedgingAllowed: broker.hedgingAllowed,
-    voidCreditOnWithdrawal: broker.voidCreditOnWithdrawal,
     // step 3b item 3
     passwordMaxAgeDays: broker.passwordMaxAgeDays,
     staffIpAllowlist: broker.staffIpAllowlist,
@@ -57,7 +56,7 @@ async function patchHandler(request: NextRequest) {
   const brokerId = session.brokerId!;
 
   const body = await request.json().catch(() => null);
-  const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number; withdrawalApproval?: "SINGLE" | "DUAL"; sessionTimeoutMinutes?: number | null; auditRetentionDays?: number | null; autoApproveWithdrawalMax?: Prisma.Decimal | null; hedgingAllowed?: boolean; passwordMaxAgeDays?: number | null; staffIpAllowlist?: string[]; voidCreditOnWithdrawal?: boolean } = {};
+  const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number; withdrawalApproval?: "SINGLE" | "DUAL"; sessionTimeoutMinutes?: number | null; auditRetentionDays?: number | null; autoApproveWithdrawalMax?: Prisma.Decimal | null; hedgingAllowed?: boolean; passwordMaxAgeDays?: number | null; staffIpAllowlist?: string[] } = {};
   const extra = parseNewSettings(body && typeof body === "object" ? (body as Record<string, unknown>) : null);
   if (!extra.ok) return NextResponse.json({ error: extra.error }, { status: 400 });
   Object.assign(data, extra.data);
@@ -107,7 +106,7 @@ async function patchHandler(request: NextRequest) {
 
   // audited (audit 2026-09-24: broker-settings saves wrote no AuditLog row); old and new value of every field sent
   const updated = await prisma.$transaction(async (tx) => {
-    const before = await tx.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, withdrawalApproval: true, sessionTimeoutMinutes: true, auditRetentionDays: true, autoApproveWithdrawalMax: true, hedgingAllowed: true, passwordMaxAgeDays: true, staffIpAllowlist: true, voidCreditOnWithdrawal: true } });
+    const before = await tx.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, withdrawalApproval: true, sessionTimeoutMinutes: true, auditRetentionDays: true, autoApproveWithdrawalMax: true, hedgingAllowed: true, passwordMaxAgeDays: true, staffIpAllowlist: true } });
     const after = await tx.broker.update({ where: { id: brokerId }, data });
     const keys = Object.keys(data) as (keyof typeof data)[];
     await tx.auditLog.create({
@@ -131,7 +130,6 @@ async function patchHandler(request: NextRequest) {
     auditRetentionDays: updated.auditRetentionDays,
     autoApproveWithdrawalMax: updated.autoApproveWithdrawalMax?.toString() ?? null,
     hedgingAllowed: updated.hedgingAllowed,
-    voidCreditOnWithdrawal: updated.voidCreditOnWithdrawal,
     passwordMaxAgeDays: updated.passwordMaxAgeDays,
     staffIpAllowlist: updated.staffIpAllowlist,
   });

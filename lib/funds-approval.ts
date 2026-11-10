@@ -3,7 +3,6 @@ import { Prisma } from "@prisma/client";
 import { nextPspStatusOnMark, nextPspStatusOnApprove } from "@/lib/psp/adapter";
 import { lockAccountBalance } from "@/lib/account-lock";
 import { checkBalanceDebit } from "@/lib/margin";
-import { creditVoidedByWithdrawal, voidCreditForWithdrawal } from "@/lib/credit-adjustment";
 import { withdrawalKycApproved, WITHDRAWAL_KYC_ADMIN_MESSAGE } from "@/lib/withdrawal-kyc";
 
 type Tx = Prisma.TransactionClient;
@@ -170,7 +169,6 @@ export async function approveFundsRequest(
   const balanceBefore = await lockAccountBalance(tx, params.accountId); // row lock: lib/account-lock.ts
   const balanceAfter = balanceBefore.add(params.amount); // amount already signed (negative for withdrawal)
   let kycApproved = true;
-  let creditOut = new Prisma.Decimal(0);
 
   if (params.type === "WITHDRAWAL") {
     // Phase 2 batch 8 (issue 132, owner decision): no payout without approved KYC -- checked here, inside the paying
@@ -182,18 +180,14 @@ export async function approveFundsRequest(
     if (!params.kycOverride && params.requireKyc !== false && !kycApproved) return { ok: false, error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: "KYC_REQUIRED" };
     // Audit 2026-09-24 (money): not only balance >= 0 -- a payout must not leave open positions under-margined.
     // Checked on the LOCKED balance (lib/margin.ts checkBalanceDebit).
-    // owner 2026-11-10: with the broker's voidCreditOnWithdrawal on, the payout also removes the whole credit, so the
-    // margin check counts both (lib/credit-adjustment.ts)
-    creditOut = await creditVoidedByWithdrawal(tx, { accountId: params.accountId, brokerId: params.brokerId });
-    const debit = await checkBalanceDebit(tx, { accountId: params.accountId, amount: params.amount.neg(), balance: balanceBefore, creditOut });
+    const debit = await checkBalanceDebit(tx, { accountId: params.accountId, amount: params.amount.neg(), balance: balanceBefore });
     if (debit) {
-      const alsoCredit = creditOut.gt(0) ? ` (the withdrawal also removes the ${creditOut.toFixed(2)} credit)` : "";
       return {
         ok: false,
         error:
           debit.error === "BALANCE_BELOW_ZERO"
             ? "account balance is no longer sufficient for this withdrawal, reject or ask the trader to resubmit"
-            : `withdrawal refused: ${debit.message}${alsoCredit}. Reject it or ask the trader to close positions first`,
+            : `withdrawal refused: ${debit.message}. Reject it or ask the trader to close positions first`,
         // staff-recorded withdrawals (lib/staff-funds.ts) answer with these codes
         code: debit.error === "BALANCE_BELOW_ZERO" ? "INSUFFICIENT_BALANCE" : debit.error === "NO_CONVERSION_RATE" ? "NO_CONVERSION_RATE" : "MARGIN_TOO_LOW",
       };
@@ -236,10 +230,6 @@ export async function approveFundsRequest(
       },
     },
   });
-
-  if (params.type === "WITHDRAWAL" && creditOut.gt(0)) {
-    await voidCreditForWithdrawal(tx, { accountId: params.accountId, brokerId: params.brokerId, credit: creditOut, balance: balanceAfter, adminId: params.adminId, withdrawalTransactionId: params.transactionId });
-  }
 
   if (params.type === "WITHDRAWAL" && params.kycOverride && !kycApproved) {
     const account = await tx.account.findUnique({ where: { id: params.accountId }, select: { accountNumber: true } });

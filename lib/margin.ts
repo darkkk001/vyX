@@ -460,7 +460,7 @@ export function evaluateBalanceDebit(params: {
 
 export async function checkBalanceDebit(
   prisma: PrismaClient | Prisma.TransactionClient,
-  params: { accountId: string; amount: Prisma.Decimal; balance?: Prisma.Decimal; creditOut?: Prisma.Decimal }
+  params: { accountId: string; amount: Prisma.Decimal; balance?: Prisma.Decimal }
 ): Promise<BalanceDebitRejection | null> {
   const acc = await prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { leverage: true, balance: true, group: { select: { marginCallLevel: true } } } });
   const balance = params.balance ?? acc.balance;
@@ -470,7 +470,6 @@ export async function checkBalanceDebit(
     return { error: "NO_CONVERSION_RATE", message: "an open position cannot be valued in the account currency right now, try again later", balanceAfter: balanceAfter.toFixed(2), freeMarginAfter: null };
   }
   // equity was computed from the stored balance; move it by the difference to the locked one, then by the debit
-  // creditOut (owner 2026-11-10): a withdrawal that also voids the credit lowers equity by both
-  const equityAfter = state.equity.add(balance.sub(state.account.balance)).sub(params.amount).sub(params.creditOut ?? 0);
+  const equityAfter = state.equity.add(balance.sub(state.account.balance)).sub(params.amount);
   return evaluateBalanceDebit({ balanceAfter, equityAfter, usedMargin: state.usedMargin, marginCallLevel: acc.group?.marginCallLevel ?? new Prisma.Decimal(100) });
 }

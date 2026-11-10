@@ -136,6 +136,5 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261106150000_room_accounts_wallet",
   "20261109120000_bridge_license_enforcement",
   "20261109200000_room_request_keys",
-  "20261110000000_account_number_counter",
-  "20261110130000_void_credit_on_withdrawal"
+  "20261110000000_account_number_counter"
 ];
