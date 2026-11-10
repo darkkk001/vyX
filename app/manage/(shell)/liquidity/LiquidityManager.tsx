@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { BridgeStatusBadge } from "@/components/admin/BridgeStatusBadge";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
@@ -105,6 +106,8 @@ export default function LiquidityManager() {
 
   return (
     <div className="flex flex-col gap-4">
+      <BridgeStatusBadge />
+
       <Card title="Current book exposure">
         <p className="mb-3 text-sm text-[var(--text-3)]">
           Real open volume per symbol, split by the book each position was stamped into at fill time. Config-only
@@ -177,8 +180,9 @@ export default function LiquidityManager() {
         </TableBody>
       </Table>
       <p className="text-xs text-[var(--text-3)]">
-        Status badges: <Badge tone={statusTone.PROSPECTIVE}>PROSPECTIVE</Badge> <Badge tone={statusTone.NEGOTIATING}>NEGOTIATING</Badge>{" "}
-        <Badge tone={statusTone.CONTRACTED}>CONTRACTED</Badge> <Badge tone={statusTone.CONNECTED}>CONNECTED</Badge>, always manually set, not detected.
+        Provider stage: <Badge tone={statusTone.PROSPECTIVE}>PROSPECTIVE</Badge> <Badge tone={statusTone.NEGOTIATING}>NEGOTIATING</Badge>{" "}
+        <Badge tone={statusTone.CONTRACTED}>CONTRACTED</Badge> <Badge tone={statusTone.CONNECTED}>CONNECTED</Badge>, set by hand. Whether the
+        bridge is actually connected is the live status at the top of this page.
       </p>
 
       <Card title="Latency & execution quality">
