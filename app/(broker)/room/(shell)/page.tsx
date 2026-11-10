@@ -74,7 +74,7 @@ export default function RoomDashboard() {
             <a href="/room/accounts">Manage accounts</a>
           </div>
           <div className="r-acct-grid">
-            {cards.map((a) => <AccountCard key={a.id} a={a} onSettings={() => setDrawerId(a.id)} />)}
+            {cards.map((a) => <AccountCard key={a.id} a={a} pending={levOf(a.id)?.pending?.to ?? null} onSettings={() => setDrawerId(a.id)} />)}
             <OpenAccountButton style={{ background: "none", cursor: "pointer", font: "inherit",  border: "1px dashed var(--r-dash)", borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--r-text-2)", minHeight: 150 }}>
               <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M11 4v14M4 11h14" /></svg>
               <span style={{ fontSize: 13, fontWeight: 500 }}>Open new account</span>

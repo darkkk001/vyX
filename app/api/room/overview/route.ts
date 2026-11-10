@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 import { accountFigures } from "@/lib/room/figures";
 import { roomTransactions } from "@/lib/room/transactions";
+import { platformBrand } from "@/lib/room/platform-brand";
 
 // Trader's Room Dashboard: the client, every own account with the server's figures, totals over the LIVE accounts
 // (only when they share one currency), the five latest money rows and the verification state.
@@ -77,6 +78,8 @@ export async function GET() {
     accounts: withFigures,
     wallet,
     walletCurrency,
+    // the platform the account cards and Settings name: the broker's own brand (lib/room/platform-brand.ts)
+    platform: platformBrand(session.broker.name),
     totals,
     realFunds,
     recent: recentLive,
