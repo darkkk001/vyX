@@ -56,8 +56,9 @@ const SUPER_ADMIN_SUBDOMAIN = "admin";
 // nav, not a per-feature thing) -- keep this in sync with
 // app/(super-admin)/(shell)/*'s own directory listing if a page is ever
 // added or removed there.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for the manage gate commented out below (re-enable path)
-const MANAGE_GATE_COOKIE = "vyx_manage_gate";
+//
+// 2026-11-10: the manager-tauri cookie path above is gone (the native backoffice calls /api/manage/* only); /manage
+// pages are now an unconditional 404, see the manage lock in route(). Super Admin keeps its cookie gate.
 const SUPER_ADMIN_GATE_COOKIE = "vyx_admin_gate";
 
 const SUPER_ADMIN_PAGE_PATHS = new Set([
@@ -181,22 +182,6 @@ async function route(request: NextRequest) {
       : new NextResponse(UPDATING_BODY.error, { status: 503, headers });
   }
 
-  // 2026-09-08 TEMPORARY REVERSAL, requested directly -- the native-app
-  // track this gate was built for (see the architecture comment below)
-  // isn't ready yet, and Futurix needs a working backoffice on the web
-  // right now. /manage/* is unblocked for browsers again, exactly like
-  // before the 2026-09-07 lockdown -- normal broker resolution, normal
-  // page rendering, no cookie required. The gate machinery itself
-  // (MANAGE_GATE_COOKIE, lib/desktop-gate.ts, the /api/manage/
-  // desktop-gate route) is left in place, unused, so re-enabling the
-  // block later is just restoring the two checks below, not rebuilding
-  // them. Super Admin's own block (isSuperAdminPage, further down) is
-  // untouched -- only /manage/* was asked to be reopened.
-  //
-  // if (isManagePage && !request.cookies.get(MANAGE_GATE_COOKIE)?.value) {
-  //   return new NextResponse("Not found", { status: 404 });
-  // }
-
   const host = request.headers.get("host") ?? "";
   const hostname = host.split(":")[0];
   const rootDomain = (process.env.ROOT_DOMAIN ?? "localhost:3000").split(":")[0];
@@ -217,6 +202,15 @@ async function route(request: NextRequest) {
   const effectivePathname = (!isRootOrSuperAdmin ? CLIENT_CLEAN_PATHS[pathname] : undefined) ?? PATH_ALIASES[pathname] ?? pathname;
   const isManagePage = effectivePathname === "/manage" || effectivePathname.startsWith("/manage/");
   const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(effectivePathname);
+
+  // The manage lock (owner 2026-11-10; the 2026-09-07 lockdown, reverted "temporarily" on 2026-09-08, is back): the
+  // native backoffice is the brokers' only tool and it calls /api/manage/* only, never a /manage page, so every
+  // /manage page is a 404 on every host, browser or not. There is no cookie or token way in: the old manage gate
+  // cookie had no mint route left (and its "manage:<brokerId>" scope could never verify). /api/manage/*, the client
+  // pages (WebTrader, /login, /trade), /manage-launch and Super Admin's own gate below are not touched.
+  if (isManagePage) {
+    return new NextResponse("Not found", { status: 404 });
+  }
 
   if (isSuperAdminPage) {
     // No broker involved for Super Admin -- bind the check to the actual
@@ -239,8 +233,8 @@ async function route(request: NextRequest) {
 
   if (isRootOrSuperAdmin) {
     // /manage/* still has no meaning on the admin or root domain (no
-    // broker to resolve there) regardless of the temporary reversal
-    // above -- this was never gate-related, just "there's nothing to
+    // broker to resolve there), whatever the manage lock says -- this
+    // was never gate-related, just "there's nothing to
     // serve here," so it stays.
     if (isManagePage) {
       return new NextResponse("Not found", { status: 404 });
@@ -295,21 +289,6 @@ async function route(request: NextRequest) {
     // already tried that, see the brokerResolver comment above).
     return NextResponse.rewrite(new URL("/broker-not-found", request.url), { request: { headers: trustedHeaders(request) } });
   }
-
-  // 2026-09-08 TEMPORARY REVERSAL -- see the top-of-function comment.
-  // /manage/* now falls straight through to the same custom-domain-
-  // redirect and header-attachment logic as any other page on this
-  // broker, same as before the 2026-09-07 lockdown.
-  //
-  // if (isManagePage) {
-  //   const internalSecret = process.env.INTERNAL_SERVICE_SECRET ?? "";
-  //   const gateCookie = request.cookies.get(MANAGE_GATE_COOKIE)!.value;
-  //   const gateValid =
-  //     !!internalSecret && (await verifyDesktopGateToken(gateCookie, `manage:${broker.id}`, internalSecret));
-  //   if (!gateValid) {
-  //     return new NextResponse("Not found", { status: 404 });
-  //   }
-  // }
 
   // A broker with a customDomain configured gets ONE canonical address --
   // their own domain, not two live URLs for the same site. If this request
