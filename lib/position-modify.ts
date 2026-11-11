@@ -93,9 +93,9 @@ export function refuseModify(input: {
 export async function loadAmountContext(accountId: string, quoteCurrency: string | null): Promise<{ refused: ModifyRefusal | null; currency: string; fxRate: Prisma.Decimal | null }> {
   const account = await prisma.account.findUniqueOrThrow({
     where: { id: accountId },
-    select: { currency: true, accountMode: true, broker: { select: { riskAuthority: true, riskAuthorityDemoOnly: true } } },
+    select: { currency: true, accountMode: true, engineLiveEnabled: true, broker: { select: { riskAuthority: true, riskAuthorityDemoOnly: true, engineLiveAllowlistOn: true } } },
   });
-  if (amountRefusedForAuthority(account.broker, account.accountMode)) {
+  if (amountRefusedForAuthority(account.broker, account.accountMode, process.env, account.engineLiveEnabled)) {
     return { refused: { status: 400, body: amountRefusalBody("AMOUNT_SLTP_NOT_AVAILABLE", AMOUNT_NOT_AVAILABLE_TEXT) }, currency: account.currency, fxRate: null };
   }
   let fxRate: Prisma.Decimal | null = null;

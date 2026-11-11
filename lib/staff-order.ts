@@ -77,7 +77,7 @@ export async function staffOrderContext(brokerId: string, accountId: string, inp
   }
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
   // amount SL / TP: until the engine watches amounts, a Rust-owned account takes none (lib/amount-sltp.ts)
-  if (setsAnAmount(input) && amountRefusedForAuthority(broker, account.accountMode)) {
+  if (setsAnAmount(input) && amountRefusedForAuthority(broker, account.accountMode, process.env, account.engineLiveEnabled)) {
     return { response: NextResponse.json(amountRefusalBody("AMOUNT_SLTP_NOT_AVAILABLE", AMOUNT_NOT_AVAILABLE_TEXT), { status: 400 }) };
   }
   const g = account.group;

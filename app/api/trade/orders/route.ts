@@ -294,7 +294,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
   }
   const [broker, account] = brokerAccount.v;
   // amount SL / TP: until the engine watches amounts, an account whose risk the Rust engine owns takes none (an amount stored there would be watched by nothing)
-  if (setsAnAmount(amountLegs) && amountRefusedForAuthority(broker, account.accountMode)) {
+  if (setsAnAmount(amountLegs) && amountRefusedForAuthority(broker, account.accountMode, process.env, account.engineLiveEnabled)) {
     return NextResponse.json(amountRefusalBody("AMOUNT_SLTP_NOT_AVAILABLE", AMOUNT_NOT_AVAILABLE_TEXT), { status: 400 });
   }
   // QoreTrader demo tenant (DEMO_BROKER_SUBDOMAIN): instant execution on the B-book only, at the deterministic server price;

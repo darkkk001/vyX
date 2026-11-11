@@ -54,9 +54,8 @@ The route never changes `Broker.engineLiveAllowlistOn`: the flag is turned on on
 ## Before any account is enabled (not part of this dormant change)
 
 1. Engine and gateway implement the rule above on these columns, tested on the shared case matrix.
-2. `lib/amount-sltp.ts` `amountRefusedForAuthority` still calls `riskOwnerOf(broker, mode)` without the entry (amount logic left untouched by
-   instruction). Once an allowlisted LIVE account is engine-owned, that check must pass the entry too, or an amount SL / TP could be stored
-   for an account the engine watches without amounts. Owner decision before enabling.
+2. Done: `lib/amount-sltp.ts` `amountRefusedForAuthority` now passes the entry (all three callers read `Account.engineLiveEnabled` and the flag), so an
+   allowlisted LIVE account is judged as engine-owned. Proof: `lib/amount-sltp-allowlist.test.ts` (flag off / no entry identical to the previous rule).
 3. The backoffice toggle (native backoffice) calls the route above.
 4. Owner's explicit go for the flag, for each account, and for the deploy.
 
