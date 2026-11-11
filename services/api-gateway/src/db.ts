@@ -57,14 +57,51 @@ export interface AccountRow {
   // the column that decides it -- read here so the check is on the DATABASE's answer, never on a list
   // someone maintains by hand.
   accountMode: string;
+  // LIVE CUTOVER (DORMANT): Broker."engineLiveAllowlistOn" and Account."engineLiveEnabled", read on the
+  // SAME row as accountMode so the ingress decision is made on one consistent answer. Both default
+  // false, and both are false here on any database whose migration has not run yet -- which is the
+  // fail-closed answer and exactly the old DEMO-only rule. See allowlistColumnsSelect().
+  engineLiveAllowlistOn: boolean;
+  engineLiveEnabled: boolean;
+}
+
+// The columns arrive with prisma/migrations/20261111140000_engine_live_allowlist. Selecting a column
+// that is not there is a 42703 that fails the WHOLE query, so a gateway deployed before the migration
+// would 500 every order rather than fail closed on one rule. Detected once and cached: present forever,
+// absent re-checked after 30 s so the migration can run underneath a live gateway.
+let allowlistColumns: { present: boolean; at: number } | null = null;
+export async function allowlistColumnsSelect(): Promise<string> {
+  const now = Date.now();
+  if (allowlistColumns && (allowlistColumns.present || now - allowlistColumns.at < 30_000)) {
+    return allowlistColumns.present
+      ? `b."engineLiveAllowlistOn" AS allowlist_on, a."engineLiveEnabled" AS engine_live_enabled`
+      : `false AS allowlist_on, false AS engine_live_enabled`;
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND ((table_name = 'Broker'  AND column_name = 'engineLiveAllowlistOn')
+            OR (table_name = 'Account' AND column_name = 'engineLiveEnabled'))`
+    );
+    allowlistColumns = { present: rows[0]?.n === 2, at: now };
+  } catch {
+    allowlistColumns = { present: false, at: now };
+  }
+  return allowlistColumns.present
+    ? `b."engineLiveAllowlistOn" AS allowlist_on, a."engineLiveEnabled" AS engine_live_enabled`
+    : `false AS allowlist_on, false AS engine_live_enabled`;
 }
 
 // Prisma's default (no @@map in schema.prisma) table/column names are
 // exact-case model/field names — "Account", "brokerId", etc. — hence the
 // double-quoting throughout this file.
 export async function getAccount(accountId: string, brokerId: string): Promise<AccountRow | null> {
+  const cols = await allowlistColumnsSelect();
   const { rows } = await pool.query(
-    `SELECT balance, credit, leverage, status, "accountMode" FROM "Account" WHERE id = $1 AND "brokerId" = $2`,
+    `SELECT a.balance, a.credit, a.leverage, a.status, a."accountMode", ${cols}
+       FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId"
+      WHERE a.id = $1 AND a."brokerId" = $2`,
     [accountId, brokerId]
   );
   if (rows.length === 0) return null;
@@ -75,6 +112,8 @@ export async function getAccount(accountId: string, brokerId: string): Promise<A
     leverage: row.leverage,
     status: row.status,
     accountMode: row.accountMode,
+    engineLiveAllowlistOn: row.allowlist_on === true,
+    engineLiveEnabled: row.engine_live_enabled === true,
   };
 }
 
@@ -90,10 +129,12 @@ export async function getAccountAndContractSize(
   brokerId: string,
   symbol: string
 ): Promise<{ account: AccountRow; contractSize: Decimal | null } | null> {
+  const cols = await allowlistColumnsSelect();
   const { rows } = await pool.query(
-    `SELECT a.balance, a.credit, a.leverage, a.status, a."accountMode",
+    `SELECT a.balance, a.credit, a.leverage, a.status, a."accountMode", ${cols},
             (SELECT s."contractSize" FROM "Symbol" s WHERE s.name = $3) AS contract_size
-       FROM "Account" a WHERE a.id = $1 AND a."brokerId" = $2`,
+       FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId"
+      WHERE a.id = $1 AND a."brokerId" = $2`,
     [accountId, brokerId, symbol]
   );
   if (rows.length === 0) return null;
@@ -105,6 +146,8 @@ export async function getAccountAndContractSize(
       leverage: row.leverage,
       status: row.status,
       accountMode: row.accountMode,
+      engineLiveAllowlistOn: row.allowlist_on === true,
+      engineLiveEnabled: row.engine_live_enabled === true,
     },
     contractSize: row.contract_size == null ? null : new Decimal(row.contract_size),
   };

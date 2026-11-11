@@ -189,7 +189,7 @@ router.post(
     }
 
     // (1) the scope the engine's close route does not enforce
-    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode, undefined, account.engineLiveAllowlistOn, account.engineLiveEnabled);
     if (!ingress.ok) {
       res.status(403).json({ error: ingress.why });
       return;
@@ -438,7 +438,7 @@ router.post(
     }
 
     // the scope the engine's close routes do not enforce
-    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode, undefined, account.engineLiveAllowlistOn, account.engineLiveEnabled);
     if (!ingress.ok) {
       res.status(403).json({ error: ingress.why });
       return;
