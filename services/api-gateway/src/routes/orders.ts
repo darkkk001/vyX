@@ -64,14 +64,35 @@ const ENGINE_INGRESS_ACCOUNT_IDS = (process.env.ENGINE_INGRESS_ACCOUNT_IDS ?? ""
 
 type IngressVerdict = { ok: true } | { ok: false; why: string };
 
+// LIVE CUTOVER (owner 2026-11-11, DORMANT -- docs/ENGINE-LIVE-ALLOWLIST.md). The one rule, shared by
+// the web (lib/risk-authority.ts engineLiveAllowed) and the engine (ingress::engine_live_allowed), and
+// pinned for all three by lib/engine-live-allowlist-cases.json.
+//
+// THREE conditions, all required: the account is LIVE, its broker's flag is on, and its own entry is
+// on. Anything missing, null, unknown or false is NOT allowed. Both columns default false in the
+// database, so this is false for every account today.
+//
+// The two flags are COLUMNS read in the same query as `accountMode` (src/db.ts) -- never an env list,
+// never a cache older than the request. The env list above keeps its old meaning, the trial SCOPE, and
+// on its own it still cannot admit a LIVE account: that was the L2 Step 3 finding, where a live id was
+// put on the list and filled because the list was the only condition.
+export function engineLiveAllowed(accountMode: string, allowlistOn: boolean, engineLiveEnabled: boolean): boolean {
+  return accountMode === "LIVE" && allowlistOn === true && engineLiveEnabled === true;
+}
+
 export function engineIngressVerdict(
   accountId: string,
   accountMode: string,
-  allowList: string[] = ENGINE_INGRESS_ACCOUNT_IDS
+  allowList: string[] = ENGINE_INGRESS_ACCOUNT_IDS,
+  allowlistOn = false,
+  engineLiveEnabled = false
 ): IngressVerdict {
   if (allowList.length === 0) return { ok: false, why: "the engine order path is not enabled here" };
   if (!allowList.includes(accountId)) return { ok: false, why: "this account is not served by the engine order path" };
-  if (accountMode !== "DEMO") return { ok: false, why: "the engine order path serves DEMO accounts only" };
+  // the defaults above are false, so a caller that passes neither flag gets exactly the old rule
+  if (accountMode !== "DEMO" && !engineLiveAllowed(accountMode, allowlistOn, engineLiveEnabled)) {
+    return { ok: false, why: "the engine order path serves DEMO accounts only" };
+  }
   return { ok: true };
 }
 
@@ -161,7 +182,7 @@ router.post(
 
     // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
     // engine simply does not serve this account, and the caller's correct answer is the web path.
-    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode, undefined, account.engineLiveAllowlistOn, account.engineLiveEnabled);
     if (!ingress.ok) {
       res.status(403).json({ error: ingress.why });
       return;
@@ -335,7 +356,7 @@ router.post(
 
     // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
     // engine simply does not serve this account, and the caller's correct answer is the web path.
-    const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+    const ingress = engineIngressVerdict(session.accountId, account.accountMode, undefined, account.engineLiveAllowlistOn, account.engineLiveEnabled);
     if (!ingress.ok) {
       res.status(403).json({ error: ingress.why });
       return;
@@ -400,7 +421,7 @@ router.post("/:id/cancel", requireTraderSession, rateLimitOrders(30, 60), async 
 
   // L2 Step 3 ingress scoping: 403 and not 400 -- nothing about the request is malformed, the
   // engine simply does not serve this account, and the caller's correct answer is the web path.
-  const ingress = engineIngressVerdict(session.accountId, account.accountMode);
+  const ingress = engineIngressVerdict(session.accountId, account.accountMode, undefined, account.engineLiveAllowlistOn, account.engineLiveEnabled);
   if (!ingress.ok) {
     res.status(403).json({ error: ingress.why });
     return;
