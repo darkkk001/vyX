@@ -3,12 +3,13 @@ import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getClientSession, type ClientSessionPayload } from "@/lib/client-auth";
+import { parseWordmark, type WordmarkStyle } from "@/lib/room/wordmark";
 
 // Trader's Room (CRM module, owner brief 2026-11-03). Every room page and /api/room route starts here: the host's
 // broker must have the CRM module on (Broker.crmEnabled, read per request, so the switch needs no redeploy), and the
 // API routes also need a signed-in Client of that broker.
 
-export type RoomBroker = { id: string; name: string; subdomain: string; logoUrl: string | null; primaryColor: string | null };
+export type RoomBroker = { id: string; name: string; subdomain: string; logoUrl: string | null; primaryColor: string | null; wordmark: WordmarkStyle | null };
 
 /** The host's broker when its CRM module is on; null = the Trader's Room does not exist on this host. */
 export async function roomBroker(): Promise<RoomBroker | null> {
@@ -16,10 +17,10 @@ export async function roomBroker(): Promise<RoomBroker | null> {
   if (!brokerId) return null;
   const b = await prisma.broker.findUnique({
     where: { id: brokerId },
-    select: { id: true, name: true, subdomain: true, logoUrl: true, primaryColor: true, crmEnabled: true, status: true },
+    select: { id: true, name: true, subdomain: true, logoUrl: true, primaryColor: true, wordmark: true, crmEnabled: true, status: true },
   });
   if (!b || !b.crmEnabled) return null;
-  return { id: b.id, name: b.name, subdomain: b.subdomain, logoUrl: b.logoUrl, primaryColor: b.primaryColor };
+  return { id: b.id, name: b.name, subdomain: b.subdomain, logoUrl: b.logoUrl, primaryColor: b.primaryColor, wordmark: parseWordmark(b.wordmark, b.name) };
 }
 
 /** True only for a session the room shell will let in, so sign-in never bounces a suspended client back and forth. */

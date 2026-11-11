@@ -141,7 +141,7 @@ export default function RoomWithdraw() {
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div className="r-label">Payout method</div>
-            <MethodGrid side="withdraw" methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={ccy} onSelect={(id) => { setMethodId(id); setPayoutId(""); setAdding(false); setAddMsg(""); setMsg(null); }} />
+            <MethodGrid side="withdraw" locked={kycStatus !== "APPROVED"} methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={ccy} onSelect={(id) => { setMethodId(id); setPayoutId(""); setAdding(false); setAddMsg(""); setMsg(null); }} />
             {saved.map((p) => {
               const sel = payout?.id === p.id;
               return (

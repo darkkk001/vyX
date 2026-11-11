@@ -548,6 +548,10 @@ model Broker {
   // Branding — resolved at request time, never hardcoded or baked into a build.
   logoUrl      String?
   primaryColor String? // CSS custom property override, e.g. "#1e8a5f"
+  // How the name is drawn as a wordmark (owner 2026-11-12, lib/room/wordmark.ts): {"parts":["Qore","Trader"],"accent":1,
+  // "caps":false} = the parts spell the name, `accent` is the part in the brand colour (-1 none), `caps` = capitals.
+  // null = the default: first word in the accent, the rest plain, capitals (FUTURIX GLOBAL).
+  wordmark     Json?
   // CRM module (owner brief 2026-11-03): one switch per broker. On = the Trader's Room (/room) answers on the broker's
   // host and the backoffice shows its CRM tab; off = the platform is unchanged (/room is a 404).
   crmEnabled           Boolean @default(false)

@@ -2,6 +2,8 @@ import { withBrokerConfigEvent } from "@/lib/config-events";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { Prisma } from "@prisma/client";
+import { parseWordmark } from "@/lib/room/wordmark";
 
 const VALID_STATUSES = new Set(["TRIAL", "ACTIVE", "SUSPENDED", "DISABLED"]);
 const TRIAL_PERIOD_MS = 14 * 24 * 60 * 60 * 1000;
@@ -51,6 +53,8 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "primaryColor must be a 6-digit hex color like #1e8a5f" }, { status: 400 });
   }
   const primaryColor = hasPrimaryColor ? (typeof body.primaryColor === "string" && body.primaryColor.trim() ? body.primaryColor.trim() : null) : undefined;
+  // wordmark (owner 2026-11-12, lib/room/wordmark.ts): null = the default look; else checked against the broker name below
+  const hasWordmark = "wordmark" in (body ?? {});
 
   // Transactional email config -- see lib/email/adapter.ts's
   // sendBrokerEmail. All four saved together from one form (BrokersManager's
@@ -75,8 +79,8 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "orderBurst and orderPerMinute must be a whole number from 0 to 100000, or null for the default" }, { status: 400 });
   }
 
-  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasCrmEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor && !hasEmailFromDomain && !hasEmailFromAddress && !hasEmailFromName && !hasEmailEnabled && !hasOrderBurst && !hasOrderPerMinute) {
-    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, crmEnabled, supportEmail, logoUrl, primaryColor, an email config field, orderBurst or orderPerMinute is required" }, { status: 400 });
+  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasCrmEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor && !hasWordmark && !hasEmailFromDomain && !hasEmailFromAddress && !hasEmailFromName && !hasEmailEnabled && !hasOrderBurst && !hasOrderPerMinute) {
+    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, crmEnabled, supportEmail, logoUrl, primaryColor, wordmark, an email config field, orderBurst or orderPerMinute is required" }, { status: 400 });
   }
 
   const existing = await prisma.broker.findUnique({ where: { id } });
@@ -88,6 +92,11 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   // address to send from -- check the resulting value (either freshly
   // set in this request, or already on the row) rather than just what
   // this request happens to include.
+  const wordmark = hasWordmark && body.wordmark !== null ? parseWordmark(body.wordmark, existing.name) : null;
+  if (hasWordmark && body.wordmark !== null && !wordmark) {
+    return NextResponse.json({ error: "wordmark parts must spell the broker name exactly (1 to 3 parts), with accent a part number or -1 and caps true or false" }, { status: 400 });
+  }
+
   const resultingEmailFromAddress = hasEmailFromAddress ? emailFromAddress : existing.emailFromAddress;
   if (emailEnabled === true && !resultingEmailFromAddress) {
     return NextResponse.json({ error: "set emailFromAddress before enabling email sending" }, { status: 400 });
@@ -201,6 +210,21 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       });
     }
 
+    if (hasWordmark) {
+      const broker = await tx.broker.update({ where: { id }, data: { wordmark: wordmark ?? Prisma.DbNull } });
+      await tx.auditLog.create({
+        data: {
+          brokerId: id,
+          actorAdminId: session!.adminId,
+          action: "BROKER_WORDMARK_CHANGED",
+          entityType: "Broker",
+          entityId: id,
+          oldValue: { wordmark: existing.wordmark ?? null },
+          newValue: { wordmark: broker.wordmark ?? null },
+        },
+      });
+    }
+
     if (hasPrimaryColor) {
       const broker = await tx.broker.update({ where: { id }, data: { primaryColor } });
       await tx.auditLog.create({
@@ -262,6 +286,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     supportEmail: updated.supportEmail,
     logoUrl: updated.logoUrl,
     primaryColor: updated.primaryColor,
+    wordmark: updated.wordmark ?? null,
     executionEngine: updated.executionEngine,
     pricingEngineEnabled: updated.pricingEngineEnabled,
     crmEnabled: updated.crmEnabled,

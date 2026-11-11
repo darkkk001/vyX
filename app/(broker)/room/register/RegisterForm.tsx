@@ -51,7 +51,7 @@ export default function RegisterForm({ formToken, referral, humanKey }: { formTo
     <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 22 }}>
       {humanKey ? <HumanCheck siteKey={humanKey} round={humanRound} onToken={setHumanToken} /> : null}
       <div>
-        <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Open an account</h1>
+        <h1 style={{ margin: 0, fontFamily: "var(--r-head)", fontSize: 24, fontWeight: 600 }}>Open your client portal account</h1>
         <div style={{ fontSize: 13.5, color: "var(--r-text-2)", marginTop: 8, lineHeight: 1.6 }}>Start with your name and email. You can trade on a demo account right after you confirm your email.</div>
       </div>
       <div className="r-card" style={{ padding: 24, display: "flex", flexDirection: "column", gap: 18 }}>

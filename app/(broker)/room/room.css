@@ -85,6 +85,8 @@
 .r-logo img { flex: none; height: 40px; width: auto; max-width: 64px; object-fit: contain; }
 .r-logo-word { font-family: var(--r-head); font-weight: 700; letter-spacing: 4px; font-size: 19px; text-transform: uppercase; line-height: 1.2; overflow-wrap: anywhere; }
 .r-logo-first { color: var(--r-accent); }
+/* a broker whose wordmark is set in mixed case (Broker.wordmark caps false, e.g. QoreTrader) */
+.r-wm-mixed { text-transform: none; letter-spacing: 0.4px; }
 .r-logo-sm { gap: 10px; }
 .r-logo-sm img { height: 28px; max-width: 44px; }
 .r-logo-sm .r-logo-word { font-size: 14px; letter-spacing: 3px; }
@@ -225,6 +227,11 @@
 .r-method-line { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; line-height: 17px; min-height: 17px; color: var(--r-text-2); white-space: nowrap; }
 .r-method-line > span:first-child { flex-shrink: 0; }
 .r-method-line > .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* identity not verified (owner 2026-11-12): every card shown, none can be picked, each with the reason and a Verify now link */
+.r-method.is-locked { cursor: default; }
+.r-method.is-locked .r-method-name, .r-method.is-locked .r-method-line { opacity: 0.6; }
+.r-method-lock { margin-top: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--r-pending); }
+.r-method-verify { font-size: 12px; font-weight: 600; }
 .r-method-chip { align-self: flex-start; margin-top: auto; font-size: 10.5px; font-weight: 600; color: var(--r-muted); border: 1px solid var(--r-input); border-radius: 4px; padding: 2px 6px; }
 .r-note { font-size: 12px; color: var(--r-muted); line-height: 1.6; }
 .r-error { font-size: 12.5px; color: var(--r-loss); }
@@ -250,10 +257,13 @@
 .r-auth-brand .r-logo img { height: 48px; max-width: 72px; }
 .r-auth-brand .r-logo-word { font-size: 22px; letter-spacing: 4px; white-space: nowrap; }
 .r-auth-copy { display: flex; flex-direction: column; gap: 12px; max-width: 400px; }
-/* the broker's logo large and centred above the headline (owner 2026-11-12); the top row then shows the name only */
-.r-auth-brand.has-mark > .r-logo img { display: none; }
+/* owner 2026-11-12: the broker's logo large and centred above the portal headline, then what the portal is for */
 .r-auth-brand.has-mark .r-auth-copy { align-self: center; align-items: center; text-align: center; }
 .r-auth-mark { height: 140px; width: auto; max-width: min(100%, 320px); object-fit: contain; margin-bottom: 14px; }
+.r-auth-eyebrow { font-size: 11.5px; font-weight: 600; letter-spacing: 2.4px; color: var(--r-accent); }
+.r-auth-points { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 9px; text-align: left; font-size: 15px; line-height: 1.45; color: var(--r-text-2); }
+.r-auth-points li { position: relative; padding-left: 18px; }
+.r-auth-points li::before { content: ""; position: absolute; left: 0; top: 0.58em; width: 6px; height: 6px; border-radius: 50%; background: var(--r-accent); }
 .r-auth-title { font-family: var(--r-head); font-size: 32px; font-weight: 600; line-height: 1.2; color: var(--r-text); }
 .r-auth-line { font-size: 15px; line-height: 1.6; color: var(--r-text-2); }
 .r-auth-status { display: flex; gap: 22px; flex-wrap: wrap; font-size: 11.5px; color: var(--r-muted); }
@@ -304,7 +314,7 @@
   .r-auth { align-content: flex-start; }
   .r-auth-brand { flex-basis: 100%; padding: calc(22px + env(safe-area-inset-top)) 16px 22px; gap: 0; }
   .r-auth-brand::after { display: none; }
-  .r-auth-brand .r-logo img, .r-auth-brand.has-mark > .r-logo img { display: inline-block; height: 40px; max-width: 64px; }
+  .r-auth-brand .r-logo img { height: 40px; max-width: 64px; }
   .r-auth-brand .r-logo-word { font-size: 19px; letter-spacing: 4px; }
   .r-auth-copy, .r-auth-status { display: none; }
   .r-auth-form { padding: 32px 16px 64px; align-items: flex-start; }

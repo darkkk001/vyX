@@ -117,8 +117,10 @@ describe("Payment methods reach the Deposit page", () => {
 describe("Sidebar brand", () => {
   it("the sidebar asks for the name beside the logo; login and onboarding do not", () => {
     const src = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
-    expect(src("components/room/RoomSidebar.tsx")).toContain("logoUrl={logoUrl} showName");
-    expect(src("components/room/RoomBrand.tsx")).toMatch(/showName \? <>\{logo\}<span className="r-wordmark">\{name\}<\/span><\/> : logo/);
+    expect(src("components/room/RoomSidebar.tsx")).toContain("logoUrl={logoUrl} wordmark={wordmark} showName");
+    // the name beside the logo: plain, or drawn by the broker's wordmark setting (owner 2026-11-12)
+    expect(src("components/room/RoomBrand.tsx")).toContain(': <span className="r-wordmark">{name}</span>;');
+    expect(src("components/room/RoomBrand.tsx")).toContain("return showName ? <>{logo}{word}</> : logo;");
     expect(src("components/room/Onboarding.tsx")).not.toContain("showName");
   });
 });
@@ -270,7 +272,11 @@ describe("account dropdowns (owner 2026-11-09)", () => {
     const items = fs.readFileSync(path.join(process.cwd(), "components/room/transfer-items.ts"), "utf8");
     expect(items).toContain('`${i.isWallet ? "Funding wallet" : i.accountNumber} · ${money(i.balance)} ${i.currency}`');
     expect(items).not.toContain(".plan");
-    for (const page of ["deposit", "withdraw"]) {
+    // Deposit (owner 2026-11-12): the wallet, the live and the demo accounts, a demo marked as such
+    const deposit = fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/(shell)/deposit/page.tsx"), "utf8");
+    expect(deposit).toContain('`${t.accountNumber}${t.mode === "DEMO" ? " · Demo" : ""} · ${money(t.balance)} ${t.currency}`');
+    expect(deposit).not.toContain("a.plan");
+    for (const page of ["withdraw"]) {
       const src = fs.readFileSync(path.join(process.cwd(), `app/(broker)/room/(shell)/${page}/page.tsx`), "utf8");
       expect(src, page).toContain("`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`");
       expect(src, page).not.toContain("a.plan");

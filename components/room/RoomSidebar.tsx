@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import RoomBrand from "./RoomBrand";
+import type { WordmarkStyle } from "@/lib/room/wordmark";
 
 // Trader's Room sidebar, as on every artboard: OVERVIEW / FUNDS / PERFORMANCE / PARTNER / MORE; Refer & earn and
 // Collapse at the foot (the client and KYC state live in the top-right menu). PARTNER shows only for a client the broker has flagged as an IB; Refer & earn shows for everyone.
@@ -38,7 +39,7 @@ const GROUPS: { title: string; items: Item[]; partner?: boolean }[] = [
 
 const keep = (name: string, value: string) => { document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=31536000; samesite=lax`; };
 
-export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: railAtLoad, closedGroups }: { brokerName: string; logoUrl: string | null; isPartner: boolean; rail: boolean; closedGroups: string[] }) {
+export default function RoomSidebar({ brokerName, logoUrl, wordmark = null, isPartner, rail: railAtLoad, closedGroups }: { brokerName: string; logoUrl: string | null; wordmark?: WordmarkStyle | null; isPartner: boolean; rail: boolean; closedGroups: string[] }) {
   const path = usePathname() ?? "/room";
   const [rail, setRail] = useState(railAtLoad);
   const [closed, setClosed] = useState(closedGroups);
@@ -67,7 +68,7 @@ export default function RoomSidebar({ brokerName, logoUrl, isPartner, rail: rail
     <>
     {drawer ? <div className="r-drawer-back" onClick={() => setDrawer(false)} /> : null}
     <aside className={`r-side${rail ? " is-rail" : ""}${drawer ? " is-open" : ""}`}>
-      <a className="r-brand" href="/room"><RoomBrand name={brokerName} logoUrl={logoUrl} showName /></a>
+      <a className="r-brand" href="/room"><RoomBrand name={brokerName} logoUrl={logoUrl} wordmark={wordmark} showName /></a>
       {GROUPS.filter((g) => !g.partner || isPartner).map((g) => (
         <div key={g.title} className="r-nav-sec">
           <button type="button" className="r-nav-group" aria-expanded={!closed.includes(g.title)} onClick={() => toggleGroup(g.title)}>

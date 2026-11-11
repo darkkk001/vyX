@@ -18,7 +18,7 @@ export default async function RoomVerifyPage() {
   if (!c) redirect("/login");
   const kyc = c.kycRecord?.status ?? null;
   return (
-    <Onboarding brokerName={broker.name} logoUrl={broker.logoUrl} right={<a href="/room" style={{ fontWeight: 600 }}>Go to dashboard</a>}>
+    <Onboarding brokerName={broker.name} logoUrl={broker.logoUrl} wordmark={broker.wordmark} right={<a href="/room" style={{ fontWeight: 600 }}>Go to dashboard</a>}>
       <VerifyFlow
         initial={{ phone: c.phone ?? "", country: c.country ?? "", dateOfBirth: dateOnly(c.dateOfBirth) ?? "" }}
         kyc={kyc}

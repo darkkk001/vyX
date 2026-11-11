@@ -26,7 +26,7 @@ export default async function RoomShellLayout({ children }: { children: ReactNod
   return (
     <RoomDataProvider>
       <div className="r-shell">
-        <RoomSidebar brokerName={broker.name} logoUrl={broker.logoUrl} isPartner={isPartner} rail={rail} closedGroups={closedGroups} />
+        <RoomSidebar brokerName={broker.name} logoUrl={broker.logoUrl} wordmark={broker.wordmark} isPartner={isPartner} rail={rail} closedGroups={closedGroups} />
         <main className="r-main">{children}</main>
       </div>
       <OpenAccountModal />
