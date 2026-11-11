@@ -13,9 +13,13 @@ export default async function AuthBrandPanel({ broker }: { broker: RoomBroker })
   const [caddy, prices] = await Promise.all([readInfraSummary("caddy"), readLivePrices()]);
   const status = roomServiceStatus([caddy.state, prices]);
   return (
-    <section className="r-auth-brand">
+    // Owner 2026-11-12: the broker's logo large (about 140 px), centred above the headline, for every broker. The top row
+    // keeps the name; its small mark shows only on a phone, where the headline block is hidden.
+    <section className={`r-auth-brand${broker.logoUrl ? " has-mark" : ""}`}>
       <RoomLogo name={broker.name} logoUrl={broker.logoUrl} />
       <div className="r-auth-copy">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        {broker.logoUrl ? <img className="r-auth-mark" src={broker.logoUrl} alt="" /> : null}
         <div className="r-auth-title">Trade with {broker.name}</div>
         <div className="r-auth-line">Forex, gold, indices and crypto. One account, every platform.</div>
       </div>
