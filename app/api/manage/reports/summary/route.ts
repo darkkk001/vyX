@@ -42,11 +42,12 @@ export async function GET(req: Request) {
   // its cumulative closedVolume (volume is only the last piece), or volume for rows closed before closedVolume existed
   const cov = (await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } })).coverageAccountId;   // the hedge account is not client money (lib/client-accounts.ts)
   const client = { accountMode: "LIVE" as const, isInternal: false, ...notCoverageAccount(cov) };
-  const volWhere = { brokerId, openedAt: { gte: thirtyDaysAgo }, account: client };
+  // owner 2026-11-11: voided / deleted trades are not traded volume
+  const volWhere = { brokerId, openedAt: { gte: thirtyDaysAgo }, account: client, deletedAt: null };
   const [volOpen, volDoneNew, volDoneOld, commissionAgg, depositsAgg, withdrawalsAgg, newClients] = await Promise.all([
     prisma.position.aggregate({ where: { ...volWhere, status: "OPEN" }, _sum: { volume: true, closedVolume: true } }),
-    prisma.position.aggregate({ where: { ...volWhere, status: { not: "OPEN" }, closedVolume: { not: null } }, _sum: { closedVolume: true } }),
-    prisma.position.aggregate({ where: { ...volWhere, status: { not: "OPEN" }, closedVolume: null }, _sum: { volume: true } }),
+    prisma.position.aggregate({ where: { ...volWhere, status: "CLOSED", closedVolume: { not: null } }, _sum: { closedVolume: true } }),
+    prisma.position.aggregate({ where: { ...volWhere, status: "CLOSED", closedVolume: null }, _sum: { volume: true } }),
     prisma.position.aggregate({
       where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: client },
       _sum: { commission: true },

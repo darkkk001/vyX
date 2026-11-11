@@ -31,7 +31,8 @@ export async function GET() {
   // positions) -- reported live as "my withdrawal isn't showing up
   // anywhere," even though the balance change itself was correct.
   const requests = await prisma.transaction.findMany({
-    where: { accountId: session.accountId, type: { in: ["DEPOSIT", "WITHDRAWAL", "ADJUSTMENT"] } },
+    // owner 2026-11-11: a deleted trade's own rows (its reversal ADJUSTMENT) are hidden from the client like every other client read
+    where: { accountId: session.accountId, type: { in: ["DEPOSIT", "WITHDRAWAL", "ADJUSTMENT"] }, hiddenForPositionId: null },
     include: { paymentMethod: { select: { type: true } } },
     orderBy: { createdAt: "desc" },
   });

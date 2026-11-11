@@ -482,3 +482,57 @@ describe("D-2: pending requests and the delete record", () => {
     expect(await prisma.auditLog.count({ where: { entityId: a.id, action: "POSITION_DELETED" } })).toBe(1);
   });
 });
+
+
+// ---- owner 2026-11-11: a voided / deleted trade's P&L is out of every money control and report (audit leaks 1-4) ----
+describe("voided and deleted trades leave the daily loss limit, the client funds list and the volume report", () => {
+  it("the daily loss limit no longer counts a voided loss, and a voided win no longer offsets a real loss", async () => {
+    if (!dbReachable) return;
+    const { checkMaxDailyLoss, realizedPnlSinceExcludingVoided } = await import("@/lib/risk");
+    const fx = await fixture({ balance: 1000 });
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const loss = await trade(fx, { open: "100", close: "50" });   // -50 today
+    expect((await realizedPnlSinceExcludingVoided(prisma, fx.accountId, start)).toNumber()).toBe(-50);
+    expect(await checkMaxDailyLoss(prisma, fx.accountId, D(40))).toMatch(/daily loss limit/);   // blocked: real
+    expect((await voidAsAdmin(fx, loss.id)).status).toBe(200);
+    expect((await realizedPnlSinceExcludingVoided(prisma, fx.accountId, start)).toNumber()).toBe(0);
+    expect(await checkMaxDailyLoss(prisma, fx.accountId, D(40))).toBeNull();   // the voided loss no longer blocks
+    // a real loss plus a voided win: the win must not offset it
+    const win = await trade(fx, { open: "100", close: "200" });   // +100
+    await trade(fx, { open: "100", close: "50" });                  // -50, real
+    expect(await checkMaxDailyLoss(prisma, fx.accountId, D(40))).toBeNull();   // +100 - 50: allowed while the win stands
+    expect((await voidAsAdmin(fx, win.id)).status).toBe(200);
+    expect(await checkMaxDailyLoss(prisma, fx.accountId, D(40))).toMatch(/daily loss limit/);   // the win is voided: -50 counts alone
+    // the balance reversal itself is untouched: 1000 - 50 (the real loss) after both voids
+    expect((await balance(fx)).balance.toNumber()).toBe(950);
+  });
+
+  it("a deleted trade's reversal row is not in the client's funds list", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture({ balance: 1000 });
+    const t = await trade(fx, { open: "100", close: "80" });
+    expect((await deleteAsAdmin(fx, t.id)).status).toBe(200);
+    asTrader(fx);
+    const { GET } = await import("@/app/api/trade/funds-requests/route");
+    const rows = (await call(GET, "/api/trade/funds-requests")).json as { id: string; type: string; note: string | null }[];
+    const hidden = await prisma.transaction.findMany({ where: { hiddenForPositionId: t.id }, select: { id: true } });
+    expect(hidden.length).toBeGreaterThan(0);
+    for (const h of hidden) expect(rows.map((r) => r.id)).not.toContain(h.id);
+    expect((await balance(fx)).balance.toNumber()).toBe(1000);   // the reversal still applied
+  });
+
+  it("the reports summary's trading volume leaves voided and deleted trades out", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture({ balance: 1000 });
+    await trade(fx, { open: "100", close: "110", volume: "2" });
+    const v = await trade(fx, { open: "100", close: "90", volume: "3" });
+    const d = await trade(fx, { open: "100", close: "95", volume: "5" });
+    expect((await voidAsAdmin(fx, v.id)).status).toBe(200);
+    expect((await deleteAsAdmin(fx, d.id)).status).toBe(200);
+    asAdmin(fx);
+    const { GET } = await import("@/app/api/manage/reports/summary/route");
+    const res = await call(GET, "/api/manage/reports/summary");
+    expect(res.status).toBe(200);
+    expect((res.json as { tradingVolume: number }).tradingVolume).toBe(2);
+  });
+});

@@ -687,6 +687,27 @@ export function checkSlippage(params: {
 // already at or below -maxDailyLoss. Existing open positions are
 // untouched -- this only blocks new trading for the rest of the day.
 // On-the-fly aggregate query, no new ledger/running-total table needed.
+/**
+ * Realized P&L booked to an account since `since`, WITHOUT voided / deleted trades (owner 2026-11-11). A void (and a delete, which voids first)
+ * leaves the trade's TRADE_PNL row in place and books its reversal as an ADJUSTMENT, so summing TRADE_PNL alone still counted the voided result:
+ * a voided loss kept a client blocked by the daily loss limit, a voided win offset real losses. Rows of VOIDED positions are left out here.
+ */
+export async function realizedPnlSinceExcludingVoided(db: Db, accountId: string, since: Date): Promise<Prisma.Decimal> {
+  const voided = await db.position.findMany({ where: { accountId, status: "VOIDED" }, select: { id: true } });
+  const voidedIds = voided.map((p) => p.id);
+  const agg = await db.transaction.aggregate({
+    where: {
+      accountId,
+      type: "TRADE_PNL",
+      createdAt: { gte: since },
+      // a row with no referenceId is kept (NOT IN would drop a NULL too)
+      ...(voidedIds.length > 0 ? { OR: [{ referenceId: null }, { referenceId: { notIn: voidedIds } }] } : {}),
+    },
+    _sum: { amount: true },
+  });
+  return agg._sum.amount ?? new Prisma.Decimal(0);
+}
+
 export async function checkMaxDailyLoss(
   db: Db,
   accountId: string,
@@ -695,11 +716,7 @@ export async function checkMaxDailyLoss(
   if (maxDailyLoss == null) return null;
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
-  const agg = await db.transaction.aggregate({
-    where: { accountId, type: "TRADE_PNL", createdAt: { gte: startOfToday } },
-    _sum: { amount: true },
-  });
-  const realizedToday = agg._sum.amount ?? new Prisma.Decimal(0);
+  const realizedToday = await realizedPnlSinceExcludingVoided(db, accountId, startOfToday);
   if (realizedToday.lte(maxDailyLoss.neg())) {
     return `daily loss limit of ${maxDailyLoss} reached for this account, try again tomorrow`;
   }

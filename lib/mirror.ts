@@ -16,6 +16,7 @@ import {
   checkAccountStatusForOpen,
   checkGroupCloseOnly,
   checkAccountTradingRights,
+  realizedPnlSinceExcludingVoided,
 } from "@/lib/risk";
 import { getFreshPrices } from "@/lib/live-price";
 import { loadRateResolver } from "@/lib/fx";
@@ -203,11 +204,8 @@ export async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ kille
   if (rule.maxDailyLoss != null) {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
-    const realizedAgg = await db.transaction.aggregate({
-      where: { accountId: rule.targetAccountId, type: "TRADE_PNL", createdAt: { gte: startOfToday } },
-      _sum: { amount: true },
-    });
-    const realizedToday = realizedAgg._sum.amount ?? new Prisma.Decimal(0);
+    // owner 2026-11-11: voided / deleted trades are not today's realized P&L (lib/risk.ts realizedPnlSinceExcludingVoided)
+    const realizedToday = await realizedPnlSinceExcludingVoided(db, rule.targetAccountId, startOfToday);
 
     const [openPositions, target] = await Promise.all([
       db.position.findMany({
