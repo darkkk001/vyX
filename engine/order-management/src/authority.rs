@@ -49,7 +49,12 @@ impl RiskOwner {
 }
 
 /// The ownership rule, exactly `riskOwnerOf` of lib/risk-authority.ts. `None` = missing.
-pub fn risk_owner_of(authority: Option<&str>, demo_only: Option<bool>, account_mode: Option<&str>) -> RiskOwner {
+pub fn risk_owner_of(
+    authority: Option<&str>,
+    demo_only: Option<bool>,
+    account_mode: Option<&str>,
+    engine_live: Option<bool>,
+) -> RiskOwner {
     if authority != Some("RUST") {
         return RiskOwner::Web;
     }
@@ -60,7 +65,10 @@ pub fn risk_owner_of(authority: Option<&str>, demo_only: Option<bool>, account_m
         _ => return RiskOwner::Web,
     };
     let demo_only = demo_only != Some(false);
-    if !demo_only || demo {
+    // live cutover (DORMANT, docs/ENGINE-LIVE-ALLOWLIST.md): a LIVE account explicitly on the allowlist
+    // of a broker whose flag is on also satisfies the demo-only scope. `engine_live` is the AND of the
+    // two columns, already evaluated by the caller; None (or false) leaves this rule exactly as it was.
+    if !demo_only || demo || engine_live == Some(true) {
         RiskOwner::Rust
     } else {
         RiskOwner::Web
@@ -68,9 +76,15 @@ pub fn risk_owner_of(authority: Option<&str>, demo_only: Option<bool>, account_m
 }
 
 /// The rule with the engine's liveness counted: a stale or missing heartbeat hands every account to the web.
-pub fn effective_owner(authority: Option<&str>, demo_only: Option<bool>, account_mode: Option<&str>, engine_alive: bool) -> RiskOwner {
+pub fn effective_owner(
+    authority: Option<&str>,
+    demo_only: Option<bool>,
+    account_mode: Option<&str>,
+    engine_alive: bool,
+    engine_live: Option<bool>,
+) -> RiskOwner {
     if engine_alive {
-        risk_owner_of(authority, demo_only, account_mode)
+        risk_owner_of(authority, demo_only, account_mode, engine_live)
     } else {
         RiskOwner::Web
     }
@@ -78,6 +92,13 @@ pub fn effective_owner(authority: Option<&str>, demo_only: Option<bool>, account
 
 /// The same rule as a SQL predicate over `"Account" a` and `"Broker" b` (both columns are NOT NULL enums / booleans).
 pub const RUST_OWNED_SQL: &str = r#"(b."riskAuthority"::text = 'RUST' AND (b."riskAuthorityDemoOnly" = false OR a."accountMode"::text = 'DEMO'))"#;
+
+/// The same predicate WITH the live allowlist, for a database that has the two columns. Kept separate
+/// from `RUST_OWNED_SQL` rather than replacing it, because the columns do not exist on every database
+/// this binary can be pointed at (they arrive with 20261111140000_engine_live_allowlist) and a SELECT of
+/// a missing column is a 42703 that would fail the read outright rather than fail closed. `db` picks
+/// between the two once, the same way `book::amount_columns` picks its SELECT.
+pub const RUST_OWNED_SQL_WITH_ALLOWLIST: &str = r#"(b."riskAuthority"::text = 'RUST' AND (b."riskAuthorityDemoOnly" = false OR a."accountMode"::text = 'DEMO' OR (a."accountMode"::text = 'LIVE' AND b."engineLiveAllowlistOn" AND a."engineLiveEnabled")))"#;
 
 /// The heartbeat is fresh by the database's own clock (one clock for both sides). `clock_timestamp()`, never `now()`: a transaction's
 /// `now()` is the time it STARTED, which would make a long-running transaction judge a stale heartbeat fresh.
@@ -114,7 +135,7 @@ pub async fn owner_of_account(pool: &PgPool, account_id: &str) -> Result<Option<
            FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" WHERE a.id = $1"#
     );
     let row: Option<(String, bool, String, bool)> = sqlx::query_as(&sql).bind(account_id).fetch_optional(pool).await?;
-    Ok(row.map(|(authority, demo_only, mode, alive)| effective_owner(Some(&authority), Some(demo_only), Some(&mode), alive)))
+    Ok(row.map(|(authority, demo_only, mode, alive)| effective_owner(Some(&authority), Some(demo_only), Some(&mode), alive, None)))
 }
 
 /// The owner as the database says, read INSIDE the acting transaction with the account row locked (`FOR NO KEY UPDATE`:
@@ -130,7 +151,7 @@ pub async fn lock_owner_in_tx(tx: &mut sqlx::PgTransaction<'_>, account_id: &str
     .fetch_optional(&mut **tx)
     .await?;
     let Some((authority, demo_only, mode)) = row else { return Ok(None) };
-    let owner = risk_owner_of(Some(&authority), Some(demo_only), Some(&mode));
+    let owner = risk_owner_of(Some(&authority), Some(demo_only), Some(&mode), None);
     if owner == RiskOwner::Rust {
         // the watchdog: the engine keeps the account only while its own heartbeat is fresh. The row is locked FOR SHARE (the lock order
         // Position, Account, Broker, heartbeat; a beat takes no other lock, so no cycle): a beat waits for this transaction, so the reading
@@ -140,7 +161,7 @@ pub async fn lock_owner_in_tx(tx: &mut sqlx::PgTransaction<'_>, account_id: &str
         )
         .fetch_optional(&mut **tx)
         .await?;
-        return Ok(Some(effective_owner(Some(&authority), Some(demo_only), Some(&mode), alive.is_some_and(|(a,)| a))));
+        return Ok(Some(effective_owner(Some(&authority), Some(demo_only), Some(&mode), alive.is_some_and(|(a,)| a), None)));
     }
     Ok(Some(owner))
 }
@@ -586,7 +607,7 @@ impl AuthorityCache {
     /// The owner of an account of `broker_id` in `mode` as this cache knows it; WEB until loaded.
     pub fn owner(&self, broker_id: &str, account_mode: &str) -> RiskOwner {
         match self.brokers.read().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|m| m.get(broker_id)) {
-            Some(demo_only) => risk_owner_of(Some("RUST"), Some(*demo_only), Some(account_mode)),
+            Some(demo_only) => risk_owner_of(Some("RUST"), Some(*demo_only), Some(account_mode), None),
             None => RiskOwner::Web,
         }
     }
@@ -689,7 +710,7 @@ mod tests {
         assert!(cases.len() >= 100, "the matrix is the full cross product: {}", cases.len());
         let mut rust = 0;
         for c in &cases {
-            let got = risk_owner_of(c.authority.as_deref(), c.demo_only, c.mode.as_deref());
+            let got = risk_owner_of(c.authority.as_deref(), c.demo_only, c.mode.as_deref(), None);
             assert_eq!(got.as_str(), c.owner, "authority {:?} demoOnly {:?} mode {:?}", c.authority, c.demo_only, c.mode);
             rust += (got == RiskOwner::Rust) as usize;
         }
@@ -699,10 +720,10 @@ mod tests {
     #[test]
     fn a_stale_engine_hands_every_account_to_the_web() {
         for mode in [Some("DEMO"), Some("LIVE")] {
-            assert_eq!(effective_owner(Some("RUST"), Some(false), mode, true), RiskOwner::Rust);
-            assert_eq!(effective_owner(Some("RUST"), Some(false), mode, false), RiskOwner::Web, "stale heartbeat: WEB");
+            assert_eq!(effective_owner(Some("RUST"), Some(false), mode, true, None), RiskOwner::Rust);
+            assert_eq!(effective_owner(Some("RUST"), Some(false), mode, false, None), RiskOwner::Web, "stale heartbeat: WEB");
         }
-        assert_eq!(effective_owner(Some("WEB"), Some(true), Some("DEMO"), true), RiskOwner::Web);
+        assert_eq!(effective_owner(Some("WEB"), Some(true), Some("DEMO"), true, None), RiskOwner::Web);
     }
 
     #[test]

@@ -223,7 +223,7 @@ async fn count(pool: &PgPool, sql: &str, bind: &str) -> i64 {
 /// What the engine did to each account of `w`, against the rule.
 async fn assert_engine_acted_exactly_on_its_own(pool: &PgPool, w: &World, authority_name: &str, demo_only: bool, how: &str) {
     for a in &w.accounts {
-        let engine_owns = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode)) == RiskOwner::Rust;
+        let engine_owns = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode), None) == RiskOwner::Rust;
         let label = format!("{how}: {authority_name} demo-only={demo_only} {} {:?}", a.mode, a.kind);
         match a.kind {
             Kind::MarginCall => {
@@ -245,7 +245,7 @@ async fn assert_engine_acted_exactly_on_its_own(pool: &PgPool, w: &World, author
         assert_eq!(t["actor"], "RUST", "{how}: {t}");
     }
     for a in &w.accounts {
-        let engine_owns = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode)) == RiskOwner::Rust;
+        let engine_owns = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode), None) == RiskOwner::Rust;
         assert_eq!(mine.iter().any(|t| t["accountId"] == a.id.as_str()), engine_owns, "{how}: {} {:?} acted on", a.mode, a.kind);
     }
 }
@@ -276,7 +276,7 @@ async fn every_combination_a_fire_for_any_account_acts_only_on_the_ones_the_engi
         for a in &w.accounts {
             let fire = LiveFire { account_id: a.id.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), received: HashMap::new(), source: FireSource::Margin };
             let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_live_fire(&pool, None, fire)).await.unwrap().expect("evaluated or dropped");
-            let engine_owns = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode)) == RiskOwner::Rust;
+            let engine_owns = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode), None) == RiskOwner::Rust;
             assert_eq!(r.not_owner, !engine_owns, "{name}: {} {:?} dropped as not ours", a.mode, a.kind);
         }
         assert_engine_acted_exactly_on_its_own(&pool, &w, authority_name, demo_only, &format!("fire, {name}")).await;
@@ -299,7 +299,7 @@ async fn the_sql_forms_of_the_rule_agree_with_risk_owner_of_on_every_combination
             }
             let listed = authority::rust_owned_account_ids_with_open_positions(&pool).await.unwrap();
             for a in &w.accounts {
-                let rule = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode));
+                let rule = risk_owner_of(Some(authority_name), Some(demo_only), Some(a.mode), None);
                 let label = format!("{authority_name} demo-only={demo_only} {}", a.mode);
                 assert_eq!(listed.contains(&a.id), rule == RiskOwner::Rust, "{label}: the pass's listing");
                 assert_eq!(authority::owner_of_account(&pool, &a.id).await.unwrap(), Some(rule), "{label}: owner_of_account");

@@ -289,7 +289,7 @@ pub async fn place_market_order(
     // rather than on the environment variable. Checked the moment the one read comes back and before
     // anything at all is written, so a LIVE account on the list leaves no trace either.
     if let Some(snap) = &snapshot {
-        if !ingress::mode_allowed(&snap.gates.account_mode) {
+        if !ingress::mode_allowed(&snap.gates.account_mode, snap.gates.allowlist_on, snap.gates.engine_live_enabled) {
             return Err(PlaceOrderError::IngressDemoOnly(req.account_id.clone()));
         }
     }
@@ -1327,10 +1327,10 @@ pub async fn close_positions_bulk(
     if !ingress::allows(account_id) {
         return Ok(all(|| ClosePositionOutcome::NotScoped));
     }
-    let Some(mode) = db::account_mode(pool, account_id).await? else {
+    let Some((mode, allowlist_on, engine_live)) = db::account_gate(pool, account_id).await? else {
         return Ok(all(|| ClosePositionOutcome::NotFound));
     };
-    if !ingress::mode_allowed(&mode) {
+    if !ingress::mode_allowed(&mode, allowlist_on, engine_live) {
         return Ok(all(|| ClosePositionOutcome::NotDemo));
     }
     if items.is_empty() {
@@ -1518,10 +1518,10 @@ async fn close_position_on_book(
     if !ingress::allows(account_id) {
         return Ok(ClosePositionOutcome::NotScoped);
     }
-    let Some(mode) = db::account_mode(pool, account_id).await? else {
+    let Some((mode, allowlist_on, engine_live)) = db::account_gate(pool, account_id).await? else {
         return Ok(ClosePositionOutcome::NotFound);
     };
-    if !ingress::mode_allowed(&mode) {
+    if !ingress::mode_allowed(&mode, allowlist_on, engine_live) {
         return Ok(ClosePositionOutcome::NotDemo);
     }
 

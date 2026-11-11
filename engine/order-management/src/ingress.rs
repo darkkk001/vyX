@@ -59,8 +59,30 @@ pub fn restricted() -> bool {
 /// FILLED: the allow-list was the engine's only condition, so the one realistic mistake -- pasting the
 /// wrong id into an environment variable -- went straight through. The list is a human artefact; this
 /// is the database's own answer about the account, and it is why both are checked.
-pub fn mode_allowed(account_mode: &str) -> bool {
-    !restricted() || account_mode == "DEMO"
+pub fn mode_allowed(account_mode: &str, allowlist_on: bool, engine_live_enabled: bool) -> bool {
+    !restricted() || account_mode == "DEMO" || engine_live_allowed(account_mode, allowlist_on, engine_live_enabled)
+}
+
+/// THE live-cutover rule, and the only thing that lets a LIVE account onto this path
+/// (docs/ENGINE-LIVE-ALLOWLIST.md, owner 2026-11-11). DORMANT: both columns default false, so this is
+/// false for every account in the database today and `mode_allowed` above is byte-for-byte the rule it
+/// has always been.
+///
+/// THREE conditions, all required, and the two flags are COLUMNS rather than anything this process can
+/// be told: `Broker."engineLiveAllowlistOn"` is the broker-wide switch and `Account."engineLiveEnabled"`
+/// is that one account's entry. Anything missing, NULL, unknown or false is NOT ALLOWED -- the caller
+/// passes `false` for a column that is absent (see `db::allowlist_columns`), which is the same answer.
+///
+/// THE ENVIRONMENT LIST IS NOT PART OF THIS, deliberately. `ENGINE_INGRESS_ACCOUNT_IDS` stays what it
+/// has always been -- the trial SCOPE -- and on its own it can never make a LIVE account eligible. That
+/// separation is the whole point of the L2 Step 3 finding: a live id was pasted onto the list and FILLED,
+/// because the list was the only condition. Now the list narrows, and these two columns admit.
+///
+/// The identical rule is `lib/risk-authority.ts engineLiveAllowed` in the web and `engineLiveAllowed` in
+/// the gateway's `src/ingress-scope.ts`; all three are pinned to the same 324-case matrix in
+/// `lib/engine-live-allowlist-cases.json`.
+pub fn engine_live_allowed(account_mode: &str, allowlist_on: bool, engine_live_enabled: bool) -> bool {
+    account_mode == "LIVE" && allowlist_on && engine_live_enabled
 }
 
 /// Is a restriction installed at all, and how many accounts does it name? For start-up logging and the

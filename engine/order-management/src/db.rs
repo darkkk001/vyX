@@ -188,6 +188,12 @@ pub struct GateInputs {
     /// (`ingress::mode_allowed`), which is checked on the database's answer rather than on the
     /// environment variable someone maintained by hand. Costs nothing: it rides the one read.
     pub account_mode: String,
+    /// `Broker."engineLiveAllowlistOn"` and `Account."engineLiveEnabled"` -- the live-cutover allowlist
+    /// (docs/ENGINE-LIVE-ALLOWLIST.md). Both are `false` on every row today and on any database whose
+    /// migration has not run, so the ingress rule they feed is unchanged. They ride the SAME read as
+    /// `account_mode` on purpose: the rule must be decided on one consistent answer.
+    pub allowlist_on: bool,
+    pub engine_live_enabled: bool,
     // aggregates
     /// The broker's OPEN client volume: the coverage account, COVERAGE groups and internal accounts are
     /// excluded, because those are the broker's own hedge legs and not client exposure (the web's audit
@@ -326,6 +332,8 @@ pub(crate) fn gate_inputs_from_row(r: &sqlx::postgres::PgRow) -> Result<GateInpu
         symbol_quote_currency: r.try_get("symbol_quote_currency")?,
         account_currency: r.try_get("account_currency")?,
         account_mode: r.try_get("account_mode")?,
+        allowlist_on: r.try_get("allowlist_on")?,
+        engine_live_enabled: r.try_get("engine_live_enabled")?,
         broker_open_volume: r.try_get("broker_open_volume")?,
         realized_today: r.try_get("realized_today")?,
         broker_day_start: r.try_get("broker_day_start")?,
@@ -416,6 +424,9 @@ pub async fn get_open_snapshot(
     use sqlx::Row;
     let opposite = if side == OrderSide::Buy { "SELL" } else { "BUY" };
     let broker_day = r#"((date_trunc('day', (now() AT TIME ZONE 'UTC') + make_interval(secs => $5)) - make_interval(secs => $5)) AT TIME ZONE 'UTC')"#;
+    let mut gate_conn = pool.acquire().await?;
+    let allowlist_select = allowlist_columns(&mut gate_conn).await;
+    drop(gate_conn);
     let sql = format!(
         r#"WITH cfg AS MATERIALIZED (
              SELECT
@@ -471,6 +482,13 @@ pub async fn get_open_snapshot(
                sym."quoteCurrency" AS symbol_quote_currency,
                a.currency AS account_currency,
                a."accountMode"::text AS account_mode,
+               -- live cutover (DORMANT, docs/ENGINE-LIVE-ALLOWLIST.md): the two columns the DEMO-only
+               -- rule now also consults. Selected here, on the SAME read that already answers
+               -- `account_mode`, because the decision must be made on one consistent answer -- never on
+               -- an env list and never on a cache older than the request. `{allowlist_select}` is
+               -- either the real columns or the constant `false`s, depending on whether the migration
+               -- has run; see `allowlist_columns`.
+               {allowlist_select}
                COALESCE((SELECT SUM(p.volume) FROM "Position" p
                            JOIN "Account" pa ON pa.id = p."accountId"
                            LEFT JOIN "Group" pg ON pg.id = pa."groupId"
@@ -527,6 +545,7 @@ pub async fn get_open_snapshot(
              LEFT JOIN (SELECT {columns}, p."openedAt" AS opened_at {from} WHERE p."accountId" = $2 AND p.status = 'OPEN') pos ON true
             ORDER BY pos.opened_at, pos.id"#,
         broker_day = broker_day,
+        allowlist_select = allowlist_select,
         columns = crate::book::POSITION_COLUMNS,
         from = crate::book::POSITION_FROM,
     );
@@ -1325,14 +1344,71 @@ pub struct PositionRow {
     pub contract_size: Decimal,
 }
 
+/// Does this database have the live-allowlist columns yet?
+///
+/// The same shape as `book::amount_columns`, and for the same reason: the two columns arrive with
+/// migration 20261111140000_engine_live_allowlist, and a SELECT of a column that is not there is a
+/// 42703 that fails the WHOLE read -- so an engine deployed before the migration would refuse every
+/// fill rather than fail closed on one rule. Absent is cached for 30 s and present is cached for good,
+/// so the migration can run under a live engine and be picked up without a restart.
+///
+/// Absent therefore means "`false` for both", which by the rule in `ingress::engine_live_allowed` is
+/// exactly today's DEMO-only behaviour. That is the fail-closed answer, not a degraded one.
+static ALLOWLIST_COLUMNS: std::sync::Mutex<(Option<bool>, Option<std::time::Instant>)> =
+    std::sync::Mutex::new((None, None));
+
+const ALLOWLIST_SELECT_PRESENT: &str =
+    r#"b."engineLiveAllowlistOn" AS allowlist_on, a."engineLiveEnabled" AS engine_live_enabled,"#;
+const ALLOWLIST_SELECT_ABSENT: &str =
+    "false AS allowlist_on, false AS engine_live_enabled,";
+
+pub async fn allowlist_columns(conn: &mut sqlx::PgConnection) -> &'static str {
+    let cached = *ALLOWLIST_COLUMNS.lock().unwrap_or_else(|e| e.into_inner());
+    match cached {
+        (Some(true), _) => return ALLOWLIST_SELECT_PRESENT,
+        (Some(false), Some(at)) if at.elapsed() < std::time::Duration::from_secs(30) => return ALLOWLIST_SELECT_ABSENT,
+        _ => {}
+    }
+    let found: Result<(i64,), _> = sqlx::query_as(
+        r#"SELECT count(*) FROM information_schema.columns
+           WHERE table_schema = current_schema()
+             AND ((table_name = 'Broker'  AND column_name = 'engineLiveAllowlistOn')
+               OR (table_name = 'Account' AND column_name = 'engineLiveEnabled'))"#,
+    )
+    .fetch_one(&mut *conn)
+    .await;
+    match found {
+        Ok((2,)) => {
+            *ALLOWLIST_COLUMNS.lock().unwrap_or_else(|e| e.into_inner()) = (Some(true), None);
+            tracing::info!("engine live allowlist columns present: the LIVE cutover rule is READABLE (both columns still default false, so nothing is enabled by this alone)");
+            ALLOWLIST_SELECT_PRESENT
+        }
+        _ => {
+            *ALLOWLIST_COLUMNS.lock().unwrap_or_else(|e| e.into_inner()) = (Some(false), Some(std::time::Instant::now()));
+            ALLOWLIST_SELECT_ABSENT
+        }
+    }
+}
+
 /// The account's mode as the DATABASE says it, for the ingress DEMO-only rule. Read here rather than
 /// taken from a caller: `ingress`'s own doc says the list is a human artefact and this check is not.
-pub async fn account_mode(pool: &PgPool, account_id: &str) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> = sqlx::query_as(r#"SELECT "accountMode"::text FROM "Account" WHERE id = $1"#)
+/// Returns the mode AND the two allowlist columns, because every caller of this decides the ingress
+/// rule and that rule now needs all three from ONE answer. Reading the flags separately would let an
+/// account's mode and its entry come from two different instants.
+pub async fn account_gate(pool: &PgPool, account_id: &str) -> Result<Option<(String, bool, bool)>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    let cols = allowlist_columns(&mut conn).await;
+    let sql = format!(
+        r#"SELECT a."accountMode"::text, {cols} TRUE AS _ignored
+             FROM "Account" a
+             JOIN "Broker" b ON b.id = a."brokerId"
+            WHERE a.id = $1"#
+    );
+    let row: Option<(String, bool, bool, bool)> = sqlx::query_as(&sql)
         .bind(account_id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?;
-    Ok(row.map(|(m,)| m))
+    Ok(row.map(|(m, on, en, _)| (m, on, en)))
 }
 
 /// One Prisma-book position's status, scoped to its account. Used only on the miss path of the manual
