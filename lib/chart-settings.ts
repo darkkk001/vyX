@@ -107,7 +107,9 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   candleDownBorderColor: "#ef5350",
   candleUpWickColor: "#26a69a",
   candleDownWickColor: "#ef5350",
-  showGrid: true,
+  // Defaults OFF (owner 2026-11-12, terminal 1.0.111: every broker's chart starts without a grid; "Show grid" in the chart menu turns it on).
+  // Like showSessionHighLow, this reaches accounts that never saved a chart setting; a saved blob keeps its explicit value.
+  showGrid: false,
   showLastPriceLine: true,
   // Defaults OFF -- was on for every trader with no saved preference,
   // cluttering every chart by default. Unlike `theme` above, this one
