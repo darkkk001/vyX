@@ -224,9 +224,9 @@
 .r-method.is-selected { background: var(--r-gold-tint); border: 1.5px solid var(--r-accent); }
 .r-method:disabled { cursor: not-allowed; opacity: 0.55; }
 .r-method-name { font-size: 14px; font-weight: 600; }
-.r-method-line { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; line-height: 17px; min-height: 17px; color: var(--r-text-2); white-space: nowrap; }
-.r-method-line > span:first-child { flex-shrink: 0; }
-.r-method-line > .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.r-method-line { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 11.5px; line-height: 17px; min-height: 17px; color: var(--r-text-2); }
+.r-method-line > span:first-child { flex-shrink: 0; white-space: nowrap; }
+.r-method-line > .mono { min-width: 0; text-align: right; overflow-wrap: anywhere; }
 /* identity not verified (owner 2026-11-12): every card shown, none can be picked, each with the reason and a Verify now link */
 .r-method.is-locked { cursor: default; }
 .r-method.is-locked .r-method-name, .r-method.is-locked .r-method-line { opacity: 0.6; }

@@ -66,13 +66,17 @@ describe("Deposit and Withdraw layout", () => {
     expect(s).not.toMatch(/lines\.filter/);
     expect(s).toMatch(/: <span key=\{k\} className="r-method-line" aria-hidden="true" \/>/);
   });
-  it("every card the same height, slots one line tall, the Not available badge pinned at the bottom", () => {
+  it("every card the same height, slots at least one line tall, the Not available badge pinned at the bottom", () => {
     const css = src("app/(broker)/room/room.css");
     expect(css).toMatch(/\.r-method-grid \{[^}]*grid-auto-rows: 1fr;/);
     expect(css).toMatch(/\.r-method-line \{[^}]*min-height: 17px;/);
     expect(css).toMatch(/\.r-method-chip \{[^}]*margin-top: auto;/);
-    // one line per slot: a long value is cut with an ellipsis (full text on hover), never wraps the card out of line
-    expect(css).toMatch(/\.r-method-line \{[^}]*white-space: nowrap;/);
+    // owner 2026-11-12 (Neteller "Instant-24 hours" was cut off): a long value wraps to a second line, never cut;
+    // the label stays on one line, and grid-auto-rows 1fr keeps every card the height of the tallest
+    expect(css).not.toMatch(/\.r-method-line \{[^}]*white-space: nowrap;/);
+    expect(css).toContain(".r-method-line > span:first-child { flex-shrink: 0; white-space: nowrap; }");
+    expect(css).toContain(".r-method-line > .mono { min-width: 0; text-align: right; overflow-wrap: anywhere; }");
+    expect(css).not.toMatch(/\.r-method-line > \.mono \{[^}]*(ellipsis|overflow: hidden)/);
   });
 });
 
