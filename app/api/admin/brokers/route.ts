@@ -68,6 +68,7 @@ export async function GET() {
       supportEmail: b.supportEmail,
       logoUrl: b.logoUrl,
       primaryColor: b.primaryColor,
+      wordmark: b.wordmark ?? null,
       emailFromDomain: b.emailFromDomain,
       emailFromAddress: b.emailFromAddress,
       emailFromName: b.emailFromName,

@@ -8,6 +8,8 @@ import { Prisma } from "@prisma/client";
 import { withRequestKey, withTwinGuard, withClientLock, twinSince, twinAmount } from "@/lib/room/request-key";
 import { depositCooldowns, depositView, pendingDeposit } from "@/lib/room/deposit-status";
 import { countdown } from "@/components/room/money-input";
+import { ensureWallet, WalletUnavailable } from "@/lib/room/wallet";
+import { WALLET_KEY, NEW_WALLET_NUMBER } from "@/lib/room/wallet-key";
 
 // POST {key, accountId, methodId, amount, reference, receipt?}: a deposit request to the broker (approved in the backoffice).
 // The receipt is an image or PDF as a data URL, at most 8 MB. After a request, the same client sends no other deposit with
@@ -27,10 +29,27 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   // one request per form load (body.key), and never two identical pending deposits within 60 s (lib/room/request-key.ts)
   return withRequestKey(session.clientId, "DEPOSIT", body?.key, async () => {
-    const account = await ownAccount(session, body?.accountId);
+    // "wallet" = the funding wallet, created by this first deposit request if the client has none yet (owner 2026-11-12)
+    const toWallet = body?.accountId === WALLET_KEY;
+    let account = toWallet ? null : await ownAccount(session, body?.accountId);
+    if (!toWallet && !account) return NextResponse.json({ error: "Account not found." }, { status: 404 });
+    if (account && account.accountMode !== "LIVE") return NextResponse.json({ error: "Demo accounts are not funded." }, { status: 400 });
+    // identity first (owner 2026-11-12): a client sends a deposit request only once KYC is approved. Staff deposits from
+    // the backoffice do not come through here and are never held by it.
+    const kyc = await prisma.clientKycRecord.findUnique({ where: { clientId: session.clientId }, select: { status: true } });
+    if (kyc?.status !== "APPROVED") return NextResponse.json({ error: "Verify your identity to deposit.", code: "KYC_REQUIRED" }, { status: 403 });
+    if (toWallet) {
+      try {
+        account = await ownAccount(session, (await ensureWallet(session.clientId, session.brokerId)).id);
+      } catch (e) {
+        if (e instanceof WalletUnavailable) return NextResponse.json({ error: e.message }, { status: 409 });
+        throw e;
+      }
+      if (!account) return NextResponse.json({ error: "The wallet is not available right now." }, { status: 409 });
+    }
     if (!account) return NextResponse.json({ error: "Account not found." }, { status: 404 });
-    if (account.accountMode !== "LIVE") return NextResponse.json({ error: "Demo accounts are not funded." }, { status: 400 });
-    if (!isPaymentReference(body?.reference, account.accountNumber)) return NextResponse.json({ error: "Reload the page for a new payment reference." }, { status: 400 });
+    const refOk = isPaymentReference(body?.reference, account.accountNumber) || (toWallet && isPaymentReference(body?.reference, NEW_WALLET_NUMBER));
+    if (!refOk) return NextResponse.json({ error: "Reload the page for a new payment reference." }, { status: 400 });
     let receipt: string | null = null;
     if (body?.receipt != null && body.receipt !== "") {
       if (typeof body.receipt !== "string" || body.receipt.length > MAX_RECEIPT_CHARS || !RECEIPT.test(body.receipt)) {

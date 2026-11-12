@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import RoomLogo from "./RoomLogo";
+import type { WordmarkStyle } from "@/lib/room/wordmark";
 
 // Artboard "Onboarding": the broker's brand line, the 4-step strip (Register, Personal details, Verification, Fund
 // account) and the step's own content in a 680 px column.
@@ -34,11 +35,11 @@ export function OnboardingSteps({ step }: { step: number }) {
 }
 
 /** `step` given = the strip is drawn here; left out = the page's own content draws it (it moves on the client). */
-export default function Onboarding({ brokerName, logoUrl, step, right, children }: { brokerName: string; logoUrl: string | null; step?: number; right: ReactNode; children: ReactNode }) {
+export default function Onboarding({ brokerName, logoUrl, wordmark = null, step, right, children }: { brokerName: string; logoUrl: string | null; wordmark?: WordmarkStyle | null; step?: number; right: ReactNode; children: ReactNode }) {
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", padding: "18px 40px", borderBottom: "1px solid var(--r-line)" }}>
-        <a className="r-brand" href="/room" style={{ padding: 0 }}><RoomLogo name={brokerName} logoUrl={logoUrl} size="sm" /></a>
+        <a className="r-brand" href="/room" style={{ padding: 0 }}><RoomLogo name={brokerName} logoUrl={logoUrl} wordmark={wordmark} size="sm" /></a>
         <div style={{ fontSize: 13, color: "var(--r-text-2)" }}>{right}</div>
       </header>
       <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "44px 24px" }}>

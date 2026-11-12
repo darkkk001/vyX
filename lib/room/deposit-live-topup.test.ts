@@ -40,6 +40,8 @@ afterAll(async () => { if (dbReachable) await prisma.$disconnect(); });
 async function client(mode: "LIVE" | "DEMO" = "LIVE", balance = 0) {
   const n = ++seq;
   const c = await prisma.client.create({ data: { brokerId, email: `dl-${n}-${s}@t.local`, passwordHash: "x", fullName: "Dl Test" } });
+  // a client deposits only once KYC is approved (owner 2026-11-12)
+  await prisma.clientKycRecord.create({ data: { clientId: c.id, status: "APPROVED", documentType: "passport", documentFrontUrl: "x" } });
   const a = await prisma.account.create({ data: { brokerId, clientId: c.id, accountNumber: `5${Date.now() % 1_000_000}${n}`, email: c.email, passwordHash: "x", fullName: "Dl Test", accountMode: mode, groupId, leverage: 100, balance } });
   const { roomApiSession } = await import("@/lib/room/context");
   vi.mocked(roomApiSession).mockResolvedValue({ session: { clientId: c.id, brokerId, broker: { id: brokerId } } } as never);

@@ -19,6 +19,7 @@ import BridgeLicenses from "./BridgeLicenses";
 import OrderRateLimit from "./OrderRateLimit";
 import LpTimeouts from "./LpTimeouts";
 import StaffTwoFactorPolicy from "./StaffTwoFactorPolicy";
+import { partsFromSplitText, type WordmarkStyle } from "@/lib/room/wordmark";
 
 export type BrokerRow = {
   id: string;
@@ -41,6 +42,7 @@ export type BrokerRow = {
   supportEmail: string | null;
   logoUrl: string | null;
   primaryColor: string | null;
+  wordmark: WordmarkStyle | null;
   emailFromDomain: string | null;
   emailFromAddress: string | null;
   emailFromName: string | null;
@@ -196,6 +198,13 @@ export default function BrokersManager() {
   const [detailPrimaryColorBusy, setDetailPrimaryColorBusy] = useState(false);
   const [detailPrimaryColorError, setDetailPrimaryColorError] = useState<string | null>(null);
 
+  // --- Wordmark (Tenant detail modal), owner 2026-11-12: how the name is split, which part is in the brand colour, capitals ---
+  const [wordmarkSplit, setWordmarkSplit] = useState("");
+  const [wordmarkAccent, setWordmarkAccent] = useState(0);
+  const [wordmarkCaps, setWordmarkCaps] = useState(true);
+  const [wordmarkBusy, setWordmarkBusy] = useState(false);
+  const [wordmarkError, setWordmarkError] = useState<string | null>(null);
+
   // --- Transactional email (Tenant detail modal) -- see lib/email/adapter.ts ---
   const [emailFromDomainInput, setEmailFromDomainInput] = useState("");
   const [emailFromAddressInput, setEmailFromAddressInput] = useState("");
@@ -219,6 +228,10 @@ export default function BrokersManager() {
     setDetailLogoError(null);
     setDetailPrimaryColorInput(row.primaryColor ?? "#1e8a5f");
     setDetailPrimaryColorError(null);
+    setWordmarkSplit(row.wordmark ? row.wordmark.parts.join("|") : row.name);
+    setWordmarkAccent(row.wordmark ? row.wordmark.accent : 0);
+    setWordmarkCaps(row.wordmark ? row.wordmark.caps : true);
+    setWordmarkError(null);
     setEmailFromDomainInput(row.emailFromDomain ?? "");
     setEmailFromAddressInput(row.emailFromAddress ?? "");
     setEmailFromNameInput(row.emailFromName ?? "");
@@ -404,6 +417,29 @@ export default function BrokersManager() {
     const { primaryColor } = (await response.json()) as { primaryColor: string | null };
     setDetailTarget((prev) => (prev ? { ...prev, primaryColor } : prev));
     setDetailPrimaryColorInput(primaryColor ?? "#1e8a5f");
+    reload().catch(() => {});
+  }
+
+  // null = back to the default look (first word in the brand colour, capitals)
+  async function saveWordmark(reset: boolean) {
+    if (!detailTarget) return;
+    setWordmarkBusy(true);
+    setWordmarkError(null);
+    const wordmark = reset ? null : { parts: partsFromSplitText(wordmarkSplit), accent: wordmarkAccent, caps: wordmarkCaps };
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wordmark }),
+    });
+    setWordmarkBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setWordmarkError(body.error ?? "failed to save");
+      return;
+    }
+    const { wordmark: saved } = (await response.json()) as { wordmark: WordmarkStyle | null };
+    setDetailTarget((prev) => (prev ? { ...prev, wordmark: saved } : prev));
+    if (reset) { setWordmarkSplit(detailTarget.name); setWordmarkAccent(0); setWordmarkCaps(true); }
     reload().catch(() => {});
   }
 
@@ -811,6 +847,36 @@ export default function BrokersManager() {
                 </Button>
               </div>
               {detailPrimaryColorError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{detailPrimaryColorError}</p> : null}
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Input
+                  placeholder="Qore|Trader"
+                  value={wordmarkSplit}
+                  onChange={(e) => setWordmarkSplit(e.target.value)}
+                  title="The name as it is drawn, split with | (the parts must spell the name)"
+                  className="w-44"
+                />
+                <select
+                  value={wordmarkAccent}
+                  onChange={(e) => setWordmarkAccent(Number(e.target.value))}
+                  title="Part in the brand colour"
+                  className="h-9 rounded border border-[var(--border)] bg-[var(--bg-2)] px-2 text-sm"
+                >
+                  <option value={-1}>No accent</option>
+                  {partsFromSplitText(wordmarkSplit).map((p, i) => <option key={i} value={i}>Accent: {p.trim() || `part ${i + 1}`}</option>)}
+                </select>
+                <label className="flex items-center gap-1.5 text-sm">
+                  <input type="checkbox" checked={wordmarkCaps} onChange={(e) => setWordmarkCaps(e.target.checked)} />
+                  Capitals
+                </label>
+                <Button size="sm" variant="primary" disabled={wordmarkBusy} onClick={() => saveWordmark(false)}>
+                  {wordmarkBusy ? "Saving..." : "Save wordmark"}
+                </Button>
+                <Button size="sm" variant="ghost" disabled={wordmarkBusy || !detailTarget.wordmark} onClick={() => saveWordmark(true)}>
+                  Default
+                </Button>
+              </div>
+              {wordmarkError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{wordmarkError}</p> : null}
             </ModalSection>
 
             <ModalSection label="Tenant lifecycle">

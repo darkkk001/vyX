@@ -9,9 +9,12 @@ import { useFunds, amountOk, cleanAmount, useSendOnce } from "@/components/room/
 import AmountInput from "@/components/room/AmountInput";
 import FundsDone from "@/components/room/FundsDone";
 import { money, dayTime } from "@/components/room/format";
+import { WALLET_KEY } from "@/lib/room/wallet-key";
 
 // Artboard "Withdraw": from-account + available amount, saved own-name payout methods, request to the broker,
-// verification card, processing card, pending requests.
+// verification card, processing card, pending requests. Owner 2026-11-12 (as Deposit): From = the funding wallet (also
+// before it exists, with nothing to withdraw) and the live accounts; the method cards always show, locked with "Verify
+// your identity to withdraw" until KYC is approved.
 const KYC_CARD: Record<string, { status: string; text: string }> = {
   APPROVED: { status: "Approved", text: "Your account is verified. Withdrawal requests go straight to processing." },
   PENDING: { status: "Under review", text: "Your documents are under review. Withdrawals open once they are approved." },
@@ -29,18 +32,25 @@ const NETWORKS = [
 export default function RoomWithdraw() {
   const { data, selected, select, refresh } = useRoom();
   const live = useMemo(() => (data?.accounts ?? []).filter((a) => a.mode === "LIVE"), [data]);
-  const wallet = data?.wallet ?? null;
-  const [fromWallet, setFromWallet] = useState(false);
+  const sources = useMemo(() => {
+    if (!data) return [];
+    const w = data.wallet;
+    const wallet = { key: WALLET_KEY, id: w?.id ?? WALLET_KEY, label: "Funding wallet", currency: w?.currency ?? data.walletCurrency ?? "USD", balance: w?.figures.balance ?? "0" };
+    return [wallet, ...live.map((a) => ({ key: a.id, id: a.id, label: a.accountNumber, currency: a.currency, balance: a.figures.balance }))];
+  }, [data, live]);
+  const [sourceKey, setSourceKey] = useState<string | null>(null);
   const picked = useRef(false);
-  // ?account=<id> from a Withdraw button elsewhere picks that account once
+  // ?account=<id> from a Withdraw button elsewhere picks that account once; else the live account picked in the top bar,
+  // else the first live account, else the funding wallet
   useEffect(() => {
     if (picked.current || !data) return;
     picked.current = true;
     const wanted = new URLSearchParams(window.location.search).get("account");
-    if (wanted && wanted === data.wallet?.id) setFromWallet(true);
-    else if (wanted && data.accounts.some((a) => a.id === wanted)) select(wanted);
-  }, [data, select]);
-  const account = fromWallet && wallet ? wallet : selected?.mode === "LIVE" ? selected : live[0] ?? wallet;
+    if (wanted && (wanted === data.wallet?.id || wanted === WALLET_KEY)) setSourceKey(WALLET_KEY);
+    else if (wanted && live.some((a) => a.id === wanted)) setSourceKey(wanted);
+    else setSourceKey(selected?.mode === "LIVE" ? selected.id : live[0]?.id ?? WALLET_KEY);
+  }, [data, live, selected]);
+  const account = sources.find((s) => s.key === sourceKey) ?? null;
   const { funds, reload, setFunds } = useFunds(account?.id);
   const [amount, setAmount] = useState("");
   const [payoutId, setPayoutId] = useState("");
@@ -126,8 +136,8 @@ export default function RoomWithdraw() {
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
             <div className="r-field r-field-fixed">
               <label htmlFor="wacct" style={label}>From account</label>
-              <select id="wacct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.id ?? ""} disabled={busy} onChange={(e) => { const isWallet = e.target.value === wallet?.id; setFromWallet(isWallet); if (!isWallet) select(e.target.value); setMsg(null); }}>
-                {[...live, ...(wallet ? [wallet] : [])].map((a) => <option key={a.id} value={a.id}>{`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`}</option>)}
+              <select id="wacct" className="r-input mono" style={{ fontSize: 13, padding: "11px 12px" }} value={account?.key ?? ""} disabled={busy} onChange={(e) => { const k = e.target.value; setSourceKey(k); if (k !== WALLET_KEY) select(k); setMsg(null); }}>
+                {sources.map((a) => <option key={a.key} value={a.key}>{`${a.label} · ${money(a.balance)} ${a.currency}`}</option>)}
               </select>
               <div style={{ fontSize: 11.5, color: "var(--r-muted)" }}>Available for withdrawal: <span className="mono" style={{ color: "var(--r-text)" }}>{funds ? `${money(funds.available)} ${ccy}` : "0.00"}</span></div>
             </div>
@@ -141,7 +151,7 @@ export default function RoomWithdraw() {
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div className="r-label">Payout method</div>
-            <MethodGrid side="withdraw" methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={ccy} onSelect={(id) => { setMethodId(id); setPayoutId(""); setAdding(false); setAddMsg(""); setMsg(null); }} />
+            <MethodGrid side="withdraw" locked={kycStatus !== "APPROVED"} methods={funds?.methods ?? []} selectedId={method?.id ?? null} currency={ccy} onSelect={(id) => { setMethodId(id); setPayoutId(""); setAdding(false); setAddMsg(""); setMsg(null); }} />
             {saved.map((p) => {
               const sel = payout?.id === p.id;
               return (

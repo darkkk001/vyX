@@ -16,13 +16,29 @@ const limits = (t: { min: string; max: string | null }, ccy: string) => {
 
 // waits (Deposit, owner 2026-11-10): method id -> until when this client sends no other deposit with it; the card shows
 // "Next request in 4:32" at the badge spot. now = the page's clock, corrected to the server's.
-export default function MethodGrid({ methods, selectedId, currency, side = "deposit", onSelect, waits, now }: { methods: FundsMethod[]; selectedId: string | null; currency: string; side?: "deposit" | "withdraw"; onSelect: (id: string) => void; waits?: Record<string, string>; now?: number }) {
+// locked (owner 2026-11-12): the client's identity is not verified yet, so every card is shown but none can be picked;
+// each says why ("Verify your identity to deposit") with a "Verify now" link. A card is then not a button (a link
+// inside a button is not valid), only a panel.
+export default function MethodGrid({ methods, selectedId, currency, side = "deposit", onSelect, waits, now, locked = false }: { methods: FundsMethod[]; selectedId: string | null; currency: string; side?: "deposit" | "withdraw"; onSelect: (id: string) => void; waits?: Record<string, string>; now?: number; locked?: boolean }) {
   return (
     <div className="r-method-grid">
       {methods.map((m) => {
         const sel = m.available && m.id === selectedId;
         const terms = side === "withdraw" ? m.withdraw : m;
         const lines: [string, string | null][] = [["Processing", terms.processing], ["Fee", m.feeLine ?? "0%"], ["Limits", limits(terms, currency)]];
+        if (locked) {
+          return (
+            <div key={m.id} className="r-method is-locked">
+              <span className="r-method-name">{m.label}</span>
+              {lines.map(([k, v]) => (v ? <span key={k} className="r-method-line"><span>{k}</span><span className="mono" title={v}>{v}</span></span> : <span key={k} className="r-method-line" aria-hidden="true" />))}
+              <span className="r-method-lock">
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1" /><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" /></svg>
+                Verify your identity to {side}
+              </span>
+              <a className="r-method-verify" href="/room/verify">Verify now</a>
+            </div>
+          );
+        }
         return (
           <button key={m.id} type="button" className={`r-method${sel ? " is-selected" : ""}`} disabled={!m.available} aria-pressed={sel} onClick={() => onSelect(m.id)}>
             <span className="r-method-name">{m.label}</span>

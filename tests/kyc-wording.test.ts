@@ -19,7 +19,15 @@ const FORBIDDEN: [string, RegExp][] = [
 
 // Owner-asked exceptions, by file and exact text: the Room avatar menu's "Verify identity" link (owner 2026-11-09, final
 // Futurix Room batch: "name plus a verified badge, ID under it, or a 'Verify identity' link").
-const ALLOWED: [string, string][] = [[path.join("components", "room", "UserMenu.tsx"), ">Verify identity</a>"]];
+// Owner 2026-11-12 (Room client portal + Deposit batch), the owner's exact words: the sign-in panel's "Verify your identity"
+// point and the locked payment methods' "Verify your identity to deposit / to withdraw".
+const ALLOWED: [string, string][] = [
+  [path.join("components", "room", "UserMenu.tsx"), ">Verify identity</a>"],
+  [path.join("components", "room", "AuthBrandPanel.tsx"), '"Verify your identity"'],
+  [path.join("components", "room", "MethodGrid.tsx"), "Verify your identity to {side}"],
+  [path.join("app", "(broker)", "room", "(shell)", "deposit", "page.tsx"), "Verify your identity to deposit. <a"],
+  [path.join("app", "api", "room", "deposit", "route.ts"), '"Verify your identity to deposit."'],
+];
 
 function walk(dir: string, out: string[]) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
