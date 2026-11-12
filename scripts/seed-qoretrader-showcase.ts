@@ -387,7 +387,7 @@ async function main() {
   if (apply && wipe) throw new SeedRefused("--apply and --wipe together: pick one");
   const url = process.env.DATABASE_URL, direct = process.env.DIRECT_URL;
   if (!url || !direct) throw new SeedRefused("DATABASE_URL and DIRECT_URL must both be set in the environment (./.env is not read)");
-  const host = (u: string) => { try { const x = new URL(u); return `${x.hostname}${x.pathname}`; } catch { return ""; } };
+  const host = (u: string) => { try { const x = new URL(u); return `${x.hostname.replace("-pooler.", ".")}${x.pathname}`; } catch { return ""; } };   // a pooled URL's host differs only by "-pooler"; the database name must match
   if (host(url) !== host(direct)) throw new SeedRefused("DATABASE_URL and DIRECT_URL name different databases");
   const mode = apply ? "apply" : wipe ? "wipe" : "dry";
   if (mode !== "dry") {
