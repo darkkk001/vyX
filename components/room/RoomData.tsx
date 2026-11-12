@@ -17,7 +17,7 @@ export type RoomFigures = {
 export type RoomAccount = { nickname: string | null; server: string; readOnlyPassword: boolean; id: string; accountNumber: string; mode: "LIVE" | "DEMO"; plan: string; leverage: number; currency: string; openedAt: string; portalPassword: boolean; figures: RoomFigures };
 export type RoomTx = { id: string; ref: string; at: string; type: string; account: string; method: string; amount: string; currency: string; status: "Completed" | "Pending" | "Rejected" | "Cancelled" };
 export type RoomOverview = {
-  client: { fullName: string; email: string; clientId: string; lastLoginAt: string | null };
+  client: { fullName: string; email: string; clientId: string; lastLoginAt: string | null; avatarUrl?: string | null }; // avatarUrl: a connected Bitmoji
   kyc: { status: "NONE" | "PENDING" | "APPROVED" | "REJECTED"; identity: boolean; address: boolean; rejectionReason: string | null };
   accounts: RoomAccount[];
   wallet: RoomAccount | null;

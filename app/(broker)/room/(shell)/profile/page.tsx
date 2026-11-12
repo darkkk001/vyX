@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
-import { useRoomEvent } from "@/components/room/RoomData";
-import { day, dayTime } from "@/components/room/format";
+import { useRoom, useRoomEvent } from "@/components/room/RoomData";
+import { day, dayTime, initials } from "@/components/room/format";
 
 // Artboard "Profile & security": personal information (locked after KYC), documents, 2FA, password, active sessions.
 type Profile = {
@@ -12,6 +12,17 @@ type Profile = {
   rejectionReason: string | null;
   twoFactorEnabled: boolean;
   sessions: { id: string; device: string; ip: string | null; at: string | null; current: boolean }[];
+  bitmoji: { canConnect: boolean; avatarUrl: string | null } | null; // null = Bitmoji connect is off for this broker
+};
+// what /api/bitmoji/callback (or /start) sent back, as ?bitmoji=<result>
+const BITMOJI_RESULT: Record<string, string> = {
+  connected: "Bitmoji connected.",
+  cancelled: "Bitmoji connect was cancelled.",
+  expired: "That sign-in expired. Try again.",
+  failed: "Could not connect Bitmoji. Try again.",
+  "no-avatar": "No Bitmoji found on that Snapchat account.",
+  verify: "Bitmoji connect is for verified clients only.",
+  off: "Bitmoji connect is not available.",
 };
 const DOC_COLOR: Record<string, string> = { Approved: "var(--r-ok)", "Under review": "var(--r-pending)", Rejected: "var(--r-loss)", "Not uploaded": "var(--r-muted)" };
 const Field = ({ k, v, mono }: { k: string; v: string | null; mono?: boolean }) => (
@@ -34,6 +45,31 @@ export default function RoomProfile() {
   }, []);
   useEffect(() => { void load(); }, [load]);
   useRoomEvent(() => { void load(); });
+  const { refresh } = useRoom();
+
+  // Bitmoji: the result of the connect round trip, read once from the address and then removed from it
+  const [bmMsg, setBmMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [bmBusy, setBmBusy] = useState(false);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const r = url.searchParams.get("bitmoji");
+    if (!r) return;
+    setBmMsg({ ok: r === "connected", text: BITMOJI_RESULT[r] ?? BITMOJI_RESULT.failed });
+    url.searchParams.delete("bitmoji");
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }, []);
+  async function disconnectBitmoji() {
+    if (bmBusy) return;
+    setBmBusy(true);
+    try {
+      const res = await fetch("/api/bitmoji", { method: "DELETE" });
+      setBmMsg(res.ok ? { ok: true, text: "Bitmoji disconnected." } : { ok: false, text: "Could not disconnect. Try again." });
+      if (res.ok) { await load(); await refresh(); }
+    } catch {
+      setBmMsg({ ok: false, text: "No connection. Try again." });
+    }
+    setBmBusy(false);
+  }
 
   // password
   const [cur, setCur] = useState("");
@@ -80,6 +116,18 @@ export default function RoomProfile() {
         <div style={{ flex: "1 1 380px", minWidth: 0, display: "flex", flexDirection: "column", gap: 20 }}>
           <div className="r-card" style={card}>
             <div className="r-label">Personal information</div>
+            {p?.bitmoji && (p.bitmoji.avatarUrl || p.bitmoji.canConnect) ? (
+              <div className="r-bitmoji-row">
+                {p.bitmoji.avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img className="r-avatar r-avatar-img r-avatar-lg" src={p.bitmoji.avatarUrl} alt="Your Bitmoji" referrerPolicy="no-referrer" />
+                ) : <span className="r-avatar r-avatar-lg">{initials(p.personal.fullName)}</span>}
+                {p.bitmoji.avatarUrl ? (
+                  <button type="button" className="r-btn-ghost r-btn-sm" disabled={bmBusy} onClick={disconnectBitmoji}>{bmBusy ? "Disconnecting…" : "Disconnect"}</button>
+                ) : <a className="r-btn r-btn-sm" href="/api/bitmoji/start">Connect Bitmoji</a>}
+              </div>
+            ) : null}
+            {bmMsg ? <div role="status" style={{ fontSize: 12, color: bmMsg.ok ? "var(--r-ok)" : "var(--r-loss)" }}>{bmMsg.text}</div> : null}
             {p ? (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, fontSize: 13 }}>
                 <Field k="Full name" v={p.personal.fullName} />

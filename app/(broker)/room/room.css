@@ -107,6 +107,9 @@
 .r-side-foot { margin-top: auto; padding: 14px 10px 0; border-top: 1px solid var(--r-line); display: flex; flex-direction: column; gap: 10px; }
 .r-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; flex: none; }
 .r-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--r-avatar); color: var(--r-text); display: inline-flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 600; flex: none; }
+.r-avatar-img { object-fit: cover; }
+.r-avatar-lg { width: 56px; height: 56px; font-size: 16px; }
+.r-bitmoji-row { display: flex; align-items: center; gap: 14px; }
 .r-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; }
 .r-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 15px 28px; border-bottom: 1px solid var(--r-line); }
 .r-head h1 { margin: 0; font-family: var(--r-head); font-size: 19px; font-weight: 600; }
