@@ -93,6 +93,7 @@ const ACCOUNT_INFO_FIELDS = [
   "id", "accountNumber", "accountMode", "currency", "leverage", "balance", "credit", "status", "tradingRights", "fullName",
   "twoFactorEnabled", "tradingDayStart", "tradingWeekStart", "tradingDaySource", "marginCallLevel", "stopOutLevel",
   "tradingState", "tradingRestriction", "accountPlan",
+  "avatarUrl",   // terminal 1.0.111: the saved Bitmoji (lib/room/bitmoji.ts shownAvatar) or null
   "nickname",   // owner 2026-11-10: the client's own account label (Trader's Room); the terminal header and share card show it over fullName
 ] as const;
 

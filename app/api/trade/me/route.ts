@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { tradingDayStart, tradingWeekStart } from "@/lib/trading-day";
 import { clientAccountInfo } from "@/lib/client-execution";
+import { shownAvatar } from "@/lib/room/bitmoji";
 
 export async function GET() {
   const session = await getAccountSession();
@@ -33,7 +34,9 @@ export async function GET() {
       // displayName = the client-facing account plan (owner 2026-10-23). Group.name is internal ("Dealing", "Reverse"...)
       // and is never selected here: the account strip shows accountPlan.
       group: { select: { marginCallLevel: true, stopOutLevel: true, displayName: true, tradingHaltedAt: true, closeOnlyAt: true, tradingRestriction: true } },
-      broker: { select: { tradingHaltedAt: true, closeOnlyAt: true } },
+      broker: { select: { tradingHaltedAt: true, closeOnlyAt: true, subdomain: true } },
+      // terminal 1.0.111 (owner): the top-bar avatar shows the Bitmoji the client already saved through the Room's Snap connect
+      client: { select: { bitmojiAvatarUrl: true } },
     },
   });
 
@@ -41,7 +44,7 @@ export async function GET() {
     return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
 
-  const { group, broker, ...rest } = account;
+  const { group, broker, client, ...rest } = account;
   // Batch 5: whether this account can trade right now (the broker's or its group's halt / close-only; halted wins),
   // re-read by the terminal on every ConfigChanged so a halt shows at once
   // Per-account trading rights (2026-09-28): READ_ONLY reads as "halted" and CLOSE_ONLY as "close_only", so an installed
@@ -55,5 +58,7 @@ export async function GET() {
   const day = await tradingDayStart();
   return NextResponse.json(clientAccountInfo({ ...rest, tradingDayStart: day.start.toISOString(), tradingWeekStart: tradingWeekStart(day.start).toISOString(), tradingDaySource: day.source, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), accountPlan: group?.displayName ?? "Standard", tradingState,
     // Phase 2 batch 3: the group's side restriction (BOTH / BUY_ONLY / SELL_ONLY), so the ticket disables the side the server refuses
-    tradingRestriction: group?.tradingRestriction ?? "BOTH" }));
+    tradingRestriction: group?.tradingRestriction ?? "BOTH",
+    // the saved Bitmoji, under the same rule the Room uses (flag on for this broker, a Snap avatar URL), else null: the terminal shows the initials
+    avatarUrl: shownAvatar(broker?.subdomain ?? "", client?.bitmojiAvatarUrl) }));
 }
