@@ -363,6 +363,18 @@ export default function WebTrader({
   }, []);
 
   const [account, setAccount] = useState<AccountInfo | null>(null);
+  // the client's Bitmoji from the CRM (GET /api/trade/avatar, owner 2026-11-12); null keeps the badge's digits
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const accountIdForAvatar = account?.id ?? null;
+  useEffect(() => {
+    if (!accountIdForAvatar) return;
+    let live = true;
+    fetch("/api/trade/avatar", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => { if (live) setAvatarUrl(typeof b?.avatarUrl === "string" ? b.avatarUrl : null); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [accountIdForAvatar]);
   const [positions, setPositions] = useState<ApiPosition[]>([]);
   // "Selected" scope for Smart Trade Manager's bulk actions (break-even,
   // partial close, close) -- otherwise unused outside SmartTradeManager.tsx.
@@ -4228,7 +4240,12 @@ export default function WebTrader({
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
               {alerts.length > 0 ? <span className="bell-count">{alerts.length}</span> : null}
             </button>}
-            <div className="avatar">{account?.accountNumber?.slice(-2) ?? ""}</div>
+            {avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element -- Snap's CDN image, same as the Room's top bar
+              <img className="avatar avatar-img" src={avatarUrl} alt="" referrerPolicy="no-referrer" onError={() => setAvatarUrl(null)} />
+            ) : (
+              <div className="avatar">{account?.accountNumber?.slice(-2) ?? ""}</div>
+            )}
           </div>
         </div>
         )}
