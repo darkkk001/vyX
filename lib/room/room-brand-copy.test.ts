@@ -46,7 +46,9 @@ describe("sign-in panel and forms", () => {
   const panel = read("components/room/AuthBrandPanel.tsx");
   const css = read("app/(broker)/room/room.css");
   it("the client portal copy, the old headline and tagline gone", () => {
-    expect(panel).toContain('<div className="r-auth-eyebrow">CLIENT PORTAL</div>');
+    expect(panel).toContain('{eyebrow ? <div className="r-auth-eyebrow">CLIENT PORTAL</div> : null}');
+    // QoreTrader's sign-in drops the label (owner 2026-11-12); register, forgot-password and other brokers keep it
+    expect(read("app/(broker)/room/login/LoginView.tsx")).toContain('<AuthShell broker={broker} eyebrow={broker.subdomain !== "qoretrader"}>');
     expect(panel).toContain('<div className="r-auth-title">{broker.name} Client Portal</div>');
     expect(panel).toContain('["Open live and demo accounts", "Deposit, withdraw and transfer funds", "Verify your identity", "Track your trading and tier"]');
     expect(panel).not.toMatch(/Trade with|every platform/);
