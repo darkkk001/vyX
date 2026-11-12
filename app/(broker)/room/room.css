@@ -285,12 +285,12 @@
 /* "Continue with Google" (owner 2026-11-12): Google's own button colours (dark #131314 / light #FFFFFF), the G mark unchanged */
 .r-or { display: flex; align-items: center; gap: 12px; margin: -6px 0; font-size: 12px; color: var(--r-muted); }
 .r-or::before, .r-or::after { content: ""; flex: 1; height: 1px; background: var(--r-line); }
-.r-google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; height: 42px; border-radius: 4px; text-decoration: none;
+.room .r-google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; height: 42px; border-radius: 4px; text-decoration: none;
   font-family: Roboto, Arial, sans-serif; font-size: 14px; font-weight: 500; letter-spacing: 0.25px;
   background: #131314; color: #E3E3E3; border: 1px solid #8E918F; }
-.r-google-btn:hover { background: #1F1F21; color: #E3E3E3; }
+.room .r-google-btn:hover { background: #1F1F21; color: #E3E3E3; filter: none; }
 .room[data-theme="light"] .r-google-btn { background: #FFFFFF; color: #1F1F1F; border-color: #747775; }
-.room[data-theme="light"] .r-google-btn:hover { background: #F8F8F8; color: #1F1F1F; }
+.room[data-theme="light"] .r-google-btn:hover { background: #F8F8F8; color: #1F1F1F; filter: none; }
 
 @media (min-width: 769px) {
   .r-side.is-rail { flex: 0 0 64px; max-width: 64px; padding: 22px 10px; }

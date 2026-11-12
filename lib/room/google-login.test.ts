@@ -190,5 +190,7 @@ describe("sign-in page", () => {
     expect(read("app/(broker)/room/login/LoginView.tsx")).toContain("const googleOn = googleLoginOn(broker.subdomain);");
     expect(form).toContain('fetch("/api/auth/google/2fa"');
     expect(read("app/(broker)/room/register/RegisterForm.tsx")).toContain("useState(initialEmail)");
+    // Google's own colours win over the room's gold link colour (.room a)
+    expect(read("app/(broker)/room/room.css")).toContain(".room .r-google-btn { display: flex;");
   });
 });
