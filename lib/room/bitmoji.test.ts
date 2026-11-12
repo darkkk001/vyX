@@ -1,16 +1,16 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
-import crypto, { randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
-  BITMOJI_COOKIE, BITMOJI_SCOPE, attemptCookie, bitmojiEnabledFor, isBitmojiAvatarUrl, newConnectAttempt, readAttemptCookie, shownAvatar, snapAuthUrl,
+  BITMOJI_COOKIE, BITMOJI_SCOPE, attemptCookie, bitmojiEnabledFor, isBitmojiAvatarUrl, newConnectState, readAttemptCookie, shownAvatar, snapAuthUrl,
 } from "@/lib/room/bitmoji";
 
 // Bitmoji connect, test version (owner 2026-11-12): QoreTrader only, behind BITMOJI_CONNECT_ENABLED; a verified client
-// connects through Snap Login Kit (public client, PKCE), the avatar's image URL is saved on Client, Disconnect brings
-// the initials back. Routes run against a real database; Snap's two endpoints are stubbed.
+// connects through Snap Login Kit web with the URL Snap's own SDK builds (implicit grant), the avatar's image URL is
+// saved on Client, Disconnect brings the initials back. Routes run against a real database; Snap's /v1/me is stubbed.
 vi.mock("@/lib/room/context", async (importActual) => ({ ...(await importActual<typeof import("@/lib/room/context")>()), roomApiSession: vi.fn() }));
 
 const read = (p: string) => readFileSync(p, "utf8");
@@ -42,28 +42,32 @@ async function start() {
   const { GET } = await import("@/app/api/bitmoji/start/route");
   return GET(new NextRequest("https://t.local/api/bitmoji/start", { headers: { "x-forwarded-proto": "https", host: "t.local" } }));
 }
-async function callback(query: string, cookie?: string) {
+async function landing(query: string) {
   const { GET } = await import("@/app/api/bitmoji/callback/route");
-  const headers: Record<string, string> = { "x-forwarded-proto": "https", host: "t.local" };
-  if (cookie) headers.cookie = `${BITMOJI_COOKIE}=${cookie}`;
-  return GET(new NextRequest(`https://t.local/api/bitmoji/callback?${query}`, { headers }));
+  return GET(new NextRequest(`https://t.local/api/bitmoji/callback${query ? `?${query}` : ""}`, { headers: { "x-forwarded-proto": "https", host: "t.local" } }));
 }
-/** Snap stubbed: the token endpoint and /v1/me; records what was sent. */
-function stubSnap(avatar: unknown = AVATAR, tokenStatus = 200) {
+/** What the landing page's form posts: the fragment's access_token, state and error. */
+async function callback(fields: Record<string, string>, cookie?: string) {
+  const { POST } = await import("@/app/api/bitmoji/callback/route");
+  const headers: Record<string, string> = { "x-forwarded-proto": "https", host: "t.local", "content-type": "application/x-www-form-urlencoded" };
+  if (cookie) headers.cookie = `${BITMOJI_COOKIE}=${cookie}`;
+  return POST(new NextRequest("https://t.local/api/bitmoji/callback", { method: "POST", headers, body: new URLSearchParams({ access_token: "", state: "", error: "", ...fields }).toString() }));
+}
+/** Snap stubbed: /v1/me; records what was sent. */
+function stubSnap(avatar: unknown = AVATAR, meStatus = 200) {
   const calls: { url: string; init?: RequestInit }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
-    if (url.startsWith("https://accounts.snapchat.com/accounts/oauth2/token")) {
-      return new Response(JSON.stringify(tokenStatus === 200 ? { access_token: "tok", token_type: "Bearer", expires_in: 3600 } : { error: "invalid_grant" }), { status: tokenStatus });
+    if (url === "https://kit.snapchat.com/v1/me") {
+      return new Response(JSON.stringify(meStatus === 200 ? { data: { me: { bitmoji: avatar === null ? null : { avatar } } } } : { message: "unauthorized" }), { status: meStatus });
     }
-    if (url === "https://kit.snapchat.com/v1/me") return new Response(JSON.stringify({ data: { me: { bitmoji: avatar === null ? null : { avatar } } } }), { status: 200 });
     return new Response("not stubbed", { status: 599 });
   }));
   return calls;
 }
 const saved = async (id: string) => (await prisma.client.findUniqueOrThrow({ where: { id }, select: { bitmojiAvatarUrl: true, bitmojiConnectedAt: true } }));
 
-describe("flag, PKCE and the avatar URL check", () => {
+describe("flag, Snap's sign-in URL and the avatar URL check", () => {
   it("BITMOJI_CONNECT_ENABLED lists broker subdomains; unset, empty or '1' is off", () => {
     expect(bitmojiEnabledFor("qoretrader", "qoretrader")).toBe(true);
     expect(bitmojiEnabledFor("qoretrader", " QoreTrader , other")).toBe(true);
@@ -73,20 +77,26 @@ describe("flag, PKCE and the avatar URL check", () => {
     expect(bitmojiEnabledFor("qoretrader", "")).toBe(false);
     expect(bitmojiEnabledFor("qoretrader", "1")).toBe(false);
   });
-  it("S256 challenge of the verifier, Snap's auth URL with the Bitmoji scope", () => {
-    const a = newConnectAttempt();
-    expect(a.challenge).toBe(crypto.createHash("sha256").update(a.verifier).digest("base64url"));
-    expect(a.verifier.length).toBeGreaterThanOrEqual(43);
-    const u = new URL(snapAuthUrl("cid", "https://my.qoretrader.com/api/bitmoji/callback", a.state, a.challenge));
-    expect(u.origin + u.pathname).toBe("https://accounts.snapchat.com/accounts/oauth2/auth");
-    expect(Object.fromEntries(u.searchParams)).toEqual({
-      client_id: "cid", redirect_uri: "https://my.qoretrader.com/api/bitmoji/callback", response_type: "code", scope: BITMOJI_SCOPE,
-      state: a.state, code_challenge: a.challenge, code_challenge_method: "S256",
-    });
+  it("the URL Snap's web SDK builds (getImplicitRedirectURL): same parameters, order and encoding", () => {
+    const state = newConnectState();
+    expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const url = snapAuthUrl("cid", "https://my.qoretrader.com/api/bitmoji/callback", state);
+    // The SDK: query-string stringify of { client_id, redirect_uri, response_type: "token", scope, state }, scopes as
+    // OAUTH_SCOPE_URL_PREFIX + name joined by a space.
+    expect(url).toBe(
+      "https://accounts.snapchat.com/accounts/oauth2/auth?client_id=cid"
+      + "&redirect_uri=https%3A%2F%2Fmy.qoretrader.com%2Fapi%2Fbitmoji%2Fcallback"
+      + "&response_type=token"
+      + "&scope=https%3A%2F%2Fauth.snapchat.com%2Foauth2%2Fapi%2Fuser.display_name%20https%3A%2F%2Fauth.snapchat.com%2Foauth2%2Fapi%2Fuser.bitmoji.avatar"
+      + `&state=${state}`,
+    );
+    expect(BITMOJI_SCOPE).toBe("https://auth.snapchat.com/oauth2/api/user.display_name https://auth.snapchat.com/oauth2/api/user.bitmoji.avatar");
+    expect(url).not.toContain("code_challenge");
   });
   it("attempt cookie round trip; a broken one is refused", () => {
-    expect(readAttemptCookie(attemptCookie("c1", "st", "ver"))).toEqual({ clientId: "c1", state: "st", verifier: "ver" });
-    expect(readAttemptCookie("c1.st")).toBeNull();
+    expect(readAttemptCookie(attemptCookie("c1", "st"))).toEqual({ clientId: "c1", state: "st" });
+    expect(readAttemptCookie("c1.st.x")).toBeNull();
+    expect(readAttemptCookie("c1")).toBeNull();
     expect(readAttemptCookie(undefined)).toBeNull();
   });
   it("only https images on Bitmoji / Snap hosts", () => {
@@ -122,7 +132,7 @@ describe("Connect: /api/bitmoji/start", () => {
     const r = await start();
     expect(r.headers.get("location")).toBe("https://t.local/room/profile?bitmoji=off");
   });
-  it("verified client: to Snap's sign-in with PKCE; the attempt cookie is httpOnly and bound to the client", async () => {
+  it("verified client: to Snap's sign-in (implicit, as the SDK); the attempt cookie is httpOnly and bound to the client", async () => {
     if (!dbReachable) return;
     const c = await client("APPROVED");
     const r = await start();
@@ -132,62 +142,82 @@ describe("Connect: /api/bitmoji/start", () => {
     expect(to.searchParams.get("client_id")).toBe(process.env.SNAP_KIT_CLIENT_ID);
     expect(to.searchParams.get("redirect_uri")).toBe("https://t.local/api/bitmoji/callback");
     expect(to.searchParams.get("scope")).toBe(BITMOJI_SCOPE);
+    expect(to.searchParams.get("response_type")).toBe("token");
     const ck = r.cookies.get(BITMOJI_COOKIE)!;
     expect(ck.httpOnly).toBe(true);
     expect(ck.path).toBe("/api/bitmoji");
     const att = readAttemptCookie(ck.value)!;
     expect(att.clientId).toBe(c.id);
     expect(att.state).toBe(to.searchParams.get("state"));
-    expect(crypto.createHash("sha256").update(att.verifier).digest("base64url")).toBe(to.searchParams.get("code_challenge"));
   });
 });
 
 describe("Callback: /api/bitmoji/callback", () => {
-  it("saves the avatar URL; the token exchange is PKCE with no secret; Snap's token is not stored", async () => {
+  it("landing (GET): a page that posts the fragment's token and state back, and takes them off the address bar", async () => {
+    if (!dbReachable) return;
+    await client("APPROVED");
+    const r = await landing("");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toContain("text/html");
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+    const html = await r.text();
+    expect(html).toContain('<form method="post" action="/api/bitmoji/callback">');
+    expect(html).toContain("new URLSearchParams(location.hash.slice(1))");
+    expect(html).toContain('history.replaceState(null,"",location.pathname)');
+    expect((await landing("error=access_denied")).headers.get("location")).toBe("https://t.local/room/profile?bitmoji=cancelled");
+  });
+  it("landing on a broker without the flag: off", async () => {
+    if (!dbReachable) return;
+    await client("APPROVED", "futurixglobal");
+    expect((await landing("")).headers.get("location")).toBe("https://t.local/room/profile?bitmoji=off");
+  });
+  it("saves the avatar URL read with Snap's token; the token is not stored", async () => {
     if (!dbReachable) return;
     const c = await client("APPROVED");
     const calls = stubSnap();
-    const r = await callback("code=abc&state=st1", attemptCookie(c.id, "st1", "verifier-1"));
+    const r = await callback({ access_token: "tok", state: "st1" }, attemptCookie(c.id, "st1"));
+    expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("https://t.local/room/profile?bitmoji=connected");
     expect(r.cookies.get(BITMOJI_COOKIE)?.value).toBe("");
     const row = await saved(c.id);
     expect(row.bitmojiAvatarUrl).toBe(AVATAR);
     expect(row.bitmojiConnectedAt).toBeInstanceOf(Date);
-    const body = new URLSearchParams(String(calls[0].init?.body));
-    expect(Object.fromEntries(body)).toEqual({ grant_type: "authorization_code", code: "abc", redirect_uri: "https://t.local/api/bitmoji/callback", client_id: process.env.SNAP_KIT_CLIENT_ID, code_verifier: "verifier-1" });
-    expect(calls[1].url).toBe("https://kit.snapchat.com/v1/me");
-    expect((calls[1].init?.headers as Record<string, string>).Authorization).toBe("Bearer tok");
-    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ query: "{me{bitmoji{avatar}}}" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://kit.snapchat.com/v1/me");
+    expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe("Bearer tok");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ query: "{me{bitmoji{avatar}}}" });
   });
-  it("state mismatch, no cookie, or a cookie from another client: expired, nothing saved, Snap not called", async () => {
+  it("state mismatch, no token, no cookie, or a cookie from another client: expired, nothing saved, Snap not called", async () => {
     if (!dbReachable) return;
     const c = await client("APPROVED");
     const calls = stubSnap();
-    expect((await callback("code=abc&state=WRONG", attemptCookie(c.id, "st1", "v"))).headers.get("location")).toContain("bitmoji=expired");
-    expect((await callback("code=abc&state=st1")).headers.get("location")).toContain("bitmoji=expired");
-    expect((await callback("code=abc&state=st1", attemptCookie("someone-else", "st1", "v"))).headers.get("location")).toContain("bitmoji=expired");
+    expect((await callback({ access_token: "tok", state: "WRONG" }, attemptCookie(c.id, "st1"))).headers.get("location")).toContain("bitmoji=expired");
+    expect((await callback({ access_token: "", state: "st1" }, attemptCookie(c.id, "st1"))).headers.get("location")).toContain("bitmoji=expired");
+    expect((await callback({ access_token: "tok", state: "st1" })).headers.get("location")).toContain("bitmoji=expired");
+    expect((await callback({ access_token: "tok", state: "st1" }, attemptCookie("someone-else", "st1"))).headers.get("location")).toContain("bitmoji=expired");
     expect(calls).toHaveLength(0);
     expect((await saved(c.id)).bitmojiAvatarUrl).toBeNull();
   });
-  it("cancelled at Snap, a refused code, no Bitmoji, or a URL off Bitmoji's hosts: nothing saved", async () => {
+  it("cancelled at Snap, a refused token, no Bitmoji, or a URL off Bitmoji's hosts: nothing saved", async () => {
     if (!dbReachable) return;
     const c = await client("APPROVED");
-    const ck = attemptCookie(c.id, "st1", "v");
+    const ck = attemptCookie(c.id, "st1");
     stubSnap();
-    expect((await callback("error=access_denied&state=st1", ck)).headers.get("location")).toContain("bitmoji=cancelled");
-    stubSnap(AVATAR, 400);
-    expect((await callback("code=abc&state=st1", ck)).headers.get("location")).toContain("bitmoji=failed");
+    expect((await callback({ error: "access_denied", state: "st1" }, ck)).headers.get("location")).toContain("bitmoji=cancelled");
+    stubSnap(AVATAR, 401);
+    expect((await callback({ access_token: "tok", state: "st1" }, ck)).headers.get("location")).toContain("bitmoji=failed");
     stubSnap(null);
-    expect((await callback("code=abc&state=st1", ck)).headers.get("location")).toContain("bitmoji=no-avatar");
+    expect((await callback({ access_token: "tok", state: "st1" }, ck)).headers.get("location")).toContain("bitmoji=no-avatar");
     stubSnap("https://evil.com/x.png");
-    expect((await callback("code=abc&state=st1", ck)).headers.get("location")).toContain("bitmoji=failed");
+    expect((await callback({ access_token: "tok", state: "st1" }, ck)).headers.get("location")).toContain("bitmoji=failed");
     expect((await saved(c.id)).bitmojiAvatarUrl).toBeNull();
   });
   it("KYC no longer approved by the time Snap answers: verify, nothing saved", async () => {
     if (!dbReachable) return;
     const c = await client("PENDING");
     const calls = stubSnap();
-    expect((await callback("code=abc&state=st1", attemptCookie(c.id, "st1", "v"))).headers.get("location")).toContain("bitmoji=verify");
+    expect((await callback({ access_token: "tok", state: "st1" }, attemptCookie(c.id, "st1"))).headers.get("location")).toContain("bitmoji=verify");
     expect(calls).toHaveLength(0);
   });
 });
