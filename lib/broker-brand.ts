@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { logoVersion } from "@/lib/broker-logo-paths";
 
 // A tenant's browser and home-screen identity, from its brand config (Broker.logoUrl, name, primaryColor). These paths are
 // fetched by browsers with no page around them and sit outside middleware.ts (its matcher skips dotted paths), so the
@@ -20,6 +21,15 @@ export async function brandForHost(host: string | null): Promise<BrandBroker> {
 }
 
 export const HEX = /^#[0-9a-fA-F]{6}$/;
+
+/** The version the pages put on the icon links (?v=): the logo URL's hash, so a new logo gets a new link. */
+export function brandIconVersion(logoUrl: string | null | undefined): string {
+  return logoUrl ? logoVersion(logoUrl) : "0";
+}
+/** Icons asked for with the current version never change, so they are cached for a year; any other ask, an hour. */
+export function brandIconCache(b: BrandBroker, v: string | null): string {
+  return v && v === brandIconVersion(b.logoUrl) ? "public, max-age=31536000, s-maxage=31536000, immutable" : "public, max-age=3600";
+}
 
 /** One PNG in an .ico container, which every browser and crawler asking for /favicon.ico accepts. */
 export function icoFromPng(png: Buffer, size: number): Buffer {
