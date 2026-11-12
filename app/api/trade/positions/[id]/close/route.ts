@@ -23,6 +23,7 @@ import { demoQuoteTimeRefusal } from "@/lib/demo-prices";
 import { clientDealSource } from "@/lib/deals";
 import { requestMeta } from "@/lib/order-execution";
 import { toClientShape } from "@/lib/client-execution";
+import { closeThroughEngine, engineFillsFor } from "@/lib/engine-ingress";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -274,6 +275,29 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     });
     // 202: accepted for dealer review, nothing closed yet -- the client keeps the position, locked
     return NextResponse.json({ queued: true, order: queued, positionId: position.id, closeVolume: closeVolume.toString() }, { status: 202 });
+  }
+
+  // THE ENGINE INGRESS for closes (owner 2026-11-12; lib/engine-ingress.ts): a designated account's FULL close goes to
+  // the gateway -> engine, after every check above (rights, state, dealer queue) so nothing they refuse is sent. A
+  // partial close stays here (the engine's close is full-only), and so does an STM bulk close (its BULK deal reason
+  // and audit row are this route's). null = the web path below, which closes only a position that is still open.
+  if (engineFillsFor(session.accountId) && closeVolume.equals(position.volume) && source !== "stm_bulk") {
+    const viaEngine = await closeThroughEngine(
+      position.id,
+      {
+        closePrice: clientReferencePrice,
+        maxSlippagePips: body?.maxSlippagePips,
+        maxSlippagePoints: body?.maxSlippagePoints,
+        idempotencyKey: body?.idempotencyKey,
+      },
+      session
+    );
+    if (viaEngine) return viaEngine;
+    // the engine may have closed it after all (an answer lost to a timeout): re-read before closing here
+    const now = await prisma.position.findUnique({ where: { id: position.id }, select: { status: true, volume: true } });
+    if (!now || now.status !== "OPEN" || !now.volume.equals(position.volume)) {
+      return NextResponse.json({ error: "position was already closed" }, { status: 409 });
+    }
   }
 
   // Slippage: the server's fill vs what the client saw, within the EFFECTIVE max -- the smaller of the trader's value

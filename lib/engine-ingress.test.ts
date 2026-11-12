@@ -157,3 +157,80 @@ describe("engineIngressGatewayHost", () => {
     expect((await load({ ENGINE_INGRESS_GATEWAY_URL: undefined })).engineIngressGatewayHost()).toBe("");
   });
 });
+
+describe("closes through the engine (owner 2026-11-12)", () => {
+  const session = { accountId: DEMO, brokerId: "b" };
+  const env = { ENGINE_INGRESS_ACCOUNT_IDS: DEMO, ENGINE_INGRESS_GATEWAY_URL: "https://feed.example" };
+  type Sent = { url: string; cookie: string | null; broker: string | null; body: Record<string, unknown> };
+
+  function gateway(answer: () => Response | Promise<Response>) {
+    const sent: Sent[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const h = new Headers(init.headers);
+      sent.push({ url, cookie: h.get("cookie"), broker: h.get("x-broker-id"), body: JSON.parse(String(init.body)) });
+      return answer();
+    });
+    return sent;
+  }
+
+  it("a single close goes to /v1/positions/:id/close with the app's bearer session and the client's reference", async () => {
+    const { closeThroughEngine } = await load(env);
+    jar.authorization = "Bearer app-token";
+    const sent = gateway(() => Response.json({ position: { id: "p1", status: "CLOSED" }, partial: false, balance: "990" }));
+    const res = await closeThroughEngine("p1", { closePrice: "4100.5", maxSlippagePoints: 30, idempotencyKey: "k1" }, session);
+    expect(sent).toEqual([
+      {
+        url: "https://feed.example/v1/positions/p1/close",
+        cookie: "vyx_trade_session=app-token",
+        broker: "b",
+        body: { closePrice: "4100.5", maxSlippagePoints: "30", idempotencyKey: "k1" },
+      },
+    ]);
+    expect(res?.status).toBe(200);
+    expect(await res!.json()).toMatchObject({ partial: false, balance: "990", executedBy: "engine" });
+  });
+
+  it("a basket goes to /v1/positions/close-bulk in the web's own scope vocabulary", async () => {
+    const { closeBulkThroughEngine } = await load(env);
+    jar.cookie = "cookie-token";
+    const sent = gateway(() => Response.json({ requested: 2, successful: 2, failed: 0, results: [] }));
+    const res = await closeBulkThroughEngine({ scope: "SYMBOL", symbol: "XAUUSD", side: "BUY", positionIds: ["a", "b"] }, session);
+    expect(sent[0].url).toBe("https://feed.example/v1/positions/close-bulk");
+    expect(sent[0].cookie).toBe("vyx_trade_session=cookie-token");
+    expect(sent[0].body).toEqual({ scope: "SYMBOL", symbol: "XAUUSD", side: "BUY", positionIds: ["a", "b"] });
+    expect(await res!.json()).toMatchObject({ requested: 2, successful: 2, executedBy: "engine" });
+  });
+
+  it("a 409 (already closed / pending / replayed key) is the answer, not a fallback", async () => {
+    const { closeThroughEngine, closeBulkThroughEngine } = await load(env);
+    jar.cookie = "t";
+    gateway(() => Response.json({ error: "position was already closed" }, { status: 409 }));
+    const one = await closeThroughEngine("p1", { closePrice: "1" }, session);
+    expect(one?.status).toBe(409);
+    expect(await one!.json()).toEqual({ error: "position was already closed" });
+    expect((await closeBulkThroughEngine({ scope: "ALL" }, session))?.status).toBe(409);
+  });
+
+  it("403, 503, 400, 502 and a timeout / network failure all fall back to the web path (null)", async () => {
+    const { closeThroughEngine, closeBulkThroughEngine } = await load(env);
+    jar.cookie = "t";
+    for (const status of [403, 503, 400, 502, 500]) {
+      gateway(() => Response.json({ error: "x" }, { status }));
+      expect(await closeThroughEngine("p1", { closePrice: "1" }, session), String(status)).toBeNull();
+      expect(await closeBulkThroughEngine({ scope: "ALL" }, session), String(status)).toBeNull();
+    }
+    gateway(() => {
+      throw new Error("aborted");
+    });
+    expect(await closeThroughEngine("p1", { closePrice: "1" }, session)).toBeNull();
+    expect(await closeBulkThroughEngine({ scope: "ALL" }, session)).toBeNull();
+  });
+
+  it("no session token: nothing is sent, the web path closes", async () => {
+    const { closeThroughEngine } = await load(env);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await closeThroughEngine("p1", { closePrice: "1" }, session)).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

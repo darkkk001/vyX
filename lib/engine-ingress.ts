@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { ACCOUNT_SESSION_COOKIE_NAME } from "@/lib/account-auth";
 import { bearerToken } from "@/lib/app-web";
+import { toClientShape } from "@/lib/client-execution";
 import { POSITION_DTO_INCLUDE, positionDto } from "@/lib/position-dto";
 import { prisma } from "@/lib/prisma";
 
@@ -50,6 +51,22 @@ export function engineIngressGatewayHost(): string {
 const TIMEOUT_MS = 10_000;
 
 /**
+ * The trader's own session token for the gateway: the cookie (terminal, WebTrader) OR the bearer header (the
+ * QoreTrader app: its origin never gets the cookie), the same two getAccountSession accepts. Reading only the
+ * cookie sent every app order down the web path in silence (2026-11-12: six MOBILE orders of the designated
+ * account never reached the gateway). A missing token is logged: the caller then stays on the web path.
+ */
+async function sessionToken(accountId: string): Promise<string | null> {
+  const token =
+    (await cookies()).get(ACCOUNT_SESSION_COOKIE_NAME)?.value || bearerToken((await headers()).get("authorization"));
+  if (!token) {
+    console.warn("[engine-ingress] no session token on a designated account's request; staying on the web path", { accountId });
+    return null;
+  }
+  return token;
+}
+
+/**
  * Fill one MARKET order through the gateway -> engine.
  *
  * `null` means THIS ROUTE SHOULD CARRY ON with its own path, and it is returned only when the engine
@@ -73,18 +90,9 @@ export async function fillThroughEngine(
   if (!body || body.type !== "MARKET") return null;
   if (typeof body.symbol !== "string" || (body.side !== "BUY" && body.side !== "SELL")) return null;
 
-  // the trader's own session, forwarded: the gateway authenticates the ORDER, not this service.
-  // The cookie (terminal, WebTrader) OR the bearer header (the QoreTrader app: its origin never gets the
-  // cookie), the same two getAccountSession accepts. Reading only the cookie sent every app order down the
-  // web path in silence (2026-11-12: six MOBILE orders of the designated account never reached the gateway).
-  const token =
-    (await cookies()).get(ACCOUNT_SESSION_COOKIE_NAME)?.value || bearerToken((await headers()).get("authorization"));
-  if (!token) {
-    console.warn("[engine-ingress] no session token on a designated account's order; filling on the web path", {
-      accountId: session.accountId,
-    });
-    return null;
-  }
+  // the trader's own session, forwarded: the gateway authenticates the ORDER, not this service
+  const token = await sessionToken(session.accountId);
+  if (!token) return null;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -143,4 +151,106 @@ export async function fillThroughEngine(
     },
     { status: 201 }
   );
+}
+
+// ---- CLOSES (owner 2026-11-12): the same designated accounts, the mirror of the open path ----------------------
+//
+// A designated account's trader close goes to the gateway -> engine: one position to /v1/positions/:id/close, a
+// basket to /v1/positions/close-bulk (the engine's one-call basket). Every other account never gets here.
+//
+// THE FALLBACK IS WIDER THAN THE OPEN PATH'S, AND SAFE, FOR ONE REASON: A CLOSE CANNOT BE DOUBLED. The engine's
+// close_position_full and the web's closePositionInTx both close with a compare-and-set UPDATE
+// (status = OPEN AND volume = expected), and the web path re-reads the position (or re-selects the basket from the
+// account's OPEN positions) before it closes anything. So after ANY failure here -- a refusal (403 / 503 / 400), a
+// 5xx, a timeout, the gateway unreachable -- the web path closes only what is still open: a position the engine
+// already closed is refused there as "already closed" instead of being closed again. An open has no such guard,
+// which is why fillThroughEngine must not fall back on an ambiguous failure and these may.
+//
+// A 409 is the one answer passed through as it is: the position is already closed / its close is pending with the
+// dealer / this idempotency key was already answered -- a true answer about the position, and the web path would
+// only say the same thing.
+
+type GatewayAnswer = { status: number; data: unknown } | null;
+
+/** POST to the gateway with the trader's session; null when there is no token or no answer (timeout, network). */
+async function postToGateway(
+  path: string,
+  payload: unknown,
+  session: { accountId: string; brokerId: string }
+): Promise<GatewayAnswer> {
+  const token = await sessionToken(session.accountId);
+  if (!token) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const upstream = await fetch(`${GATEWAY_URL}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: `${ACCOUNT_SESSION_COOKIE_NAME}=${token}`,
+        "x-broker-id": session.brokerId,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    return { status: upstream.status, data: await upstream.json().catch(() => null) };
+  } catch (err) {
+    console.warn("[engine-ingress] gateway unreachable or timed out; the web path closes what is still open", {
+      path,
+      err: String(err),
+    });
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The engine's answer as the route's response, or null = carry on with the web path (see above). */
+function closeAnswer(path: string, answer: GatewayAnswer): NextResponse | null {
+  if (!answer) return null;
+  if (answer.status >= 200 && answer.status < 300 && answer.data && typeof answer.data === "object") {
+    return NextResponse.json(toClientShape({ ...(answer.data as object), executedBy: "engine" }), { status: 200 });
+  }
+  if (answer.status === 409) {
+    return NextResponse.json(answer.data ?? { error: "position was already closed" }, { status: 409 });
+  }
+  console.warn("[engine-ingress] gateway did not close; the web path closes what is still open", {
+    path,
+    status: answer.status,
+    data: answer.data,
+  });
+  return null;
+}
+
+/** A FULL close of one position (the engine's close takes no volume: a partial close stays on the web path). */
+export async function closeThroughEngine(
+  positionId: string,
+  ask: { closePrice: string; maxSlippagePips?: unknown; maxSlippagePoints?: unknown; idempotencyKey?: unknown },
+  session: { accountId: string; brokerId: string }
+): Promise<NextResponse | null> {
+  const path = `/v1/positions/${encodeURIComponent(positionId)}/close`;
+  const payload = {
+    closePrice: ask.closePrice,
+    ...(ask.maxSlippagePips != null ? { maxSlippagePips: String(ask.maxSlippagePips) } : {}),
+    ...(ask.maxSlippagePoints != null ? { maxSlippagePoints: String(ask.maxSlippagePoints) } : {}),
+    ...(typeof ask.idempotencyKey === "string" && ask.idempotencyKey !== "" ? { idempotencyKey: ask.idempotencyKey } : {}),
+  };
+  return closeAnswer(path, await postToGateway(path, payload, session));
+}
+
+/** A basket, in the web close-bulk's own scope vocabulary (the gateway's closeBulkSchema is its port). */
+export async function closeBulkThroughEngine(
+  ask: { scope: string; symbol?: string; side?: "BUY" | "SELL"; positionIds?: string[]; idempotencyKey?: unknown },
+  session: { accountId: string; brokerId: string }
+): Promise<NextResponse | null> {
+  const path = "/v1/positions/close-bulk";
+  const payload = {
+    scope: ask.scope,
+    ...(ask.symbol ? { symbol: ask.symbol } : {}),
+    ...(ask.side ? { side: ask.side } : {}),
+    ...(ask.positionIds ? { positionIds: ask.positionIds } : {}),
+    ...(typeof ask.idempotencyKey === "string" && ask.idempotencyKey !== "" ? { idempotencyKey: ask.idempotencyKey } : {}),
+  };
+  return closeAnswer(path, await postToGateway(path, payload, session));
 }
