@@ -265,7 +265,7 @@ export default function RoomProfile() {
 
           <div className="r-card" style={{ ...card, gap: 14 }}>
             <div className="r-label">Active sessions</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 12.5 }}>
+            <div className="r-sessions" style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 12.5 }}>
               {(p?.sessions ?? []).filter((s) => s.current || s.device !== "Unknown device").map((s, i) => (
                 <div key={s.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", borderTop: i ? "1px solid var(--r-row)" : "none", paddingTop: i ? 12 : 0 }}>
                   <div>

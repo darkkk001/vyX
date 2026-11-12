@@ -110,6 +110,12 @@
 .r-avatar-img { object-fit: cover; }
 .r-avatar-lg { width: 56px; height: 56px; font-size: 16px; }
 .r-bitmoji-row { display: flex; align-items: center; gap: 14px; }
+/* Profile, Active sessions (owner 2026-11-12): about 5 sessions tall (a row is 64 px apart, the 5th ends at 295 px),
+   the rest scroll inside the card; the scrollbar takes the theme's colours */
+.r-sessions { max-height: 296px; overflow-y: auto; overscroll-behavior: contain; padding-right: 10px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--r-muted) 45%, transparent) transparent; }
+.r-sessions::-webkit-scrollbar { width: 6px; }
+.r-sessions::-webkit-scrollbar-track { background: transparent; }
+.r-sessions::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--r-muted) 45%, transparent); border-radius: 3px; }
 .r-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; }
 .r-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 15px 28px; border-bottom: 1px solid var(--r-line); }
 .r-head h1 { margin: 0; font-family: var(--r-head); font-size: 19px; font-weight: 600; }
