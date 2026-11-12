@@ -140,3 +140,30 @@ describe("Deposit page", () => {
     expect(page).toContain("const DEMO_CAP = 100_000;");
   });
 });
+
+// Withdraw (owner 2026-11-12, same model as Deposit): From = the funding wallet (also before it exists) and the live
+// accounts; the cards always show, locked until KYC is approved.
+async function withdraw(accountId: string) {
+  const { POST } = await import("@/app/api/room/withdraw/route");
+  const r = await POST(new NextRequest("https://t.local/api/room/withdraw", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: randomUUID().replace(/-/g, ""), accountId, payoutMethodId: "none", amount: "10" }) }));
+  return { status: r.status, body: await r.json() };
+}
+describe("Withdraw: no live account", () => {
+  it("the wallet's payout methods load before it exists (nothing to withdraw), and a withdrawal from it is refused without creating it", async () => {
+    if (!dbReachable) return;
+    const { c } = await client({ kyc: null, accounts: ["DEMO"] });
+    const f = await funds("wallet");
+    expect(f.body.methods.length).toBe(1);
+    expect(f.body.available).toBe("0.00");
+    expect(f.body.kyc).toBe("NONE");
+    expect(await withdraw("wallet")).toMatchObject({ status: 400, body: { error: "Not enough balance on the funding wallet." } });
+    expect(await walletOf(c.id)).toBeNull();
+  });
+  it("page: From = the wallet and the live accounts, the cards locked until KYC is approved", () => {
+    const w = readFileSync("app/(broker)/room/(shell)/withdraw/page.tsx", "utf8");
+    expect(w).toContain("return [wallet, ...live.map((a) => ({ key: a.id, id: a.id, label: a.accountNumber, currency: a.currency, balance: a.figures.balance }))];");
+    expect(w).toContain("id: w?.id ?? WALLET_KEY");
+    expect(w).toContain('locked={kycStatus !== "APPROVED"}');
+    expect(w).toContain("disabled={!funds || !payout || busy || funds.kyc !== \"APPROVED\"}");
+  });
+});

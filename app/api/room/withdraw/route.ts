@@ -7,6 +7,8 @@ import { createFundsRequest } from "@/lib/funds-request-create";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { withRequestKey, withTwinGuard, twinSince, twinAmount } from "@/lib/room/request-key";
 import { verifyTotp } from "@/lib/totp";
+import { findWallet } from "@/lib/room/wallet";
+import { WALLET_KEY } from "@/lib/room/wallet-key";
 
 // POST {key, accountId, payoutMethodId, amount, code?}: a withdrawal request to one of the client's own saved payout methods.
 // KYC approved first (inside createFundsRequest), never more than the withdrawable amount (lib/room/funds.ts).
@@ -20,7 +22,10 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   // one request per form load (body.key), and never two identical withdrawals within 60 s (lib/room/request-key.ts)
   return withRequestKey(session.clientId, "WITHDRAWAL", body?.key, async () => {
-    const account = await ownAccount(session, body?.accountId);
+    // "wallet" = the funding wallet as the page names it before it exists (owner 2026-11-12): nothing to withdraw then
+    const wallet = body?.accountId === WALLET_KEY ? await findWallet(session.clientId, session.brokerId) : null;
+    if (body?.accountId === WALLET_KEY && !wallet) return NextResponse.json({ error: "Not enough balance on the funding wallet." }, { status: 400 });
+    const account = await ownAccount(session, wallet ? wallet.id : body?.accountId);
     if (!account) return NextResponse.json({ error: "Account not found." }, { status: 404 });
     if (account.accountMode !== "LIVE") return NextResponse.json({ error: "Demo accounts have nothing to withdraw." }, { status: 400 });
     // 2FA on: every withdrawal carries a code from the authenticator app. A broker may also require 2FA for withdrawing.

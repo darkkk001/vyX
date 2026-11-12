@@ -276,9 +276,11 @@ describe("account dropdowns (owner 2026-11-09)", () => {
     const deposit = fs.readFileSync(path.join(process.cwd(), "app/(broker)/room/(shell)/deposit/page.tsx"), "utf8");
     expect(deposit).toContain('`${t.accountNumber}${t.mode === "DEMO" ? " · Demo" : ""} · ${money(t.balance)} ${t.currency}`');
     expect(deposit).not.toContain("a.plan");
+    // Withdraw (owner 2026-11-12): the wallet (named) and the live accounts (their numbers)
     for (const page of ["withdraw"]) {
       const src = fs.readFileSync(path.join(process.cwd(), `app/(broker)/room/(shell)/${page}/page.tsx`), "utf8");
-      expect(src, page).toContain("`${a.accountNumber} · ${money(a.figures.balance)} ${a.currency}`");
+      expect(src, page).toContain("`${a.label} · ${money(a.balance)} ${a.currency}`");
+      expect(src, page).toContain("label: a.accountNumber");
       expect(src, page).not.toContain("a.plan");
     }
   });
