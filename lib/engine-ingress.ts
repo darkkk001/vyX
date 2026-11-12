@@ -1,7 +1,8 @@
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { ACCOUNT_SESSION_COOKIE_NAME } from "@/lib/account-auth";
+import { bearerToken } from "@/lib/app-web";
 import { POSITION_DTO_INCLUDE, positionDto } from "@/lib/position-dto";
 import { prisma } from "@/lib/prisma";
 
@@ -37,6 +38,15 @@ export function engineIngressScope(): { enabled: boolean; accounts: number } {
   return { enabled: GATEWAY_URL !== "" && ACCOUNTS.length > 0, accounts: ACCOUNTS.length };
 }
 
+/** The gateway host this deployment would call ("" when unset or not a URL); never the path or a query. */
+export function engineIngressGatewayHost(): string {
+  try {
+    return GATEWAY_URL ? new URL(GATEWAY_URL).host : "";
+  } catch {
+    return "";
+  }
+}
+
 const TIMEOUT_MS = 10_000;
 
 /**
@@ -63,9 +73,18 @@ export async function fillThroughEngine(
   if (!body || body.type !== "MARKET") return null;
   if (typeof body.symbol !== "string" || (body.side !== "BUY" && body.side !== "SELL")) return null;
 
-  // the trader's own session, forwarded: the gateway authenticates the ORDER, not this service
-  const token = (await cookies()).get(ACCOUNT_SESSION_COOKIE_NAME)?.value;
-  if (!token) return null;
+  // the trader's own session, forwarded: the gateway authenticates the ORDER, not this service.
+  // The cookie (terminal, WebTrader) OR the bearer header (the QoreTrader app: its origin never gets the
+  // cookie), the same two getAccountSession accepts. Reading only the cookie sent every app order down the
+  // web path in silence (2026-11-12: six MOBILE orders of the designated account never reached the gateway).
+  const token =
+    (await cookies()).get(ACCOUNT_SESSION_COOKIE_NAME)?.value || bearerToken((await headers()).get("authorization"));
+  if (!token) {
+    console.warn("[engine-ingress] no session token on a designated account's order; filling on the web path", {
+      accountId: session.accountId,
+    });
+    return null;
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
