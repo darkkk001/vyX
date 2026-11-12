@@ -86,7 +86,7 @@
 .r-logo-word { font-family: var(--r-head); font-weight: 700; letter-spacing: 4px; font-size: 19px; text-transform: uppercase; line-height: 1.2; overflow-wrap: anywhere; }
 .r-logo-first { color: var(--r-accent); }
 /* a broker whose wordmark is set in mixed case (Broker.wordmark caps false, e.g. QoreTrader) */
-.r-wm-mixed { text-transform: none; letter-spacing: 0.4px; }
+.r-wm-mixed, .r-logo .r-logo-word.r-wm-mixed, .r-auth-brand .r-logo-word.r-wm-mixed, .r-side .r-wordmark.r-wm-mixed { text-transform: none; letter-spacing: 0.4px; }
 .r-logo-sm { gap: 10px; }
 .r-logo-sm img { height: 28px; max-width: 44px; }
 .r-logo-sm .r-logo-word { font-size: 14px; letter-spacing: 3px; }

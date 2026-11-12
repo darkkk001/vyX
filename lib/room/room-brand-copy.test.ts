@@ -38,7 +38,7 @@ describe("wordmark setting", () => {
     expect(read("lib/room/context.ts")).toContain("wordmark: parseWordmark(b.wordmark, b.name)");
     expect(read("components/room/AuthBrandPanel.tsx")).toContain("wordmark={broker.wordmark}");
     expect(read("components/room/RoomSidebar.tsx")).toContain("wordmark={wordmark} showName");
-    expect(read("app/(broker)/room/room.css")).toContain(".r-wm-mixed { text-transform: none;");
+    expect(read("app/(broker)/room/room.css")).toContain(".r-auth-brand .r-logo-word.r-wm-mixed, .r-side .r-wordmark.r-wm-mixed { text-transform: none; letter-spacing: 0.4px; }");
   });
 });
 
