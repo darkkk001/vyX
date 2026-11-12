@@ -4,9 +4,9 @@ import { useState } from "react";
 import HumanCheck from "@/components/room/HumanCheck";
 
 // POST /api/portal/register with the anti-bot fields: the hidden "website" honeypot and the signed form token.
-export default function RegisterForm({ formToken, referral, humanKey }: { formToken: string; referral: string; humanKey: string | null }) {
+export default function RegisterForm({ formToken, referral, humanKey, initialEmail = "" }: { formToken: string; referral: string; humanKey: string | null; initialEmail?: string }) {
   const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
   const [website, setWebsite] = useState("");
   const [busy, setBusy] = useState(false);
