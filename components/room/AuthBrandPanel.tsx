@@ -2,7 +2,10 @@ import type { ReactNode } from "react";
 import type { RoomBroker } from "@/lib/room/context";
 import { readInfraSummary } from "@/lib/infra-health";
 import { readLivePrices, roomServiceStatus } from "@/lib/room/service-status";
+import { preload } from "react-dom";
 import RoomLogo from "@/components/room/RoomLogo";
+import BrokerLogoImg from "@/components/room/BrokerLogoImg";
+import { logoResizable, logoSources } from "@/lib/broker-logo-paths";
 import ServerClock from "@/app/(broker)/room/login/ServerClock";
 
 // The left brand panel of the Trader's Room sign-in, register and forgot-password pages. Always dark (both themes),
@@ -15,6 +18,13 @@ export default async function AuthBrandPanel({ broker }: { broker: RoomBroker })
   // what a client depends on: the way in and the prices they trade on (neither read throws; no report shows no line)
   const [caddy, prices] = await Promise.all([readInfraSummary("caddy"), readLivePrices()]);
   const status = roomServiceStatus([caddy.state, prices]);
+  // the logo is the first thing on this page: its resized copies are asked for from the <head>, ahead of the body
+  if (logoResizable(broker.logoUrl)) {
+    for (const h of [140, 48] as const) {
+      const s = logoSources(broker.logoUrl, h);
+      preload(s.webpSet.split(" ")[0], { as: "image", type: "image/webp", imageSrcSet: s.webpSet, fetchPriority: "high" });
+    }
+  }
   return (
     // Owner 2026-11-12, every broker: the top row is the broker's logo with its wordmark beside it (Broker.wordmark);
     // in the middle the logo large (about 140 px), the "Client portal" label, "<broker> Client Portal" and what the
@@ -22,8 +32,7 @@ export default async function AuthBrandPanel({ broker }: { broker: RoomBroker })
     <section className={`r-auth-brand${broker.logoUrl ? " has-mark" : ""}`}>
       <RoomLogo name={broker.name} logoUrl={broker.logoUrl} wordmark={broker.wordmark} />
       <div className="r-auth-copy">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        {broker.logoUrl ? <img className="r-auth-mark" src={broker.logoUrl} alt="" /> : null}
+        {broker.logoUrl ? <BrokerLogoImg className="r-auth-mark" src={broker.logoUrl} height={140} /> : null}
         <div className="r-auth-eyebrow">CLIENT PORTAL</div>
         <div className="r-auth-title">{broker.name} Client Portal</div>
         <ul className="r-auth-points">

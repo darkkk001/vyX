@@ -1,4 +1,5 @@
 import { Wordmark } from "./RoomLogo";
+import BrokerLogoImg from "./BrokerLogoImg";
 import type { WordmarkStyle } from "@/lib/room/wordmark";
 // Trader's Room brand line: the broker's own logo when it has one, else the gem mark + the broker's name as a wordmark.
 // showName keeps the name beside a logo too (the sidebar: a broker's logo can be just a small mark).
@@ -15,8 +16,8 @@ export default function RoomBrand({ name, logoUrl, wordmark = null, size = 26, s
   // a broker with its own wordmark setting (Broker.wordmark) gets its split, accent and case; else the name as before
   const word = wordmark ? <Wordmark name={name} style={wordmark} className="r-wordmark" /> : <span className="r-wordmark">{name}</span>;
   if (logoUrl) {
-    // eslint-disable-next-line @next/next/no-img-element
-    const logo = <img src={logoUrl} alt={showName ? "" : name} />;
+    // the sidebar draws it 40 px tall (room.css .r-side .r-brand img), the other brand rows at most 28
+    const logo = <BrokerLogoImg src={logoUrl} height={showName ? 40 : 28} alt={showName ? "" : name} />;
     return showName ? <>{logo}{word}</> : logo;
   }
   return (

@@ -55,7 +55,7 @@ describe("sign-in panel and forms", () => {
     expect(read("app/(broker)/room/forgot-password/RoomForgotForm.tsx")).toContain("<h1>Forgot password?</h1>");
   });
   it("logo about 140 px above the headline, 40 px in the sidebar", () => {
-    expect(panel).toContain('<img className="r-auth-mark" src={broker.logoUrl} alt="" />');
+    expect(panel).toContain('<BrokerLogoImg className="r-auth-mark" src={broker.logoUrl} height={140} />');
     expect(css).toContain(".r-auth-mark { height: 140px;");
     expect(css).toContain(".r-side .r-brand img { flex: none; height: 40px; max-height: 40px;");
   });

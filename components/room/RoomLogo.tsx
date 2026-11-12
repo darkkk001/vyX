@@ -1,4 +1,5 @@
 import { wordmarkPieces, type WordmarkStyle } from "@/lib/room/wordmark";
+import BrokerLogoImg from "./BrokerLogoImg";
 
 // The broker's full logo for the Trader's Room sign-in, register and forgot-password pages and the onboarding header:
 // its mark (Broker.logoUrl) on the left, its name as a wordmark on the right. The wordmark follows the broker's own
@@ -17,8 +18,8 @@ export function Wordmark({ name, style, className }: { name: string; style: Word
 export default function RoomLogo({ name, logoUrl, wordmark = null, size = "lg" }: { name: string; logoUrl: string | null; wordmark?: WordmarkStyle | null; size?: "lg" | "sm" }) {
   return (
     <span className={`r-logo r-logo-${size}`} aria-label={name} role="img">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      {logoUrl ? <img src={logoUrl} alt="" /> : null}
+      {/* the sign-in top row draws it 48 px tall, the onboarding header 28 (room.css .r-logo img, .r-logo-sm img) */}
+      {logoUrl ? <BrokerLogoImg src={logoUrl} height={size === "sm" ? 28 : 48} /> : null}
       <Wordmark name={name} style={wordmark} className="r-logo-word" />
     </span>
   );

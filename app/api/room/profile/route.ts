@@ -42,7 +42,7 @@ export async function GET() {
     // Bitmoji connect (lib/room/bitmoji.ts): offered only where the flag is on, to verified clients; a connected client
     // can always disconnect
     bitmoji: bitmojiEnabledFor(ctx.session.broker.subdomain) && snapClientId()
-      ? { canConnect: kyc?.status === "APPROVED", avatarUrl: shownAvatar(ctx.session.broker.subdomain, c.bitmojiAvatarUrl) }
+      ? { canConnect: kyc?.status === "APPROVED", avatarUrl: shownAvatar(ctx.session.broker.subdomain, c.bitmojiAvatarUrl), appName: ctx.session.broker.name }
       : null,
     sessions: sessions.map((s) => ({ id: s.sessionId, device: deviceOf(s.userAgent), ip: s.ip, at: s.createdAt || null, current: s.current })),
   });

@@ -5,19 +5,14 @@ import { requestOrigin } from "@/lib/request-origin";
 import {
   BITMOJI_CALLBACK_PATH, BITMOJI_COOKIE, bitmojiEnabledFor, fetchBitmojiAvatar, readAttemptCookie, sameString, snapClientId,
 } from "@/lib/room/bitmoji";
+import { bitmojiResult } from "@/lib/room/bitmoji-result";
 
 // Snap sends the client back here (the redirect URI registered in the Snap Kit app). The sign-in is the implicit grant
 // Snap's web SDK uses, so the token arrives in the URL fragment, which never reaches a server: GET serves a small page
 // that takes the fragment off the address bar and posts access_token + state back here. POST checks the state against
 // the attempt cookie (which must belong to the signed-in client), reads the avatar with the token and saves its image
-// URL on Client. Snap's token is dropped. Every outcome lands on Profile with a short result.
-
-function backTo(origin: string, result: string) {
-  const res = NextResponse.redirect(`${origin}/room/profile?bitmoji=${result}`, 303);
-  res.cookies.set(BITMOJI_COOKIE, "", { httpOnly: true, secure: origin.startsWith("https://"), sameSite: "lax", path: "/api/bitmoji", maxAge: 0 });
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
+// URL on Client. Snap's token is dropped. Every outcome ends on Profile with a short result (lib/room/bitmoji-result.ts:
+// in the same page, or told to the Profile tab when the sign-in ran in its own tab).
 
 const HANDOFF = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -35,8 +30,9 @@ export async function GET(request: NextRequest) {
   const origin = requestOrigin(request);
   const ctx = await roomApiSession();
   if ("response" in ctx) return NextResponse.redirect(`${origin}/login`, 303);
-  if (!snapClientId() || !bitmojiEnabledFor(ctx.session.broker.subdomain)) return backTo(origin, "off");
-  if (request.nextUrl.searchParams.get("error")) return backTo(origin, "cancelled");
+  const tab = !!readAttemptCookie(request.cookies.get(BITMOJI_COOKIE)?.value)?.tab;
+  if (!snapClientId() || !bitmojiEnabledFor(ctx.session.broker.subdomain)) return bitmojiResult(origin, "off", tab);
+  if (request.nextUrl.searchParams.get("error")) return bitmojiResult(origin, "cancelled", tab);
   return new NextResponse(HANDOFF, {
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" },
   });
@@ -47,18 +43,19 @@ export async function POST(request: NextRequest) {
   const ctx = await roomApiSession();
   if ("response" in ctx) return NextResponse.redirect(`${origin}/login`, 303);
   const { session } = ctx;
-  if (!snapClientId() || !bitmojiEnabledFor(session.broker.subdomain)) return backTo(origin, "off");
+  const attempt = readAttemptCookie(request.cookies.get(BITMOJI_COOKIE)?.value);
+  const tab = !!attempt?.tab;
+  if (!snapClientId() || !bitmojiEnabledFor(session.broker.subdomain)) return bitmojiResult(origin, "off", tab);
 
   const form = await request.formData().catch(() => null);
   const field = (k: string) => { const v = form?.get(k); return typeof v === "string" ? v : ""; };
-  if (field("error")) return backTo(origin, "cancelled");
+  if (field("error")) return bitmojiResult(origin, "cancelled", tab);
   const token = field("access_token");
   const state = field("state");
-  const attempt = readAttemptCookie(request.cookies.get(BITMOJI_COOKIE)?.value);
-  if (!token || !state || !attempt || attempt.clientId !== session.clientId || !sameString(attempt.state, state)) return backTo(origin, "expired");
+  if (!token || !state || !attempt || attempt.clientId !== session.clientId || !sameString(attempt.state, state)) return bitmojiResult(origin, "expired", tab);
 
   const kyc = await prisma.clientKycRecord.findUnique({ where: { clientId: session.clientId }, select: { status: true } });
-  if (kyc?.status !== "APPROVED") return backTo(origin, "verify");
+  if (kyc?.status !== "APPROVED") return bitmojiResult(origin, "verify", tab);
 
   let avatar: string;
   try {
@@ -66,11 +63,11 @@ export async function POST(request: NextRequest) {
   } catch (e) {
     const reason = e instanceof Error ? e.message : "unknown";
     console.warn(`[bitmoji] connect failed for client ${session.clientId}: ${reason}`);
-    return backTo(origin, reason === "no-avatar" ? "no-avatar" : "failed");
+    return bitmojiResult(origin, reason === "no-avatar" ? "no-avatar" : "failed", tab);
   }
   await prisma.client.updateMany({
     where: { id: session.clientId, brokerId: session.brokerId },
     data: { bitmojiAvatarUrl: avatar, bitmojiConnectedAt: new Date() },
   });
-  return backTo(origin, "connected");
+  return bitmojiResult(origin, "connected", tab);
 }

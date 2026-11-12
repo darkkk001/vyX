@@ -44,16 +44,23 @@ export function newConnectState(): string {
   return b64url(crypto.randomBytes(32));
 }
 
-/** The cookie that ties the callback to the attempt and to the signed-in client: clientId.state */
-export function attemptCookie(clientId: string, state: string): string {
-  return `${clientId}.${state}`;
+/** The cookie that ties the callback to the attempt and to the signed-in client: clientId.state, plus ".t" when the
+ *  sign-in runs in its own tab (Profile opened it; the result then goes back to Profile and the tab closes). */
+export function attemptCookie(clientId: string, state: string, tab = false): string {
+  return `${clientId}.${state}${tab ? ".t" : ""}`;
 }
-export function readAttemptCookie(raw: string | undefined): { clientId: string; state: string } | null {
+export function readAttemptCookie(raw: string | undefined): { clientId: string; state: string; tab: boolean } | null {
   if (!raw) return null;
   const parts = raw.split(".");
-  if (parts.length !== 2 || parts.some((p) => !p)) return null;
-  return { clientId: parts[0], state: parts[1] };
+  if (parts.length < 2 || parts.length > 3 || parts.some((p) => !p) || (parts.length === 3 && parts[2] !== "t")) return null;
+  return { clientId: parts[0], state: parts[1], tab: parts.length === 3 };
 }
+
+/** The results the connect round trip can end with (Profile's ?bitmoji= and the tab's message). */
+export const BITMOJI_RESULTS = ["connected", "cancelled", "expired", "failed", "no-avatar", "verify", "off"] as const;
+export type BitmojiResult = (typeof BITMOJI_RESULTS)[number];
+/** Name of the BroadcastChannel the sign-in tab tells Profile on. */
+export const BITMOJI_CHANNEL = "bitmoji-connect";
 
 /** Constant-time string compare. */
 export function sameString(a: string, b: string): boolean {
@@ -105,5 +112,15 @@ export async function fetchBitmojiAvatar(accessToken: string, doFetch: Fetch = f
 
 /** The avatar to draw instead of the initials: the saved Bitmoji while the flag is on for this broker, else null. */
 export function shownAvatar(subdomain: string, saved: string | null | undefined): string | null {
-  return saved && bitmojiEnabledFor(subdomain) && isBitmojiAvatarUrl(saved) ? saved : null;
+  return saved && bitmojiEnabledFor(subdomain) && isBitmojiAvatarUrl(saved) ? bitmojiDisplayUrl(saved) : null;
+}
+
+/** Snap's avatar URL comes with trim=circle: cut tight, so the hair touches the top of our circle and the shirt fills
+ *  its bottom. Snap's same render without that parameter is also transparent (checked on the real response: corners
+ *  alpha 0), with room above the head; our circle (--r-avatar, the tile colour) shows around it. The saved URL stays
+ *  as Snap sent it. */
+export function bitmojiDisplayUrl(saved: string): string {
+  const u = new URL(saved);
+  u.searchParams.delete("trim");
+  return u.toString();
 }

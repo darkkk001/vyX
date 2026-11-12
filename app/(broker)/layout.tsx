@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { prisma } from "@/lib/prisma";
 import { isDemoTenant } from "@/lib/demo-policy";
 import { DEMO_ACCENT } from "@/lib/demo-brand";
+import { brandIconVersion } from "@/lib/broker-brand";
 
 // Overrides app/layout.tsx's global "VyXTrader" tab title for every
 // broker-facing route -- Next.js's metadata resolution takes the most
@@ -22,7 +23,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const headerList = await headers();
   const brokerId = headerList.get("x-broker-id");
   if (!brokerId) return {};
-  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
+  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true } });
   // QoreTrader demo: its own favicon, and never indexed (the X-Robots-Tag header in middleware.ts says the same)
   if (isDemoTenant(headerList.get("x-broker-slug"))) {
     return {
@@ -34,7 +35,8 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     ...(broker ? { title: broker.name } : {}),
     // every tenant, from its brand config (lib/broker-brand.tsx)
-    icons: { icon: "/favicon.ico", apple: "/apple-touch-icon.png" },
+    // versioned by the logo (lib/broker-brand.ts), so the icons can be cached for a year and still follow a new logo
+    icons: { icon: `/favicon.ico?v=${brandIconVersion(broker?.logoUrl)}`, apple: `/apple-touch-icon.png?v=${brandIconVersion(broker?.logoUrl)}` },
     manifest: "/manifest.webmanifest",
     appleWebApp: { capable: true, title: broker?.name, statusBarStyle: "black-translucent" },
   };

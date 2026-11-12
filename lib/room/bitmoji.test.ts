@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
-  BITMOJI_COOKIE, BITMOJI_SCOPE, attemptCookie, bitmojiEnabledFor, isBitmojiAvatarUrl, newConnectState, readAttemptCookie, shownAvatar, snapAuthUrl,
+  BITMOJI_COOKIE, BITMOJI_SCOPE, attemptCookie, bitmojiDisplayUrl, bitmojiEnabledFor, isBitmojiAvatarUrl, newConnectState, readAttemptCookie, shownAvatar, snapAuthUrl,
 } from "@/lib/room/bitmoji";
 
 // Bitmoji connect, test version (owner 2026-11-12): QoreTrader only, behind BITMOJI_CONNECT_ENABLED; a verified client
@@ -38,9 +38,9 @@ async function client(kyc: "APPROVED" | "PENDING" | null, subdomain = SUB) {
   vi.mocked(roomApiSession).mockResolvedValue({ session: { clientId: c.id, brokerId, broker: { id: brokerId, name: "Bm", subdomain } } } as never);
   return c;
 }
-async function start() {
+async function start(query = "") {
   const { GET } = await import("@/app/api/bitmoji/start/route");
-  return GET(new NextRequest("https://t.local/api/bitmoji/start", { headers: { "x-forwarded-proto": "https", host: "t.local" } }));
+  return GET(new NextRequest(`https://t.local/api/bitmoji/start${query}`, { headers: { "x-forwarded-proto": "https", host: "t.local" } }));
 }
 async function landing(query: string) {
   const { GET } = await import("@/app/api/bitmoji/callback/route");
@@ -93,9 +93,11 @@ describe("flag, Snap's sign-in URL and the avatar URL check", () => {
     expect(BITMOJI_SCOPE).toBe("https://auth.snapchat.com/oauth2/api/user.display_name https://auth.snapchat.com/oauth2/api/user.bitmoji.avatar");
     expect(url).not.toContain("code_challenge");
   });
-  it("attempt cookie round trip; a broken one is refused", () => {
-    expect(readAttemptCookie(attemptCookie("c1", "st"))).toEqual({ clientId: "c1", state: "st" });
+  it("attempt cookie round trip (same page, or its own tab); a broken one is refused", () => {
+    expect(readAttemptCookie(attemptCookie("c1", "st"))).toEqual({ clientId: "c1", state: "st", tab: false });
+    expect(readAttemptCookie(attemptCookie("c1", "st", true))).toEqual({ clientId: "c1", state: "st", tab: true });
     expect(readAttemptCookie("c1.st.x")).toBeNull();
+    expect(readAttemptCookie("c1.st.t.t")).toBeNull();
     expect(readAttemptCookie("c1")).toBeNull();
     expect(readAttemptCookie(undefined)).toBeNull();
   });
@@ -108,6 +110,12 @@ describe("flag, Snap's sign-in URL and the avatar URL check", () => {
     expect(isBitmojiAvatarUrl("javascript:alert(1)")).toBe(false);
     expect(isBitmojiAvatarUrl("https://user:pw@sdk.bitmoji.com/x.png")).toBe(false);
     expect(isBitmojiAvatarUrl(42)).toBe(false);
+  });
+  it("drawn from Snap's same render without the circle crop (transparent, room above the head); saved URL untouched", () => {
+    const snap = "https://sdk.bitmoji.com/3d/render/10226021-abc-v1.png?trim=circle&ua=2";
+    expect(bitmojiDisplayUrl(snap)).toBe("https://sdk.bitmoji.com/3d/render/10226021-abc-v1.png?ua=2");
+    expect(shownAvatar(SUB, snap)).toBe("https://sdk.bitmoji.com/3d/render/10226021-abc-v1.png?ua=2");
+    expect(bitmojiDisplayUrl(AVATAR)).toBe(AVATAR);
   });
   it("shown only while the flag is on for the broker", () => {
     expect(shownAvatar(SUB, AVATAR)).toBe(AVATAR);
@@ -124,7 +132,7 @@ describe("Connect: /api/bitmoji/start", () => {
     const r = await start();
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("https://t.local/room/profile?bitmoji=verify");
-    expect(r.cookies.get(BITMOJI_COOKIE)).toBeUndefined();
+    expect(r.cookies.get(BITMOJI_COOKIE)?.value ?? "").toBe(""); // no attempt: at most the clearing cookie
   });
   it("broker without the flag (Futurix, TradeNext): off", async () => {
     if (!dbReachable) return;
@@ -149,6 +157,43 @@ describe("Connect: /api/bitmoji/start", () => {
     const att = readAttemptCookie(ck.value)!;
     expect(att.clientId).toBe(c.id);
     expect(att.state).toBe(to.searchParams.get("state"));
+  });
+});
+
+describe("Connect in its own tab (?tab=1)", () => {
+  it("start marks the attempt as a tab; an unverified client's tab tells Profile and closes", async () => {
+    if (!dbReachable) return;
+    const c = await client("APPROVED");
+    const r = await start("?tab=1");
+    expect(r.status).toBe(303);
+    expect(readAttemptCookie(r.cookies.get(BITMOJI_COOKIE)!.value)).toEqual({ clientId: c.id, state: expect.any(String), tab: true });
+    await client("PENDING");
+    const v = await start("?tab=1");
+    expect(v.status).toBe(200);
+    const html = await v.text();
+    expect(html).toContain('new BroadcastChannel("bitmoji-connect")');
+    expect(html).toContain("c.postMessage({bitmoji:r})");
+    expect(html).toContain('var r="verify"');
+    expect(html).toContain("window.close()");
+    expect(html).toContain('location.replace("/room/profile?bitmoji="+encodeURIComponent(r))');
+  });
+  it("connected in the tab: saved, the tab tells Profile 'connected' and closes, cookie cleared", async () => {
+    if (!dbReachable) return;
+    const c = await client("APPROVED");
+    stubSnap();
+    const r = await callback({ access_token: "tok", state: "st1" }, attemptCookie(c.id, "st1", true));
+    expect(r.status).toBe(200);
+    expect(await r.text()).toContain('var r="connected"');
+    expect(r.cookies.get(BITMOJI_COOKIE)?.value).toBe("");
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    expect((await saved(c.id)).bitmojiAvatarUrl).toBe(AVATAR);
+  });
+  it("cancelled at Snap in the tab: the tab says so to Profile", async () => {
+    if (!dbReachable) return;
+    const c = await client("APPROVED");
+    const { GET } = await import("@/app/api/bitmoji/callback/route");
+    const r = await GET(new NextRequest("https://t.local/api/bitmoji/callback?error=access_denied", { headers: { "x-forwarded-proto": "https", host: "t.local", cookie: `${BITMOJI_COOKIE}=${attemptCookie(c.id, "st1", true)}` } }));
+    expect(await r.text()).toContain('var r="cancelled"');
   });
 });
 
@@ -249,9 +294,26 @@ describe("where it shows", () => {
   });
   it("Profile: Connect Bitmoji for verified clients, Disconnect once connected, only where the flag is on", () => {
     const pg = read("app/(broker)/room/(shell)/profile/page.tsx");
-    expect(pg).toContain('<a className="r-btn r-btn-sm" href="/api/bitmoji/start">Connect Bitmoji</a>');
+    expect(pg).toContain('href="/api/bitmoji/start" onClick={(e) => { e.preventDefault(); setBmAsk(true); }}>Connect Bitmoji</a>');
     expect(pg).toContain('{bmBusy ? "Disconnecting…" : "Disconnect"}');
     expect(pg).toContain("p?.bitmoji && (p.bitmoji.avatarUrl || p.bitmoji.canConnect)");
+    // the popup before Snap: the owner's text, Cancel and Continue; Continue opens a new tab, blocked = this page
+    expect(pg).toContain('aria-label="Connect your Bitmoji"');
+    for (const t of [
+      "We use your Snapchat login one time, only to get your Bitmoji image.",
+      "After that the connection ends. We don&apos;t keep your login.",
+      "We never see your password, chats, friends or any other Snapchat data.",
+      "You can check or remove {p?.bitmoji?.appName ?? \"us\"} anytime in Snapchat settings, under Connected apps.",
+      ">Cancel</button>", ">Continue</button>",
+    ]) expect(pg).toContain(t);
+    expect(pg).toContain('const w = window.open("/api/bitmoji/start?tab=1", "_blank");');
+    expect(pg).toContain('if (!w) window.location.assign("/api/bitmoji/start");');
+    // the tab's result lands here with no reload: avatar and top bar redrawn
+    expect(pg).toContain('new BroadcastChannel("bitmoji-connect")');
+    expect(pg).toMatch(/showBitmojiResult = useCallback\(\(r: string\) => \{[\s\S]*?void load\(\);\s*void refresh\(\);/);
+    // "Bitmoji connected." goes after a few seconds
+    expect(pg).toContain("if (bmMsg?.text !== BITMOJI_RESULT.connected) return;");
+    expect(pg).toContain("4000");
     const route = read("app/api/room/profile/route.ts");
     expect(route).toContain("bitmojiEnabledFor(ctx.session.broker.subdomain) && snapClientId()");
     expect(route).toContain('canConnect: kyc?.status === "APPROVED"');

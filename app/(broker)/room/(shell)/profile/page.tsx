@@ -12,7 +12,7 @@ type Profile = {
   rejectionReason: string | null;
   twoFactorEnabled: boolean;
   sessions: { id: string; device: string; ip: string | null; at: string | null; current: boolean }[];
-  bitmoji: { canConnect: boolean; avatarUrl: string | null } | null; // null = Bitmoji connect is off for this broker
+  bitmoji: { canConnect: boolean; avatarUrl: string | null; appName: string } | null; // null = Bitmoji connect is off for this broker
 };
 // what /api/bitmoji/callback (or /start) sent back, as ?bitmoji=<result>
 const BITMOJI_RESULT: Record<string, string> = {
@@ -47,9 +47,17 @@ export default function RoomProfile() {
   useRoomEvent(() => { void load(); });
   const { refresh } = useRoom();
 
-  // Bitmoji: the result of the connect round trip, read once from the address and then removed from it
+  // Bitmoji: the result of the connect round trip. From the sign-in tab (BroadcastChannel, or postMessage while Snap's
+  // pages kept the opener): shown here at once, the avatar redrawn, no reload. Same-page fallback: ?bitmoji=<result>,
+  // read once and removed from the address.
   const [bmMsg, setBmMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [bmBusy, setBmBusy] = useState(false);
+  const [bmAsk, setBmAsk] = useState(false);
+  const showBitmojiResult = useCallback((r: string) => {
+    setBmMsg({ ok: r === "connected", text: BITMOJI_RESULT[r] ?? BITMOJI_RESULT.failed });
+    void load();
+    void refresh();
+  }, [load, refresh]);
   useEffect(() => {
     const url = new URL(window.location.href);
     const r = url.searchParams.get("bitmoji");
@@ -58,6 +66,33 @@ export default function RoomProfile() {
     url.searchParams.delete("bitmoji");
     window.history.replaceState(null, "", url.pathname + url.search + url.hash);
   }, []);
+  useEffect(() => {
+    const take = (d: unknown) => { const r = (d as { bitmoji?: unknown } | null)?.bitmoji; if (typeof r === "string" && r in BITMOJI_RESULT) showBitmojiResult(r); };
+    let ch: BroadcastChannel | null = null;
+    try { ch = new BroadcastChannel("bitmoji-connect"); ch.onmessage = (e) => take(e.data); } catch { /* old browser: postMessage below */ }
+    const onMsg = (e: MessageEvent) => { if (e.origin === window.location.origin) take(e.data); };
+    window.addEventListener("message", onMsg);
+    return () => { ch?.close(); window.removeEventListener("message", onMsg); };
+  }, [showBitmojiResult]);
+  // "Bitmoji connected." shows for a few seconds after connecting, then goes
+  useEffect(() => {
+    if (bmMsg?.text !== BITMOJI_RESULT.connected) return;
+    const t = setTimeout(() => setBmMsg((m) => (m?.text === BITMOJI_RESULT.connected ? null : m)), 4000);
+    return () => clearTimeout(t);
+  }, [bmMsg]);
+  useEffect(() => {
+    if (!bmAsk) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setBmAsk(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [bmAsk]);
+  /** Continue in the popup: Snap's sign-in in a new tab; if the browser blocks it, in this page as before. */
+  function continueBitmoji() {
+    setBmAsk(false);
+    setBmMsg(null);
+    const w = window.open("/api/bitmoji/start?tab=1", "_blank");
+    if (!w) window.location.assign("/api/bitmoji/start");
+  }
   async function disconnectBitmoji() {
     if (bmBusy) return;
     setBmBusy(true);
@@ -124,7 +159,24 @@ export default function RoomProfile() {
                 ) : <span className="r-avatar r-avatar-lg">{initials(p.personal.fullName)}</span>}
                 {p.bitmoji.avatarUrl ? (
                   <button type="button" className="r-btn-ghost r-btn-sm" disabled={bmBusy} onClick={disconnectBitmoji}>{bmBusy ? "Disconnecting…" : "Disconnect"}</button>
-                ) : <a className="r-btn r-btn-sm" href="/api/bitmoji/start">Connect Bitmoji</a>}
+                ) : <a className="r-btn r-btn-sm" href="/api/bitmoji/start" onClick={(e) => { e.preventDefault(); setBmAsk(true); }}>Connect Bitmoji</a>}
+              </div>
+            ) : null}
+            {bmAsk ? (
+              <div className="r-modal-back" onPointerDown={(e) => { if (e.target === e.currentTarget) setBmAsk(false); }}>
+                <div className="r-modal" role="dialog" aria-modal="true" aria-label="Connect your Bitmoji" style={{ maxWidth: 420 }}>
+                  <div style={{ fontFamily: "var(--r-head)", fontSize: 18, fontWeight: 600 }}>Connect your Bitmoji</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: "var(--r-text-2)", lineHeight: 1.5 }}>
+                    <li>We use your Snapchat login one time, only to get your Bitmoji image.</li>
+                    <li>After that the connection ends. We don&apos;t keep your login.</li>
+                    <li>We never see your password, chats, friends or any other Snapchat data.</li>
+                    <li>You can check or remove {p?.bitmoji?.appName ?? "us"} anytime in Snapchat settings, under Connected apps.</li>
+                  </ul>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                    <button type="button" className="r-btn-ghost r-btn-sm" onClick={() => setBmAsk(false)}>Cancel</button>
+                    <button type="button" className="r-btn r-btn-sm" autoFocus onClick={continueBitmoji}>Continue</button>
+                  </div>
+                </div>
               </div>
             ) : null}
             {bmMsg ? <div role="status" style={{ fontSize: 12, color: bmMsg.ok ? "var(--r-ok)" : "var(--r-loss)" }}>{bmMsg.text}</div> : null}
@@ -213,7 +265,7 @@ export default function RoomProfile() {
 
           <div className="r-card" style={{ ...card, gap: 14 }}>
             <div className="r-label">Active sessions</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 12.5 }}>
+            <div className="r-sessions" style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 12.5 }}>
               {(p?.sessions ?? []).filter((s) => s.current || s.device !== "Unknown device").map((s, i) => (
                 <div key={s.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", borderTop: i ? "1px solid var(--r-row)" : "none", paddingTop: i ? 12 : 0 }}>
                   <div>
