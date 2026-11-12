@@ -81,7 +81,10 @@ export default function UserMenu() {
   return (
     <div className="r-user" ref={box}>
       <button type="button" className="r-user-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <span className="r-avatar">{initials(data.client.fullName)}</span>
+        {data.client.avatarUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="r-avatar r-avatar-img" src={data.client.avatarUrl} alt="" referrerPolicy="no-referrer" />
+        ) : <span className="r-avatar">{initials(data.client.fullName)}</span>}
         <span className="r-user-name">{data.client.fullName}</span>
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--r-muted)" strokeWidth="1.5" aria-hidden="true"><path d="M2 3.5 5 6.5 8 3.5" /></svg>
       </button>

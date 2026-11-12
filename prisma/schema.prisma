@@ -1508,6 +1508,10 @@ model Client {
   // setup and only counts once a code from it was confirmed
   twoFactorSecret  String?
   twoFactorEnabled Boolean @default(false)
+  // Bitmoji connect (test, owner 2026-11-12, lib/room/bitmoji.ts): the avatar image URL read from Snap Login Kit; null =
+  // not connected (the initials show). Snap's tokens are never stored.
+  bitmojiAvatarUrl   String?
+  bitmojiConnectedAt DateTime? @db.Timestamptz(3)
   // Partner (IB) portal (CRM 2026-11-03): partnerAccountId = the client's account the broker made an IB (it receives the
   // commissions, IbRelationship.ibAccountId); null = not a partner. referralCode = their link's code; referredByClientId =
   // the partner whose link this client signed up through (their live accounts are attached to that partner).
