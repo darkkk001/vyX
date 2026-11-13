@@ -18,6 +18,7 @@ import PricingEngineSwitch from "./PricingEngineSwitch";
 import BridgeLicenses from "./BridgeLicenses";
 import OrderRateLimit from "./OrderRateLimit";
 import LpTimeouts from "./LpTimeouts";
+import BrokerEngine from "./BrokerEngine";
 import StaffTwoFactorPolicy from "./StaffTwoFactorPolicy";
 import { partsFromSplitText, type WordmarkStyle } from "@/lib/room/wordmark";
 
@@ -908,6 +909,10 @@ export default function BrokersManager() {
                 initialRequired={detailTarget.staffTwoFactorRequired}
                 onSaved={reload}
               />
+            </ModalSection>
+
+            <ModalSection label="Engine">
+              <BrokerEngine key={detailTarget.id} brokerId={detailTarget.id} brokerName={detailTarget.name} />
             </ModalSection>
 
             <ModalSection label="Liquidity bridge licenses">

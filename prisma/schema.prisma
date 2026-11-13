@@ -658,6 +658,11 @@ model Broker {
   // scripts/seed-qoredemo.ts only; never by a form.
   isDemoSandbox Boolean @default(false)
   leverageChangeRequests LeverageChangeRequest[]
+  // Multi-engine control plane (owner 2026-11-13): the engine this broker runs on. THE source of truth for the assignment (one engine per
+  // broker); every change writes an EngineAssignmentLog row. Dormant until the engine step: engines read engine_broker_scope by their ENGINE_ID.
+  engineId                   String?         @db.VarChar(40)
+  engine                     Engine?         @relation(fields: [engineId], references: [id], onDelete: Restrict)
+  @@index([engineId])
 }
 
 model AdminUser {
@@ -3381,4 +3386,43 @@ model CrmTask {
 
   @@index([entityType, entityId])
   @@index([brokerId, doneAt, dueAt])
+}
+
+// Multi-engine control plane (owner 2026-11-13, docs/ENGINE-REGISTRY.md). One row per deployed engine. Engines will write lastBeatAt (their own
+// heartbeat) and read their brokers from the engine_broker_scope view (migration 20261113130000) by their ENGINE_ID; both start with the engine step.
+enum EngineStatus {
+  PLANNED   // registered, not serving yet (the view leaves its brokers out)
+  ACTIVE    // serving its brokers
+  DRAINING  // still serving while its brokers are moved off it
+  RETIRED   // serves nothing (the view leaves its brokers out)
+}
+
+model Engine {
+  id              String       @id @db.VarChar(40) // a short slug, e.g. eu-fr-1 (the engine's ENGINE_ID)
+  name            String
+  region          String
+  gatewayUrl      String
+  status          EngineStatus @default(PLANNED)
+  // the engine's own heartbeat (written by the engine; null until the engine step). Stale = the web owns its brokers' accounts.
+  lastBeatAt      DateTime?    @db.Timestamptz(3)
+  lastBeatVersion String?
+  staleAfterSecs  Int          @default(30)
+  notes           String       @default("")
+  createdAt       DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @db.Timestamptz(3)
+  brokers         Broker[]
+}
+
+// Append-only history of Broker.engineId (never updated or deleted): an assign (from null), a move, an unassign (to null).
+model EngineAssignmentLog {
+  id           String   @id @default(cuid())
+  brokerId     String
+  fromEngineId String?  @db.VarChar(40)
+  toEngineId   String?  @db.VarChar(40)
+  adminId      String?
+  reason       String
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerId, createdAt])
+  @@index([toEngineId])
 }

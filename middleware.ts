@@ -67,6 +67,7 @@ const SUPER_ADMIN_PAGE_PATHS = new Set([
   "/admins",
   "/audit",
   "/billing",
+  "/engines",
   "/health",
   "/notifications",
   "/security",
