@@ -83,7 +83,7 @@ describe("Deposit and Withdraw layout", () => {
 describe("Trade on links", () => {
   const dash = () => src("app/(broker)/room/(shell)/page.tsx");
   it("WebTrader Open: the WebTrader in a new tab", () => {
-    expect(dash()).toMatch(/<span>WebTrader<\/span><a href="\/trade" target="_blank" rel="noopener"/);
+    expect(dash()).toMatch(/<span>WebTrader<\/span><a href="\/api\/room\/webtrader" target="_blank" rel="noopener"/);
   });
   it("Desktop terminal Download: the installer itself", () => {
     expect(dash()).toMatch(/<span>Desktop terminal<\/span><a href="\/download\/terminal\/installer"/);
@@ -101,7 +101,7 @@ describe("Trade on links", () => {
     expect(trade).toMatch(/if \(current\?\.accountNumber !== wanted\) redirect\(toLogin\);/);
   });
   it("Downloads Open WebTrader: a new tab", () => {
-    expect(src("app/(broker)/room/(shell)/downloads/page.tsx")).toMatch(/<a href="\/trade" target="_blank" rel="noopener"[^>]*>Open WebTrader<\/a>/);
+    expect(src("app/(broker)/room/(shell)/downloads/page.tsx")).toMatch(/<a href="\/api\/room\/webtrader" target="_blank" rel="noopener"[^>]*>Open WebTrader<\/a>/);
   });
 });
 
