@@ -64,6 +64,9 @@ type OpenPositionWithMarket = {
   fxRate: Prisma.Decimal;
   // MT5 hedged margin (2026-09-25): BrokerSymbol.hedgedMarginPct of this position's symbol (200 = no reduction).
   hedgedMarginPct: Prisma.Decimal;
+  // order sounds by origin (lib/client-origin.ts): the client that set its SL / TP (a hit sounds there) and the one that opened it (stop-out)
+  slTpClientInstance: string | null;
+  openClientInstance: string | null;
 };
 
 async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPositionWithMarket[]> {
@@ -139,6 +142,8 @@ async function loadMarketBook(accountIds: string[]): Promise<Map<string, OpenPos
       tpPrice: p.tpPrice,
       slAmount: p.slAmount,
       tpAmount: p.tpAmount,
+      slTpClientInstance: p.slTpClientInstance,
+      openClientInstance: p.openClientInstance,
       contractSize: p.symbol.contractSize,
       ticket: p.ticket,
       symbol: p.symbol.name,
@@ -313,7 +318,7 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
       // manual one -- this whole module never called it at all before.
       await mirror.onClose(prisma, { positionId: p.id, brokerId: p.brokerId, closedLots: p.volume, sourceVolumeBeforeClose: p.volume, closePrice: cp }).catch((err) => console.error("mirror.onClose failed", err));
       await coverage.onClose(prisma, { positionId: p.id, brokerId: p.brokerId, closedLots: p.volume, sourceVolumeBeforeClose: p.volume, reason: "sl_tp" }).catch((err) => console.error("coverage.onClose failed", err));
-      await publishTradingEvent("PositionClosed", { position_id: p.id, account_id: accountId, broker_id: p.brokerId, reason });
+      await publishTradingEvent("PositionClosed", { position_id: p.id, account_id: accountId, broker_id: p.brokerId, reason, origin_client_id: p.slTpClientInstance });   // sounds only where the SL / TP was set
       await emitPositionClosedActivity(prisma, { positionId: p.id, closePrice: cp, closeVolume: p.volume, partial: false, realizedPnl: outcome.realizedPnl, closeReason: reason === "stop_loss" ? "STOP_LOSS" : "TAKE_PROFIT", origin: "risk_monitor" });
     }
   }
@@ -378,7 +383,7 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
       await coverage.notifyStopOut(prisma, { brokerId: worst.position.brokerId, accountId, accountNumber: freshAccount.accountNumber, positionId: worst.position.id, ticket: worst.position.ticket, symbol: worst.position.symbol, side: worst.position.side, volume: worst.position.volume.toString(), marginLevel: marginLevel.toFixed(2), stopOutLevel: stopOutLevel.toString() }).catch((err) => console.error("coverage.notifyStopOut failed", err));
       await coverage.onClose(prisma, { positionId: worst.position.id, brokerId: worst.position.brokerId, closedLots: worst.position.volume, sourceVolumeBeforeClose: worst.position.volume, reason: "stop_out", marginLevel: marginLevel.toFixed(2) }).catch((err) => console.error("coverage.onClose failed", err));
       // is_coverage (Phase 2 batch 5): the broker's own hedge account stopped out -- the dealer's louder alarm, exact
-      await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, broker_id: worst.position.brokerId, reason: "stop_out", is_coverage: freshAccount.group?.category === "COVERAGE" });
+      await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, broker_id: worst.position.brokerId, origin_client_id: worst.position.openClientInstance, reason: "stop_out", is_coverage: freshAccount.group?.category === "COVERAGE" });
       await emitPositionClosedActivity(prisma, { positionId: worst.position.id, closePrice: worst.closePrice, closeVolume: worst.position.volume, partial: false, realizedPnl: outcome.realizedPnl, closeReason: "STOP_OUT", origin: "risk_monitor" });
     }
     // If outcome.closed is false, a concurrent evaluation (or the trader)

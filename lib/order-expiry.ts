@@ -66,11 +66,13 @@ export type ExpirableOrder = ExpiryOrder & {
   closesPositionId: string | null;
   symbolName: string;
   accountNumber: string;
+  clientInstance?: string | null;
 };
 
 const EXPIRABLE_SELECT = {
   id: true, ticket: true, brokerId: true, accountId: true, side: true, type: true, volume: true, status: true, requotedPrice: true,
   executedAt: true, queuedAt: true, createdAt: true, closesPositionId: true,
+  clientInstance: true,   // order sounds by origin: an expiry sounds only on the client that placed the order
   symbol: { select: { name: true } },
   account: { select: { accountNumber: true } },
   broker: { select: { requoteExpirySeconds: true, offerExpirySeconds: true } },
@@ -109,7 +111,7 @@ export async function expireOffer(db: PrismaClient, order: ExpirableOrder, now: 
     return true;
   });
   if (expired) {
-    await publishTradingEvent("OrderCancelled", { order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, reason: OFFER_EXPIRED });
+    await publishTradingEvent("OrderCancelled", { origin_client_id: order.clientInstance ?? null, order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, reason: OFFER_EXPIRED });
   }
   return expired;
 }

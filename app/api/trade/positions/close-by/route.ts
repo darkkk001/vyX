@@ -9,6 +9,7 @@ import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendin
 import { clientDealSource } from "@/lib/deals";
 import { requestMeta } from "@/lib/order-execution";
 import { toClientShape } from "@/lib/client-execution";
+import { enterClientOrigin } from "@/lib/client-origin";
 
 // "Close By" -- nets the smaller of two opposite-side
 // positions on the same symbol against the larger one at a single fair
@@ -106,6 +107,7 @@ async function postInner(request: NextRequest) {
 
 // Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts); close / modify refusals are traced first.
 export async function POST(request: Parameters<typeof postInner>[0]) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const requestedAt = new Date();
   const probe = request.clone();
   const raw = await postInner(request);

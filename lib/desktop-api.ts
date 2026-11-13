@@ -1,3 +1,4 @@
+import { CLIENT_INSTANCE_HEADER, clientInstanceId } from "./client-instance";
 // Shared transport layer for every bundled desktop shell (desktop-tauri's
 // webtrader-shell/, manager-tauri's manager-shell/, and admin-tauri's
 // admin-shell/ once it exists) -- originally lived only in
@@ -130,7 +131,8 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     cache: "no-store",
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    // order sounds by origin (lib/client-instance.ts): a trade request names this tab, so only this tab sounds for what it causes
+    headers: { "Content-Type": "application/json", ...(path.startsWith("/api/trade/") ? { [CLIENT_INSTANCE_HEADER]: clientInstanceId() } : {}), ...init?.headers },
   });
   recalibrateFromResponse(response, sentAt, Date.now());
   const rawBody = await response.json().catch(() => null);

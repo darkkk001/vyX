@@ -31,6 +31,8 @@ export async function openPositionFromOrder(
     // amount SL / TP (lib/amount-sltp.ts): copied onto the position with the prices
     slAmount: Prisma.Decimal | null;
     tpAmount: Prisma.Decimal | null;
+    // order sounds by origin: the client that placed the order (null = none): the position's opener and SL / TP setter
+    clientInstance?: string | null;
   },
   fillPrice: Prisma.Decimal,
   bookType: BookType,
@@ -59,6 +61,8 @@ export async function openPositionFromOrder(
       slAmount: order.slAmount,
       tpAmount: order.tpAmount,
       bookType,
+      openClientInstance: order.clientInstance ?? null,
+      slTpClientInstance: order.slPrice || order.tpPrice || order.slAmount || order.tpAmount ? order.clientInstance ?? null : null,
     },
   });
   await chargeCommission(tx, {

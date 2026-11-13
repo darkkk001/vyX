@@ -1,6 +1,7 @@
 import "server-only";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDemoBrokerId } from "@/lib/demo";
+import { stampOrigin } from "@/lib/client-origin";
 
 // Publish-only relay for the legacy Next.js trade routes — see
 // docs/webtrader-stm-architecture-review.md §4.3 (sequencing item 4).
@@ -143,6 +144,8 @@ export async function publishTradingEvent(
   type: TradingEventType,
   payload: Record<string, unknown> & { broker_id: string }
 ): Promise<void> {
+  // order sounds by origin (lib/client-origin.ts): the event carries the client that caused it, so only that client plays its sound
+  payload = stampOrigin(payload);
   // QoreTrader demo: nothing the demo tenant does ever reaches the gateway, NATS, the engine or the VPS (no env var = no cost)
   if (await isDemoBrokerId(payload.broker_id)) return;
   const buffer = eventBuffer.getStore();

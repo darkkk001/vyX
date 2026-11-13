@@ -80,7 +80,7 @@ export function pendingTriggered(order: { side: "BUY" | "SELL"; type: string }, 
 }
 
 async function rejectPending(
-  order: { id: string; brokerId: string; accountId: string; side: string; volume: Prisma.Decimal; type: string; requestedPrice: Prisma.Decimal | null; symbol: { name: string } },
+  order: { id: string; brokerId: string; accountId: string; side: string; volume: Prisma.Decimal; type: string; requestedPrice: Prisma.Decimal | null; symbol: { name: string }; clientInstance?: string | null },
   accountNumber: string,
   reason: string,
   origin: "server" | "client",
@@ -113,7 +113,7 @@ async function rejectPending(
     entityType: "Order",
     entityId: order.id,
   }).catch((err) => console.error("[pending-trigger] notification failed", err));
-  await publishTradingEvent("OrderRejected", { order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, reason }).catch(() => {});
+  await publishTradingEvent("OrderRejected", { origin_client_id: order.clientInstance ?? null, order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, reason }).catch(() => {});
   return true;
 }
 
@@ -226,7 +226,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
       entityType: "Order",
       entityId: order.id,
     });
-    await publishTradingEvent("DealingQueued", {
+    await publishTradingEvent("DealingQueued", { origin_client_id: order.clientInstance ?? null,
       order_id: order.id,
       broker_id: order.brokerId,
       account_id: order.accountId,
@@ -311,6 +311,9 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
         slAmount: order.slAmount,
         tpAmount: order.tpAmount,
         bookType,
+        // order sounds by origin: the client that placed the pending order opened it and set its SL / TP
+        openClientInstance: order.clientInstance ?? null,
+        slTpClientInstance: order.slPrice || order.tpPrice || order.slAmount || order.tpAmount ? order.clientInstance ?? null : null,
       },
     });
     await chargeCommission(tx, { brokerId: order.brokerId, accountId: order.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume: order.volume });
@@ -339,7 +342,7 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
 
   await mirror.onFillPosition(prisma, result.position, order.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
   await coverage.onFillAutoHedge(prisma, { positionId: result.position.id, brokerId: order.brokerId });
-  await publishTradingEvent("OrderFilled", {
+  await publishTradingEvent("OrderFilled", { origin_client_id: order.clientInstance ?? null,
     order_id: order.id,
     account_id: order.accountId,
     broker_id: order.brokerId,
@@ -417,7 +420,7 @@ async function fillCoverageOrder(args: {
     return { order: filledOrder, position };
   });
   if (!result) return { kind: "skipped", reason: "already handled" };
-  await publishTradingEvent("OrderFilled", { order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, price: fillPrice.toString(), volume: order.volume.toString(), remaining_volume: "0" });
+  await publishTradingEvent("OrderFilled", { origin_client_id: order.clientInstance ?? null, order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, price: fillPrice.toString(), volume: order.volume.toString(), remaining_volume: "0" });
   return { kind: "filled", order: result.order, position: result.position, fillPrice: fillPrice.toString() };
 }
 

@@ -60,6 +60,7 @@ import { DEMO_BANNER_TEXT } from "@/lib/demo-policy";
 import { wtColors } from "./wt-colors";
 import { DEMO_SYMBOLS, demoBucketStart, demoCandleOf, gridTime } from "@/lib/demo-prices";
 import { demoTicksAt, noteDemoTick } from "@/lib/demo-client";
+import { isMine, noteEventOrigin } from "@/lib/client-instance";
 // WebTrader colour classes per tone (lib/format.ts): profit blue, loss red, zero neutral (platform colour rule)
 const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
 // inline colour per tone in the WebTrader's own money tokens (webtrader.css); lib/format.ts TONE_COLOR stays on the web
@@ -1175,6 +1176,9 @@ export default function WebTrader({
       const freshIds = new Set(fresh.map((p) => p.id));
       for (const [id, prev] of prevPositionsRef.current) {
         if (freshIds.has(id)) continue;
+        // order sounds by origin (lib/client-instance.ts): only the tab that closed it, or that set the SL / TP that hit (the event's
+        // origin), sounds; another device's close or a close no client caused stays silent here
+        if (!isMine(id)) continue;
         const digits = prev.symbol.digits;
         const sl = prev.slPrice ? parseFloat(prev.slPrice) : null;
         const tp = prev.tpPrice ? parseFloat(prev.tpPrice) : null;
@@ -1277,6 +1281,7 @@ export default function WebTrader({
       for (const order of all) {
         const prevStatus = prevOrderStatusRef.current.get(order.id);
         if (prevStatus === order.status) continue;
+        if (!isMine(order.id)) continue;   // order sounds by origin: a fill / reject this tab did not place stays silent
         if (order.status === "FILLED" && prevStatus !== undefined) {
           playSound(order.type === "MARKET" ? "orderFilled" : "pendingTriggered", chartSettingsRef.current);
         } else if (order.status === "REJECTED" && prevStatus !== undefined) {
@@ -2030,6 +2035,7 @@ export default function WebTrader({
       let parsed: { type?: string; symbol?: string; triggered_price?: string; scope?: string; state?: string } | null = null;
       try {
         parsed = JSON.parse(raw);
+        noteEventOrigin(parsed as Parameters<typeof noteEventOrigin>[0]);   // order sounds by origin: which client caused it
       } catch {
         // Not JSON, or empty -- fall through to the generic refresh below
         // rather than dropping the event entirely (every non-alert event
@@ -2602,7 +2608,7 @@ export default function WebTrader({
     const requoted = pendingOrders.find((o) => o.status === "REQUOTED" && !requotedPromptedRef.current.has(o.id));
     if (!requoted) return;
     requotedPromptedRef.current.add(requoted.id);
-    playSound("requoteReceived", chartSettingsRef.current);
+    if (isMine(requoted.id)) playSound("requoteReceived", chartSettingsRef.current);   // order sounds by origin: only the tab that placed it
     setGenericModal({
       title: "Dealer requoted your order",
       message: `${requoted.side} ${requoted.volume} ${requoted.symbol.name}, dealer offered ${

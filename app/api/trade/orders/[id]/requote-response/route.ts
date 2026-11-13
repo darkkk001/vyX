@@ -14,6 +14,7 @@ import { orderAuditFields } from "@/lib/order-audit";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { expireIfStale, OFFER_EXPIRED } from "@/lib/order-expiry";
 import { Prisma } from "@prisma/client";
+import { enterClientOrigin } from "@/lib/client-origin";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -153,7 +154,7 @@ async function postInner(request: NextRequest, { params }: { params: Promise<{ i
     });
     if (result.kind === "raced") return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
     if (result.kind === "position_gone") return NextResponse.json({ error: "position was already closed; the close request is cancelled" }, { status: 409 });
-    await afterQueuedCloseExecuted(prisma, {
+    await afterQueuedCloseExecuted(prisma, { clientInstance: order.clientInstance ?? null,
       brokerId: order.brokerId,
       accountId: session.accountId,
       accountNumber: order.account.accountNumber,
@@ -286,6 +287,7 @@ async function postInner(request: NextRequest, { params }: { params: Promise<{ i
 
 // Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts).
 export async function POST(request: Parameters<typeof postInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const raw = await postInner(request, ctx);
   return withClientRefusals(raw);
 }

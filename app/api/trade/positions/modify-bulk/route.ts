@@ -9,6 +9,8 @@ import { prisma } from "@/lib/prisma";
 import { amountOfSpec, announcePositionModified, levelFromSpec, loadAmountContext, refuseModify, type LevelSpec } from "@/lib/position-modify";
 import { amountRefusalBody, parseAmount } from "@/lib/amount-sltp";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
+import { enterClientOrigin } from "@/lib/client-origin";
+import { currentClientOrigin } from "@/lib/client-origin";
 
 const MAX_POSITIONS = 200;
 
@@ -108,7 +110,7 @@ async function postInner(request: NextRequest) {
     // guarded on OPEN so a position closed a moment ago is not written to
     const changed = await prisma.position.updateMany({
       where: { id, accountId: session.accountId, status: "OPEN" },
-      data: { ...(slPrice !== undefined ? { slPrice } : {}), ...(tpPrice !== undefined ? { tpPrice } : {}), ...(slAmount !== undefined ? { slAmount } : {}), ...(tpAmount !== undefined ? { tpAmount } : {}) },
+      data: { ...(slPrice !== undefined ? { slPrice } : {}), ...(tpPrice !== undefined ? { tpPrice } : {}), ...(slAmount !== undefined ? { slAmount } : {}), slTpClientInstance: currentClientOrigin(), ...(tpAmount !== undefined ? { tpAmount } : {}) },
     });
     if (changed.count === 0) { results.push({ positionId: id, ok: false, slPrice: null, tpPrice: null, error: "position is not open" }); continue; }
     const updated = await prisma.position.findUniqueOrThrow({ where: { id } });
@@ -126,6 +128,7 @@ async function postInner(request: NextRequest) {
 
 // Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts); close / modify refusals are traced first.
 export async function POST(request: Parameters<typeof postInner>[0]) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const requestedAt = new Date();
   const raw = await postInner(request);
   await traceCloseOrModifyRefusals("MODIFY", raw, request.headers, requestedAt, null);

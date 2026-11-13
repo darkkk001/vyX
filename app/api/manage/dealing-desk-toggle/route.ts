@@ -201,7 +201,7 @@ async function flushDealingQueueToMarket(
         });
         if (result.kind === "raced") { results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "already actioned" }); continue; }
         if (result.kind === "position_gone") { results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "position already closed" }); continue; }
-        await afterQueuedCloseExecuted(prisma, {
+        await afterQueuedCloseExecuted(prisma, { clientInstance: order.clientInstance ?? null,
           brokerId, accountId: order.accountId, accountNumber: order.account.accountNumber, accountFullName: order.account.fullName,
           symbolName: order.symbol.name, side: order.side, positionId: order.closesPositionId, positionVolumeBefore: before?.volume ?? order.volume, result, origin: "dealer_desk_auto_flush",
         });

@@ -9,6 +9,7 @@ import { clientDealSource } from "@/lib/deals";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 import { requestMeta } from "@/lib/order-execution";
 import { closeBulkThroughEngine, engineFillsFor } from "@/lib/engine-ingress";
+import { enterClientOrigin } from "@/lib/client-origin";
 
 const SCOPES: BulkCloseScope[] = ["ALL", "PROFIT", "LOSS", "SYMBOL"];
 
@@ -186,6 +187,7 @@ async function postInner(request: NextRequest) {
 
 // Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts); close / modify refusals are traced first.
 export async function POST(request: Parameters<typeof postInner>[0]) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const requestedAt = new Date();
   const raw = await postInner(request);
   await traceCloseOrModifyRefusals("CLOSE", raw, request.headers, requestedAt, null);

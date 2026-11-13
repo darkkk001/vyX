@@ -8,6 +8,7 @@ import { recordDealerActivity } from "@/lib/dealer-activity";
 import { orderAuditFields } from "@/lib/order-audit";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
+import { currentClientOrigin } from "@/lib/client-origin";
 
 // Closes respect DEALER mode (docs/CLOSES-RESPECT-DEALER-MODE.md, 2026-09-18).
 //
@@ -77,6 +78,7 @@ export async function queueCloseInTx(tx: Prisma.TransactionClient, input: QueueC
       closesPositionId: input.position.id,
       closeVolume: input.closeVolume,
       closeByPositionId: input.closeByPositionId ?? null,
+      clientInstance: currentClientOrigin(),   // order sounds by origin: the dealer's fill of this close sounds on this client
       ...(input.capture ?? {}),
     },
   });
@@ -254,13 +256,15 @@ export async function afterQueuedCloseExecuted(
     positionVolumeBefore: Prisma.Decimal;
     result: Extract<ExecuteQueuedCloseResult, { kind: "closed" }>;
     origin: string;
+    // order sounds by origin: the client that asked for this close (the queued close order's clientInstance); null = silent
+    clientInstance?: string | null;
   }
 ) {
   await mirror
     .onClose(db, { positionId: p.positionId, brokerId: p.brokerId, closedLots: p.result.closeVolume, sourceVolumeBeforeClose: p.positionVolumeBefore, closePrice: p.result.closePrice })
     .catch((err) => console.error("mirror.onClose failed", err));
   await coverage.onClose(db, { positionId: p.positionId, brokerId: p.brokerId, closedLots: p.result.closeVolume, sourceVolumeBeforeClose: p.positionVolumeBefore, reason: "manual" }).catch((err) => console.error("coverage.onClose failed", err));
-  await publishTradingEvent("PositionClosed", { position_id: p.positionId, account_id: p.accountId, broker_id: p.brokerId, reason: "manual" });
+  await publishTradingEvent("PositionClosed", { position_id: p.positionId, account_id: p.accountId, broker_id: p.brokerId, reason: "manual", origin_client_id: p.clientInstance ?? null });
   await recordDealerActivity(db, {
     brokerId: p.brokerId,
     accountId: p.accountId,
