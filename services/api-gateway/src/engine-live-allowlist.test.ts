@@ -76,3 +76,46 @@ test("the env list alone never admits a LIVE account", () => {
   assert.equal(engineIngressVerdict(ID, "LIVE", LIST, true, true).ok, true, "both on -- the feature");
   assert.equal(engineLiveAllowed("DEMO", true, true), false, "a DEMO account is never 'live allowed'");
 });
+
+// ---- the scope is the list OR the columns (owner 2026-11-13) --------------------------------------
+//
+// Before this, an allowlisted LIVE account ALSO had to be pasted into ENGINE_INGRESS_ACCOUNT_IDS to be
+// in scope. The env list stays the DEMO trial scope; live accounts are enrolled by the two columns.
+
+test("an allowlisted LIVE account is in scope without being on the env list", () => {
+  const demoOnlyList = ["demo-1"];
+  const v = engineIngressVerdict("live-x", "LIVE", demoOnlyList, true, true);
+  assert.equal(v.ok, true, v.ok ? "" : v.why);
+});
+
+test("the env list still works, and still admits nothing it does not name", () => {
+  const list = ["demo-1"];
+  assert.equal(engineIngressVerdict("demo-1", "DEMO", list, false, false).ok, true);
+  assert.equal(engineIngressVerdict("demo-2", "DEMO", list, false, false).ok, false);
+});
+
+test("DORMANT: with both columns false the scope check is exactly the old membership test", () => {
+  const list = ["demo-1"];
+  for (const [id, mode] of [["demo-1", "DEMO"], ["demo-2", "DEMO"], ["live-x", "LIVE"], ["live-y", "LIVE"]] as const) {
+    const now = engineIngressVerdict(id, mode, list, false, false).ok;
+    const old = list.includes(id) && mode === "DEMO";
+    assert.equal(now, old, `${id}/${mode}: widening must change nothing while nothing is enabled`);
+  }
+});
+
+test("every half of the rule is required for an off-list LIVE account", () => {
+  const list = ["demo-1"];
+  assert.equal(engineIngressVerdict("live-x", "LIVE", list, true, false).ok, false, "broker on, account off");
+  assert.equal(engineIngressVerdict("live-x", "LIVE", list, false, true).ok, false, "account on, broker off");
+  assert.equal(engineIngressVerdict("live-x", "LIVE", list, false, false).ok, false, "neither");
+  assert.equal(engineIngressVerdict("live-x", "LIVE", list, true, true).ok, true, "both");
+});
+
+test("widening the scope does not let the env list admit a LIVE account", () => {
+  // the L2 Step 3 finding: a live id pasted onto the list is IN SCOPE by that paste, and must still be
+  // refused by the DEMO-only rule, because its columns are false
+  const pasted = ["live-pasted"];
+  const v = engineIngressVerdict("live-pasted", "LIVE", pasted, false, false);
+  assert.equal(v.ok, false);
+  assert.match(v.ok ? "" : v.why, /DEMO accounts only/);
+});

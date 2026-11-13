@@ -88,8 +88,19 @@ export function engineIngressVerdict(
   engineLiveEnabled = false
 ): IngressVerdict {
   if (allowList.length === 0) return { ok: false, why: "the engine order path is not enabled here" };
-  if (!allowList.includes(accountId)) return { ok: false, why: "this account is not served by the engine order path" };
-  // the defaults above are false, so a caller that passes neither flag gets exactly the old rule
+  // THE SCOPE IS THE LIST **OR** WHAT THE COLUMNS ADMIT (owner 2026-11-13). An allowlisted LIVE account
+  // is in scope without also having to be pasted into ENGINE_INGRESS_ACCOUNT_IDS -- that list stays the
+  // DEMO trial scope and is not where live accounts are enrolled.
+  //
+  // DORMANT BY CONSTRUCTION: engineLiveAllowed is false for every account while the two columns are
+  // false, so this reads exactly as `!allowList.includes(accountId)` did, for every account in the
+  // database today.
+  if (!allowList.includes(accountId) && !engineLiveAllowed(accountMode, allowlistOn, engineLiveEnabled)) {
+    return { ok: false, why: "this account is not served by the engine order path" };
+  }
+  // the defaults above are false, so a caller that passes neither flag gets exactly the old rule.
+  // Kept SEPARATE from the scope check above on purpose: a LIVE id someone pastes into the env list is
+  // in scope by that paste, and this is what still refuses it -- the L2 Step 3 finding.
   if (accountMode !== "DEMO" && !engineLiveAllowed(accountMode, allowlistOn, engineLiveEnabled)) {
     return { ok: false, why: "the engine order path serves DEMO accounts only" };
   }
