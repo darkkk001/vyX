@@ -1,0 +1,33 @@
+{
+  "_comment": "Vercel Firewall custom rules for the CRM (owner 2026-11-13). Applied with scripts/firewall-apply.mjs (vercel firewall CLI). 'enforce' is each rule's real action; the script's 'log' mode turns every rule into Log first. Only browser pages are challenged: /api/*, /native-*-updates, /_next, favicon, logos and every other path never match.",
+  "project": "vy-x",
+  "rules": [
+    {
+      "name": "CRM pages challenge",
+      "description": "Browser challenge on the client sign-in pages: /login, /register and every /portal page (forgot/reset password included). API, feeds and static files never match.",
+      "conditionGroup": [
+        { "conditions": [{ "type": "path", "op": "eq", "value": "/login" }] },
+        { "conditions": [{ "type": "path", "op": "eq", "value": "/register" }] },
+        { "conditions": [{ "type": "path", "op": "eq", "value": "/portal" }] },
+        { "conditions": [{ "type": "path", "op": "pre", "value": "/portal/" }] }
+      ],
+      "enforce": { "mitigate": { "action": "challenge" } }
+    },
+    {
+      "name": "Login API per-IP limit",
+      "description": "POST /api/portal/login: 30 per minute per IP, then 429 (the app's own limits stay behind it).",
+      "conditionGroup": [
+        { "conditions": [{ "type": "path", "op": "eq", "value": "/api/portal/login" }, { "type": "method", "op": "eq", "value": "POST" }] }
+      ],
+      "enforce": { "mitigate": { "action": "rate_limit", "rateLimit": { "algo": "fixed_window", "window": 60, "limit": 30, "keys": ["ip"], "action": "rate_limit" } } }
+    },
+    {
+      "name": "Register API per-IP limit",
+      "description": "POST /api/portal/register: 10 per minute per IP, then 429 (the app's own limits stay behind it).",
+      "conditionGroup": [
+        { "conditions": [{ "type": "path", "op": "eq", "value": "/api/portal/register" }, { "type": "method", "op": "eq", "value": "POST" }] }
+      ],
+      "enforce": { "mitigate": { "action": "rate_limit", "rateLimit": { "algo": "fixed_window", "window": 60, "limit": 10, "keys": ["ip"], "action": "rate_limit" } } }
+    }
+  ]
+}
