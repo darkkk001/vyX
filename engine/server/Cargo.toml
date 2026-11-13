@@ -8,6 +8,8 @@ name = "trading-core-server"
 path = "src/main.rs"
 
 [dependencies]
+# the bridge's license client, by the pin declared in the workspace manifest
+qb-license.workspace = true
 protocol = { path = "../protocol" }
 order-management = { path = "../order-management" }
 margin = { path = "../margin" }
