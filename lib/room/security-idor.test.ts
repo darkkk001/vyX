@@ -142,7 +142,7 @@ describe("another client's id gets nothing (signed in as A1)", () => {
   it("the accounts list shows only A1's own", async () => {
     if (!dbReachable) return;
     const { GET } = await import("@/app/api/portal/accounts/route");
-    const text = await (await GET(req("/api/portal/accounts"))).text();
+    const text = await (await GET()).text();
     expect(text).toContain(W.a1.live);
     for (const o of others()) expect(text).not.toContain(o.live);
   });
