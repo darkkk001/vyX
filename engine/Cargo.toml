@@ -37,6 +37,9 @@ axum = "0.8"
 # production since 2026-11-10 (qorebridge f77a73a) -- license enforcement phase 1.2 plus status report
 # v2, which is the contract C:\vyx\handoff\license-enforcement-contract.md describes.
 #
-# Pinned by TAG, never by branch: a branch would let the bridge's next change reach this engine without
-# anyone choosing it, which is the whole failure mode a pin exists to prevent.
-qb-license = { git = "https://github.com/darkkk001/qorebridge.git", tag = "qb-license-1.2.0" }
+# Pinned by REV, not by tag and never by branch. A branch would let the bridge's next change reach this
+# engine without anyone choosing it. A TAG is better but still movable -- and this repo gitignores
+# engine/Cargo.lock (.gitignore:63), so there is no committed lock to fall back on and the manifest is
+# the only thing holding the pin. A commit sha cannot be moved, so that is what holds it.
+# f77a73a6 is what the tag qb-license-1.2.0 points at; the tag stays as the human-readable name for it.
+qb-license = { git = "https://github.com/darkkk001/qorebridge.git", rev = "f77a73a6" }

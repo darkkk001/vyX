@@ -51,6 +51,27 @@ pub fn assign_to(broker_ids: Vec<String>) {
     *ASSIGNED.write().unwrap_or_else(|p| p.into_inner()) = next;
 }
 
+/// SERVE NO BROKER AT ALL -- a third state, distinct from both of the others.
+///
+/// The control plane needs it (owner 2026-11-13): a PLANNED or RETIRED engine serves nothing, and an
+/// engine that has been out of contact with the control plane for longer than its grace serves
+/// nothing. That is NOT "no assignment", which means today's behaviour and serves EVERYTHING -- the two
+/// are opposites, and confusing them is the difference between an engine that stands down and an engine
+/// that quietly takes over every broker.
+///
+/// The mechanism costs nothing: an empty list in `= ANY($1)` already matches no row. What this adds is
+/// the INTENT. `assign_to(vec![])` deliberately collapses to no-assignment, so that an unset variable
+/// can never stop an engine by accident; "serve nothing" therefore has to be asked for by name, and
+/// the name is what makes a reader of the call site see which of the two was meant.
+pub fn serve_nothing() {
+    *ASSIGNED.write().unwrap_or_else(|p| p.into_inner()) = Some(Vec::new());
+}
+
+/// Is the engine serving no broker ON PURPOSE, as opposed to having no assignment at all?
+pub fn is_serving_nothing() -> bool {
+    matches!(&*ASSIGNED.read().unwrap_or_else(|p| p.into_inner()), Some(v) if v.is_empty())
+}
+
 /// Forget any assignment. Tests only -- production installs once and never changes it.
 pub fn clear() {
     *ASSIGNED.write().unwrap_or_else(|p| p.into_inner()) = None;
