@@ -15,6 +15,7 @@ const I = (d: ReactNode) => (
 const ICONS: Record<string, ReactNode> = {
   dashboard: I(<><rect x="2" y="2" width="5" height="5" /><rect x="9" y="2" width="5" height="5" /><rect x="2" y="9" width="5" height="5" /><rect x="9" y="9" width="5" height="5" /></>),
   accounts: I(<><rect x="2" y="4" width="12" height="9" rx="1.5" /><path d="M2 7.5h12" /></>),
+  webtrader: I(<><path d="M2 12.5 6 8l3 2.5 5-6" /><path d="M10.5 4.5H14V8" /></>),
   deposit: I(<><rect x="2" y="7" width="12" height="7" rx="1.5" /><path d="M8 1v5M6 4.5 8 6.5l2-2" /></>),
   withdraw: I(<><rect x="2" y="2" width="12" height="7" rx="1.5" /><path d="M8 15v-5M6 11.5 8 9.5l2 2" /></>),
   transfer: I(<path d="M3 5h8M9 2l3 3-3 3M13 11H5M7 8l-3 3 3 3" />),
@@ -28,9 +29,9 @@ const ICONS: Record<string, ReactNode> = {
   profile: I(<><circle cx="8" cy="5.5" r="2.5" /><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5" /></>),
 };
 
-type Item = { href: string; label: string; icon: string };
+type Item = { href: string; label: string; icon: string; newTab?: boolean };
 const GROUPS: { title: string; items: Item[]; partner?: boolean }[] = [
-  { title: "Overview", items: [{ href: "/room", label: "Dashboard", icon: "dashboard" }, { href: "/room/accounts", label: "Accounts", icon: "accounts" }] },
+  { title: "Overview", items: [{ href: "/room", label: "Dashboard", icon: "dashboard" }, { href: "/room/accounts", label: "Accounts", icon: "accounts" }, { href: "/api/room/webtrader", label: "WebTrader", icon: "webtrader", newTab: true }] },
   { title: "Funds", items: [{ href: "/room/deposit", label: "Deposit", icon: "deposit" }, { href: "/room/withdraw", label: "Withdraw", icon: "withdraw" }, { href: "/room/transfer", label: "Transfer", icon: "transfer" }, { href: "/room/wallet", label: "Funding wallet", icon: "wallet" }, { href: "/room/history", label: "History", icon: "history" }] },
   { title: "Performance", items: [{ href: "/room/analytics", label: "Analytics", icon: "analytics" }, { href: "/room/journal", label: "Journal", icon: "journal" }] },
   { title: "Partner", partner: true, items: [{ href: "/room/partner", label: "IB Portal", icon: "partner" }] },
@@ -78,7 +79,8 @@ export default function RoomSidebar({ brokerName, logoUrl, wordmark = null, isPa
           {(rail || !closed.includes(g.title)) && g.items.map((it) => {
             const active = it.href === "/room" ? path === "/room" : path === it.href || path.startsWith(`${it.href}/`);
             return (
-              <a key={it.href} href={it.href} className="r-nav" title={it.label} aria-current={active ? "page" : undefined}>
+              // WebTrader (owner 2026-11-13): a new tab, signed in to the client's live account (/api/room/webtrader)
+              <a key={it.href} href={it.href} className="r-nav" title={it.label} aria-current={active ? "page" : undefined} {...(it.newTab ? { target: "_blank", rel: "noopener" } : {})}>
                 {ICONS[it.icon]}<span className="r-side-text">{it.label}</span>
               </a>
             );

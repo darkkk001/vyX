@@ -42,7 +42,7 @@ export default async function RoomDownloads() {
               <div style={text}>Trade from any browser. Nothing to install: same account, same prices.</div>
             </div>
             <div className="mono" style={meta}>Chrome · Edge · Safari · Firefox</div>
-            <a href="/trade" target="_blank" rel="noopener" style={{ marginTop: "auto", border: "1px solid var(--r-accent)", borderRadius: 6, color: "var(--r-gold-text)", fontSize: 13, fontWeight: 600, padding: "11px 0", textAlign: "center" }}>Open WebTrader</a>
+            <a href="/api/room/webtrader" target="_blank" rel="noopener" style={{ marginTop: "auto", border: "1px solid var(--r-accent)", borderRadius: 6, color: "var(--r-gold-text)", fontSize: 13, fontWeight: 600, padding: "11px 0", textAlign: "center" }}>Open WebTrader</a>
           </div>
           <div className="r-card" style={cardStyle}>
             <div>

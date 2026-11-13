@@ -136,7 +136,7 @@ export default function RoomDashboard() {
                 {/* the installer itself: a full page load, never a client-side navigation */}
                 {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>Desktop terminal</span><a href="/download/terminal/installer" style={{ fontSize: 12.5, fontWeight: 500 }}>Download</a></div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>WebTrader</span><a href="/trade" target="_blank" rel="noopener" style={{ fontSize: 12.5, fontWeight: 500 }}>Open</a></div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>WebTrader</span><a href="/api/room/webtrader" target="_blank" rel="noopener" style={{ fontSize: 12.5, fontWeight: 500 }}>Open</a></div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}><span>Mobile app</span><a href="/room/downloads" style={{ fontSize: 12.5, fontWeight: 500 }}>Get the app</a></div>
               </div>
             </div>
