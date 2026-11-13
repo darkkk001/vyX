@@ -3,6 +3,7 @@ import fs from "node:fs";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { effectiveRiskOwner, riskOwnerOf, type RiskOwner } from "@/lib/risk-authority";
+import { engineAliveForBroker } from "@/lib/engine-registry";
 
 // Rust cutover Stage 6: the DATABASE side of the risk-authority split (the pure rule is lib/risk-authority.ts).
 //
@@ -60,11 +61,19 @@ export async function loadRiskOwners(db: Db, accountIds: string[]): Promise<Map<
     for (const id of accountIds) out.set(id, "WEB");
     return out;
   }
-  const rows = await db.$queryRaw<{ id: string; mode: string; authority: string; demoOnly: boolean; alive: boolean }[]>`
+  // multi-engine control plane (lib/engine-registry.ts engineAliveForBroker): the broker's assigned engine decides once it writes its own
+  // heartbeat; until then (every engine today) the legacy single heartbeat does, exactly as before
+  const rows = await db.$queryRaw<{ id: string; mode: string; authority: string; demoOnly: boolean; allowOn: boolean; engineLive: boolean; alive: boolean; engineStatus: string | null; engineStarted: boolean; engineFresh: boolean }[]>`
     SELECT a.id, a."accountMode"::text AS mode, b."riskAuthority"::text AS authority, b."riskAuthorityDemoOnly" AS "demoOnly",
-           COALESCE((SELECT clock_timestamp() - h."beatAt" <= make_interval(secs => h."staleAfterSecs") FROM "RiskEngineHeartbeat" h WHERE h.name = 'risk'), false) AS alive
-    FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" WHERE a.id = ANY(${accountIds}::text[])`;
-  for (const r of rows) out.set(r.id, effectiveRiskOwner({ riskAuthority: r.authority, riskAuthorityDemoOnly: r.demoOnly }, r.mode, r.alive));
+           b."engineLiveAllowlistOn" AS "allowOn", a."engineLiveEnabled" AS "engineLive",
+           COALESCE((SELECT clock_timestamp() - h."beatAt" <= make_interval(secs => h."staleAfterSecs") FROM "RiskEngineHeartbeat" h WHERE h.name = 'risk'), false) AS alive,
+           e.status::text AS "engineStatus", (e."lastBeatAt" IS NOT NULL) AS "engineStarted",
+           COALESCE(clock_timestamp() - e."lastBeatAt" <= make_interval(secs => e."staleAfterSecs"), false) AS "engineFresh"
+    FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" LEFT JOIN "Engine" e ON e.id = b."engineId" WHERE a.id = ANY(${accountIds}::text[])`;
+  for (const r of rows) {
+    const alive = engineAliveForBroker(r.alive, r.engineStatus ? { status: r.engineStatus, started: r.engineStarted, fresh: r.engineFresh } : null);
+    out.set(r.id, effectiveRiskOwner({ riskAuthority: r.authority, riskAuthorityDemoOnly: r.demoOnly, engineLiveAllowlistOn: r.allowOn }, r.mode, alive, r.engineLive));
+  }
   return out;
 }
 
@@ -86,19 +95,26 @@ export async function assertRiskActorInTx(tx: Prisma.TransactionClient, accountI
     if (actor === "WEB") return; // before the migration every broker is WEB
     throw new NotRiskOwnerError(accountId, actor, "WEB");
   }
-  const rows = await tx.$queryRaw<{ mode: string; authority: string; demoOnly: boolean }[]>`
-    SELECT a."accountMode"::text AS mode, b."riskAuthority"::text AS authority, b."riskAuthorityDemoOnly" AS "demoOnly"
+  const rows = await tx.$queryRaw<{ mode: string; authority: string; demoOnly: boolean; allowOn: boolean; engineLive: boolean }[]>`
+    SELECT a."accountMode"::text AS mode, b."riskAuthority"::text AS authority, b."riskAuthorityDemoOnly" AS "demoOnly",
+           b."engineLiveAllowlistOn" AS "allowOn", a."engineLiveEnabled" AS "engineLive"
     FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" WHERE a.id = ${accountId}
     FOR NO KEY UPDATE OF a FOR SHARE OF b`;
   if (rows.length === 0) throw new Error(`account ${accountId} not found`);
-  let owner = riskOwnerOf({ riskAuthority: rows[0].authority, riskAuthorityDemoOnly: rows[0].demoOnly }, rows[0].mode);
+  let owner = riskOwnerOf({ riskAuthority: rows[0].authority, riskAuthorityDemoOnly: rows[0].demoOnly, engineLiveAllowlistOn: rows[0].allowOn }, rows[0].mode, rows[0].engineLive);
   if (owner === "RUST") {
     // The engine-down watchdog (docs/STAGE6-PLAN.md section 14): a RUST-owned account stays with the engine only while the engine's heartbeat is fresh
     // by the database clock. The heartbeat row is locked FOR SHARE: the engine's next beat (an UPDATE of that row) waits for this transaction, so a
     // stale reading cannot flip to fresh under an action already decided on it. Stale or missing = the web owns the account.
     const beat = await tx.$queryRaw<{ alive: boolean }[]>`
       SELECT (clock_timestamp() - "beatAt" <= make_interval(secs => "staleAfterSecs")) AS alive FROM "RiskEngineHeartbeat" WHERE name = 'risk' FOR SHARE`;
-    owner = effectiveRiskOwner({ riskAuthority: rows[0].authority, riskAuthorityDemoOnly: rows[0].demoOnly }, rows[0].mode, beat[0]?.alive === true);
+    // multi-engine control plane: the broker's assigned engine, locked FOR SHARE like the legacy row (its next beat waits for this transaction).
+    // It decides only once it writes its own heartbeat; RETIRED / PLANNED or stale then = the web owns the account (engineAliveForBroker).
+    const eng = await tx.$queryRaw<{ status: string; started: boolean; fresh: boolean }[]>`
+      SELECT e.status::text AS status, (e."lastBeatAt" IS NOT NULL) AS started,
+             COALESCE(clock_timestamp() - e."lastBeatAt" <= make_interval(secs => e."staleAfterSecs"), false) AS fresh
+      FROM "Engine" e JOIN "Broker" b ON b."engineId" = e.id JOIN "Account" a ON a."brokerId" = b.id WHERE a.id = ${accountId} FOR SHARE OF e`;
+    owner = effectiveRiskOwner({ riskAuthority: rows[0].authority, riskAuthorityDemoOnly: rows[0].demoOnly, engineLiveAllowlistOn: rows[0].allowOn }, rows[0].mode, engineAliveForBroker(beat[0]?.alive === true, eng[0] ?? null), rows[0].engineLive);
   }
   if (owner !== actor) throw new NotRiskOwnerError(accountId, actor, owner);
 }

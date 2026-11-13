@@ -88,12 +88,15 @@ export function amountRefusalBody(code: AmountCode, text: string): { error: stri
  *  (ENGINE_AMOUNT_SLTP=1 lifts it once the engine part ships): an amount stored there would be watched by nothing.
  *  Uses the static owner (lib/risk-authority.ts), not the engine's liveness: a stored amount must stay watched after the engine returns. */
 export function amountRefusedForAuthority(
-  broker: { riskAuthority?: string | null; riskAuthorityDemoOnly?: boolean | null } | null | undefined,
+  broker: { riskAuthority?: string | null; riskAuthorityDemoOnly?: boolean | null; engineLiveAllowlistOn?: boolean | null } | null | undefined,
   accountMode: string | null | undefined,
   env: Record<string, string | undefined> = process.env,
+  accountEngineLive?: boolean | null,
 ): boolean {
   if (env.ENGINE_AMOUNT_SLTP === "1") return false;
-  return riskOwnerOf(broker, accountMode) === "RUST";
+  // Engine live allowlist (DORMANT, docs/ENGINE-LIVE-ALLOWLIST.md): an allowlisted LIVE account (flag on + entry on) is engine-owned, so it is
+  // judged against the engine like a DEMO account. Flag off / no entry = exactly the previous rule (fail-closed in riskOwnerOf).
+  return riskOwnerOf(broker, accountMode, accountEngineLive) === "RUST";
 }
 
 export type AmountLegs = { slAmount: Prisma.Decimal | null | undefined; tpAmount: Prisma.Decimal | null | undefined };

@@ -45,6 +45,7 @@ export default async function SuperAdminShellLayout({ children }: { children: Re
       label: "Platform",
       items: [
         { href: "/health", label: "Platform health" },
+        { href: "/engines", label: "Engines" },
         { href: "/audit", label: "Audit log" },
         { href: "/security", label: "Security" },
         { href: "/notifications", label: "Notifications", ...(unreadNotifications > 0 ? { badge: unreadNotifications } : {}) },

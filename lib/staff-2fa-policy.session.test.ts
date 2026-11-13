@@ -15,7 +15,7 @@ vi.mock("next/headers", () => ({
 vi.mock("next/navigation", () => ({
   redirect: (to: string) => { throw new Error(`REDIRECT:${to}`); },
 }));
-vi.mock("@/lib/rate-limit", () => ({ checkRateLimit: vi.fn().mockResolvedValue({ allowed: true }) }));
+vi.mock("@/lib/rate-limit", () => ({ checkRateLimit: vi.fn().mockResolvedValue({ allowed: true }), isLockedOut: vi.fn().mockResolvedValue(false), recordFailure: vi.fn().mockResolvedValue(1), clearFailures: vi.fn().mockResolvedValue(undefined) }));
 
 let dbReachable = false;
 beforeAll(async () => {

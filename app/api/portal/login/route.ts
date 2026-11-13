@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateClient, createClientSession, CLIENT_SESSION_COOKIE_NAME, clientSessionCookieOptions } from "@/lib/client-auth";
-import { checkRateLimit, clearFailures, failureCount, isLockedOut, recordFailure } from "@/lib/rate-limit";
-import { humanCheckSiteKey, verifyHumanCheck } from "@/lib/turnstile";
+import { checkRateLimit, clearFailures, isLockedOut, recordFailure } from "@/lib/rate-limit";
+import { humanCheckRefusal } from "@/lib/turnstile";
 import { prisma } from "@/lib/prisma";
 import { verifyTotp } from "@/lib/totp";
 import { clientIp } from "@/lib/order-execution";
@@ -14,8 +14,6 @@ const PER_IP_AND_ADDRESS_PER_MINUTE = 5;
 const PER_IP_PER_MINUTE = 30;
 const FAILURES_PER_ADDRESS = 20;
 const FAILURE_WINDOW_SECONDS = 15 * 60;
-// Failures from this IP, or on this address, before the sign-in asks for the human check.
-const HUMAN_CHECK_AFTER_FAILURES = 3;
 
 // Client Portal login -- email + password, distinct from the trader
 // account-number login (app/api/trade/login) this doesn't touch or
@@ -44,13 +42,9 @@ export async function POST(request: NextRequest) {
   }
 
   const ipFailures = `portal-login-ip:${brokerId}:${ip}`;
-  const siteKey = await humanCheckSiteKey(brokerId);
-  if (siteKey) {
-    const [onAddress, onIp] = await Promise.all([failureCount(failures), failureCount(ipFailures)]);
-    if (Math.max(onAddress, onIp) >= HUMAN_CHECK_AFTER_FAILURES && (await verifyHumanCheck(body?.turnstileToken, clientIp(request.headers))) === "bad") {
-      return NextResponse.json({ error: "complete the check to continue", code: "HUMAN_CHECK_REQUIRED", siteKey }, { status: 401 });
-    }
-  }
+  // the human check on every sign-in where the broker has it (owner 2026-11-13; it used to start after 3 failures)
+  const refused = await humanCheckRefusal(brokerId, body?.turnstileToken, clientIp(request.headers));
+  if (refused) return refused;
 
   const client = await authenticateClient(brokerId, email, password);
   if (!client) {

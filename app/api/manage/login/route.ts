@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { clientIpOf } from "@/lib/demo";
+import { clearFailures, isLockedOut, recordFailure } from "@/lib/rate-limit";
+import { STAFF_LOGIN_FAILURES, STAFF_LOGIN_FAILURE_WINDOW_SECONDS, staffDecoyCompare } from "@/lib/staff-login-guard";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions, staffTwoFactorRequired, TWO_FACTOR_SETUP_REQUIRED } from "@/lib/auth";
@@ -38,7 +41,10 @@ export async function POST(request: NextRequest) {
   // less-protected login than the traders themselves, with no rate limit
   // on it at all before this.
   const { allowed } = await checkRateLimit(`manage-login:${requestBrokerId ?? "none"}:${email}`, 5, 60);
-  if (!allowed) {
+  // CRM security batch (owner 2026-11-13): also per IP, and 10 wrong passwords lock the address for 15 minutes
+  const byIp = await checkRateLimit(`manage-login-ip:${requestBrokerId ?? "none"}:${clientIpOf(request.headers)}`, 30, 60);
+  const failures = `manage-login-fail:${requestBrokerId ?? "none"}:${email}`;
+  if (!allowed || !byIp.allowed || (await isLockedOut(failures, STAFF_LOGIN_FAILURES))) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
 
@@ -49,7 +55,12 @@ export async function POST(request: NextRequest) {
   // are registered" rule as app/api/admin/login/route.ts, extended here
   // to also not leak "that email exists but isn't a manager for this
   // broker."
-  const invalid = () => NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  // every refusal costs one bcrypt compare and counts as a failure, so time says nothing about which emails exist
+  const invalid = async (compared = false) => {
+    if (!compared) await staffDecoyCompare(password);
+    await recordFailure(failures, STAFF_LOGIN_FAILURE_WINDOW_SECONDS);
+    return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  };
 
   if (!admin || admin.status !== "ACTIVE") {
     return invalid();
@@ -68,8 +79,9 @@ export async function POST(request: NextRequest) {
 
   const passwordMatches = await bcrypt.compare(password, admin.passwordHash);
   if (!passwordMatches) {
-    return invalid();
+    return invalid(true);
   }
+  await clearFailures(failures);
 
   // step 3b item 3: the broker's staff IP allowlist (after the password, so nothing leaks to a stranger)
   if (!(await staffAddressAllowed(admin.brokerId, request.headers))) {

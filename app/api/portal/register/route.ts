@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "no broker resolved for this domain" }, { status: 400 });
   }
 
-  const { allowed } = await checkRateLimit(`portal-register:${brokerId}`, 10, 60);
+  const { allowed } = await checkRateLimit(`portal-register-ip-min:${brokerId}:${clientIpOf(request.headers)}`, 5, 60);
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }

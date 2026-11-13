@@ -389,6 +389,10 @@ model Broker {
   // broker moves its demo accounts only; its live accounts move only when this is set to false on purpose.
   riskAuthority              RiskAuthority   @default(WEB)
   riskAuthorityDemoOnly      Boolean         @default(true)
+  // Live cutover (owner 2026-11-11), DORMANT: the feature flag of the per-account engine allowlist. While false (the default) no LIVE
+  // account is engine-enabled whatever Account.engineLiveEnabled says, and every rule is exactly today's DEMO-only one. The engine
+  // (ingress::mode_allowed + authority.rs), the gateway and lib/risk-authority.ts all read this same column -- docs/ENGINE-LIVE-ALLOWLIST.md.
+  engineLiveAllowlistOn      Boolean         @default(false)
   // Phase 1 trust pack -- when true, any AdminUser for this broker
   // (MANAGER/BROKER_ADMIN/SUPPORT) without twoFactorEnabled is forced
   // through 2FA setup on next login before reaching the manage shell
@@ -654,6 +658,11 @@ model Broker {
   // scripts/seed-qoredemo.ts only; never by a form.
   isDemoSandbox Boolean @default(false)
   leverageChangeRequests LeverageChangeRequest[]
+  // Multi-engine control plane (owner 2026-11-13): the engine this broker runs on. THE source of truth for the assignment (one engine per
+  // broker); every change writes an EngineAssignmentLog row. Dormant until the engine step: engines read engine_broker_scope by their ENGINE_ID.
+  engineId                   String?         @db.VarChar(40)
+  engine                     Engine?         @relation(fields: [engineId], references: [id], onDelete: Restrict)
+  @@index([engineId])
 }
 
 model AdminUser {
@@ -791,6 +800,9 @@ model Account {
   mustChangePassword Boolean   @default(false)
   fullName      String
   accountMode   AccountMode
+  // Live cutover (owner 2026-11-11), DORMANT: this LIVE account is on the engine allowlist. Counts only while its broker's
+  // engineLiveAllowlistOn is true; set per account from the backoffice. Default false = not engine-enabled for live.
+  engineLiveEnabled Boolean @default(false)
   currency      String           @default("USD")
   leverage      Int              @default(100) // 1:100
   balance       Decimal          @default(0) @db.Decimal(18, 4)
@@ -3367,4 +3379,43 @@ model CrmTask {
 
   @@index([entityType, entityId])
   @@index([brokerId, doneAt, dueAt])
+}
+
+// Multi-engine control plane (owner 2026-11-13, docs/ENGINE-REGISTRY.md). One row per deployed engine. Engines will write lastBeatAt (their own
+// heartbeat) and read their brokers from the engine_broker_scope view (migration 20261113130000) by their ENGINE_ID; both start with the engine step.
+enum EngineStatus {
+  PLANNED   // registered, not serving yet (the view leaves its brokers out)
+  ACTIVE    // serving its brokers
+  DRAINING  // still serving while its brokers are moved off it
+  RETIRED   // serves nothing (the view leaves its brokers out)
+}
+
+model Engine {
+  id              String       @id @db.VarChar(40) // a short slug, e.g. eu-fr-1 (the engine's ENGINE_ID)
+  name            String
+  region          String
+  gatewayUrl      String
+  status          EngineStatus @default(PLANNED)
+  // the engine's own heartbeat (written by the engine; null until the engine step). Stale = the web owns its brokers' accounts.
+  lastBeatAt      DateTime?    @db.Timestamptz(3)
+  lastBeatVersion String?
+  staleAfterSecs  Int          @default(30)
+  notes           String       @default("")
+  createdAt       DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @db.Timestamptz(3)
+  brokers         Broker[]
+}
+
+// Append-only history of Broker.engineId (never updated or deleted): an assign (from null), a move, an unassign (to null).
+model EngineAssignmentLog {
+  id           String   @id @default(cuid())
+  brokerId     String
+  fromEngineId String?  @db.VarChar(40)
+  toEngineId   String?  @db.VarChar(40)
+  adminId      String?
+  reason       String
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerId, createdAt])
+  @@index([toEngineId])
 }

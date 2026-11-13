@@ -22,7 +22,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${origin}${login}?verify=invalid`, { status: 303 });
   }
 
-  await prisma.client.update({ where: { id: clientId }, data: { emailVerifiedAt: new Date() } });
+  // the link only works on the broker that sent it (owner 2026-11-13)
+  const brokerId = request.headers.get("x-broker-id");
+  const done = brokerId ? await prisma.client.updateMany({ where: { id: clientId, brokerId }, data: { emailVerifiedAt: new Date() } }) : { count: 0 };
+  if (done.count === 0) {
+    return NextResponse.redirect(`${origin}${login}?verify=invalid`, { status: 303 });
+  }
 
   return NextResponse.redirect(`${origin}${login}?verify=success`, { status: 303 });
 }

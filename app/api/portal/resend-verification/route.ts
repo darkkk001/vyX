@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { humanCheckRefusal } from "@/lib/turnstile";
+import { clientIpOf } from "@/lib/demo";
+import { clientIp } from "@/lib/order-execution";
 import { RESEND_PER_EMAIL_PER_HOUR, RESEND_PER_IP_PER_HOUR, sendClientVerificationEmail } from "@/lib/email/verification-email";
 import { requestOrigin } from "@/lib/request-origin";
 
@@ -27,7 +30,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "a valid email is required" }, { status: 400 });
   }
 
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  const ip = clientIpOf(request.headers);
+  const refused = await humanCheckRefusal(brokerId, body?.turnstileToken, clientIp(request.headers));
+  if (refused) return refused;
   const byIp = await checkRateLimit(`portal-resend-verification-ip:${brokerId}:${ip}`, RESEND_PER_IP_PER_HOUR, 60 * 60);
   if (!byIp.allowed) {
     return NextResponse.json({ error: "too many attempts, try again later" }, { status: 429 });

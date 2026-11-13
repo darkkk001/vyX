@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { useHumanCheck } from "@/components/room/HumanCheck";
 
 // Same request as the portal form (POST /api/portal/forgot-password): the answer has one shape whether or not the
 // e-mail exists, so the form never tells which addresses are registered.
-export default function RoomForgotForm() {
+export default function RoomForgotForm({ humanKey = null }: { humanKey?: string | null }) {
+  const human = useHumanCheck(humanKey);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -16,10 +18,11 @@ export default function RoomForgotForm() {
     setBusy(true);
     setError("");
     try {
-      const res = await fetch("/api/portal/forgot-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+      const turnstileToken = await human.take();
+      const res = await fetch("/api/portal/forgot-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, ...(turnstileToken ? { turnstileToken } : {}) }) });
       if (res.ok) { setSent(true); return; }
       const body = await res.json().catch(() => null);
-      setError(res.status === 429 ? "Too many attempts. Try again in a few minutes." : body?.error ?? "Something went wrong. Try again.");
+      setError(body?.code === "HUMAN_CHECK_REQUIRED" ? "Could not check your browser. Press Send reset link again." : res.status === 429 ? "Too many attempts. Try again in a few minutes." : body?.error ?? "Something went wrong. Try again.");
     } catch {
       setError("No connection. Try again.");
     } finally {
@@ -51,6 +54,7 @@ export default function RoomForgotForm() {
         <label htmlFor="email">Email</label>
         <input id="email" className="r-input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
       </div>
+      {human.el}
       {error ? <div className="r-error" role="alert">{error}</div> : null}
       <button className="r-btn" type="submit" disabled={busy} style={{ padding: "12px 0", fontSize: 14 }}>{busy ? "Sending…" : "Send reset link"}</button>
       <div style={{ borderTop: "1px solid var(--r-line)", paddingTop: 18, fontSize: 13, color: "var(--r-text-2)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>

@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 // 2FA around money leaving (owner 2026-11-05): a client with 2FA on needs the code to add a payout method; a broker may
 // require 2FA for withdrawing at all. Off by default: 2FA stays the client's own choice.
 vi.mock("@/lib/room/context", async (importActual) => ({ ...(await importActual<typeof import("@/lib/room/context")>()), roomApiSession: vi.fn() }));
-vi.mock("@/lib/rate-limit", () => ({ checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 1 }) }));
+vi.mock("@/lib/rate-limit", () => ({ checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 1 }), isLockedOut: vi.fn().mockResolvedValue(false), recordFailure: vi.fn().mockResolvedValue(1), clearFailures: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/totp", async (importActual) => ({ ...(await importActual<typeof import("@/lib/totp")>()), verifyTotp: (_s: string, c: string) => c === "123456" }));
 
 const s = randomUUID().replace(/-/g, "").slice(0, 10);

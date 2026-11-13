@@ -13,7 +13,17 @@ export type RiskOwner = "WEB" | "RUST";
 export type RiskAuthorityFields = {
   riskAuthority?: string | null;
   riskAuthorityDemoOnly?: boolean | null;
+  /** Live cutover (owner 2026-11-11), DORMANT: the broker's engine-allowlist flag (Broker.engineLiveAllowlistOn). Missing = off. */
+  engineLiveAllowlistOn?: boolean | null;
 };
+
+/** Live cutover (owner 2026-11-11): is this LIVE account engine-enabled through the allowlist? Exactly true for both the broker's flag
+ *  (Broker.engineLiveAllowlistOn) and the account's entry (Account.engineLiveEnabled), and the account LIVE; anything missing, null or
+ *  false = no. With the flag off or the list empty this is always false, which leaves every rule exactly as it was (the DEMO-only one).
+ *  THE SAME RULE is engine/order-management/src/ingress.rs (mode_allowed) and authority.rs (RUST_OWNED_SQL); docs/ENGINE-LIVE-ALLOWLIST.md. */
+export function engineLiveAllowed(broker: RiskAuthorityFields | null | undefined, accountMode: string | null | undefined, accountEngineLive: boolean | null | undefined): boolean {
+  return accountMode === "LIVE" && broker?.engineLiveAllowlistOn === true && accountEngineLive === true;
+}
 
 /** The broker's authority, WEB unless it is exactly "RUST". */
 export function getRiskAuthority(broker: RiskAuthorityFields | null | undefined): RiskOwner {
@@ -28,16 +38,17 @@ export function isRustAuthoritative(broker: RiskAuthorityFields | null | undefin
 /** Per-account owner: RUST only when the broker is RUST AND the account mode is a known one AND (the broker is not
  *  demo-only, or the account is DEMO). A missing demo-only value counts as demo-only (the safer, narrower scope); a
  *  missing or unknown account mode is WEB. */
-export function riskOwnerOf(broker: RiskAuthorityFields | null | undefined, accountMode: string | null | undefined): RiskOwner {
+export function riskOwnerOf(broker: RiskAuthorityFields | null | undefined, accountMode: string | null | undefined, accountEngineLive?: boolean | null): RiskOwner {
   if (!isRustAuthoritative(broker)) return "WEB";
   if (accountMode !== "DEMO" && accountMode !== "LIVE") return "WEB";
   const demoOnly = broker?.riskAuthorityDemoOnly !== false;
-  return !demoOnly || accountMode === "DEMO" ? "RUST" : "WEB";
+  // live cutover (dormant): a LIVE account explicitly on the allowlist of a broker whose flag is on also passes the demo-only scope
+  return !demoOnly || accountMode === "DEMO" || engineLiveAllowed(broker, accountMode, accountEngineLive) ? "RUST" : "WEB";
 }
 
 /** The owner once the ENGINE'S LIVENESS is counted (the engine-down watchdog, docs/STAGE6-PLAN.md section 14): when the engine's heartbeat is stale
  *  (or there is none) the engine counts as down and nothing is RUST-owned, so every account falls back to WEB. `engineAlive` must be exactly true to
  *  keep an account with the engine. */
-export function effectiveRiskOwner(broker: RiskAuthorityFields | null | undefined, accountMode: string | null | undefined, engineAlive: boolean | null | undefined): RiskOwner {
-  return engineAlive === true ? riskOwnerOf(broker, accountMode) : "WEB";
+export function effectiveRiskOwner(broker: RiskAuthorityFields | null | undefined, accountMode: string | null | undefined, engineAlive: boolean | null | undefined, accountEngineLive?: boolean | null): RiskOwner {
+  return engineAlive === true ? riskOwnerOf(broker, accountMode, accountEngineLive) : "WEB";
 }

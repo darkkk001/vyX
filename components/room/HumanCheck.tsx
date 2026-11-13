@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 // Cloudflare Turnstile (the widget is Invisible, set in Cloudflare). A token is single use: raise `round` after each try
 // to get a new one.
@@ -49,4 +49,26 @@ export default function HumanCheck({ siteKey, round, onToken }: { siteKey: strin
   }, [round]);
 
   return <div ref={box} />;
+}
+
+// Out of the page flow: the widget is Invisible, so it adds no space where the form puts it.
+const OFF_FLOW: CSSProperties = { position: "absolute", width: 0, height: 0, overflow: "hidden" };
+
+/**
+ * The human check for a form (owner 2026-11-13: every CRM sign-in form). `el` goes anywhere in the form; `take()` waits
+ * (up to 15 s) for Cloudflare's token, hands it over and asks for a fresh one for the next try. No site key = "".
+ */
+export function useHumanCheck(siteKey: string | null): { el: ReactNode; take: () => Promise<string> } {
+  const [round, setRound] = useState(0);
+  const token = useRef("");
+  const el = siteKey ? <div style={OFF_FLOW}><HumanCheck siteKey={siteKey} round={round} onToken={(t) => { token.current = t; }} /></div> : null;
+  async function take(): Promise<string> {
+    if (!siteKey) return "";
+    for (let i = 0; i < 60 && !token.current; i++) await new Promise((r) => setTimeout(r, 250));
+    const t = token.current;
+    token.current = "";
+    setRound((r) => r + 1);
+    return t;
+  }
+  return { el, take };
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ipAllowed } from "@/lib/room/limits";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession, ownAccount } from "@/lib/room/context";
@@ -14,7 +15,7 @@ export async function POST(request: NextRequest) {
   const ctx = await roomApiSession();
   if ("response" in ctx) return ctx.response;
   const { session } = ctx;
-  const { allowed } = await checkRateLimit(`room-transfer:${session.clientId}`, 10, 60);
+  const allowed = (await checkRateLimit(`room-transfer:${session.clientId}`, 10, 60)).allowed && (await ipAllowed(request.headers, session.brokerId, "room-transfer", 30, 60));
   if (!allowed) return NextResponse.json({ error: "Too many attempts. Try again in a minute." }, { status: 429 });
 
   const body = await request.json().catch(() => null);

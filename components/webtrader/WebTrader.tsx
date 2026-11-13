@@ -1931,7 +1931,7 @@ export default function WebTrader({
 
     async function connect() {
       if (cancelled) return;
-      const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
+      const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? (process.env.NODE_ENV === "production" ? "" : "ws://127.0.0.1:8080");
       // 2026-09-07 -- a broker's own custom domain can't share this
       // Gateway's session cookie at all (unrelated domain to
       // feed.<ROOT_DOMAIN>, see lib/cookie-domain.ts's own comment), so
@@ -2109,7 +2109,7 @@ export default function WebTrader({
 
     async function connect() {
       if (cancelled) return;
-      const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
+      const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? (process.env.NODE_ENV === "production" ? "" : "ws://127.0.0.1:8080");
       // Same custom-domain ticket detour as the price-tick socket above --
       // see that connect()'s own comment.
       let wsUrl = `${base}/v1/trading/stream`;

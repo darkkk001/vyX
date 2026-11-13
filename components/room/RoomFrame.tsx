@@ -3,6 +3,7 @@ import type { ReactNode, CSSProperties } from "react";
 import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import type { RoomBroker } from "@/lib/room/context";
 import "@/app/(broker)/room/room.css";
+import DevToolsGuard from "@/components/security/DevToolsGuard";
 
 // The Trader's Room root: fonts, theme and tenant accent. Wraps /room/* (room/layout.tsx) and the room's sign-in and
 // sign-up, which live at /login and /register (owner routes 2026-11-04), outside that layout.
@@ -30,6 +31,7 @@ export default async function RoomFrame({ broker, children }: { broker: RoomBrok
     : undefined;
   return (
     <div className={`room ${inter.variable} ${mono.variable} ${grotesk.variable}`} data-theme={theme} style={style}>
+      <DevToolsGuard />
       {children}
     </div>
   );

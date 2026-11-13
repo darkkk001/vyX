@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { checkRateLimit } from "@/lib/rate-limit";
+import { ipAllowed } from "@/lib/room/limits";
 import { publishTradingEvent } from "@/lib/nats";
 import { put } from "@vercel/blob";
 import { AnnualIncomeRange, SourceOfFunds, TradingExperience, EmploymentStatus, RiskTolerance } from "@prisma/client";
@@ -48,6 +50,12 @@ export async function POST(request: NextRequest) {
   const session = await getClientSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  }
+
+  // uploads limited per client and per IP before the body is read (owner 2026-11-13)
+  const byClient = await checkRateLimit(`portal-kyc-upload:${session.clientId}`, 5, 60 * 60);
+  if (!byClient.allowed || !(await ipAllowed(request.headers, session.brokerId, "portal-kyc-upload", 20, 60 * 60))) {
+    return NextResponse.json({ error: "too many uploads, try again later" }, { status: 429 });
   }
 
   const existing = await prisma.clientKycRecord.findUnique({ where: { clientId: session.clientId } });

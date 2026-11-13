@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { humanCheckRefusal } from "@/lib/turnstile";
+import { clientIpOf } from "@/lib/demo";
+import { clientIp } from "@/lib/order-execution";
 import { issuePasswordResetToken } from "@/lib/client-auth";
 import { sendBrokerEmail } from "@/lib/email/adapter";
 import { renderBrokerEmail } from "@/lib/email/template";
@@ -25,6 +28,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "email is required" }, { status: 400 });
   }
 
+  const byIp = await checkRateLimit(`portal-forgot-password-ip:${brokerId}:${clientIpOf(request.headers)}`, 10, 60 * 60);
+  if (!byIp.allowed) {
+    return NextResponse.json({ error: "too many attempts, try again later" }, { status: 429 });
+  }
+  const refused = await humanCheckRefusal(brokerId, body?.turnstileToken, clientIp(request.headers));
+  if (refused) return refused;
   const { allowed } = await checkRateLimit(`portal-forgot-password:${brokerId}:${email}`, 3, 60 * 60);
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again later" }, { status: 429 });

@@ -1,0 +1,2918 @@
+[
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "RUST"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "RUST",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": "WEB",
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": true,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": false,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": true,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": false,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": true,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": false,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "DEMO",
+  "engineLiveEnabled": null,
+  "modeAllowed": true,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "LIVE",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": null,
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": true,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": false,
+  "modeAllowed": false,
+  "owner": "WEB"
+ },
+ {
+  "riskAuthority": null,
+  "riskAuthorityDemoOnly": null,
+  "engineLiveAllowlistOn": null,
+  "accountMode": "OTHER",
+  "engineLiveEnabled": null,
+  "modeAllowed": false,
+  "owner": "WEB"
+ }
+]

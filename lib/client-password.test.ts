@@ -45,7 +45,7 @@ async function reset(clientId: string) {
   const { consumePasswordResetToken } = await import("@/lib/client-auth");
   vi.mocked(consumePasswordResetToken).mockResolvedValue(clientId);
   const { POST } = await import("@/app/api/portal/reset-password/route");
-  return POST(new NextRequest("https://t.local/api/portal/reset-password", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "t", password: NEW }) }));
+  return POST(new NextRequest("https://t.local/api/portal/reset-password", { method: "POST", headers: { "content-type": "application/json", "x-broker-id": brokerId }, body: JSON.stringify({ token: "t", password: NEW }) }));
 }
 
 describe("forgot-password reset", () => {

@@ -248,6 +248,10 @@ export async function getClientSession(opts: { activity?: boolean } = {}): Promi
   const requestBrokerId = headerList.get("x-broker-id");
   if (!requestBrokerId || requestBrokerId !== session.brokerId) return null;
 
+  // a client who is no longer ACTIVE (suspended / closed) loses every live session within a minute (owner 2026-11-13).
+  // The status is cached in Redis for 60 s: the room reads this API every second per open tab, so no DB read each time.
+  if (!(await clientIsActive(session.clientId))) return null;
+
   if (opts.activity !== false && session.idleSeconds) await getRedis().set(sessionIdleKey(token), "1", "EX", session.idleSeconds);
   return session;
 }
@@ -291,4 +295,17 @@ export async function clientSessionCookieOptions(remember: boolean = true) {
     domain,
     ...(remember ? { maxAge: CLIENT_ABSOLUTE_SECONDS } : {}),
   };
+}
+
+const CLIENT_STATUS_CACHE_SECONDS = 60;
+/** Client.status === "ACTIVE", cached per client for a minute in Redis (see getClientSession). */
+export async function clientIsActive(clientId: string): Promise<boolean> {
+  const key = `client_status:${clientId}`;
+  const redis = getRedis();
+  const cached = await redis.get(key);
+  if (cached) return cached === "ACTIVE";
+  const c = await prisma.client.findUnique({ where: { id: clientId }, select: { status: true } });
+  const status = c?.status ?? "MISSING";
+  await redis.set(key, status, "EX", CLIENT_STATUS_CACHE_SECONDS);
+  return status === "ACTIVE";
 }

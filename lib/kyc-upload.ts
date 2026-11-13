@@ -47,3 +47,17 @@ export async function validateKycFile(
   }
   return { error: null, bytes, sniffedType };
 }
+
+/**
+ * Deposit receipts (a data URL, owner 2026-11-13): the file's real bytes must be the type it says it is (JPG, PNG, WebP
+ * or PDF), not only the label. Returns false for anything else.
+ */
+export function receiptBytesMatch(dataUrl: string): boolean {
+  const m = /^data:(image\/(?:png|jpeg|jpg|webp)|application\/pdf);base64,/.exec(dataUrl);
+  if (!m) return false;
+  const head = Buffer.from(dataUrl.slice(m[0].length, m[0].length + 24), "base64");
+  const declared = m[1] === "image/jpg" ? "image/jpeg" : m[1];
+  const isWebp = head.length >= 12 && head.toString("latin1", 0, 4) === "RIFF" && head.toString("latin1", 8, 12) === "WEBP";
+  const sniffed = isWebp ? "image/webp" : sniffMimeType(head);
+  return sniffed === declared;
+}

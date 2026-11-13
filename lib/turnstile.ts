@@ -37,3 +37,16 @@ export async function verifyHumanCheck(token: unknown, ip: string | null): Promi
     return "unavailable";
   }
 }
+
+/**
+ * The human check every CRM sign-in form must pass (owner 2026-11-13): login, register, forgot password, reset password,
+ * resend verification. Returns the refusal to send, or null to go on. Brokers without the check (no CRM / switched
+ * off) are not asked; Cloudflare being unreachable lets the request through (logged), the rate limits stay in force.
+ */
+export async function humanCheckRefusal(brokerId: string | null, token: unknown, ip: string | null): Promise<Response | null> {
+  if (!brokerId) return null;
+  const siteKey = await humanCheckSiteKey(brokerId);
+  if (!siteKey) return null;
+  if ((await verifyHumanCheck(token, ip)) !== "bad") return null;
+  return Response.json({ error: "complete the check to continue", code: "HUMAN_CHECK_REQUIRED", siteKey }, { status: 401 });
+}

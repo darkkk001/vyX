@@ -191,20 +191,19 @@ describe("human check (Turnstile)", () => {
     return { status: r.status, body: await r.json() };
   };
 
-  it("sign-in asks only after three failures, for a registered or an unknown address alike", async () => {
+  // owner 2026-11-13: every sign-in sends the check (it used to start after three failures)
+  it("every sign-in without a token is refused, for a registered or an unknown address alike", async () => {
     if (!dbReachable) return;
     await setBroker(true);
     for (const [address, ip] of [[email, "2.2.2.1"], [`none-${s}@t.local`, "2.2.2.2"]]) {
-      for (let i = 0; i < 3; i++) expect((await login(address, "nope-nope-1", ip)).body.code).toBeUndefined();
       expect(await login(address, "nope-nope-1", ip)).toEqual({ status: 401, body: { error: "complete the check to continue", code: "HUMAN_CHECK_REQUIRED", siteKey: "site-key" } });
     }
     expect(siteverify).not.toHaveBeenCalled();
     await setBroker(false, false);
   });
-  it("failures from one IP on different addresses count too; a good token lets the sign-in through", async () => {
+  it("the right password without a token is refused; with a good token it signs in", async () => {
     if (!dbReachable) return;
     await setBroker(true);
-    for (let i = 0; i < 3; i++) await login(`w${i}-${s}@t.local`, "x", "2.2.3.1");
     expect((await login(email, PASSWORD, "2.2.3.1")).body.code).toBe("HUMAN_CHECK_REQUIRED");
     expect((await login(email, PASSWORD, "2.2.3.1", "tok")).status).toBe(200);
     expect(JSON.parse(siteverify.mock.calls[0][1].body)).toMatchObject({ secret: "secret-key", response: "tok" });
@@ -213,7 +212,6 @@ describe("human check (Turnstile)", () => {
   it("a refused token stops the sign-in; Cloudflare being down does not lock clients out", async () => {
     if (!dbReachable) return;
     await setBroker(true);
-    for (let i = 0; i < 3; i++) await login(email, "nope-nope-1", "2.2.4.1");
     siteverify.mockResolvedValue(new Response(JSON.stringify({ success: false })));
     expect((await login(email, PASSWORD, "2.2.4.1", "bad")).body.code).toBe("HUMAN_CHECK_REQUIRED");
     siteverify.mockRejectedValue(new Error("down"));

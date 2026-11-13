@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { checkClientCode, CODE_LOCKED_MESSAGE } from "@/lib/room/limits";
 import type { PaymentMethodType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 import { payoutMethods } from "@/lib/room/funds";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { verifyTotp } from "@/lib/totp";
 
 // Saved payout methods (own name only). POST {type, bank?, account?, swift?, address?} adds one; DELETE ?id= removes
 // one (kept as history: removedAt). A bank account is always in the client's own name (the holder is the client's
@@ -55,7 +55,9 @@ export async function POST(request: NextRequest) {
   if (client.twoFactorEnabled && client.twoFactorSecret) {
     const code = typeof body?.code === "string" ? body.code.replace(/\s+/g, "") : "";
     if (!code) return NextResponse.json({ error: "Enter the code from your authenticator app.", code: "TWO_FACTOR_REQUIRED" }, { status: 401 });
-    if (!verifyTotp(client.twoFactorSecret, code)) return NextResponse.json({ error: "Wrong code.", code: "TWO_FACTOR_INVALID" }, { status: 401 });
+    const checked = await checkClientCode(session.clientId, client.twoFactorSecret, code);
+    if (checked === "locked") return NextResponse.json({ error: CODE_LOCKED_MESSAGE, code: "TWO_FACTOR_LOCKED" }, { status: 429 });
+    if (checked === "wrong") return NextResponse.json({ error: "Wrong code.", code: "TWO_FACTOR_INVALID" }, { status: 401 });
   }
   const created = await prisma.clientPayoutMethod.create({ data: { brokerId: session.brokerId, clientId: session.clientId, type, holderName: client.fullName, details } });
   await prisma.auditLog.create({ data: { brokerId: session.brokerId, clientId: session.clientId, action: "PAYOUT_METHOD_ADDED", entityType: "ClientPayoutMethod", entityId: created.id, newValue: { type, ...details, source: "CLIENT" } } });

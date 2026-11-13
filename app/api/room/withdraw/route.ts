@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ipAllowed, checkClientCode, CODE_LOCKED_MESSAGE } from "@/lib/room/limits";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession, ownAccount } from "@/lib/room/context";
@@ -6,7 +7,6 @@ import { withdrawable, payoutDestination } from "@/lib/room/funds";
 import { createFundsRequest } from "@/lib/funds-request-create";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { withRequestKey, withTwinGuard, twinSince, twinAmount } from "@/lib/room/request-key";
-import { verifyTotp } from "@/lib/totp";
 import { findWallet } from "@/lib/room/wallet";
 import { WALLET_KEY } from "@/lib/room/wallet-key";
 
@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
   const ctx = await roomApiSession();
   if ("response" in ctx) return ctx.response;
   const { session } = ctx;
-  const { allowed } = await checkRateLimit(`room-withdraw:${session.clientId}`, 6, 60);
+  const allowed = (await checkRateLimit(`room-withdraw:${session.clientId}`, 6, 60)).allowed && (await ipAllowed(request.headers, session.brokerId, "room-withdraw", 20, 60));
   if (!allowed) return NextResponse.json({ error: "Too many attempts. Try again in a minute." }, { status: 429 });
 
   const body = await request.json().catch(() => null);
@@ -39,7 +39,9 @@ export async function POST(request: NextRequest) {
     if (tf.twoFactorEnabled && tf.twoFactorSecret) {
       const code = typeof body?.code === "string" ? body.code.replace(/\s+/g, "") : "";
       if (!code) return NextResponse.json({ error: "Enter the code from your authenticator app.", code: "TWO_FACTOR_REQUIRED" }, { status: 401 });
-      if (!verifyTotp(tf.twoFactorSecret, code)) return NextResponse.json({ error: "Wrong code.", code: "TWO_FACTOR_INVALID" }, { status: 401 });
+      const checked = await checkClientCode(session.clientId, tf.twoFactorSecret, code);
+      if (checked === "locked") return NextResponse.json({ error: CODE_LOCKED_MESSAGE, code: "TWO_FACTOR_LOCKED" }, { status: 429 });
+      if (checked === "wrong") return NextResponse.json({ error: "Wrong code.", code: "TWO_FACTOR_INVALID" }, { status: 401 });
     }
     const payout = typeof body?.payoutMethodId === "string"
       ? await prisma.clientPayoutMethod.findFirst({ where: { id: body.payoutMethodId, clientId: session.clientId, removedAt: null } })
