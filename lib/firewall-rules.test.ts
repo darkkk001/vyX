@@ -45,7 +45,9 @@ describe("CRM firewall rules", () => {
   });
 
   it("Log mode turns every rule into Log (rate limits keep counting)", () => {
-    const src = readFileSync("scripts/firewall-apply.mjs", "utf8");
+    const src = readFileSync("scripts/firewall-apply.mjs", "utf8").replace(/
+/g, "
+");
     expect(src).toContain('return rl\n    ? { mitigate: { action: "rate_limit", rateLimit: { ...rl, action: "log" } } }\n    : { mitigate: { action: "log" } };');
   });
 });
