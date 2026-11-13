@@ -71,6 +71,8 @@ describe("order sounds by origin (live DB)", () => {
     if (!dbReachable) return;
     const fx = await fixture();
     const { POST } = await import("./route");
+    // the route refuses a price older than 3 s: the first (cold) import can take longer than that, so the price is fresh as the order goes
+    await prisma.livePrice.update({ where: { symbol: fx.symbolName }, data: { updatedAt: new Date() } });
     const r = await call("/api/trade/orders", "POST", { symbol: fx.symbolName, side: "BUY", type: "MARKET", volume: "0.01", price: "100.10", slPrice: "90.00", idempotencyKey: `o:${randomUUID()}` }, A, POST as never);
     expect(r.status).toBe(201);
     const order = await prisma.order.findUniqueOrThrow({ where: { id: r.json.order.id } });
