@@ -24,6 +24,7 @@ import { clientDealSource } from "@/lib/deals";
 import { requestMeta } from "@/lib/order-execution";
 import { toClientShape } from "@/lib/client-execution";
 import { closeThroughEngine, engineFillsFor } from "@/lib/engine-ingress";
+import { enterClientOrigin } from "@/lib/client-origin";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -50,6 +51,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const startedAt = Date.now();
   const raw = await handleClose(request, params, new Date(startedAt));
   // a refusal is traced with its internal reason, then cut to clientReason for the client (lib/client-reason.ts)

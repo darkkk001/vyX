@@ -15,6 +15,8 @@ import { toClientShape } from "@/lib/client-execution";
 import { AMOUNT_NO_RATE_TEXT, amountRefusalBody, legWrite, parseAmountLegs, setsAnAmount } from "@/lib/amount-sltp";
 import { loadAmountContext } from "@/lib/position-modify";
 import { orderRef } from "@/lib/sltp-refusal-text";
+import { enterClientOrigin } from "@/lib/client-origin";
+import { currentClientOrigin } from "@/lib/client-origin";
 
 // Edit a resting PENDING order's own entry price and/or its SL/TP -- the
 // chart's draggable entry-price line (LIMIT/STOP only) and, since broker
@@ -188,7 +190,7 @@ async function patchInner(
   const auditBase = orderAuditFields(order, order.symbol.name, order.account.accountNumber);
 
   const updated = await prisma.$transaction(async (tx) => {
-    const result = await tx.order.update({ where: { id }, data });
+    const result = await tx.order.update({ where: { id }, data: { ...data, clientInstance: currentClientOrigin() } });   // order sounds by origin: its trigger sounds on this client
     await tx.auditLog.create({
       data: {
         brokerId: order.brokerId,
@@ -312,12 +314,14 @@ async function deleteInner(
 
 // Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts).
 export async function PATCH(request: Parameters<typeof patchInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const raw = await patchInner(request, ctx);
   return withClientRefusals(raw);
 }
 
 // Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts).
 export async function DELETE(request: Parameters<typeof deleteInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const raw = await deleteInner(request, ctx);
   return withClientRefusals(raw);
 }

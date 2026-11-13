@@ -164,7 +164,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // watching this broker (broker_id) both need this -- neither
     // previously learned about a dealing-queue reject until their next
     // poll/refresh.
-    await publishTradingEvent("OrderRejected", { order_id: id, account_id: order.accountId, broker_id: brokerId, reason });
+    await publishTradingEvent("OrderRejected", { origin_client_id: order.clientInstance ?? null, order_id: id, account_id: order.accountId, broker_id: brokerId, reason });
     return NextResponse.json({ id, status: "REJECTED" });
   }
 
@@ -214,7 +214,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // the offer's deadline (lib/order-expiry.ts), for the client's requote prompt and the desk's countdown
     const expiry = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { requoteExpirySeconds: true, offerExpirySeconds: true } });
     const expiresAt = offerExpiresAt({ status: "REQUOTED", type: "MARKET", executedAt: requotedAt, createdAt: requotedAt }, expiry)!.toISOString();
-    await publishTradingEvent("OrderRequoted", {
+    await publishTradingEvent("OrderRequoted", { origin_client_id: order.clientInstance ?? null,
       order_id: id,
       account_id: order.accountId,
       broker_id: brokerId,
@@ -280,7 +280,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return true;
     });
     if (!requoted) return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
-    await publishTradingEvent("OrderRequoted", { order_id: id, account_id: order.accountId, broker_id: brokerId, requoted_price: requotePrice.toString() });
+    await publishTradingEvent("OrderRequoted", { origin_client_id: order.clientInstance ?? null, order_id: id, account_id: order.accountId, broker_id: brokerId, requoted_price: requotePrice.toString() });
     return NextResponse.json({ id, status: "REQUOTED", requotedPrice: requotePrice.toString(), reason: "SLIPPAGE_CAP" });
   };
 
@@ -321,10 +321,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     });
     if (result.kind === "raced") return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
     if (result.kind === "position_gone") {
-      await publishTradingEvent("OrderCancelled", { order_id: order.id, account_id: order.accountId, broker_id: brokerId, reason: "position already closed" });
+      await publishTradingEvent("OrderCancelled", { origin_client_id: order.clientInstance ?? null, order_id: order.id, account_id: order.accountId, broker_id: brokerId, reason: "position already closed" });
       return NextResponse.json({ error: "position was already closed (by SL / TP / stop-out or another close); the close request is cancelled" }, { status: 409 });
     }
-    await afterQueuedCloseExecuted(prisma, {
+    await afterQueuedCloseExecuted(prisma, { clientInstance: order.clientInstance ?? null,
       brokerId,
       accountId: order.accountId,
       accountNumber: order.account.accountNumber,
@@ -456,7 +456,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // WebTrader.tsx's /v1/trading/stream effect); broker_id is what makes
     // this also reach every other backoffice tab
     // (services/api-gateway/src/ws.ts's attachAdminEventStream).
-    await publishTradingEvent("OrderFilled", {
+    await publishTradingEvent("OrderFilled", { origin_client_id: order.clientInstance ?? null,
       order_id: order.id,
       account_id: order.accountId,
       broker_id: brokerId,

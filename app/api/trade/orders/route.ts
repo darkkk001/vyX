@@ -61,6 +61,8 @@ import { firstRefusalOfEpisode, ORDER_RATE_LIMITED_MESSAGE, orderLimitsFor, take
 import { requestMeta } from "@/lib/order-execution";
 import { offerExpiresAt } from "@/lib/order-expiry";
 import { orderRef } from "@/lib/sltp-refusal-text";
+import { enterClientOrigin } from "@/lib/client-origin";
+import { currentClientOrigin } from "@/lib/client-origin";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
   await prisma.auditLog.create({
@@ -106,6 +108,7 @@ async function refuseRateLimited(request: NextRequest, session: { accountId: str
 }
 
 export async function POST(request: NextRequest) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const startedAt = Date.now();
   // Latency fix 1 (2026-09-26): ONE session check per request -- this wrapper used to check it again after the
   // handler just to learn the broker for the latency sample (two more Redis round trips before the response).
@@ -526,7 +529,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
       const o = existing
         ? await tx.order.update({ where: { id: existing.id }, data })
         : await tx.order.create({
-            data: { brokerId: session.brokerId, accountId: session.accountId, symbolId: brokerSymbol.symbolId, side, type, volume, requestedPrice: price, slPrice, tpPrice, slAmount, tpAmount, idempotencyKey, source: orderSource, ...capture, ...data },
+            data: { brokerId: session.brokerId, accountId: session.accountId, symbolId: brokerSymbol.symbolId, side, type, volume, requestedPrice: price, slPrice, tpPrice, slAmount, tpAmount, idempotencyKey, clientInstance: currentClientOrigin(), source: orderSource, ...capture, ...data },
           });
       await tx.auditLog.create({ data: { brokerId: session.brokerId, action: "ORDER_SLIPPAGE_REQUOTED", entityType: "Order", entityId: o.id, newValue: detail } });
       return o;
@@ -582,6 +585,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
           slAmount,
           tpAmount,
           idempotencyKey,
+          clientInstance: currentClientOrigin(),   // order sounds by origin
           status: "PENDING",
           // the dealer queue clock (lib/order-expiry.ts): written once, here, when the order joins the queue
           queuedAt: type === "MARKET" ? new Date() : null,
@@ -819,6 +823,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             slAmount,
             tpAmount,
             idempotencyKey,
+            clientInstance: currentClientOrigin(),   // order sounds by origin
             status: "FILLED",
             filledPrice: fillPrice,
             filledAt: new Date(),
@@ -842,6 +847,9 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
             slAmount,
             tpAmount,
             bookType,
+            // order sounds by origin: who opened it (a stop-out sounds there) and who set its SL / TP (a hit sounds there)
+            openClientInstance: currentClientOrigin(),
+            slTpClientInstance: slPrice || tpPrice || slAmount || tpAmount ? currentClientOrigin() : null,
           },
         });
         const balanceAfter = await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: fillPricing.commissionPerLot, volume });
@@ -920,6 +928,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session, requeste
         slAmount,
         tpAmount,
         idempotencyKey,
+        clientInstance: currentClientOrigin(),   // order sounds by origin
         status: "PENDING",
         source: orderSource,
         ...capture,

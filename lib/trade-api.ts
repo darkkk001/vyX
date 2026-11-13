@@ -8,6 +8,7 @@ import { apiCall as call, apiCallForm as callForm, serverNow, ApiError } from ".
 import type { SymbolCategory } from "./market-simulator";
 import type { ChartSettings } from "./chart-settings";
 import type { ChartIndicatorsState } from "./chart-indicators";
+import { markOwn } from "./client-instance";
 export { serverNow, ApiError };
 
 export type AccountInfo = {
@@ -334,8 +335,8 @@ export const tradeApi = {
     call<{ order: { id: string }; position?: ApiPosition; balance?: string; executedBy?: string }>("/api/trade/orders", {
       method: "POST",
       body: JSON.stringify({ ...body, maxSlippagePips: body.maxSlippagePips ?? "unlimited" }),
-    }),
-  cancelOrder: (id: string) => call(`/api/trade/orders/${id}`, { method: "DELETE" }),
+    }).then((r) => { markOwn(r?.order?.id, r?.position?.id); return r; }),   // order sounds by origin: this tab's order
+  cancelOrder: (id: string) => (markOwn(id), call(`/api/trade/orders/${id}`, { method: "DELETE" })),
   // Draggable entry-price line for a resting LIMIT/STOP order (chart
   // interaction pack). `currentPrice` is the client's own live price, same
   // reference-price pattern editPositionSlTp already uses below --
@@ -355,7 +356,7 @@ export const tradeApi = {
   // this account's own Logs tab (see app/api/trade/audit/route.ts).
   auditLog: () => call<{ id: string; time: string; message: string }[]>("/api/trade/audit"),
   requoteResponse: (id: string, accept: boolean) =>
-    call(`/api/trade/orders/${id}/requote-response`, { method: "POST", body: JSON.stringify({ accept }) }),
+    markOwn(id) ?? call(`/api/trade/orders/${id}/requote-response`, { method: "POST", body: JSON.stringify({ accept }) }),
   editPositionSlTp: (
     id: string,
     body: { currentPrice: number; slPrice?: number | null; tpPrice?: number | null; slAmount?: string | null; tpAmount?: string | null }
@@ -364,7 +365,7 @@ export const tradeApi = {
   // app/api/trade/positions/[id]/close/route.ts) -- flags this close for
   // the STM_BULK_CLOSE audit trail, doesn't change validation/execution.
   closePosition: (id: string, closePrice: number, volume?: number, source?: "stm_bulk") =>
-    call(`/api/trade/positions/${id}/close`, {
+    markOwn(id) ?? call(`/api/trade/positions/${id}/close`, {
       method: "POST",
       body: JSON.stringify({ closePrice, maxSlippagePips: "unlimited", ...(volume != null ? { volume } : {}), ...(source ? { source } : {}) }),
     }),
@@ -376,11 +377,11 @@ export const tradeApi = {
     call<{ requested: number; successful: number; failed: number; results: { positionId: string; closed: boolean; closePrice: string | null; realizedPnl: string | null; error: string | null }[] }>(
       "/api/trade/positions/close-bulk",
       { method: "POST", body: JSON.stringify({ scope, ...(symbol ? { symbol } : {}) }) }
-    ),
+    ).then((r) => { markOwn(...(r?.results ?? []).map((x) => x.positionId)); return r; }),
   // "Close By" -- see lib/close-by.ts for the full reasoning.
   closeBy: (positionId: string, againstPositionId: string) =>
     call<{ ok: true; closeVolume: string; closePrice: string; positionAId: string; positionBId: string; realizedPnlA: string; realizedPnlB: string }>(
-      "/api/trade/positions/close-by",
+      (markOwn(positionId, againstPositionId), "/api/trade/positions/close-by"),
       { method: "POST", body: JSON.stringify({ positionId, againstPositionId }) }
     ),
   // Default (active only) / ?status=all (history, incl. triggered/

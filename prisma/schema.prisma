@@ -2163,6 +2163,9 @@ model Order {
   requotedPrice   Decimal?    @db.Decimal(18, 5)
   idempotencyKey  String // client-supplied, unique per account
   source          OrderSource @default(WEB)
+  // Order sounds by origin (owner 2026-11-13, option C): the client instance (one terminal / WebTrader tab, a random id per launch) that placed
+  // or last modified this order. A trigger, expiry or dealer action on it sounds only on that client; null (staff, engine, older rows) = silent.
+  clientInstance  String?     @db.VarChar(64)
 
   // Queued CLOSE (docs/CLOSES-RESPECT-DEALER-MODE.md, 2026-09-18): when set, this MARKET order
   // is a client's request to CLOSE closesPosition -- fully, or closeVolume lots of it -- that
@@ -2249,6 +2252,10 @@ model Position {
   // Stamped from BrokerSymbol.defaultBookType at fill time -- record-
   // keeping only, see that field's schema comment.
   bookType               BookType         @default(B_BOOK)
+  // Order sounds by origin (owner 2026-11-13, option C): the client instance that opened this position (stop-out sounds there) and the one that
+  // last set its SL / TP (an SL / TP hit sounds there). Null (staff, engine, older rows) = silent on every client.
+  openClientInstance     String?          @db.VarChar(64)
+  slTpClientInstance     String?          @db.VarChar(64)
   // The account's group category at the moment this position opened (owner 2026-10-06). Set by a database
   // trigger on INSERT (migration 20261006090000_book_pnl_group_min_volume) so every open path, web or engine,
   // stamps it; Book P/L (lib/book-pnl.ts) counts only B_BOOK / DEALING here, so moving an account to another group

@@ -10,6 +10,8 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { announcePositionModified, loadAmountContext, refuseModify } from "@/lib/position-modify";
 import { amountRefusalBody, legWrite, parseAmountLegs, setsAnAmount, sltpAuditLevels } from "@/lib/amount-sltp";
+import { enterClientOrigin } from "@/lib/client-origin";
+import { currentClientOrigin } from "@/lib/client-origin";
 
 // Inline SL/TP edit on an open position — side-aware validated against the
 // client-reported current price, same rule as order placement.
@@ -81,6 +83,7 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
       ...(tpPrice !== undefined ? { tpPrice } : {}),
       ...(slAmount !== undefined ? { slAmount } : {}),
       ...(tpAmount !== undefined ? { tpAmount } : {}),
+      slTpClientInstance: currentClientOrigin(),   // order sounds by origin: this client set the levels, a hit sounds here
     },
   };
   // 2026-11-10: an amount leg set, changed or removed (a price replacing an armed amount included) writes one audit row with
@@ -119,6 +122,7 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
 
 // Refusals answer with clientReason only (owner 2026-10-23, lib/client-reason.ts); close / modify refusals are traced first.
 export async function PATCH(request: Parameters<typeof patchInner>[0], ctx: { params: Promise<{ id: string }> }) {
+  enterClientOrigin(request.headers);   // order sounds by origin: this request's events carry its client (lib/client-origin.ts)
   const requestedAt = new Date();
   const raw = await patchInner(request, ctx);
   await traceCloseOrModifyRefusals("MODIFY", raw, request.headers, requestedAt, (await ctx.params).id);
