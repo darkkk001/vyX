@@ -233,7 +233,10 @@ type PreloadedAccount = { positions: OpenPositionWithMarket[]; account: RiskAcco
 
 /** Which web pass made a risk close (owner 2026-10-26: Stage 6 drill step 8 must be provable from the database). Every
  *  automatic close the web makes leaves one RISK_CLOSE_WEB audit row with it, in the close's own transaction. */
-export type RiskTrigger = "risk-fallback" | "margin-monitor-cron" | "engine-backstop" | "engine-symbols" | "unknown";
+// "engine-handover" is the engine handing its risk authority over on a license stop: the engine releases its
+// heartbeat and then asks for one pass as proof the web has taken over, and will not stop evaluating risk until it
+// gets it (engine order-management/src/license_gate.rs). A separate trigger so the pass is identifiable in the logs.
+export type RiskTrigger = "risk-fallback" | "margin-monitor-cron" | "engine-backstop" | "engine-symbols" | "engine-handover" | "unknown";
 
 function riskCloseAudit(tx: Prisma.TransactionClient, p: { brokerId: string; positionId: string; accountId: string; reason: "SL" | "TP" | "STOP_OUT"; trigger: RiskTrigger; marginLevel?: string }) {
   return tx.auditLog.create({
