@@ -1955,9 +1955,66 @@ async fn main() {
             // reason `use_prisma_book()` is: no order can be taken before the rule governing it is in
             // place.
             order_management::ingress::restrict_to(ingress.clone());
+
+            // THE OTHER HALF OF THE SCOPE (owner 2026-11-13): the accounts the DATABASE admits, which
+            // are LIVE accounts whose broker has the allowlist switch on and whose own entry is set.
+            // Read once here -- before the listener binds, like the env list -- and refreshed below.
+            //
+            // FAIL-CLOSED ON EVERY PATH: a query that fails, columns that are not there yet, or nothing
+            // enabled all produce an EMPTY set, which leaves the env list as the whole scope. The
+            // engine never widens its scope on a reading it could not take.
+            match order_management::db::allowlisted_live_account_ids(&pool).await {
+                Ok(ids) => {
+                    let n = ids.len();
+                    order_management::ingress::set_admitted(ids);
+                    if n == 0 {
+                        tracing::info!("live allowlist: no account is enabled, so the order path's scope is ENGINE_INGRESS_ACCOUNT_IDS exactly (dormant)");
+                    } else {
+                        tracing::warn!(admitted = n, "live allowlist: {n} LIVE account(s) are admitted to the order path by the database, alongside the {} id(s) on ENGINE_INGRESS_ACCOUNT_IDS", ingress.len());
+                    }
+                }
+                Err(err) => {
+                    tracing::error!(%err, "live allowlist: could not read the admitted accounts; the scope stays ENGINE_INGRESS_ACCOUNT_IDS only (fail-closed)");
+                    order_management::ingress::set_admitted(Vec::new());
+                }
+            }
+
+            // Refreshed on a timer rather than on an event, deliberately: enabling an account is a
+            // deliberate, rare act by a super-admin, and a minute of delay on it is not worth another
+            // event subscription to get wrong. Disabling takes effect faster than this anyway -- the
+            // per-order `mode_allowed` check reads the columns fresh on every single order, so a
+            // disabled account stops filling at once whatever this set still says.
+            {
+                let pool = pool.clone();
+                tokio::spawn(async move {
+                    let every = std::time::Duration::from_secs(
+                        std::env::var("ENGINE_ALLOWLIST_REFRESH_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60),
+                    );
+                    let mut announced: Option<usize> = None;
+                    loop {
+                        tokio::time::sleep(every).await;
+                        match order_management::db::allowlisted_live_account_ids(&pool).await {
+                            Ok(ids) => {
+                                let n = ids.len();
+                                order_management::ingress::set_admitted(ids);
+                                if announced != Some(n) {
+                                    tracing::warn!(admitted = n, "live allowlist: {n} LIVE account(s) now admitted to the order path");
+                                    announced = Some(n);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(%err, "live allowlist: refresh failed; admitting nobody until it succeeds (fail-closed)");
+                                order_management::ingress::set_admitted(Vec::new());
+                                announced = Some(0);
+                            }
+                        }
+                    }
+                });
+            }
+
             tracing::warn!(
                 accounts = ingress.len(),
-                "live mode: the order path is SCOPED -- every account not on ENGINE_INGRESS_ACCOUNT_IDS is refused 403"
+                "live mode: the order path is SCOPED -- every account not on ENGINE_INGRESS_ACCOUNT_IDS and not admitted by the live allowlist is refused 403"
             );
             match order_management::authority::verify_order_path_pool(&pool).await {
                 Ok(role) => {

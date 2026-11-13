@@ -28,6 +28,21 @@ use std::sync::RwLock;
 /// None = no restriction installed (tests, harnesses). Some(list) = only these accounts.
 static ALLOWED: RwLock<Option<Vec<String>>> = RwLock::new(None);
 
+/// The accounts the DATABASE admits: LIVE accounts whose broker has `engineLiveAllowlistOn` and whose
+/// own `engineLiveEnabled` is set (`db::allowlisted_live_account_ids`). Refreshed from the database,
+/// never from configuration.
+///
+/// SEPARATE FROM `ALLOWED`, AND UNIONED WITH IT (owner 2026-11-13). The env list is still the trial
+/// scope and still cannot admit a LIVE account on its own -- `mode_allowed` below re-checks the two
+/// columns on the database's own answer for every order, so a LIVE id pasted into the environment is
+/// refused exactly as it was before. What this adds is the other direction: an account the columns
+/// admit no longer has to ALSO be pasted into the environment to be in scope.
+///
+/// EMPTY IS THE DORMANT STATE, and it is the state the query returns while no account is enabled: the
+/// union is then the env list exactly, so `allows` answers what it has always answered, for the same
+/// cost, with no call site changed.
+static ADMITTED: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
 /// Restrict the order path to `account_ids`. Called once at start-up, before the listener binds.
 ///
 /// An EMPTY list is a real restriction meaning "nobody", not "everybody" -- the difference matters, and
@@ -36,14 +51,37 @@ pub fn restrict_to(account_ids: Vec<String>) {
     *ALLOWED.write().unwrap_or_else(|p| p.into_inner()) = Some(account_ids);
 }
 
+/// Replace the set of accounts the database admits. Called by the refresh loop, and by tests.
+///
+/// FAIL-CLOSED ON EVERY UNCERTAINTY. The caller passes an EMPTY vector when the columns are absent,
+/// when the query failed, or when nothing is enabled -- all three mean "admit nobody", which leaves the
+/// env list as the whole scope. There is deliberately no "keep the last good answer" here: a database
+/// this engine cannot read is not a reason to go on admitting LIVE accounts.
+pub fn set_admitted(account_ids: Vec<String>) {
+    *ADMITTED.write().unwrap_or_else(|p| p.into_inner()) = account_ids;
+}
+
+/// How many accounts the database currently admits. For the start-up log line and the tests.
+pub fn admitted_count() -> usize {
+    ADMITTED.read().unwrap_or_else(|p| p.into_inner()).len()
+}
+
 /// Is this account allowed to use the engine's order path?
 ///
-/// True when no restriction is installed. See the module doc for why that is the safe default HERE and
-/// where the fail-closed decision actually lives.
+/// The env list OR the accounts the database admits. True when no restriction is installed at all --
+/// see the module doc for why that is the safe default HERE and where the fail-closed decision lives.
+///
+/// BEING IN SCOPE IS NOT PERMISSION TO FILL. This answers only "may this account reach the path"; every
+/// caller then checks `mode_allowed` on the database's own answer, which is what actually admits a LIVE
+/// account. A stale entry here therefore cannot let a disabled account through -- it only lets it be
+/// asked about.
 pub fn allows(account_id: &str) -> bool {
     match &*ALLOWED.read().unwrap_or_else(|p| p.into_inner()) {
         None => true,
-        Some(list) => list.iter().any(|id| id == account_id),
+        Some(list) => {
+            list.iter().any(|id| id == account_id)
+                || ADMITTED.read().unwrap_or_else(|p| p.into_inner()).iter().any(|id| id == account_id)
+        }
     }
 }
 
@@ -127,5 +165,40 @@ mod tests {
         restrict_to(Vec::new());
         assert!(!allows("demo-1"), "an EMPTY list means nobody, not everybody");
         assert_eq!(scope(), Some(0));
+
+        // ---- the scope is the env list UNION what the database admits (owner 2026-11-13) ----
+        //
+        // Appended to THIS test rather than written as its own, because the scope is process-wide and
+        // this file's design is that one test owns it; a second test would race with the first line
+        // above, which asserts nothing is installed yet.
+        restrict_to(vec!["demo-1".to_string()]);
+        set_admitted(Vec::new());
+
+        // DORMANT: nothing admitted, so the union is the env list exactly -- this is the byte-same state
+        assert!(allows("demo-1"));
+        assert!(!allows("live-x"), "an account the database does not admit is not in scope");
+        assert_eq!(admitted_count(), 0);
+
+        // ENABLED: a LIVE account the columns admit, which is NOT on the env list
+        set_admitted(vec!["live-x".to_string()]);
+        assert!(allows("live-x"), "admitted without being pasted into the environment");
+        assert!(allows("demo-1"), "and the env list still works");
+        assert!(!allows("live-y"), "only the admitted one");
+        assert!(!allows("live-x2"), "membership is exact, not a prefix match");
+
+        // FAIL-CLOSED: columns absent, query failed, or disabled again -- the caller passes an empty
+        // set for all three and the scope falls straight back to the env list.
+        set_admitted(Vec::new());
+        assert!(!allows("live-x"), "an engine that cannot confirm the admission must not keep it");
+        assert!(allows("demo-1"));
+
+        // AND THE ENV LIST STILL CANNOT ADMIT A LIVE ACCOUNT ON ITS OWN. This is the L2 Step 3 finding
+        // and widening the scope must not undo it: being in scope only means the account may be asked
+        // about; mode_allowed on the database's own answer is what admits a LIVE one.
+        restrict_to(vec!["live-pasted".to_string()]);
+        assert!(allows("live-pasted"), "in scope, because someone put it there");
+        assert!(!mode_allowed("LIVE", false, false), "but refused -- the list narrows, the columns admit");
+        assert!(mode_allowed("DEMO", false, false), "a DEMO account on the list is unaffected");
+        assert!(mode_allowed("LIVE", true, true), "and the columns alone are what let a LIVE one through");
     }
 }

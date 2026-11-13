@@ -1390,6 +1390,35 @@ pub async fn allowlist_columns(conn: &mut sqlx::PgConnection) -> &'static str {
     }
 }
 
+/// THE ACCOUNTS THE DATABASE ADMITS onto the order path: LIVE accounts whose broker has the allowlist
+/// switch on and whose own entry is set (owner 2026-11-13). Feeds `ingress::set_admitted`.
+///
+/// SAFE BEFORE OR AFTER THE WEB'S MIGRATION, by the same column detection every other allowlist read
+/// uses: columns absent -> this returns EMPTY without running a query at all, which is the dormant
+/// answer and also the fail-closed one. There is no version of "the columns are missing so assume
+/// yes".
+///
+/// `IS TRUE` on both flags, not `= true`: a NULL column is not an admission. The three conditions are
+/// the same three `ingress::engine_live_allowed` applies per order, so the set and the per-order check
+/// cannot disagree about what the rule is -- only about how fresh their reading of it is, and the
+/// per-order check is the fresher of the two.
+pub async fn allowlisted_live_account_ids(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    if allowlist_columns(&mut conn).await == ALLOWLIST_SELECT_ABSENT {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(String,)> = sqlx::query_as(
+        r#"SELECT a.id FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId"
+            WHERE a."accountMode"::text = 'LIVE'
+              AND b."engineLiveAllowlistOn" IS TRUE
+              AND a."engineLiveEnabled" IS TRUE
+            ORDER BY a.id COLLATE "C""#,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// The account's mode as the DATABASE says it, for the ingress DEMO-only rule. Read here rather than
 /// taken from a caller: `ingress`'s own doc says the list is a human artefact and this check is not.
 /// Returns the mode AND the two allowlist columns, because every caller of this decides the ingress
