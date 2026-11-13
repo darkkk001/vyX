@@ -31,3 +31,12 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 axum = "0.8"
+
+# The license client, taken from the bridge BY A PIN and not copied (owner 2026-11-13): one license
+# model, one implementation of it. qb-license-1.2.0 is the commit the three bridges have run in
+# production since 2026-11-10 (qorebridge f77a73a) -- license enforcement phase 1.2 plus status report
+# v2, which is the contract C:\vyx\handoff\license-enforcement-contract.md describes.
+#
+# Pinned by TAG, never by branch: a branch would let the bridge's next change reach this engine without
+# anyone choosing it, which is the whole failure mode a pin exists to prevent.
+qb-license = { git = "https://github.com/darkkk001/qorebridge.git", tag = "qb-license-1.2.0" }
