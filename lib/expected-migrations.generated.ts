@@ -140,5 +140,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261110120000_crm_permission",
   "20261111140000_engine_live_allowlist",
   "20261112120000_broker_wordmark",
-  "20261112150000_client_bitmoji"
+  "20261112150000_client_bitmoji",
+  "20261113130000_engine_registry"
 ];
