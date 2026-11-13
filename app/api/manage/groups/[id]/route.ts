@@ -104,7 +104,6 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : existing.tier;
   // "Clients can choose this group at signup" (D4: the group is the pricing tier; its name is the client-facing label
   // until the label field lands). Absent = keep.
-  const isClientSelectable = typeof body?.isClientSelectable === "boolean" ? body.isClientSelectable : existing.isClientSelectable;
   // Two axes since Stage 1 of docs/ACCOUNT-STRUCTURE-MIGRATION.md (§0.1):
   // `category` is ROUTING (where the order goes, who holds the risk) and
   // `modeRestriction` is which account MODES may sit in this group. A body
@@ -129,6 +128,9 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     modeRestriction: existing.modeRestriction,
   });
   const { category, modeRestriction } = routing;
+  // owner 2026-11-13: the backoffice's "Offered to clients" checkbox; a REVERSAL / COVERAGE group is never offered
+  const isClientSelectable = (category === "REVERSAL" || category === "COVERAGE") ? false
+    : typeof body?.isClientSelectable === "boolean" ? body.isClientSelectable : existing.isClientSelectable;
   // QoreTrader demo: a hard B-book guard (nothing the demo broker owns may route to a liquidity provider or a coverage account)
   if (category !== "B_BOOK" && (await isDemoBrokerId(brokerId))) {
     return NextResponse.json({ error: "The demo broker trades the B-book only." }, { status: 400 });

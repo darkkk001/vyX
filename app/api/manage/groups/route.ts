@@ -241,9 +241,11 @@ async function postHandler(request: NextRequest) {
   }
   const groupType = legacyGroupTypeFor(routing);
   const forceDealingMode = category === "DEALING" && forceDealingModeRequested;
-  // Owner 2026-10-06 (S2): a new B_BOOK / DEALING group is offered to clients automatically; the backoffice no longer
-  // shows the flag. A_BOOK / REVERSAL / COVERAGE groups stay unpublished, an explicit true from an older build still wins.
-  const isClientSelectable = body?.isClientSelectable === true || category === "B_BOOK" || category === "DEALING";
+  // Owner 2026-10-06 (S2): a new B_BOOK / DEALING group is offered to clients by default. Owner 2026-11-13: the backoffice's
+  // "Offered to clients" checkbox sends the flag, and an explicit true / false now wins either way. A REVERSAL / COVERAGE
+  // group is never offered, whatever is sent (the room's plan list excludes them too).
+  const neverOffered = category === "REVERSAL" || category === "COVERAGE";
+  const isClientSelectable = !neverOffered && (typeof body?.isClientSelectable === "boolean" ? body.isClientSelectable : category === "B_BOOK" || category === "DEALING");
 
   try {
     const group = await prisma.$transaction(async (tx) => {
