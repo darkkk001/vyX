@@ -5,8 +5,10 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import styles from "../PortalAuth.module.css";
 import { plainError } from "@/lib/plain-error";
+import { useHumanCheck } from "@/components/room/HumanCheck";
 
-export default function ResetPasswordForm({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string | null }) {
+export default function ResetPasswordForm({ brokerName, brokerLogoUrl, humanKey = null }: { brokerName: string; brokerLogoUrl: string | null; humanKey?: string | null }) {
+  const human = useHumanCheck(humanKey);
   const searchParams = useSearchParams();
   const token = searchParams.get("token") ?? "";
 
@@ -31,10 +33,11 @@ export default function ResetPasswordForm({ brokerName, brokerLogoUrl }: { broke
     }
 
     setSubmitting(true);
+    const turnstileToken = await human.take();
     const response = await fetch("/api/portal/reset-password", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, password }),
+      body: JSON.stringify({ token, password, ...(turnstileToken ? { turnstileToken } : {}) }),
     });
     const body = await response.json().catch(() => ({}));
     setSubmitting(false);
@@ -91,6 +94,7 @@ export default function ResetPasswordForm({ brokerName, brokerLogoUrl }: { broke
         ) : null}
 
         <form onSubmit={handleSubmit}>
+          {human.el}
           <div className={styles.field}>
             <label className={styles.fieldLabel} htmlFor="password">New password</label>
             <div className={styles.passwordWrap}>

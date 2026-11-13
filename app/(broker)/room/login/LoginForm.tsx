@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import HumanCheck from "@/components/room/HumanCheck";
+import { useState } from "react";
+import { useHumanCheck } from "@/components/room/HumanCheck";
 
 // Same credential check as the portal (POST /api/portal/login: email + password, verified e-mail, rate limit).
 // googleOn: "Continue with Google" under Sign in (GOOGLE_LOGIN_ENABLED). googleCode: Google said who it is, and the
 // client has 2FA on, so only the authenticator code is asked (POST /api/auth/google/2fa).
-export default function LoginForm({ notice, googleOn = false, googleCode = false }: { notice: { ok: boolean; text: string } | null; googleOn?: boolean; googleCode?: boolean }) {
+// humanKey: the broker's Turnstile key; every sign-in sends a fresh token (owner 2026-11-13).
+export default function LoginForm({ notice, googleOn = false, googleCode = false, humanKey = null }: { notice: { ok: boolean; text: string } | null; googleOn?: boolean; googleCode?: boolean; humanKey?: string | null }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
@@ -14,16 +15,7 @@ export default function LoginForm({ notice, googleOn = false, googleCode = false
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // the server asks for the check after repeated failures, and hands over the key with that answer
-  const [humanKey, setHumanKey] = useState("");
-  const [humanToken, setHumanToken] = useState("");
-  const [humanRound, setHumanRound] = useState(0);
-  const [waiting, setWaiting] = useState(false);
-  const form = useRef<HTMLFormElement>(null);
-
-  useEffect(() => {
-    if (waiting && humanToken) { setWaiting(false); form.current?.requestSubmit(); }
-  }, [waiting, humanToken]);
+  const human = useHumanCheck(humanKey);
 
   async function submitGoogleCode(e: React.FormEvent) {
     e.preventDefault();
@@ -67,18 +59,18 @@ export default function LoginForm({ notice, googleOn = false, googleCode = false
     setBusy(true);
     setError("");
     try {
+      const turnstileToken = await human.take();
       const res = await fetch("/api/portal/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, remember, ...(needCode ? { code } : {}), ...(humanToken ? { turnstileToken: humanToken } : {}) }),
+        body: JSON.stringify({ email, password, remember, ...(needCode ? { code } : {}), ...(turnstileToken ? { turnstileToken } : {}) }),
       });
-      if (humanToken) { setHumanToken(""); setHumanRound((r) => r + 1); }
       if (res.ok) {
         window.location.assign("/room");
         return;
       }
       const body = await res.json().catch(() => null);
-      if (body?.code === "HUMAN_CHECK_REQUIRED") { setHumanKey(body.siteKey); setWaiting(true); setError("Checking your browser…"); return; }
+      if (body?.code === "HUMAN_CHECK_REQUIRED") { setError("Could not check your browser. Press Sign in again."); return; }
       if (body?.code === "TWO_FACTOR_REQUIRED") { setNeedCode(true); setError(""); return; }
       if (body?.code === "TWO_FACTOR_INVALID") { setError("Wrong code. Try the next one."); return; }
       setError(res.status === 401 ? "Wrong email or password." : res.status === 429 ? "Too many attempts. Try again in a few minutes." : res.status === 403 ? "Verify your email first. Check your inbox." : body?.error ?? "Sign-in failed.");
@@ -90,7 +82,7 @@ export default function LoginForm({ notice, googleOn = false, googleCode = false
   }
 
   return (
-    <form ref={form} className="r-auth-box" onSubmit={submit}>
+    <form className="r-auth-box" onSubmit={submit}>
       <div>
         <h1>Sign in to your client portal</h1>
         <div style={{ fontSize: 13, color: "var(--r-muted)", marginTop: 6 }}>Use the email you registered with.</div>
@@ -117,7 +109,7 @@ export default function LoginForm({ notice, googleOn = false, googleCode = false
         <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ width: 15, height: 15, accentColor: "var(--r-accent)" }} />
         Keep me signed in on this device
       </label>
-      {humanKey ? <HumanCheck siteKey={humanKey} round={humanRound} onToken={setHumanToken} /> : null}
+      {human.el}
       {error ? <div className="r-error" role="alert">{error}</div> : null}
       <button className="r-btn" type="submit" disabled={busy} style={{ padding: "12px 0", fontSize: 14 }}>{busy ? "Signing in…" : "Sign in"}</button>
       {googleOn ? (

@@ -37,7 +37,7 @@ async function resend(brokerId: string, email: unknown, ip = ipOf()) {
   const { POST } = await import("@/app/api/portal/resend-verification/route");
   const res = await POST(new NextRequest("https://test.local/api/portal/resend-verification", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-broker-id": brokerId, "x-forwarded-for": ip },
+    headers: { "content-type": "application/json", "x-broker-id": brokerId, "x-real-ip": ip },
     body: JSON.stringify({ email }),
   }));
   return { status: res.status, body: await res.json() };
@@ -65,7 +65,11 @@ describe("POST /api/portal/resend-verification", () => {
     expect(JSON.stringify(a[0].newValue)).not.toContain(token!);
 
     const { GET } = await import("@/app/api/portal/verify-email/route");
-    const v = await GET(new NextRequest(`https://test.local/api/portal/verify-email?token=${token}`));
+    // the link works on its own broker only (owner 2026-11-13)
+    const other = await GET(new NextRequest(`https://test.local/api/portal/verify-email?token=${token}`, { headers: { "x-broker-id": "another-broker" } }));
+    expect(other.headers.get("location")).toContain("verify=invalid");
+    const token2 = (await resend(broker.id, email), tokenIn(getMockLastSentTo(email)!.text));
+    const v = await GET(new NextRequest(`https://test.local/api/portal/verify-email?token=${token2}`, { headers: { "x-broker-id": broker.id } }));
     expect(v.headers.get("location")).toContain("verify=success");
     expect((await prisma.client.findUniqueOrThrow({ where: { id: client.id } })).emailVerifiedAt).not.toBeNull();
   });

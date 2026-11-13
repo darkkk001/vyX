@@ -2,6 +2,8 @@ import { Suspense } from "react";
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import ResetPasswordForm from "./ResetPasswordForm";
+import { humanCheckSiteKey } from "@/lib/turnstile";
+import DevToolsGuard from "@/components/security/DevToolsGuard";
 
 // useSearchParams() inside ResetPasswordForm (for ?token=) opts this page
 // out of static prerendering unless wrapped in Suspense -- same reasoning
@@ -13,9 +15,11 @@ export default async function PortalResetPasswordPage() {
     ? await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true } })
     : null;
 
+  const humanKey = brokerId ? await humanCheckSiteKey(brokerId) : null;
   return (
     <Suspense fallback={null}>
-      <ResetPasswordForm brokerName={broker?.name ?? "VyXTrader"} brokerLogoUrl={broker?.logoUrl ?? null} />
+      <DevToolsGuard />
+      <ResetPasswordForm brokerName={broker?.name ?? "VyXTrader"} brokerLogoUrl={broker?.logoUrl ?? null} humanKey={humanKey} />
     </Suspense>
   );
 }

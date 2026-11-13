@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { clientIpOf } from "@/lib/demo";
+import { clientIp } from "@/lib/order-execution";
+import { STAFF_LOGIN_FAILURES, STAFF_LOGIN_FAILURE_WINDOW_SECONDS, staffDecoyCompare } from "@/lib/staff-login-guard";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import {
@@ -7,7 +10,7 @@ import {
   sessionCookieOptions,
 } from "@/lib/auth";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, clearFailures, isLockedOut, recordFailure } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
@@ -23,7 +26,9 @@ export async function POST(request: NextRequest) {
   // the key to -- had none, meaning unlimited online brute force against
   // it. Same 5/min shape as the others.
   const { allowed } = await checkRateLimit(`admin-login:${email}`, 5, 60);
-  if (!allowed) {
+  const byIp = await checkRateLimit(`admin-login-ip:${clientIpOf(request.headers)}`, 20, 60);
+  const failures = `admin-login-fail:${email}`;
+  if (!allowed || !byIp.allowed || (await isLockedOut(failures, STAFF_LOGIN_FAILURES))) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
 
@@ -31,14 +36,22 @@ export async function POST(request: NextRequest) {
 
   // Constant-shape response whether the email exists or not, to avoid
   // leaking which admin emails are registered.
-  if (!admin || admin.status !== "ACTIVE") {
+  // only a Super Admin signs in here (owner 2026-11-13): broker staff use the backoffice (/api/manage/login), which
+  // also checks their broker, app build, IP allowlist and sign-in log. Every refusal looks and takes the same.
+  const invalid = async (compared = false) => {
+    if (!compared) await staffDecoyCompare(password);
+    await recordFailure(failures, STAFF_LOGIN_FAILURE_WINDOW_SECONDS);
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  };
+  if (!admin || admin.status !== "ACTIVE" || admin.role !== "SUPER_ADMIN" || admin.brokerId !== null) {
+    return invalid();
   }
 
   const passwordMatches = await bcrypt.compare(password, admin.passwordHash);
   if (!passwordMatches) {
-    return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+    return invalid(true);
   }
+  await clearFailures(failures);
 
   // Password alone isn't enough once 2FA is turned on (see
   // AdminUser.twoFactorEnabled's schema comment) -- issue a short-lived
@@ -51,7 +64,7 @@ export async function POST(request: NextRequest) {
   }
 
   const userAgent = request.headers.get("user-agent");
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const ip = clientIp(request.headers);
   const token = await createSessionToken(
     { adminId: admin.id, role: admin.role, brokerId: admin.brokerId },
     false,

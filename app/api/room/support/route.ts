@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ipAllowed } from "@/lib/room/limits";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
   const ctx = await roomApiSession();
   if ("response" in ctx) return ctx.response;
   const { session } = ctx;
-  const { allowed } = await checkRateLimit(`room-ticket-new:${session.clientId}`, 5, 600);
+  const allowed = (await checkRateLimit(`room-ticket-new:${session.clientId}`, 5, 600)).allowed && (await ipAllowed(request.headers, session.brokerId, "room-ticket-new", 15, 600));
   if (!allowed) return NextResponse.json({ error: "Too many new tickets. Try again later." }, { status: 429 });
   const body = await request.json().catch(() => null);
   const subject = typeof body?.subject === "string" ? body.subject.trim().slice(0, 120) : "";

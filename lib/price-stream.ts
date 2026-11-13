@@ -32,7 +32,7 @@ export function useLiveTicks(): Record<string, LiveTick> {
 
     function connect() {
       if (cancelled) return;
-      const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
+      const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? (process.env.NODE_ENV === "production" ? "" : "ws://127.0.0.1:8080");
       socket = new WebSocket(`${base}/v1/prices/stream`);
       socket.onmessage = (event) => {
         try {

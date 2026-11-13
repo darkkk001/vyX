@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ipAllowed } from "@/lib/room/limits";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const ctx = await roomApiSession();
   if ("response" in ctx) return ctx.response;
   const { session } = ctx;
-  const { allowed } = await checkRateLimit(`room-ticket-reply:${session.clientId}`, 20, 600);
+  const allowed = (await checkRateLimit(`room-ticket-reply:${session.clientId}`, 20, 600)).allowed && (await ipAllowed(request.headers, session.brokerId, "room-ticket-reply", 60, 600));
   if (!allowed) return NextResponse.json({ error: "Too many messages. Try again later." }, { status: 429 });
   const { id } = await params;
   const t = await own(session.clientId, session.brokerId, id);

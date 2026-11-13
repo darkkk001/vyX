@@ -1,3 +1,4 @@
+import DevToolsGuard from "@/components/security/DevToolsGuard";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "../admin-theme.css";
 import { getAdminSession } from "@/lib/auth";
@@ -37,6 +38,7 @@ export default async function SuperAdminLayout({ children }: { children: React.R
       saveUrl="/api/admin/theme"
       className={`${adminSans.variable} ${adminMono.variable} min-h-dvh antialiased`}
     >
+      <DevToolsGuard />
       {children}
     </AdminThemeSurface>
   );

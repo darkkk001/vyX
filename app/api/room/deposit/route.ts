@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { receiptBytesMatch } from "@/lib/kyc-upload";
+import { ipAllowed } from "@/lib/room/limits";
 import { roomApiSession, ownAccount } from "@/lib/room/context";
 import { isPaymentReference } from "@/lib/room/funds";
 import { createFundsRequest } from "@/lib/funds-request-create";
@@ -23,7 +25,7 @@ export async function POST(request: NextRequest) {
   const ctx = await roomApiSession();
   if ("response" in ctx) return ctx.response;
   const { session } = ctx;
-  const { allowed } = await checkRateLimit(`room-deposit:${session.clientId}`, 6, 60);
+  const allowed = (await checkRateLimit(`room-deposit:${session.clientId}`, 6, 60)).allowed && (await ipAllowed(request.headers, session.brokerId, "room-deposit", 20, 60));
   if (!allowed) return NextResponse.json({ error: "Too many attempts. Try again in a minute." }, { status: 429 });
 
   const body = await request.json().catch(() => null);
@@ -52,7 +54,7 @@ export async function POST(request: NextRequest) {
     if (!refOk) return NextResponse.json({ error: "Reload the page for a new payment reference." }, { status: 400 });
     let receipt: string | null = null;
     if (body?.receipt != null && body.receipt !== "") {
-      if (typeof body.receipt !== "string" || body.receipt.length > MAX_RECEIPT_CHARS || !RECEIPT.test(body.receipt)) {
+      if (typeof body.receipt !== "string" || body.receipt.length > MAX_RECEIPT_CHARS || !RECEIPT.test(body.receipt) || !receiptBytesMatch(body.receipt)) {
         return NextResponse.json({ error: "Receipt must be JPG, PNG or PDF, up to 8 MB." }, { status: 400 });
       }
       receipt = body.receipt;

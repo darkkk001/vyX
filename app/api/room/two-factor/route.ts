@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { checkClientCode, CODE_LOCKED_MESSAGE } from "@/lib/room/limits";
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
 import { prisma } from "@/lib/prisma";
 import { roomApiSession } from "@/lib/room/context";
-import { generateTotpSecret, totpUri, verifyTotp } from "@/lib/totp";
+import { generateTotpSecret, totpUri } from "@/lib/totp";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 // Trader's Room 2FA (authenticator app). POST {action:"setup"} -> a new secret + QR (not on until confirmed);
@@ -28,7 +29,10 @@ export async function POST(request: NextRequest) {
   }
   if (body?.action === "confirm") {
     if (client.twoFactorEnabled) return NextResponse.json({ status: "on" });
-    if (!client.twoFactorSecret || !verifyTotp(client.twoFactorSecret, code)) return NextResponse.json({ error: "Wrong code. Check the time on your phone." }, { status: 400 });
+    if (!client.twoFactorSecret) return NextResponse.json({ error: "Wrong code. Check the time on your phone." }, { status: 400 });
+    const checked = await checkClientCode(session.clientId, client.twoFactorSecret, code);
+    if (checked === "locked") return NextResponse.json({ error: CODE_LOCKED_MESSAGE }, { status: 429 });
+    if (checked === "wrong") return NextResponse.json({ error: "Wrong code. Check the time on your phone." }, { status: 400 });
     await prisma.client.update({ where: { id: session.clientId }, data: { twoFactorEnabled: true } });
     await audit("CLIENT_2FA_ENABLED");
     return NextResponse.json({ status: "on" });
@@ -37,7 +41,9 @@ export async function POST(request: NextRequest) {
     if (!client.twoFactorEnabled || !client.twoFactorSecret) return NextResponse.json({ status: "off" });
     const password = typeof body?.password === "string" ? body.password : "";
     if (!(await bcrypt.compare(password, client.passwordHash))) return NextResponse.json({ error: "Password is wrong." }, { status: 401 });
-    if (!verifyTotp(client.twoFactorSecret, code)) return NextResponse.json({ error: "Wrong code." }, { status: 400 });
+    const checked = await checkClientCode(session.clientId, client.twoFactorSecret, code);
+    if (checked === "locked") return NextResponse.json({ error: CODE_LOCKED_MESSAGE }, { status: 429 });
+    if (checked === "wrong") return NextResponse.json({ error: "Wrong code." }, { status: 400 });
     await prisma.client.update({ where: { id: session.clientId }, data: { twoFactorEnabled: false, twoFactorSecret: null } });
     await audit("CLIENT_2FA_DISABLED");
     return NextResponse.json({ status: "off" });
