@@ -16,6 +16,7 @@ export type SoundEvent =
   | "pendingTriggered"
   | "requoteReceived"
   | "alertTriggered"
+  | "marginCall"
   | "error";
 
 type Tone = { freq: number; start: number; duration: number; gain?: number; type?: OscillatorType };
@@ -57,6 +58,12 @@ const TONE_SHAPES: Record<SoundEvent, Tone[]> = {
     { freq: 1174.66, start: 0.12, duration: 0.18 },
   ],
   error: [{ freq: 220, start: 0, duration: 0.2, type: "square", gain: 0.08 }],
+  // margin call (owner 2026-11-13): a triple low warning, like the terminal's; it sounds on EVERY device of the account (no origin gate)
+  marginCall: [
+    { freq: 440, start: 0, duration: 0.11 },
+    { freq: 440, start: 0.19, duration: 0.11 },
+    { freq: 440, start: 0.38, duration: 0.11 },
+  ],
 };
 
 // A fresh AudioContext per call (the original approach here, and the one
@@ -125,6 +132,7 @@ const SETTINGS_KEY: Record<SoundEvent, keyof ChartSettings> = {
   pendingTriggered: "soundPendingTriggered",
   requoteReceived: "soundRequoteReceived",
   alertTriggered: "soundAlertTriggered",
+  marginCall: "soundSlHit",   // the loss / margin alarms switch, as the terminal (SoundRules: margin call under SL hit)
   error: "soundError",
 };
 

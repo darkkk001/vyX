@@ -2073,7 +2073,11 @@ export default function WebTrader({
       }
 
       if (parsed?.type === "MarginCall") {
-        if (parsed.state === "margin_call") pushToast("Margin call, your margin level is below the margin call level", true);
+        if (parsed.state === "margin_call") {
+          pushToast("Margin call, your margin level is below the margin call level", true);
+          // owner 2026-11-13: the one exception to order sounds by origin -- a margin call has no setter and alerts EVERY device of the account
+          playSound("marginCall", chartSettingsRef.current);
+        }
         refreshAccount();
         refreshPositions();
         return;
