@@ -10,6 +10,7 @@ pub mod authority;
 pub mod book;
 pub use protocol::broker_scope;
 pub mod engine_registry;
+pub mod license_fleet;
 pub mod license_gate;
 pub mod license_handover;
 pub mod calc;

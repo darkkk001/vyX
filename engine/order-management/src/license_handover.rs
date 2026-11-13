@@ -20,8 +20,16 @@
 use crate::license_gate::Handover;
 use sqlx::PgPool;
 
-/// What the engine needs to hand its risk authority over.
+/// What the engine needs to hand risk authority over, FOR ONE SUBJECT -- the whole engine, or one
+/// broker. One of these per subject, because the two releases are different acts:
+///
+///   * the ENGINE's release puts the heartbeat down, which releases every broker at once;
+///   * a BROKER's release sets that broker's `riskAuthority` to WEB, which releases exactly it and
+///     leaves the engine serving the rest.
+///
+/// Both go through the web: the engine asks, and the control-plane write happens server-side.
 pub struct WebHandover {
+    pub subject: crate::license_fleet::Subject,
     pub pool: PgPool,
     pub client: reqwest::Client,
     /// `{web}/api/internal/risk-handover`
@@ -41,6 +49,9 @@ impl WebHandover {
     /// The brokers whose risk this engine currently holds -- the ones the handover is ABOUT. Scoped by
     /// the broker assignment when one is installed, so a regional engine names only its own.
     async fn brokers_held(&self) -> Result<Vec<String>, sqlx::Error> {
+        if let crate::license_fleet::Subject::Broker(id) = &self.subject {
+            return Ok(vec![id.clone()]);
+        }
         let scope = protocol::broker_scope::assigned();
         let sql = crate::authority::authority_cache_sql(scope.as_deref());
         let mut q = sqlx::query_as::<_, (String, bool)>(&sql);
@@ -100,7 +111,26 @@ impl Handover for WebHandover {
     /// `beatAt` is pushed a full `staleAfterSecs` plus a minute into the past rather than simply
     /// stopping the beat: stopping would leave the web waiting out the staleness window, and during
     /// that window neither side would consider itself the owner.
-    async fn release_heartbeat(&self) -> Result<(), String> {
+    async fn release_authority(&self) -> Result<(), String> {
+        // A BROKER'S RELEASE IS NOT THE HEARTBEAT. The heartbeat is engine-wide, so putting it down
+        // for one broker's licence would release every other broker with it. The per-broker release
+        // asks the web to set that broker's riskAuthority to WEB -- the thing its owner rule already
+        // reads -- and the web does the write, as it does every control-plane write.
+        if let crate::license_fleet::Subject::Broker(id) = &self.subject {
+            let res = self
+                .client
+                .post(format!("{}?brokerId={id}", self.handover_url))
+                .header("x-internal-secret", &self.secret)
+                .header("x-engine-id", &self.engine_id)
+                .send()
+                .await
+                .map_err(|e| format!("could not ask the web to take broker {id}: {e}"))?;
+            if !res.status().is_success() {
+                return Err(format!("the web refused to take broker {id}: {}", res.status()));
+            }
+            tracing::warn!(broker = %id, "risk handover: broker released to the web (riskAuthority set to WEB by the platform)");
+            return Ok(());
+        }
         let n = sqlx::query(
             r#"UPDATE "RiskEngineHeartbeat"
                   SET "beatAt" = clock_timestamp() - make_interval(secs => "staleAfterSecs" + 60)
@@ -125,7 +155,10 @@ impl Handover for WebHandover {
     async fn confirm_web_took_over(&self) -> Result<bool, String> {
         let res = self
             .client
-            .get(&self.handover_url)
+            .get(match &self.subject {
+                crate::license_fleet::Subject::Engine => self.handover_url.clone(),
+                crate::license_fleet::Subject::Broker(id) => format!("{}?brokerId={id}", self.handover_url),
+            })
             // x-internal-secret, NOT a bearer: that is the gate every other /api/internal route uses
             // (lib/internal-auth.ts secretMatches), and the engine already holds this secret.
             .header("x-internal-secret", &self.secret)

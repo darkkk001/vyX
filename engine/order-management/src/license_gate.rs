@@ -116,8 +116,12 @@ impl Phase {
 pub trait Handover {
     /// Step 1: write the intent somewhere durable and readable (an AuditLog row). Idempotent.
     fn record_intent(&self) -> impl std::future::Future<Output = Result<(), String>> + Send;
-    /// Step 2: make this engine's heartbeat not-alive, so the web's fallback owns every RUST account.
-    fn release_heartbeat(&self) -> impl std::future::Future<Output = Result<(), String>> + Send;
+    /// Step 2: give the authority up, in whatever way is right for THIS subject.
+    ///
+    /// Not always the heartbeat: the heartbeat is engine-wide, so putting it down releases every
+    /// broker at once. A single broker is released by its own `riskAuthority`, which is the per-broker
+    /// thing the web's owner rule reads (license_fleet has the reasoning).
+    fn release_authority(&self) -> impl std::future::Future<Output = Result<(), String>> + Send;
     /// Step 3: ask the web to run its pass, and report whether it PROVABLY ran one (`ran: true`).
     /// Unreachable or `ran: false` is `Ok(false)`, not an error -- it simply is not a confirmation yet.
     fn confirm_web_took_over(&self) -> impl std::future::Future<Output = Result<bool, String>> + Send;
@@ -191,7 +195,7 @@ pub async fn advance<H: Handover>(phase: Phase, state: Licensed, h: &H) -> (Phas
                 };
             }
             if !released {
-                return match h.release_heartbeat().await {
+                return match h.release_authority().await {
                     Ok(()) => (
                         Phase::HandingOver { intent_recorded, released: true, attempts: attempts + 1, last_error: None },
                         Step::Released,
@@ -242,7 +246,7 @@ mod tests {
             self.calls.lock().unwrap().push("intent");
             if self.intent_ok { Ok(()) } else { Err("db down".into()) }
         }
-        async fn release_heartbeat(&self) -> Result<(), String> {
+        async fn release_authority(&self) -> Result<(), String> {
             self.calls.lock().unwrap().push("release");
             if self.release_ok { Ok(()) } else { Err("db down".into()) }
         }
