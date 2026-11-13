@@ -319,6 +319,31 @@ impl PricingScope {
         }
         s
     }
+
+    /// The scope of whole BROKERS: the brokers themselves, plus every group and account that belongs to
+    /// them, read from the database.
+    ///
+    /// THIS RESOLUTION IS NOT OPTIONAL, and the reason is a trap worth naming. `load` maps
+    /// `Some(scope)` to `Some(broker_ids), Some(group_ids), Some(account_ids)` and each list is matched
+    /// with `= ANY($1)`, so an EMPTY list means "match nothing", not "match everything". Handing it a
+    /// scope that carried broker ids with empty group and account lists would therefore load the broker
+    /// levels and silently drop every GROUP and ACCOUNT level markup -- the markup would quietly fall
+    /// back to the broker default on every symbol. So the groups and accounts are looked up.
+    pub async fn broker_scope_of(conn: &mut sqlx::PgConnection, broker_ids: &[String]) -> Result<PricingScope, sqlx::Error> {
+        let groups: Vec<(String,)> = sqlx::query_as(r#"SELECT id FROM "Group" WHERE "brokerId" = ANY($1)"#)
+            .bind(broker_ids)
+            .fetch_all(&mut *conn)
+            .await?;
+        let accounts: Vec<(String,)> = sqlx::query_as(r#"SELECT id FROM "Account" WHERE "brokerId" = ANY($1)"#)
+            .bind(broker_ids)
+            .fetch_all(&mut *conn)
+            .await?;
+        Ok(PricingScope {
+            broker_ids: broker_ids.to_vec(),
+            group_ids: groups.into_iter().map(|(id,)| id).collect(),
+            account_ids: accounts.into_iter().map(|(id,)| id).collect(),
+        })
+    }
 }
 
 impl PricingSnapshot {

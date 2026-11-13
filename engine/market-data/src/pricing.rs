@@ -64,7 +64,19 @@ impl PricingCache {
     /// Reads the whole configuration on `conn` (one read-only snapshot when the caller runs it in one) and installs it.
     pub async fn load_on(&self, conn: &mut sqlx::PgConnection) -> Result<Arc<PricingSnapshot>, sqlx::Error> {
         self.reload_count.fetch_add(1, Ordering::Relaxed);
-        let snap = PricingSnapshot::load(conn, None).await?;
+        // WITH NO ASSIGNMENT THIS IS THE IDENTICAL CALL it has always been -- `load(conn, None)`, which
+        // binds NULL for all three lists and reads every broker's pricing. That is the byte-same form
+        // for this site: not a scoped statement with an empty filter, but literally the same call.
+        //
+        // With an assignment the scope must be RESOLVED from the brokers rather than built from broker
+        // ids alone -- see PricingScope::broker_scope_of for the trap that makes that necessary.
+        let snap = match protocol::broker_scope::assigned() {
+            None => PricingSnapshot::load(conn, None).await?,
+            Some(ids) => {
+                let scope = crate::ask_markup::PricingScope::broker_scope_of(conn, &ids).await?;
+                PricingSnapshot::load(conn, Some(&scope)).await?
+            }
+        };
         let n = snap.len();
         self.set(snap);
         tracing::debug!(rows = n, "pricing cache: reloaded");

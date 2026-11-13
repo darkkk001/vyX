@@ -183,15 +183,26 @@ fn side_from_prisma(s: &str) -> protocol::OrderSide {
 
 /// Every account holding at least one OPEN position (same set lib/risk-monitor.ts's callers walk), in accountId byte
 /// order (Stage 4: a deterministic pass order; the load harness's web reference walks the same order).
+/// Pure builder, so the byte-same proof can read the statement without a database. The broker
+/// assignment lands beside the demo-sandbox exclusion, which is the same kind of rule: a broker-level
+/// reason this account's positions are not this engine's business.
+pub fn account_ids_with_open_positions_sql(scope: Option<&[String]>) -> String {
+    let brokers = crate::broker_scope::filter_sql(scope, r#"a."brokerId""#, 1);
+    format!(
+        r#"SELECT p."accountId" FROM "Position" p JOIN "Account" a ON a.id = p."accountId" JOIN "Broker" sb ON sb.id = a."brokerId"
+               WHERE p.status = 'OPEN' AND NOT sb."isDemoSandbox"{brokers} GROUP BY p."accountId" ORDER BY p."accountId" COLLATE "C""#
+    )
+}
+
 pub async fn account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
-    let rows: Vec<(String,)> =
-        // QoreTrader demo sandbox (Broker.isDemoSandbox, migration 20261013100000): never part of the book
-        sqlx::query_as(
-            r#"SELECT p."accountId" FROM "Position" p JOIN "Account" a ON a.id = p."accountId" JOIN "Broker" sb ON sb.id = a."brokerId"
-               WHERE p.status = 'OPEN' AND NOT sb."isDemoSandbox" GROUP BY p."accountId" ORDER BY p."accountId" COLLATE "C""#,
-        )
-        .fetch_all(pool)
-        .await?;
+    // QoreTrader demo sandbox (Broker.isDemoSandbox, migration 20261013100000): never part of the book
+    let scope = crate::broker_scope::assigned();
+    let sql = account_ids_with_open_positions_sql(scope.as_deref());
+    let mut q = sqlx::query_as::<_, (String,)>(&sql);
+    if let Some(ids) = &scope {
+        q = q.bind(ids.clone());
+    }
+    let rows: Vec<(String,)> = q.fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -869,16 +880,25 @@ async fn load_pass_book_on(conn: &mut sqlx::PgConnection, extra_accounts: &[Stri
     use sqlx::Row;
     let d = margin::MarginThresholds::default();
     let amounts = amount_columns(conn).await;
+    // The filter is appended to the WHERE and not folded into RAW_FROM's broker join, deliberately:
+    // RAW_FROM is shared with the per-account read below, whose $1 is the account id, so a parameter
+    // added inside it would renumber that query's binding.
+    let scope = crate::broker_scope::assigned();
+    let brokers = crate::broker_scope::filter_sql(scope.as_deref(), r#"a."brokerId""#, 1);
     let sql = format!(
         r#"SELECT {RAW_COLUMNS}{amounts}, a.balance, a.credit, a.leverage, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
                   COALESCE(b."negativeBalanceProtection", false) AS nbp
            {RAW_FROM}
            LEFT JOIN "Group" g ON g.id = a."groupId"
            LEFT JOIN "Broker" b ON b.id = a."brokerId"
-           WHERE p.status = 'OPEN'
+           WHERE p.status = 'OPEN'{brokers}
            ORDER BY a.id COLLATE "C", p."openedAt", p.id"#
     );
-    let raw = sqlx::query(&sql).fetch_all(&mut *conn).await?;
+    let mut q = sqlx::query(&sql);
+    if let Some(ids) = &scope {
+        q = q.bind(ids.clone());
+    }
+    let raw = q.fetch_all(&mut *conn).await?;
     let mut accounts: std::collections::BTreeMap<String, PassAccount> = std::collections::BTreeMap::new();
     let mut rows: Vec<RawPosition> = Vec::with_capacity(raw.len());
     for r in &raw {
@@ -1384,11 +1404,17 @@ pub static DEFER_PRECHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 /// on ("status", ...) instead of the 3-way query for every account, in the normal case where nothing is pending.
 pub async fn any_pending_follow_up(pool: &PgPool) -> Result<bool, sqlx::Error> {
     DEFER_PRECHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let (any,): (bool,) = sqlx::query_as(
-        r#"SELECT EXISTS (SELECT 1 FROM "PostCloseEffect" WHERE status = 'PENDING' AND kind = 'POSITION_CLOSED')"#,
-    )
-    .fetch_one(pool)
-    .await?;
+    // Scoped because this gates THIS engine's work: another broker's backlog is not a reason for this
+    // engine to defer, and on a per-broker engine it would be a permanent false "busy".
+    let scope = crate::broker_scope::assigned();
+    let brokers = crate::broker_scope::filter_sql(scope.as_deref(), r#""brokerId""#, 1);
+    let sql =
+        format!(r#"SELECT EXISTS (SELECT 1 FROM "PostCloseEffect" WHERE status = 'PENDING' AND kind = 'POSITION_CLOSED'{brokers})"#);
+    let mut q = sqlx::query_as::<_, (bool,)>(&sql);
+    if let Some(ids) = &scope {
+        q = q.bind(ids.clone());
+    }
+    let (any,): (bool,) = q.fetch_one(pool).await?;
     Ok(any)
 }
 

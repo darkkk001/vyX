@@ -85,15 +85,28 @@ impl DispatcherConfig {
 }
 
 /// Rows due now: pending, their backoff elapsed, and no route call holding them.
-pub async fn due_ids(pool: &PgPool, limit: i64) -> Result<Vec<String>, sqlx::Error> {
-    let rows: Vec<(String,)> = sqlx::query_as(
+/// Pure builder for the byte-same proof. NOTE THE PLACEHOLDER: `limit` is already $1, so the broker
+/// predicate is $2 -- and it is placed before ORDER BY/LIMIT, where a predicate belongs.
+pub fn due_ids_sql(scope: Option<&[String]>) -> String {
+    let brokers = crate::broker_scope::filter_sql(scope, r#""brokerId""#, 2);
+    format!(
         r#"SELECT id FROM "PostCloseEffect"
-           WHERE status = 'PENDING' AND "nextAttemptAt" <= now() AND ("leaseUntil" IS NULL OR "leaseUntil" < now())
-           ORDER BY seq LIMIT $1"#,
+           WHERE status = 'PENDING' AND "nextAttemptAt" <= now() AND ("leaseUntil" IS NULL OR "leaseUntil" < now()){brokers}
+           ORDER BY seq LIMIT $1"#
     )
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+}
+
+pub async fn due_ids(pool: &PgPool, limit: i64) -> Result<Vec<String>, sqlx::Error> {
+    // Scoped so a per-broker engine drains ITS OWN follow-ups. Unscoped, two engines sharing a database
+    // would race for each other's rows -- the lease would keep that correct, but each would spend its
+    // budget on work that is not its own.
+    let scope = crate::broker_scope::assigned();
+    let sql = due_ids_sql(scope.as_deref());
+    let mut q = sqlx::query_as::<_, (String,)>(&sql).bind(limit);
+    if let Some(ids) = &scope {
+        q = q.bind(ids.clone());
+    }
+    let rows: Vec<(String,)> = q.fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 

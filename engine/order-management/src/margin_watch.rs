@@ -135,9 +135,16 @@ pub async fn load_book<'c, A: sqlx::Acquire<'c, Database = sqlx::Postgres>>(a: A
 
 /// load_book with the account ask rules from `pricing` (the shared cache's snapshot, 2026-10-05): the query joins no
 /// pricing table.
-pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market_data::ask_markup::PricingSnapshot>) -> Result<Book, sqlx::Error> {
-    use sqlx::Row;
-    let raw = sqlx::query(
+/// The broker assignment, read once per load so one pass uses one scope.
+fn order_scope() -> Option<Vec<String>> {
+    crate::broker_scope::assigned()
+}
+
+/// Pure builder for the byte-same proof. The predicate sits beside the demo-sandbox exclusion's WHERE,
+/// not inside the broker join, so the statement reads the same way the other sweeps do.
+pub fn load_book_sql(scope: Option<&[String]>) -> String {
+    let brokers = crate::broker_scope::filter_sql(scope, r#"a."brokerId""#, 1);
+    format!(
         r#"SELECT a.id, a.balance, a.credit, a.leverage, a.currency, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
                   a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode,
                   p.id AS position_id, s.id AS symbol_id, s.digits, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price,
@@ -148,11 +155,22 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
            JOIN "Symbol" s ON s.id = p."symbolId"
            LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
            LEFT JOIN "Group" g ON g.id = a."groupId"
-           WHERE p.status = 'OPEN'
-           ORDER BY a.id COLLATE "C", p."openedAt", p.id"#,
+           WHERE p.status = 'OPEN'{brokers}
+           ORDER BY a.id COLLATE "C", p."openedAt", p.id"#
     )
-    .fetch_all(&mut *conn)
-    .await?;
+}
+
+pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market_data::ask_markup::PricingSnapshot>) -> Result<Book, sqlx::Error> {
+    use sqlx::Row;
+    let scope = order_scope();
+    let raw = {
+        let sql = load_book_sql(scope.as_deref());
+        let mut q = sqlx::query(&sql);
+        if let Some(ids) = &scope {
+            q = q.bind(ids.clone());
+        }
+        q.fetch_all(&mut *conn).await?
+    };
     let mut keys: Vec<(String, String, Option<String>, String, i32)> = Vec::with_capacity(raw.len());
     for r in &raw {
         keys.push((r.try_get("id")?, r.try_get("a_broker")?, r.try_get("a_group")?, r.try_get("symbol_id")?, r.try_get("digits")?));

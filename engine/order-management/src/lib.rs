@@ -8,6 +8,7 @@
 
 pub mod authority;
 pub mod book;
+pub use protocol::broker_scope;
 pub mod calc;
 pub mod commission;
 pub mod db;

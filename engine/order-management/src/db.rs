@@ -2475,12 +2475,21 @@ pub async fn get_account_group_id(pool: &PgPool, account_id: &str) -> Result<Opt
 /// needing a separate "group changed" event for hot-reload -- a group
 /// edit takes effect within one poll cycle / one price tick, whichever
 /// comes first.
+/// Pure builder for the byte-same proof. `"Group"` carries `brokerId`, and this statement has no
+/// WHERE clause of its own, so the predicate opens one.
+pub fn load_group_thresholds_sql(scope: Option<&[String]>) -> String {
+    let brokers = crate::broker_scope::where_sql(scope, r#""brokerId""#, 1);
+    format!(r#"SELECT id, "marginCallLevel", "stopOutLevel" FROM "Group"{brokers}"#)
+}
+
 pub async fn load_group_thresholds(pool: &PgPool) -> Result<margin::ThresholdsByGroup, sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, Decimal, Decimal)>(
-        r#"SELECT id, "marginCallLevel", "stopOutLevel" FROM "Group""#,
-    )
-    .fetch_all(pool)
-    .await?;
+    let scope = crate::broker_scope::assigned();
+    let sql = load_group_thresholds_sql(scope.as_deref());
+    let mut q = sqlx::query_as::<_, (String, Decimal, Decimal)>(&sql);
+    if let Some(ids) = &scope {
+        q = q.bind(ids.clone());
+    }
+    let rows = q.fetch_all(pool).await?;
     Ok(rows
         .into_iter()
         .map(|(id, call_level, stop_out_level)| (id, margin::MarginThresholds { call_level, stop_out_level }))
@@ -2494,10 +2503,20 @@ pub async fn load_group_thresholds(pool: &PgPool) -> Result<margin::ThresholdsBy
 /// exists" -- an unused group with no accounts in it can't cause a real
 /// account to evaluate with the wrong thresholds, so it shouldn't be
 /// able to block order acceptance either.
+/// Pure builder for the byte-same proof. This one already has a WHERE, so the predicate joins it.
+pub fn get_distinct_account_group_ids_sql(scope: Option<&[String]>) -> String {
+    let brokers = crate::broker_scope::filter_sql(scope, r#""brokerId""#, 1);
+    format!(r#"SELECT DISTINCT "groupId" FROM "Account" WHERE "groupId" IS NOT NULL{brokers}"#)
+}
+
 pub async fn get_distinct_account_group_ids(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String,)>(r#"SELECT DISTINCT "groupId" FROM "Account" WHERE "groupId" IS NOT NULL"#)
-        .fetch_all(pool)
-        .await?;
+    let scope = crate::broker_scope::assigned();
+    let sql = get_distinct_account_group_ids_sql(scope.as_deref());
+    let mut q = sqlx::query_as::<_, (String,)>(&sql);
+    if let Some(ids) = &scope {
+        q = q.bind(ids.clone());
+    }
+    let rows = q.fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 

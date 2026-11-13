@@ -334,25 +334,40 @@ impl RiskHook {
         } else {
             ("false AS has_amount", "")
         };
+        // Both statements below sweep every broker's rows. The broker assignment narrows them to this
+        // engine's, read ONCE so the two halves of one hook pass agree with each other.
+        let scope = protocol::broker_scope::assigned();
+        let brokers = protocol::broker_scope::filter_sql(scope.as_deref(), r#"a."brokerId""#, 1);
         let level_sql = format!(
             r#"SELECT s.name, s.id AS symbol_id, s.digits, p.id AS position_id, p."accountId" AS account_id, p.side::text AS side,
                       p."slPrice" AS sl, p."tpPrice" AS tp, {amount_select}, a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode
                FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
                     JOIN "Broker" sb ON sb.id = a."brokerId" AND NOT sb."isDemoSandbox"
-               WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL{amount_where})"#
+               WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL{amount_where}){brokers}"#
         );
-        let level_rows = sqlx::query(&level_sql).fetch_all(&mut *conn).await?;
+        let level_rows = {
+            let mut q = sqlx::query(&level_sql);
+            if let Some(ids) = &scope {
+                q = q.bind(ids.clone());
+            }
+            q.fetch_all(&mut *conn).await?
+        };
         // resting LIMIT / STOP orders (the web's own "Order" table: PENDING, not the engine's orders table), with the
         // order's account ask rule for a BUY entry
-        let pending_rows = sqlx::query(
+        let pending_sql = format!(
             r#"SELECT s.name, s.id AS symbol_id, s.digits, o."accountId" AS account_id, o.side::text AS side, o.type::text AS kind,
                       o."requestedPrice" AS entry, a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode
                FROM "Order" o JOIN "Symbol" s ON s.id = o."symbolId" JOIN "Account" a ON a.id = o."accountId"
                     JOIN "Broker" sb ON sb.id = a."brokerId" AND NOT sb."isDemoSandbox"
-               WHERE o.status = 'PENDING' AND o.type IN ('LIMIT', 'STOP') AND o."requestedPrice" IS NOT NULL"#,
-        )
-        .fetch_all(&mut *conn)
-        .await?;
+               WHERE o.status = 'PENDING' AND o.type IN ('LIMIT', 'STOP') AND o."requestedPrice" IS NOT NULL{brokers}"#
+        );
+        let pending_rows = {
+            let mut q = sqlx::query(&pending_sql);
+            if let Some(ids) = &scope {
+                q = q.bind(ids.clone());
+            }
+            q.fetch_all(&mut *conn).await?
+        };
         // (account, broker, group, symbol, digits) of every row, levels first
         let mut keys: Vec<(String, String, Option<String>, String, i32)> = Vec::with_capacity(level_rows.len() + pending_rows.len());
         for r in level_rows.iter().chain(pending_rows.iter()) {

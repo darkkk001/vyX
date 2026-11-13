@@ -147,12 +147,35 @@ pub async fn lock_owner_in_tx(tx: &mut sqlx::PgTransaction<'_>, account_id: &str
 
 /// Accounts holding an OPEN position that the database says the engine owns, in accountId byte order (the pass order of
 /// book::account_ids_with_open_positions, filtered by the rule).
-pub async fn rust_owned_account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
-    let sql = format!(
+/// The statement, built by a pure function so the byte-same proof can assert it without a database.
+///
+/// With no broker assignment installed the filter is an EMPTY STRING, so this returns exactly the
+/// statement this function has always sent, with no bound parameter --
+/// `tests::the_risk_pass_statement_is_byte_identical_with_no_assignment` asserts that against a literal
+/// copy of today's text.
+pub fn rust_owned_account_ids_sql(scope: Option<&[String]>) -> String {
+    let brokers = crate::broker_scope::filter_sql(scope, r#"a."brokerId""#, 1);
+    format!(
         r#"SELECT p."accountId" FROM "Position" p JOIN "Account" a ON a.id = p."accountId" JOIN "Broker" b ON b.id = a."brokerId"
-           WHERE p.status = 'OPEN' AND {RUST_OWNED_SQL} AND {ENGINE_ALIVE_SQL} GROUP BY p."accountId" ORDER BY p."accountId" COLLATE "C""#
-    );
-    let rows: Vec<(String,)> = sqlx::query_as(&sql).fetch_all(pool).await?;
+           WHERE p.status = 'OPEN' AND {RUST_OWNED_SQL} AND {ENGINE_ALIVE_SQL}{brokers} GROUP BY p."accountId" ORDER BY p."accountId" COLLATE "C""#
+    )
+}
+
+/// The authority cache's load, built by a pure function for the same reason, and byte-identical to
+/// today's text when nothing is assigned.
+pub fn authority_cache_sql(scope: Option<&[String]>) -> String {
+    let brokers = crate::broker_scope::filter_sql(scope, "id", 1);
+    format!(r#"SELECT id, "riskAuthorityDemoOnly" FROM "Broker" WHERE "riskAuthority"::text = 'RUST'{brokers}"#)
+}
+
+pub async fn rust_owned_account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    let scope = crate::broker_scope::assigned();
+    let sql = rust_owned_account_ids_sql(scope.as_deref());
+    let mut q = sqlx::query_as::<_, (String,)>(&sql);
+    if let Some(ids) = &scope {
+        q = q.bind(ids.clone());
+    }
+    let rows: Vec<(String,)> = q.fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -579,6 +602,17 @@ impl AuthorityCache {
         *self.brokers.write().unwrap_or_else(|p| p.into_inner()) = Some(rust_brokers);
     }
 
+    /// The broker ids the cache currently holds, sorted. For the broker-scope proof: what the cache
+    /// loaded is the observable of `reload`, and the proof has to compare it across three scopes.
+    pub fn broker_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = match &*self.brokers.read().unwrap_or_else(|p| p.into_inner()) {
+            Some(map) => map.keys().cloned().collect(),
+            None => Vec::new(),
+        };
+        ids.sort();
+        ids
+    }
+
     pub fn is_loaded(&self) -> bool {
         self.brokers.read().unwrap_or_else(|p| p.into_inner()).is_some()
     }
@@ -593,8 +627,13 @@ impl AuthorityCache {
 
     pub async fn reload(&self, pool: &PgPool) -> Result<usize, sqlx::Error> {
         self.reload_count.fetch_add(1, Ordering::Relaxed);
-        let rows: Vec<(String, bool)> =
-            sqlx::query_as(r#"SELECT id, "riskAuthorityDemoOnly" FROM "Broker" WHERE "riskAuthority"::text = 'RUST'"#).fetch_all(pool).await?;
+        let scope = crate::broker_scope::assigned();
+        let sql = authority_cache_sql(scope.as_deref());
+        let mut q = sqlx::query_as::<_, (String, bool)>(&sql);
+        if let Some(ids) = &scope {
+            q = q.bind(ids.clone());
+        }
+        let rows: Vec<(String, bool)> = q.fetch_all(pool).await?;
         let n = rows.len();
         self.set(rows.into_iter().collect());
         Ok(n)
@@ -664,6 +703,59 @@ pub fn trace_action(actor: RiskOwner, kind: &str, account_id: &str, reference: &
         use std::io::Write;
         let line = serde_json::json!({ "actor": actor.as_str(), "kind": kind, "accountId": account_id, "ref": reference, "ts": chrono::Utc::now().timestamp_millis() });
         let _ = writeln!(f.lock().unwrap_or_else(|p| p.into_inner()), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod broker_scope_proof {
+    use super::*;
+
+    // THE BYTE-SAME PROOF, PART 1 OF 3.
+    //
+    // These two literals are a copy of the statements this file sent before the broker assignment
+    // existed, taken from d960cdee (the commit the live engine runs). They are written out in full,
+    // deliberately: a test that rebuilt the expected string from the same `format!` the code uses would
+    // pass no matter what either side did. Parts 2 and 3 are in tests/broker_scope_db.rs, which runs
+    // both statements against a real database and compares the rows -- first with no assignment, then
+    // with the assignment set to every broker currently present.
+    const LIVE_RISK_PASS_SQL: &str = r#"SELECT p."accountId" FROM "Position" p JOIN "Account" a ON a.id = p."accountId" JOIN "Broker" b ON b.id = a."brokerId"
+           WHERE p.status = 'OPEN' AND (b."riskAuthority"::text = 'RUST' AND (b."riskAuthorityDemoOnly" = false OR a."accountMode"::text = 'DEMO')) AND EXISTS (SELECT 1 FROM "RiskEngineHeartbeat" h WHERE h.name = 'risk' AND clock_timestamp() - h."beatAt" <= make_interval(secs => h."staleAfterSecs")) GROUP BY p."accountId" ORDER BY p."accountId" COLLATE "C""#;
+
+    const LIVE_AUTHORITY_CACHE_SQL: &str = r#"SELECT id, "riskAuthorityDemoOnly" FROM "Broker" WHERE "riskAuthority"::text = 'RUST'"#;
+
+    #[test]
+    fn the_risk_pass_statement_is_byte_identical_with_no_assignment() {
+        assert_eq!(rust_owned_account_ids_sql(None), LIVE_RISK_PASS_SQL);
+    }
+
+    #[test]
+    fn the_authority_cache_statement_is_byte_identical_with_no_assignment() {
+        assert_eq!(authority_cache_sql(None), LIVE_AUTHORITY_CACHE_SQL);
+    }
+
+    #[test]
+    fn an_empty_assignment_is_the_same_as_none() {
+        // The inert state has two spellings -- never installed, and installed empty -- and both must
+        // produce the live statement. `broker_scope::assign_to` collapses the empty one to None.
+        crate::broker_scope::assign_to(Vec::new());
+        let scope = crate::broker_scope::assigned();
+        assert_eq!(rust_owned_account_ids_sql(scope.as_deref()), LIVE_RISK_PASS_SQL);
+        assert_eq!(authority_cache_sql(scope.as_deref()), LIVE_AUTHORITY_CACHE_SQL);
+        crate::broker_scope::clear();
+    }
+
+    #[test]
+    fn an_assignment_appends_one_bound_predicate_and_changes_nothing_else() {
+        let ids = vec!["b1".to_string(), "b2".to_string()];
+        let risk = rust_owned_account_ids_sql(Some(&ids));
+        let cache = authority_cache_sql(Some(&ids));
+        // the live text is still there, unchanged, with exactly one predicate added
+        assert_eq!(risk.replace(r#" AND a."brokerId" = ANY($1)"#, ""), LIVE_RISK_PASS_SQL);
+        assert_eq!(cache.replace(" AND id = ANY($1)", ""), LIVE_AUTHORITY_CACHE_SQL);
+        // and the predicate lands before GROUP BY, not after it, which would not parse
+        assert!(risk.find("ANY($1)").unwrap() < risk.find("GROUP BY").unwrap());
+        // no id is ever in the text
+        assert!(!risk.contains("b1") && !cache.contains("b1"));
     }
 }
 

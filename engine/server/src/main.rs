@@ -1812,6 +1812,31 @@ async fn main() {
     let pool = db::connect_pool(&database_url, db_pool_max_connections)
         .await
         .expect("failed to connect to Postgres");
+
+    // WHICH BROKERS THIS ENGINE SERVES (productization step 1, dormant).
+    //
+    // Installed HERE -- before the authority cache's first load, before the first risk pass and long
+    // before the listener binds -- because it governs the scope of all of them, and nothing may run
+    // before the rule that governs it is in place (the same reason `ingress::restrict_to` and
+    // `db::use_prisma_book()` are installed where they are).
+    //
+    // UNSET OR EMPTY IS THE DORMANT STATE and it is what production runs today: every scoped statement
+    // is then built byte-identically to the statement it has always sent, with no bound parameter. The
+    // list will come from the control database later; `protocol::broker_scope` is the one place that
+    // changes when it does.
+    //
+    // This scopes the RISK half. The order half is scoped by account, separately, in `ingress`.
+    let broker_scope = protocol::broker_scope::parse_list(&std::env::var("ENGINE_BROKER_IDS").unwrap_or_default());
+    if broker_scope.is_empty() {
+        tracing::info!("broker assignment: none installed -- this engine serves every broker the database gives it (today's behaviour)");
+    } else {
+        protocol::broker_scope::assign_to(broker_scope.clone());
+        tracing::warn!(
+            brokers = broker_scope.len(),
+            "broker assignment: this engine serves {} broker(s) from ENGINE_BROKER_IDS -- the risk pass, the authority cache, the book and margin sweeps, the SL/TP hook, the follow-up queue and the pricing cache are all scoped to them",
+            broker_scope.len()
+        );
+    }
     // Neon→VPS candle migration: MARKET_DATA_DATABASE_URL / MARKET_DATA_WRITE
     // (market_data::sink) -- unset = exactly today's behaviour (Neon only).
     let market_pools = Arc::new(MarketDataPools::from_env(pool.clone(), db_pool_max_connections).await);

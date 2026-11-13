@@ -2,6 +2,7 @@
 //! Mirrors the state machine documented in ../../docs/architecture.md §5
 //! and ../../docs/trading-engine.md §2.1 — this is the authoritative Rust
 //! definition; the docs describe it, this enforces it at the type level.
+pub mod broker_scope;
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
