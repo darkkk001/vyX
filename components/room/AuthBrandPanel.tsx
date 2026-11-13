@@ -14,7 +14,7 @@ import ServerClock from "@/app/(broker)/room/login/ServerClock";
 /** What the client portal is for (owner 2026-11-12), the same for every broker. */
 export const PORTAL_POINTS = ["Open live and demo accounts", "Deposit, withdraw and transfer funds", "Verify your identity", "Track your trading and tier"];
 
-export default async function AuthBrandPanel({ broker, eyebrow = true }: { broker: RoomBroker; eyebrow?: boolean }) {
+export default async function AuthBrandPanel({ broker }: { broker: RoomBroker }) {
   // what a client depends on: the way in and the prices they trade on (neither read throws; no report shows no line)
   const [caddy, prices] = await Promise.all([readInfraSummary("caddy"), readLivePrices()]);
   const status = roomServiceStatus([caddy.state, prices]);
@@ -27,13 +27,12 @@ export default async function AuthBrandPanel({ broker, eyebrow = true }: { broke
   }
   return (
     // Owner 2026-11-12, every broker: the top row is the broker's logo with its wordmark beside it (Broker.wordmark);
-    // in the middle the logo large (about 140 px), the "Client portal" label, "<broker> Client Portal" and what the
-    // portal is for. On a phone only the top row shows (the middle block is hidden).
+    // in the middle the logo large (about 140 px), "<broker> Client Portal" and what the portal is for (the small
+    // "CLIENT PORTAL" label above the headline is gone on every page and broker, owner 2026-11-13). On a phone only the top row shows (the middle block is hidden).
     <section className={`r-auth-brand${broker.logoUrl ? " has-mark" : ""}`}>
       <RoomLogo name={broker.name} logoUrl={broker.logoUrl} wordmark={broker.wordmark} />
       <div className="r-auth-copy">
         {broker.logoUrl ? <BrokerLogoImg className="r-auth-mark" src={broker.logoUrl} height={140} /> : null}
-        {eyebrow ? <div className="r-auth-eyebrow">CLIENT PORTAL</div> : null}
         <div className="r-auth-title">{broker.name} Client Portal</div>
         <ul className="r-auth-points">
           {PORTAL_POINTS.map((t) => <li key={t}>{t}</li>)}
@@ -53,11 +52,10 @@ export default async function AuthBrandPanel({ broker, eyebrow = true }: { broke
 }
 
 /** The whole sign-in / register / forgot-password page: brand panel, the page's own form, the platform footer. */
-// eyebrow=false drops the small "CLIENT PORTAL" label above the headline (owner 2026-11-12: QoreTrader sign-in).
-export async function AuthShell({ broker, children, eyebrow = true }: { broker: RoomBroker; children: ReactNode; eyebrow?: boolean }) {
+export async function AuthShell({ broker, children }: { broker: RoomBroker; children: ReactNode }) {
   return (
     <div className="r-auth">
-      <AuthBrandPanel broker={broker} eyebrow={eyebrow} />
+      <AuthBrandPanel broker={broker} />
       <section className="r-auth-form">{children}</section>
       <div className="r-auth-foot">Powered by VyX Technologies</div>
     </div>

@@ -269,7 +269,6 @@
 /* owner 2026-11-12: the broker's logo large and centred above the portal headline, then what the portal is for */
 .r-auth-brand.has-mark .r-auth-copy { align-self: center; align-items: center; text-align: center; }
 .r-auth-mark { height: 140px; width: auto; max-width: min(100%, 320px); object-fit: contain; margin-bottom: 14px; }
-.r-auth-eyebrow { font-size: 11.5px; font-weight: 600; letter-spacing: 2.4px; color: var(--r-accent); }
 .r-auth-points { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 9px; text-align: left; font-size: 15px; line-height: 1.45; color: var(--r-text-2); }
 .r-auth-points li { position: relative; padding-left: 18px; }
 .r-auth-points li::before { content: ""; position: absolute; left: 0; top: 0.58em; width: 6px; height: 6px; border-radius: 50%; background: var(--r-accent); }
