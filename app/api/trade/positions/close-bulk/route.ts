@@ -8,7 +8,7 @@ import { closeBulkForAccount, selectBulkCloseTargets, type BulkCloseScope, type 
 import { clientDealSource } from "@/lib/deals";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 import { requestMeta } from "@/lib/order-execution";
-import { closeBulkThroughEngine, engineFillsFor } from "@/lib/engine-ingress";
+import { closeBulkThroughEngine, engineRoutesFor } from "@/lib/engine-ingress";
 import { enterClientOrigin } from "@/lib/client-origin";
 
 const SCOPES: BulkCloseScope[] = ["ALL", "PROFIT", "LOSS", "SYMBOL"];
@@ -153,11 +153,11 @@ async function postInner(request: NextRequest) {
     }, { status: 202 });
   }
 
-  // THE ENGINE INGRESS for closes (owner 2026-11-12; lib/engine-ingress.ts): a designated account's basket goes to the
+  // THE ENGINE INGRESS for closes (owner 2026-11-12; lib/engine-ingress.ts): a designated account's (the DEMO ingress list, or a LIVE account the live allowlist switched on) basket goes to the
   // gateway's one-call close-bulk, after the rights check and the dealer queue above. An STM bulk close stays here (its
   // audit rows are this route's). null = the web path below: it re-selects from the account's OPEN positions, so after
   // a lost answer it closes only what the engine did not.
-  if (engineFillsFor(session.accountId) && !stmBulk) {
+  if (!stmBulk && (await engineRoutesFor(session.accountId))) {
     const viaEngine = await closeBulkThroughEngine(
       { scope, symbol, side, positionIds, idempotencyKey: body?.idempotencyKey },
       session

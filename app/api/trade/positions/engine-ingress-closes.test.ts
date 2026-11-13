@@ -39,9 +39,10 @@ beforeAll(async () => {
 type Fx = { brokerId: string; accountId: string; symbolId: string; symbolName: string };
 const brokers: string[] = [];
 
-async function fixture(ingress: boolean): Promise<Fx> {
+type Live = { mode: "LIVE" | "DEMO"; flag: boolean; enabled: boolean };
+async function fixture(ingress: boolean, live?: Live): Promise<Fx> {
   const s = randomUUID().replace(/-/g, "").slice(0, 10);
-  const broker = await prisma.broker.create({ data: { name: `Ingress Close ${s}`, subdomain: `ictest-${s}` } });
+  const broker = await prisma.broker.create({ data: { name: `Ingress Close ${s}`, subdomain: `ictest-${s}`, engineLiveAllowlistOn: live?.flag ?? false } });
   brokers.push(broker.id);
   const symbol = await prisma.symbol.create({ data: { name: `IC${s.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(1) } });
   await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: symbol.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH" } });
@@ -51,7 +52,7 @@ async function fixture(ingress: boolean): Promise<Fx> {
     data: {
       ...(ingress ? { id: INGRESS_IDS[nextIngress++] } : {}),
       groupId: group.id, brokerId: broker.id, accountNumber: `8${s.slice(0, 7)}`, email: `ic-${s}@test.local`, passwordHash: "x",
-      fullName: "Ingress Close Client", accountMode: "DEMO", balance: D(10000),
+      fullName: "Ingress Close Client", accountMode: live?.mode ?? "DEMO", engineLiveEnabled: live?.enabled ?? false, balance: D(10000),
     },
   });
   return { brokerId: broker.id, accountId: account.id, symbolId: symbol.id, symbolName: symbol.name };
@@ -244,5 +245,111 @@ describe("bulk close through the engine", () => {
     await openPosition(other);
     expect((await closeBulk(other, { scope: "ALL" })).json).toMatchObject({ successful: 1 });
     expect(calls).toEqual([]);
+  });
+});
+
+// ---- LIVE CUTOVER (owner 2026-11-13): a LIVE account the live allowlist switched on routes like a DEMO-list account ----
+describe("live allowlist routing (broker flag + account toggle)", () => {
+  const ON: Live = { mode: "LIVE", flag: true, enabled: true };
+  async function fresh() {
+    // the routes' per-instance set is re-read on a fresh cache (production: within LIVE_SET_TTL_MS of a toggle)
+    (await import("@/lib/engine-ingress")).resetLiveAllowlistCacheForTests();
+  }
+
+  it("switched on: the full close goes to the gateway, the web path writes nothing", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture(false, ON);
+    const p = await openPosition(fx);
+    await fresh();
+    const calls = gateway(async () => {
+      await engineCloses(p.id);
+      return Response.json({ position: { id: p.id, status: "CLOSED", closePrice: "77.77" }, transaction: null, partial: false, balance: "9987.77" });
+    });
+    const r = await closeOne(fx, p.id);
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ executedBy: "engine" });
+    expect(calls.map((c) => c.url)).toEqual([`https://feed.example/v1/positions/${p.id}/close`]);
+    expect(await pnlRows(p.id)).toBe(0);
+  });
+
+  it("switched on: the basket goes to the gateway's close-bulk", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture(false, ON);
+    const a = await openPosition(fx);
+    const b = await openPosition(fx);
+    await fresh();
+    const calls = gateway(async () => {
+      await engineCloses(a.id);
+      await engineCloses(b.id);
+      return Response.json({ results: [], closed: 2, failed: 0 });
+    });
+    const r = await closeBulk(fx, { scope: "ALL" });
+    expect(r.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual(["https://feed.example/v1/positions/close-bulk"]);
+    expect([await pnlRows(a.id), await pnlRows(b.id)]).toEqual([0, 0]);
+  });
+
+  it("switched on: a MARKET order goes to the gateway's market route (an ambiguous answer is a 502, never a web fill)", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture(false, ON);
+    await fresh();
+    const calls = gateway(async () => Response.json({ error: "boom" }, { status: 500 }));
+    await as(fx);
+    const { POST } = await import("@/app/api/trade/orders/route");
+    const res = await POST(new NextRequest("https://test.local/api/trade/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ symbol: fx.symbolName, side: "BUY", volume: "0.10", type: "MARKET" }) }));
+    expect(res.status).toBe(502);
+    expect(calls).toEqual([{ url: "https://feed.example/v1/orders/market", auth: "vyx_trade_session=app-token", body: { symbol: fx.symbolName, side: "BUY", volume: "0.10" } }]);
+    expect(await prisma.position.count({ where: { accountId: fx.accountId } })).toBe(0);
+  });
+
+  it("the gateway refuses it (403, e.g. its own rule not deployed yet): the web path closes it, once", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture(false, ON);
+    const p = await openPosition(fx);
+    await fresh();
+    gateway(async () => Response.json({ error: "the engine order path serves DEMO accounts only" }, { status: 403 }));
+    const r = await closeOne(fx, p.id);
+    expect(r.status).toBe(200);
+    expect(r.json.executedBy).not.toBe("engine");
+    expect(await statusOf(p.id)).toBe("CLOSED");
+    expect(await pnlRows(p.id)).toBe(1);
+  });
+
+  it("any condition off -- account toggle, broker flag, or a DEMO account with both on -- never calls the gateway", async () => {
+    if (!dbReachable) return;
+    for (const live of [
+      { mode: "LIVE", flag: true, enabled: false },
+      { mode: "LIVE", flag: false, enabled: true },
+      { mode: "DEMO", flag: true, enabled: true },
+    ] as Live[]) {
+      const fx = await fixture(false, live);
+      const p = await openPosition(fx);
+      await fresh();
+      const calls = gateway(async () => Response.json({}, { status: 500 }));
+      const r = await closeOne(fx, p.id);
+      expect(calls, JSON.stringify(live)).toEqual([]);
+      expect(r.status, JSON.stringify(live)).toBe(200);
+      expect(await pnlRows(p.id)).toBe(1);
+    }
+  });
+
+  it("switched off after routing: the next read (after the TTL) keeps it on the web path", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture(false, ON);
+    const p1 = await openPosition(fx);
+    const p2 = await openPosition(fx);
+    await fresh();
+    let calls = gateway(async () => {
+      await engineCloses(p1.id);
+      return Response.json({ position: { id: p1.id, status: "CLOSED" }, transaction: null, partial: false, balance: "1" });
+    });
+    expect((await closeOne(fx, p1.id)).status).toBe(200);
+    expect(calls).toHaveLength(1);
+    await prisma.account.update({ where: { id: fx.accountId }, data: { engineLiveEnabled: false } });
+    await fresh();
+    calls = gateway(async () => Response.json({}, { status: 500 }));
+    expect((await closeOne(fx, p2.id)).status).toBe(200);
+    expect(calls).toEqual([]);
+    expect(await pnlRows(p2.id)).toBe(1);
   });
 });

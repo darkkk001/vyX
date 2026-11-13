@@ -9,7 +9,7 @@ import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { engineFillsFor, fillThroughEngine } from "@/lib/engine-ingress";
+import { engineRoutesFor, fillThroughEngine } from "@/lib/engine-ingress";
 import { validateSlTp, validatePendingOrderDirection, validatePendingPriceDistance } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
@@ -119,17 +119,17 @@ export async function POST(request: NextRequest) {
 
   // L2 Step 5 -- THE ENGINE INGRESS, the first thing after authentication and before any other work.
   //
-  // One designated DEMO account's MARKET orders are filled by the Rust engine; everything else falls
-  // straight through to the path below, with not one line of it changed. `engineFillsFor` is false
-  // whenever the account list or the gateway URL is unset, so an unconfigured deployment diverts
-  // NOTHING -- the fail-closed direction.
+  // The DEMO ingress list's accounts, and (live cutover 2026-11-13) a LIVE account switched on by the live allowlist
+  // (broker flag + account toggle), have their MARKET orders filled by the Rust engine; everything else falls straight
+  // through to the path below, with not one line of it changed. `engineRoutesFor` is false whenever the gateway URL is
+  // unset, the account is on neither, or the allowlist read fails -- the fail-closed direction.
   //
   // `fillThroughEngine` returns null only when the engine provably wrote nothing (it refused on its
   // own scoping, or its risk thresholds are not loaded), in which case this route carries on and
   // fills as usual. A timeout or a 5xx is AMBIGUOUS and answers 502 instead, because filling again
   // here could open a second position for one order (design section 5b.3).
   // An order carrying an amount SL / TP never takes the engine ingress: that fill forwards symbol, side and volume only and would drop the amount.
-  const ingressBody = engineFillsFor(session.accountId) ? await request.clone().json().catch(() => null) : null;
+  const ingressBody = (await engineRoutesFor(session.accountId)) ? await request.clone().json().catch(() => null) : null;
   if (ingressBody && !(ingressBody.slAmount != null && ingressBody.slAmount !== "") && !(ingressBody.tpAmount != null && ingressBody.tpAmount !== "")) {
     const viaEngine = await fillThroughEngine(ingressBody, session);
     if (viaEngine) {

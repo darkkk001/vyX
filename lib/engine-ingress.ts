@@ -6,6 +6,7 @@ import { bearerToken } from "@/lib/app-web";
 import { toClientShape } from "@/lib/client-execution";
 import { POSITION_DTO_INCLUDE, positionDto } from "@/lib/position-dto";
 import { prisma } from "@/lib/prisma";
+import { engineLiveAllowed } from "@/lib/risk-authority";
 
 // THE ENGINE INGRESS (L2 Step 5, owner 2026-11-03).
 //
@@ -29,9 +30,81 @@ const ACCOUNTS = (process.env.ENGINE_INGRESS_ACCOUNT_IDS ?? "")
   .filter(Boolean);
 const GATEWAY_URL = (process.env.ENGINE_INGRESS_GATEWAY_URL ?? "").trim();
 
-/** Is this account's MARKET order to be filled by the engine? False whenever anything is unconfigured. */
+/** Is this account on the DEMO ingress list (ENGINE_INGRESS_ACCOUNT_IDS)? False whenever anything is unconfigured. */
 export function engineFillsFor(accountId: string): boolean {
   return GATEWAY_URL !== "" && ACCOUNTS.includes(accountId);
+}
+
+// ---- LIVE CUTOVER (owner 2026-11-13): the toggle-based route for LIVE accounts -------------------------------------
+//
+// A LIVE account goes to the engine when the live allowlist says so -- Broker.engineLiveAllowlistOn AND
+// Account.engineLiveEnabled AND accountMode = LIVE (lib/risk-authority.ts engineLiveAllowed, the one rule the engine and
+// the gateway implement too; docs/ENGINE-LIVE-ALLOWLIST.md). The DEMO ingress list above is untouched and still the only
+// way a DEMO account routes. A LIVE account id typed into that list does NOT route it (the gateway's DEMO assert would
+// refuse it anyway); only the toggles do.
+//
+// FAIL CLOSED: no gateway URL, a failed read, or any condition false = the web fills it, exactly as before. And the
+// gateway / engine check the rule again from their own database read: a toggle switched off here a few seconds ago is
+// refused there (403), and a refusal falls back to the web path.
+//
+// COST. The order route runs this before anything else, for every account. So it does NOT read the account per order:
+// it keeps the (tiny) set of allowlisted LIVE accounts per instance, re-read on demand at most every LIVE_SET_TTL_MS
+// (no timer, so an idle instance reads nothing). A toggle therefore takes effect within that window.
+
+
+export const LIVE_SET_TTL_MS = 10_000;
+let liveSet: { ids: Set<string>; at: number } | null = null;
+let liveSetInFlight: Promise<Set<string>> | null = null;
+
+async function readLiveAllowlisted(): Promise<Set<string>> {
+  const rows = await prisma.account.findMany({
+    where: { accountMode: "LIVE", engineLiveEnabled: true, broker: { engineLiveAllowlistOn: true } },
+    select: { id: true, accountMode: true, engineLiveEnabled: true, broker: { select: { engineLiveAllowlistOn: true } } },
+  });
+  // the query already says it; the shared rule says it again, so the two can never drift apart silently
+  return new Set(rows.filter((r) => engineLiveAllowed(r.broker, r.accountMode, r.engineLiveEnabled)).map((r) => r.id));
+}
+
+async function liveAllowlisted(now = Date.now()): Promise<Set<string>> {
+  if (liveSet && now - liveSet.at < LIVE_SET_TTL_MS) return liveSet.ids;
+  if (!liveSetInFlight) {
+    liveSetInFlight = readLiveAllowlisted()
+      .then((ids) => {
+        liveSet = { ids, at: now };
+        return ids;
+      })
+      .finally(() => {
+        liveSetInFlight = null;
+      });
+  }
+  try {
+    return await liveSetInFlight;
+  } catch (err) {
+    // fail closed: no live account routes on a failed read (and nothing is cached, so the next request retries)
+    console.warn("[engine-ingress] live allowlist read failed; LIVE accounts stay on the web path", { err: String(err) });
+    return new Set();
+  }
+}
+
+/** Is this LIVE account switched on for the engine (broker flag + account toggle)? False when the gateway URL is unset. */
+export async function engineLiveRoutesFor(accountId: string): Promise<boolean> {
+  if (GATEWAY_URL === "" || !accountId) return false;
+  return (await liveAllowlisted()).has(accountId);
+}
+
+/**
+ * THE routing decision for the order, close and close-bulk routes: the DEMO ingress list (unchanged) OR the live
+ * allowlist. A DEMO-list account never costs a read.
+ */
+export async function engineRoutesFor(accountId: string): Promise<boolean> {
+  if (engineFillsFor(accountId)) return true;
+  return engineLiveRoutesFor(accountId);
+}
+
+/** Tests only: forget the cached live set. */
+export function resetLiveAllowlistCacheForTests(): void {
+  liveSet = null;
+  liveSetInFlight = null;
 }
 
 /** For a start-up / health line: the scope this deployment is actually running with. */

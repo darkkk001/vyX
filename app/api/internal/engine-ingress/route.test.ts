@@ -5,6 +5,7 @@ vi.mock("@/lib/engine-ingress", () => ({
   engineIngressScope: () => ({ enabled: true, accounts: 1 }),
   engineIngressGatewayHost: () => "feed.example",
   engineFillsFor: (id: string) => id === "acc1",
+  engineLiveRoutesFor: async (id: string) => id === "live1",
 }));
 
 afterEach(() => vi.unstubAllEnvs());
@@ -22,7 +23,8 @@ describe("GET /api/internal/engine-ingress", () => {
   });
   it("answers the running scope, and per account when asked", async () => {
     expect(await (await call("", "s3")).json()).toEqual({ enabled: true, accounts: 1, gatewayHost: "feed.example" });
-    expect(await (await call("?accountId=acc1", "s3")).json()).toMatchObject({ accountId: "acc1", fillsFor: true });
-    expect(await (await call("?accountId=nope", "s3")).json()).toMatchObject({ fillsFor: false });
+    expect(await (await call("?accountId=acc1", "s3")).json()).toMatchObject({ accountId: "acc1", fillsFor: true, demoList: true, liveAllowlist: false });
+    expect(await (await call("?accountId=live1", "s3")).json()).toMatchObject({ accountId: "live1", fillsFor: true, demoList: false, liveAllowlist: true });
+    expect(await (await call("?accountId=nope", "s3")).json()).toMatchObject({ accountId: "nope", fillsFor: false, demoList: false, liveAllowlist: false });
   });
 });
