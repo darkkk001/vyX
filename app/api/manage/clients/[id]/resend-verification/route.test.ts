@@ -68,7 +68,8 @@ describe("POST /api/manage/clients/{id}/resend-verification", () => {
     expect(a[0].actorAdminId).toBe(adminId);
     expect(JSON.stringify(a[0].newValue)).not.toContain(token!);
     const { GET } = await import("@/app/api/portal/verify-email/route");
-    await GET(new NextRequest(`https://test.local/api/portal/verify-email?token=${token}`));
+    // since 7e33fc6 the link works only on the broker that sent it (the route checks the x-broker-id its host resolves to)
+    await GET(new NextRequest(`https://test.local/api/portal/verify-email?token=${token}`, { headers: { "x-broker-id": broker.id } }));
     expect((await prisma.client.findUniqueOrThrow({ where: { id: c.id } })).emailVerifiedAt).not.toBeNull();
   });
 

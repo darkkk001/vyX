@@ -132,7 +132,7 @@ describe("enforced next to every group max-lot check (static)", () => {
     "app/api/trade/orders/route.ts",
     "lib/pending-trigger.ts",
     "app/api/trade/orders/[id]/requote-response/route.ts",
-    "app/api/manage/positions/route.ts",
+    "lib/staff-order.ts",
     "app/api/manage/dealing-queue/[id]/route.ts",
     "app/api/manage/dealing-desk-toggle/route.ts",
   ])("%s", (file) => {

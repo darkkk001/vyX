@@ -215,6 +215,12 @@ describe("permissions (owner decisions 16 / 20) and reject = approve authority",
     const refused = await call(PATCH, "/api/manage/symbols", "PATCH", { ...base, spreadMarkup: "1.5" });
     expect(refused.status).toBe(403);
     expect(refused.json.permission).toBe("PRICING");
+    // Since web security batch 1 S2/S3 (owner 2026-10-29) a lot-size change needs GROUPS_SYMBOLS, so a MANAGER without it is
+    // refused for it too; the same save succeeds once the MANAGER holds GROUPS_SYMBOLS (pricing is still separate, above).
+    const configRefused = await call(PATCH, "/api/manage/symbols", "PATCH", { ...base, maxLot: "50" });
+    expect(configRefused.status).toBe(403);
+    expect(configRefused.json.permission).toBe("GROUPS_SYMBOLS");
+    await as(fx, await admin(fx, "MANAGER", ["GROUPS_SYMBOLS"]));
     const ok = await call(PATCH, "/api/manage/symbols", "PATCH", { ...base, maxLot: "50" });
     expect(ok.status).toBe(200);
   });

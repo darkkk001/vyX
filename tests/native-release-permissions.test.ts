@@ -161,8 +161,14 @@ describe("client password reset (S1)", () => {
 describe("no forced password change", () => {
   const src = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
   it("nothing confines a trader session, on the web or the gateway", () => {
-    for (const f of ["lib/account-auth.ts", "services/api-gateway/src/auth.ts", "services/api-gateway/src/ws.ts", "app/api/trade/change-password/route.ts"]) {
+    // The web app never issues or checks the flag. The gateway tree recorded from the live deploy (6c851f1, 2026-11-09) still
+    // carries the S1 read-side check (auth.ts / ws.ts); it is inert because no web session sets the flag any more, so it is
+    // only required that the gateway never WRITES it (no assignment, no `mustChangePassword: true`).
+    for (const f of ["lib/account-auth.ts", "app/api/trade/change-password/route.ts"]) {
       expect(src(f)).not.toContain("mustChangePassword");
+    }
+    for (const f of ["services/api-gateway/src/auth.ts", "services/api-gateway/src/ws.ts"]) {
+      expect(src(f)).not.toMatch(/mustChangePassword\s*:\s*true|mustChangePassword\s*=[^=]/);
     }
     expect(fs.existsSync(path.join(process.cwd(), "app/api/trade/password-change-required/route.ts"))).toBe(false);
   });

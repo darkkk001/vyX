@@ -23,7 +23,7 @@ vi.mock("@/lib/auth", async (orig) => ({
   requireAdminRole: (s: { role: string } | null, roles: string[]) => s !== null && roles.includes(s.role),
 }));
 vi.mock("@/lib/account-auth", async (orig) => ({ ...(await orig<typeof import("@/lib/account-auth")>()), getAccountSession: async () => session.account }));
-vi.mock("@/lib/config-events", () => ({ withConfigEvent: (_scope: string, h: unknown) => h, publishConfigChanged: vi.fn() }));
+vi.mock("@/lib/config-events", () => ({ withConfigEvent: (_scope: string, h: unknown) => h, withBrokerConfigEvent: (_scope: string, h: unknown) => h, publishConfigChanged: vi.fn() }));
 vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
 import { getAdminSession } from "@/lib/auth";
 
