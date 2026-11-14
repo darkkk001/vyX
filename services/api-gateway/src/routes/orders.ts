@@ -123,10 +123,14 @@ router.get("/engine-health", async (_req, res) => {
 
 type PlaceMarketOrderBody = z.infer<typeof placeMarketOrderSchema>;
 
+// owner 2026-11-10: 30 a minute refused normal rapid manual trading (~20-25 orders plus cancels in a minute). Market, pending and
+// cancel share one budget; 600 a minute matches the web order route (lib/order-rate-limit.ts) and this service's own close / modify.
+const ORDER_RATE_LIMIT_PER_MINUTE = 600;
+
 router.post(
   "/market",
   requireTraderSession,
-  rateLimitOrders(30, 60),
+  rateLimitOrders(ORDER_RATE_LIMIT_PER_MINUTE, 60),
   validateBody(placeMarketOrderSchema),
   async (req: AuthedRequest, res) => {
     // L2 Step 5: per-stage timing. The gateway added ~80 ms on top of a 24 ms engine call, and the
@@ -315,7 +319,7 @@ type PlacePendingOrderBody = z.infer<typeof placePendingOrderSchema>;
 router.post(
   "/pending",
   requireTraderSession,
-  rateLimitOrders(30, 60),
+  rateLimitOrders(ORDER_RATE_LIMIT_PER_MINUTE, 60),
   validateBody(placePendingOrderSchema),
   async (req: AuthedRequest, res) => {
     const body = req.body as PlacePendingOrderBody;
@@ -384,7 +388,7 @@ router.post(
 // lib.rs) already rejects with NotFound if the order's own account_id
 // doesn't match the account_id this Gateway sends, so ownership is
 // enforced there, not by fetching the order here first.
-router.post("/:id/cancel", requireTraderSession, rateLimitOrders(30, 60), async (req: AuthedRequest, res) => {
+router.post("/:id/cancel", requireTraderSession, rateLimitOrders(ORDER_RATE_LIMIT_PER_MINUTE, 60), async (req: AuthedRequest, res) => {
   const session = req.session!;
   const brokerId = req.headers["x-broker-id"] as string;
 
