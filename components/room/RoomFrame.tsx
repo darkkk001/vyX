@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import type { ReactNode, CSSProperties } from "react";
-import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import type { RoomBroker } from "@/lib/room/context";
 import "@/app/(broker)/room/room.css";
 import DevToolsGuard from "@/components/security/DevToolsGuard";
@@ -8,9 +8,9 @@ import DevToolsGuard from "@/components/security/DevToolsGuard";
 // The Trader's Room root: fonts, theme and tenant accent. Wraps /room/* (room/layout.tsx) and the room's sign-in and
 // sign-up, which live at /login and /register (owner routes 2026-11-04), outside that layout.
 // Theme: dark by default, light from the room_theme cookie (no flash).
-const inter = Inter({ subsets: ["latin"], variable: "--r-font-inter", display: "swap" });
-const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--r-font-mono", display: "swap" });
-const grotesk = Space_Grotesk({ subsets: ["latin"], weight: ["500", "600", "700"], variable: "--r-font-grotesk", display: "swap" });
+const inter = localFont({ src: "../../app/fonts/Inter-latin.woff2", weight: "100 900", variable: "--r-font-inter", display: "swap" });
+const mono = localFont({ src: "../../app/fonts/JetBrainsMono-latin.woff2", weight: "100 800", variable: "--r-font-mono", display: "swap" });
+const grotesk = localFont({ src: "../../app/fonts/SpaceGrotesk-latin.woff2", weight: "300 700", variable: "--r-font-grotesk", display: "swap" });
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 

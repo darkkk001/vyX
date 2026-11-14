@@ -1,16 +1,10 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
+const geistSans = localFont({ src: "./fonts/Geist-latin.woff2", weight: "100 900", variable: "--font-geist-sans", display: "swap" });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+const geistMono = localFont({ src: "./fonts/GeistMono-latin.woff2", weight: "100 900", variable: "--font-geist-mono", display: "swap" });
 
 export const metadata: Metadata = {
   title: "VyXTrader",

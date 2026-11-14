@@ -1,16 +1,8 @@
-import { Inter, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "../admin-theme.css";
 
-const adminSans = Inter({
-  variable: "--font-admin-sans",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-});
-const adminMono = JetBrains_Mono({
-  variable: "--font-admin-mono",
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-});
+const adminSans = localFont({ src: "../fonts/Inter-latin.woff2", weight: "100 900", variable: "--font-admin-sans", display: "swap" });
+const adminMono = localFont({ src: "../fonts/JetBrainsMono-latin.woff2", weight: "100 800", variable: "--font-admin-mono", display: "swap" });
 
 // Root-domain sibling to app/manage/layout.tsx's own wrapper (same
 // data-surface="manager" tokens) -- this page runs on the bare domain,
