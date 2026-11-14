@@ -44,6 +44,9 @@ export async function GET() {
     // (emergency/sign-out-clients, lib/broker-hosts.ts, first entry = the subdomain host). Every role, so EMG can show
     // the real address to anyone who opens it.
     brokerAddress: broker ? brokerHosts(broker)[0] : null,
+    // owner 2026-11-14 (white-label): the broker's OWN domain (its custom domain, bare), every role; null when it has none. The
+    // backoffice shows this, never the platform address; emergency/sign-out-clients accepts it as the typed confirm.
+    brokerDomain: broker?.customDomain ? broker.customDomain.toLowerCase().replace(/^www\./, "") : null,
     adminEmail: admin?.email ?? null,
     role: session!.role,
     // Bundled shells (manager-shell) have no Server Component to read

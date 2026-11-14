@@ -17,6 +17,7 @@ export async function crmClientRows(brokerId: string, now = new Date()) {
     where: { brokerId },
     select: {
       id: true, clientNumber: true, fullName: true, email: true, phone: true, country: true, createdAt: true, lastLoginAt: true, ownerAdminId: true, source: true, status: true,
+      referredByClientId: true,
       kycRecord: { select: { status: true } },
       accounts: { select: { id: true, accountMode: true, balance: true, currency: true } },
     },
@@ -34,6 +35,12 @@ export async function crmClientRows(brokerId: string, now = new Date()) {
   const tradeBy = new Map(lastTrades.map((t) => [t.accountId, t._max.closedAt]));
   const owners = await prisma.adminUser.findMany({ where: { brokerId }, select: { id: true, email: true } });
   const handle = new Map(owners.map((o) => [o.id, handleOf(o.email)]));
+  // owner 2026-11-14: the referrer (the client whose link this one signed up through), shown in OWNER when no staff member is assigned
+  const refIds = [...new Set(clients.map((c) => c.referredByClientId).filter((x): x is string => !!x))];
+  const referrers = refIds.length
+    ? await prisma.client.findMany({ where: { id: { in: refIds }, brokerId }, select: { id: true, clientNumber: true } })
+    : [];
+  const refBy = new Map(referrers.map((r) => [r.id, clientRef(r.clientNumber)]));
   return clients.map((c) => {
     const live = c.accounts.filter((a) => a.accountMode === "LIVE" && a.currency === ccy);
     const balance = live.reduce((s, a) => s.add(a.balance), new Prisma.Decimal(0));
@@ -54,6 +61,7 @@ export async function crmClientRows(brokerId: string, now = new Date()) {
       depositsLtd: depositsLtd.toFixed(2),
       lastLoginAt: c.lastLoginAt?.toISOString() ?? null,
       owner: c.ownerAdminId ? { id: c.ownerAdminId, handle: handle.get(c.ownerAdminId) ?? "STAFF" } : null,
+      referrer: c.referredByClientId && refBy.has(c.referredByClientId) ? { id: c.referredByClientId, ref: refBy.get(c.referredByClientId)! } : null,
       stage,
       suspended: c.status !== "ACTIVE",
       otherCurrency: c.accounts.some((a) => a.accountMode === "LIVE" && a.currency !== ccy),

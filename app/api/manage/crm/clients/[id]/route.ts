@@ -37,7 +37,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     }),
     crmTimeline(brokerId, "CLIENT", c.id),
     c.ownerAdminId ? prisma.adminUser.findUnique({ where: { id: c.ownerAdminId }, select: { email: true } }) : null,
-    c.referredByClientId ? prisma.client.findUnique({ where: { id: c.referredByClientId }, select: { referralCode: true } }) : null,
+    c.referredByClientId ? prisma.client.findFirst({ where: { id: c.referredByClientId, brokerId }, select: { referralCode: true, clientNumber: true } }) : null,
   ]);
   const admins = await prisma.adminUser.findMany({ where: { id: { in: [...new Set(audit.map((a) => a.actorAdminId).filter((x): x is string => !!x))] } }, select: { id: true, email: true } });
   const handle = new Map(admins.map((a) => [a.id, handleOf(a.email)]));
@@ -57,6 +57,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       registeredAt: c.createdAt.toISOString(), lastLoginAt: c.lastLoginAt?.toISOString() ?? null, kyc: c.kycRecord?.status ?? "NONE",
       source: c.source ?? (referrer?.referralCode ? `IB · ${referrer.referralCode}` : "WEBSITE"),
       owner: c.ownerAdminId && owner ? { id: c.ownerAdminId, handle: handleOf(owner.email), email: owner.email } : null,
+      // owner 2026-11-14: the client whose link this one signed up through (their user id), shown when no staff member owns the client
+      referrer: c.referredByClientId && referrer ? { id: c.referredByClientId, ref: clientRef(referrer.clientNumber) } : null,
       suspended: c.status !== "ACTIVE",
     },
     accounts: c.accounts.map((a) => ({ id: a.id, accountNumber: a.accountNumber, plan: a.group?.displayName ?? "Standard", mode: a.accountMode, balance: a.balance.toFixed(2), currency: a.currency, status: a.status })),
