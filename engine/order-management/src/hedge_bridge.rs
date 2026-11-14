@@ -32,10 +32,18 @@ pub const PROTOCOL_VERSION: u32 = 1;
 // ---------------------------------------------------------------------------------------------------------
 // the wire contract
 // ---------------------------------------------------------------------------------------------------------
+//
+// THE DISCRIMINATOR IS `op`, AND IT IS THE BRIDGE'S CHOICE, NOT OURS (bridge, 2026-11-14). This started as
+// `type` on the engine side while the bridge had always used `op`, so neither side could parse the other and
+// nothing connected at all. The failure was silent in the worst way: no error, no refusal, just intents
+// resent for ever and never accepted -- safe (no double hedge, nothing mis-routed) but completely inert.
+//
+// The name is pinned by `the_discriminator_is_op_because_that_is_what_the_bridge_reads`. A rename here is a
+// protocol break, not a refactor: change it only alongside the bridge, and bump PROTOCOL_VERSION.
 
 /// Engine -> bridge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case")]
 pub enum EngineToBridge {
     Hello { v: u32, token: String, broker_id: String },
     Intent(IntentMsg),
@@ -53,7 +61,7 @@ pub enum EngineToBridge {
 
 /// Bridge -> engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case")]
 pub enum BridgeToEngine {
     /// The reply to `hello`: `ok` true, or false with `error` saying why.
     Hello { ok: bool, #[serde(default)] error: Option<String> },
@@ -625,19 +633,48 @@ mod tests {
 
     // ---- the wire format itself ----
 
+    /// The discriminator key itself, pinned in BOTH directions.
+    ///
+    /// This is the test the `type` / `op` mismatch would have needed. It cannot see the bridge, so it cannot
+    /// prove agreement -- what it does is make the name a deliberate decision: anyone who renames the tag
+    /// has to change this line and read why. The key is asserted by looking it up, not by substring match,
+    /// so a message that happens to contain the text "op" elsewhere cannot make it pass.
+    #[test]
+    fn the_discriminator_is_op_because_that_is_what_the_bridge_reads() {
+        let engine_side = [
+            encode(&EngineToBridge::Hello { v: PROTOCOL_VERSION, token: "t".into(), broker_id: "b".into() }).unwrap(),
+            encode(&EngineToBridge::Intent(intent("H1"))).unwrap(),
+            encode(&EngineToBridge::ResultAck { intent_id: "H1".into(), leg_id: Some("H1_0".into()) }).unwrap(),
+            encode(&EngineToBridge::Ping { ts: "t".into() }).unwrap(),
+        ];
+        let expected = ["hello", "intent", "result_ack", "ping"];
+        for (line, want) in engine_side.iter().zip(expected) {
+            let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(v.get("op").and_then(|o| o.as_str()), Some(want), "wrong or missing `op` in {line}");
+            assert!(v.get("type").is_none(), "`type` must not be emitted: the bridge reads `op` ({line})");
+        }
+
+        // and the inbound direction decodes from `op`, not `type`
+        assert!(decode_line(r#"{"op":"hello","ok":true}"#).is_ok());
+        assert!(
+            decode_line(r#"{"type":"hello","ok":true}"#).is_err(),
+            "a `type`-tagged line is not our contract; accepting it would hide the very mismatch this pins"
+        );
+    }
+
     #[test]
     fn every_message_round_trips_through_json() {
         let hello = EngineToBridge::Hello { v: PROTOCOL_VERSION, token: "t".into(), broker_id: "b".into() };
         let line = encode(&hello).unwrap();
         assert!(line.ends_with('\n'), "the framing is one message per line");
-        assert!(line.contains(r#""type":"hello""#));
+        assert!(line.contains(r#""op":"hello""#));
 
         let i = EngineToBridge::Intent(intent("H1"));
-        assert!(encode(&i).unwrap().contains(r#""type":"intent""#));
+        assert!(encode(&i).unwrap().contains(r#""op":"intent""#));
 
         // the ack carries BOTH keys on the wire, mirroring `result`
         let ack = encode(&EngineToBridge::ResultAck { intent_id: "H1".into(), leg_id: Some("H1_0".into()) }).unwrap();
-        assert!(ack.contains(r#""type":"result_ack""#));
+        assert!(ack.contains(r#""op":"result_ack""#));
         assert!(ack.contains(r#""intent_id":"H1""#));
         assert!(ack.contains(r#""leg_id":"H1_0""#));
         // and a set-aside ack says so explicitly rather than omitting the field
@@ -645,22 +682,22 @@ mod tests {
         assert!(null_leg.contains(r#""leg_id":null"#), "an absent leg must be explicit, not missing");
 
         let ping = EngineToBridge::Ping { ts: "t".into() };
-        assert!(encode(&ping).unwrap().contains(r#""type":"ping""#));
+        assert!(encode(&ping).unwrap().contains(r#""op":"ping""#));
     }
 
     #[test]
     fn the_bridge_messages_decode_from_the_contract_shape() {
-        let ok = decode_line(r#"{"type":"hello","ok":true}"#).unwrap();
+        let ok = decode_line(r#"{"op":"hello","ok":true}"#).unwrap();
         assert_eq!(ok, BridgeToEngine::Hello { ok: true, error: None });
 
-        let refused = decode_line(r#"{"type":"hello","ok":false,"error":"bad token"}"#).unwrap();
+        let refused = decode_line(r#"{"op":"hello","ok":false,"error":"bad token"}"#).unwrap();
         assert_eq!(refused, BridgeToEngine::Hello { ok: false, error: Some("bad token".into()) });
 
-        let accepted = decode_line(r#"{"type":"accepted","intent_id":"H1"}"#).unwrap();
+        let accepted = decode_line(r#"{"op":"accepted","intent_id":"H1"}"#).unwrap();
         assert_eq!(accepted, BridgeToEngine::Accepted { intent_id: "H1".into() });
 
         let r = decode_line(
-            r#"{"type":"result","intent_id":"H1","leg_id":"H1_0","status":"FILLED","filled_qty":"0.01",
+            r#"{"op":"result","intent_id":"H1","leg_id":"H1_0","status":"FILLED","filled_qty":"0.01",
                 "avg_px":"1.10344","lp_id":"lp-1","lp_order_ids":["o-1","o-2"],"reason":null,
                 "completed_at":"2026-11-14T00:00:01Z"}"#,
         )
@@ -678,7 +715,7 @@ mod tests {
     #[test]
     fn a_set_aside_result_decodes_with_a_null_leg() {
         let r = decode_line(
-            r#"{"type":"result","intent_id":"H1","leg_id":null,"status":"ESCALATED","filled_qty":"0",
+            r#"{"op":"result","intent_id":"H1","leg_id":null,"status":"ESCALATED","filled_qty":"0",
                 "avg_px":null,"lp_id":null,"reason":"set aside: no route","completed_at":"2026-11-14T00:00:01Z"}"#,
         )
         .unwrap();

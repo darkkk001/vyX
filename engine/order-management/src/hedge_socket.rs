@@ -418,7 +418,7 @@ mod tests {
     async fn the_session_greets_first_and_the_reply_opens_it() {
         let (mut bridge, _offers, _store, _h) = session();
         let hello = bridge.next().await;
-        assert_eq!(hello["type"], "hello");
+        assert_eq!(hello["op"], "hello");
         assert_eq!(hello["token"], "tok");
         assert_eq!(hello["broker_id"], "brk");
         assert_eq!(hello["v"], crate::hedge_bridge::PROTOCOL_VERSION);
@@ -428,11 +428,11 @@ mod tests {
     async fn an_offered_intent_reaches_the_wire_after_the_handshake() {
         let (mut bridge, offers, _store, _h) = session();
         bridge.next().await; // hello
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
         offers.send(intent("H1")).await.unwrap();
 
         let sent = bridge.next().await;
-        assert_eq!(sent["type"], "intent");
+        assert_eq!(sent["op"], "intent");
         assert_eq!(sent["intent_id"], "H1");
         assert_eq!(sent["volume"], "0.01", "a decimal string, not a float");
         assert_eq!(sent["reduce"], false);
@@ -446,10 +446,10 @@ mod tests {
         offers.send(intent("H1")).await.unwrap();
         // give the session a moment to take it off the channel while still in the handshake
         tokio::time::sleep(Duration::from_millis(30)).await;
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
 
         let sent = bridge.next().await;
-        assert_eq!(sent["type"], "intent");
+        assert_eq!(sent["op"], "intent");
         assert_eq!(sent["intent_id"], "H1");
     }
 
@@ -457,11 +457,11 @@ mod tests {
     async fn accepted_becomes_a_store_op() {
         let (mut bridge, offers, mut store, _h) = session();
         bridge.next().await;
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
         offers.send(intent("H1")).await.unwrap();
         bridge.next().await; // the intent
 
-        bridge.say(r#"{"type":"accepted","intent_id":"H1"}"#).await;
+        bridge.say(r#"{"op":"accepted","intent_id":"H1"}"#).await;
         assert_eq!(store.recv().await.unwrap(), StoreOp::MarkAccepted("H1".into()));
     }
 
@@ -469,7 +469,7 @@ mod tests {
     async fn a_result_is_queued_for_writing_and_acked_on_the_wire_by_leg() {
         let (mut bridge, offers, mut store, _h) = session();
         bridge.next().await;
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
         offers.send(intent("H1")).await.unwrap();
         bridge.next().await;
 
@@ -478,7 +478,7 @@ mod tests {
         // newlines, which is why the hedge_bridge tests can afford to be pretty-printed -- they call
         // decode_line directly and never cross the wire.)
         bridge
-            .say(r#"{"type":"result","intent_id":"H1","leg_id":"H1_0","status":"FILLED","filled_qty":"0.01","avg_px":"1.10344","lp_id":"lp-1","lp_order_ids":["o-1"],"reason":null,"completed_at":"2026-11-14T00:00:01Z"}"#)
+            .say(r#"{"op":"result","intent_id":"H1","leg_id":"H1_0","status":"FILLED","filled_qty":"0.01","avg_px":"1.10344","lp_id":"lp-1","lp_order_ids":["o-1"],"reason":null,"completed_at":"2026-11-14T00:00:01Z"}"#)
             .await;
 
         match store.recv().await.unwrap() {
@@ -490,7 +490,7 @@ mod tests {
         }
 
         let ack = bridge.next().await;
-        assert_eq!(ack["type"], "result_ack");
+        assert_eq!(ack["op"], "result_ack");
         assert_eq!(ack["intent_id"], "H1");
         assert_eq!(ack["leg_id"], "H1_0", "the ack names the leg it answers");
     }
@@ -501,14 +501,14 @@ mod tests {
     async fn a_resent_leg_is_acked_again_and_not_written_twice() {
         let (mut bridge, offers, mut store, _h) = session();
         bridge.next().await;
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
         offers.send(intent("H1")).await.unwrap();
         bridge.next().await;
 
         // one line per message -- see the note in the test above
         let leg = |n: u32| {
             format!(
-                r#"{{"type":"result","intent_id":"H1","leg_id":"H1_{n}","status":"PARTIAL","filled_qty":"0.004","avg_px":"1.10344","lp_id":"lp-{n}","lp_order_ids":[],"reason":null,"completed_at":"2026-11-14T00:00:0{n}Z"}}"#
+                r#"{{"op":"result","intent_id":"H1","leg_id":"H1_{n}","status":"PARTIAL","filled_qty":"0.004","avg_px":"1.10344","lp_id":"lp-{n}","lp_order_ids":[],"reason":null,"completed_at":"2026-11-14T00:00:0{n}Z"}}"#
             )
         };
         for n in 0..3 {
@@ -529,7 +529,7 @@ mod tests {
         // the bridge never saw the ack for leg 1, so it resends that leg alone
         bridge.say(&leg(1)).await;
         let ack = bridge.next().await;
-        assert_eq!(ack["type"], "result_ack");
+        assert_eq!(ack["op"], "result_ack");
         assert_eq!(ack["leg_id"], "H1_1", "acked again, by leg");
         assert!(store.try_recv().is_err(), "and NOT queued for writing a second time");
     }
@@ -538,7 +538,7 @@ mod tests {
     async fn a_refused_handshake_ends_the_session_with_the_reason() {
         let (mut bridge, _offers, _store, h) = session();
         bridge.next().await;
-        bridge.say(r#"{"type":"hello","ok":false,"error":"bad token"}"#).await;
+        bridge.say(r#"{"op":"hello","ok":false,"error":"bad token"}"#).await;
         let end = h.await.unwrap();
         assert!(end.is_refusal(), "the supervisor must take the long backoff, not reconnect at once");
         match end {
@@ -553,16 +553,16 @@ mod tests {
     async fn a_line_that_does_not_parse_is_skipped_and_the_session_lives() {
         let (mut bridge, offers, mut store, _h) = session();
         bridge.next().await;
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
 
         bridge.say("this is not json").await;
-        bridge.say(r#"{"type":"nonsense_message"}"#).await;
+        bridge.say(r#"{"op":"nonsense_message"}"#).await;
         bridge.say("").await;
 
         // still alive: an intent offered now still goes out, and an accept still lands
         offers.send(intent("H1")).await.unwrap();
         assert_eq!(bridge.next().await["intent_id"], "H1");
-        bridge.say(r#"{"type":"accepted","intent_id":"H1"}"#).await;
+        bridge.say(r#"{"op":"accepted","intent_id":"H1"}"#).await;
         assert_eq!(store.recv().await.unwrap(), StoreOp::MarkAccepted("H1".into()));
     }
 
@@ -574,7 +574,7 @@ mod tests {
     async fn a_message_split_across_lines_is_not_a_message() {
         let (mut bridge, offers, mut store, _h) = session();
         bridge.next().await;
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
         offers.send(intent("H1")).await.unwrap();
         bridge.next().await; // the intent
 
@@ -592,7 +592,7 @@ mod tests {
         assert!(store.try_recv().is_err(), "a split document must not be read as a result");
 
         // and the session is still usable: the skipped frames did not cost the connection
-        bridge.say(r#"{"type":"accepted","intent_id":"H1"}"#).await;
+        bridge.say(r#"{"op":"accepted","intent_id":"H1"}"#).await;
         assert_eq!(store.recv().await.unwrap(), StoreOp::MarkAccepted("H1".into()));
     }
 
@@ -607,11 +607,11 @@ mod tests {
     async fn a_pong_is_harmless() {
         let (mut bridge, offers, mut store, _h) = session();
         bridge.next().await;
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
-        bridge.say(r#"{"type":"pong","ts":"t"}"#).await;
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
+        bridge.say(r#"{"op":"pong","ts":"t"}"#).await;
         offers.send(intent("H1")).await.unwrap();
         assert_eq!(bridge.next().await["intent_id"], "H1");
-        bridge.say(r#"{"type":"accepted","intent_id":"H1"}"#).await;
+        bridge.say(r#"{"op":"accepted","intent_id":"H1"}"#).await;
         assert_eq!(store.recv().await.unwrap(), StoreOp::MarkAccepted("H1".into()));
     }
 
@@ -627,10 +627,10 @@ mod tests {
             run_session(engine_r, engine_w, &mut link, &mut offer_rx, &store_tx, Duration::from_millis(40)).await
         });
         let mut bridge = FakeBridge { lines: BufReader::new(bridge_r).lines(), writer: bridge_w };
-        assert_eq!(bridge.next().await["type"], "hello");
-        bridge.say(r#"{"type":"hello","ok":true}"#).await;
+        assert_eq!(bridge.next().await["op"], "hello");
+        bridge.say(r#"{"op":"hello","ok":true}"#).await;
         let ping = bridge.next().await;
-        assert_eq!(ping["type"], "ping");
+        assert_eq!(ping["op"], "ping");
         assert!(ping["ts"].as_str().is_some_and(|t| !t.is_empty()));
     }
 
