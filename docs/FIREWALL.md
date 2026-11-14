@@ -52,10 +52,30 @@ blocked"; there is no path exclusion for Attack Mode. The terminal, backoffice (
 (dart:io HttpClient) are exactly such clients. The real test runs on the throwaway project `vyx-fw-attack-test`
 (page /login/ + POST /api/trade/login, never vy-x) with clients built like the apps: see "Attack Mode test" below.
 
-## Attack Mode test
+## Attack Mode test (2026-11-14, 03:57-04:10 UTC)
 
-Status: waiting for the owner to switch Attack Mode on for the throwaway project (the Vercel CLI does not let an agent
-do it): `cd C:\vyx\web` then `npx vercel firewall attack-mode enable --project vyx-fw-attack-test --scope bigfishs-projects-020b7a21`.
+Throwaway project `vyx-fw-attack-test` (a page `/login/` and `POST /api/trade/login`), Attack Mode switched on by the
+owner for 1 hour. Clients built like ours: .NET 8 HttpClient with `X-Client-Platform: DESKTOP_NATIVE` (terminal,
+backoffice), dart:io HttpClient with UA `QoreTrader-Mobile/1.0` (mobile app), curl, and Chrome.
+
+| Client | GET /login/ | POST /api/trade/login |
+|---|---|---|
+| Chrome (normal browser) | checkpoint (403), passes by itself in a few seconds, then the page | the page's own call: 200 |
+| Headless Chrome (default "HeadlessChrome" UA) | stays on the checkpoint | 403 |
+| curl | 429 / 403 checkpoint | 403 / 429 (`x-vercel-mitigated: challenge`) |
+| .NET HttpClient (terminal, backoffice) | 403 | **403** `{"error":{"code":"challenge",...}}` |
+| dart:io HttpClient (mobile app) | 403 | **403** (the checkpoint page) |
+
+A custom rule `path starts with /api/` -> **bypass**, published while Attack Mode was on, changed nothing: for 4 minutes
+after it went live (04:05-04:10 UTC) curl, .NET and Dart were still 403/429 on `/api/trade/login`. Attack Mode is in
+front of the project's own rules; there is no path exclusion.
+
+**What this means:** while Attack Mode is on for `vy-x`, the terminal, the backoffice and the mobile app cannot sign in
+or talk to the server at all (every `/api/*` call is challenged, and they cannot solve a challenge). WebTrader and the
+client portal keep working in a normal browser. Turn it on only when the attack is worse than having the apps offline,
+for the shortest time (1 hour), and tell traders the desktop and mobile apps will be down; use WebTrader meanwhile.
+
+The test project was deleted after the test.
 
 ## Live checks after Challenge was published (2026-11-13 07:14 UTC)
 
