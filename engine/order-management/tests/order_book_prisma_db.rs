@@ -930,7 +930,13 @@ async fn the_engines_open_chain_matches_the_webs_row_for_row() {
         .await
         .unwrap();
     assert_eq!(v["hedgeIntents"].as_i64().unwrap(), 1, "the web writes the intent itself");
-    assert_eq!(intents, 0, "the engine must not write HedgeIntent: Stage 5 queues it for the web instead");
+    // STILL ZERO, AND STILL CORRECT AFTER THE HEDGE-ROUTE MOVE (owner 2026-11-14). The engine does write
+    // intents now, but only through the NEW entry point that opens a transaction for them
+    // (hedge_outbox::open_position_one_call_hedged). `open_position_one_call` -- the call under test here --
+    // is unchanged to the byte, so the count it leaves is unchanged too. That is the reason the hedge path
+    // is a second entry point rather than a widening of this one: this assertion keeps testing what it
+    // always tested, instead of being rewritten to mean something else.
+    assert_eq!(intents, 0, "open_position_one_call itself writes no HedgeIntent; the hedged entry point is what does");
 
     tx.rollback().await.unwrap();
 }

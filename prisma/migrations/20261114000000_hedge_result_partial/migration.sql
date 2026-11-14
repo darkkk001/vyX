@@ -1,0 +1,14 @@
+-- The wire contract for the engine's hedge socket carries a PARTIAL leg status; the enum does not have one.
+--
+-- WHY IT IS NEEDED. A leg that fills part of its requested volume is a real and ordinary outcome: the LP
+-- gave 0.004 of a 0.01 lot and stopped. Today the only way to record that is FILLED with a smaller
+-- filledVolume, which reads as "done, in full" to anyone who looks at status alone -- including the
+-- Liquidity screen. PARTIAL says what happened.
+--
+-- WHY IT IS SAFE TO APPLY BEFORE THE ENGINE SHIPS. ADD VALUE only widens the type: nothing reads or writes
+-- PARTIAL until the engine's hedge path is deployed, so applying this early is a no-op for the running
+-- system, and applying it late is what would break -- the INSERT would fail on an unknown enum label. Apply
+-- this FIRST, deploy second.
+--
+-- IF NOT EXISTS makes it idempotent, so re-running the migration set is harmless.
+ALTER TYPE "HedgeResultStatus" ADD VALUE IF NOT EXISTS 'PARTIAL';

@@ -52,7 +52,7 @@ pub async fn connect_pool(database_url: &str, max_connections: u32) -> Result<Pg
         .await
 }
 
-fn side_to_str(s: OrderSide) -> &'static str {
+pub fn side_to_str(s: OrderSide) -> &'static str {
     match s {
         OrderSide::Buy => "BUY",
         OrderSide::Sell => "SELL",
@@ -1017,6 +1017,27 @@ pub async fn open_position_one_call(
     pool: &PgPool,
     call: &OpenPositionCall<'_>,
 ) -> Result<Option<OpenedPosition>, sqlx::Error> {
+    open_position_one_call_on(pool, call).await
+}
+
+/// The same single call, on ANY executor, so a caller that needs the fill and one more write in ONE
+/// transaction can put them side by side. That caller is the A-book hedge path (hedge_outbox.rs
+/// `open_position_one_call_hedged`), which must have the `"HedgeIntent"` land in the same transaction as the
+/// fill, or an A-book position can open with nothing to say it should have been hedged.
+///
+/// `vyx_open_position` ITSELF IS NOT TOUCHED, deliberately: adding a parameter to it would create a second
+/// Postgres function of the same name, and the live engine's existing 23-argument calls would start
+/// resolving against the wrong one. The transaction is opened on this side instead.
+///
+/// There is exactly one copy of the SQL -- `open_position_one_call` is a delegation to this -- so the pooled
+/// and the transactional paths cannot drift.
+pub async fn open_position_one_call_on<'e, E>(
+    executor: E,
+    call: &OpenPositionCall<'_>,
+) -> Result<Option<OpenedPosition>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     let order_id = call.order_id.to_string();
     let position_id = Uuid::new_v4().to_string();
     let deal_id = Uuid::new_v4().to_string();
@@ -1062,7 +1083,7 @@ pub async fn open_position_one_call(
     .bind(call.deal_reason)
     .bind(call.create_order)
     .bind(call.idempotency_key)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await;
 
     let (order_id, position_id, opened_at, deal_id, category, _charged, effect) = match row {

@@ -264,11 +264,16 @@ pub struct TablePrivilege {
 /// What the engine must be able to write once its order path writes Prisma's book instead of its own
 /// lowercase tables (design §2's delta, Stages 3-5).
 ///
+/// `"HedgeIntent"` AND `"HedgeResult"` ARE HERE NOW, AND THAT IS A CHANGE OF RULE (owner 2026-11-14).
+/// Until this branch the list deliberately excluded them: the cutover took design option (b), the engine
+/// queued a `"PostCloseEffect"` and the WEB wrote the intent inside its own transaction, so the invariant
+/// "an intent exists iff its deal committed" lived in one place and the engine needed no such privilege.
+/// The owner has moved the A-book hedge-route decision into the engine, so the engine now writes both tables
+/// itself (hedge_outbox.rs) and keeps that same invariant on this side: the intent insert shares the fill's
+/// transaction. The old wording is left in the git history rather than quietly edited away, because a reader
+/// who remembers option (b) needs to see that it was replaced and not forgotten.
+///
 /// Deliberately NOT here:
-/// - `"HedgeIntent"`: the cutover takes design option (b), so the engine queues a `"PostCloseEffect"` and
-///   the WEB writes the intent inside its own transaction. The invariant "an intent exists iff its deal
-///   committed" stays in one place, and the engine never needs this privilege. Already covered by
-///   `verify_risk_pool`'s `"PostCloseEffect"` INSERT.
 /// - `"Account"` UPDATE, `"Transaction"` INSERT, `"AuditLog"` INSERT: `verify_risk_pool` already demands
 ///   all three, and `live` mode runs both checks, so repeating them here would only produce two error
 ///   messages for one missing grant.
@@ -292,6 +297,26 @@ pub const ORDER_PATH_PRIVILEGES: &[TablePrivilege] = &[
         table: "Deal",
         privilege: "INSERT",
         why: "Stage 4: the IN deal. lib/hedge.ts keys a hedge off a Deal, so without this an A-book fill cannot be hedged",
+    },
+    TablePrivilege {
+        table: "HedgeIntent",
+        privilege: "INSERT",
+        why: "hedge route: the A-book intent, written in the SAME transaction as the fill, so a fill cannot commit without the row that says it must be hedged",
+    },
+    TablePrivilege {
+        table: "HedgeIntent",
+        privilege: "UPDATE",
+        why: "hedge route: PENDING -> CLAIMED when the bridge answers accepted, which is what stops the intent being re-offered on every reconnect",
+    },
+    TablePrivilege {
+        table: "HedgeResult",
+        privilege: "INSERT",
+        why: "hedge route: one row per leg of a filled intent, and the row a set-aside escalation is seen on",
+    },
+    TablePrivilege {
+        table: "HedgeResult",
+        privilege: "UPDATE",
+        why: "hedge route: the bridge resends a result until it is acked, so the same leg lands twice and the second one must update rather than duplicate",
     },
 ];
 
@@ -765,14 +790,31 @@ mod tests {
         let have: Vec<(&str, &str)> = ORDER_PATH_PRIVILEGES.iter().map(|p| (p.table, p.privilege)).collect();
         assert_eq!(
             have,
-            [("Order", "INSERT"), ("Order", "UPDATE"), ("Position", "INSERT"), ("Deal", "INSERT")],
-            "the order path's privilege list changed: re-read it against what Stages 3-5 actually write"
+            [
+                ("Order", "INSERT"),
+                ("Order", "UPDATE"),
+                ("Position", "INSERT"),
+                ("Deal", "INSERT"),
+                ("HedgeIntent", "INSERT"),
+                ("HedgeIntent", "UPDATE"),
+                ("HedgeResult", "INSERT"),
+                ("HedgeResult", "UPDATE"),
+            ],
+            "the order path's privilege list changed: re-read it against what the order and hedge paths write"
         );
-        // HedgeIntent is the one a reader expects and must NOT find: design option (b) has the engine
-        // queue a PostCloseEffect and the WEB write the intent, so the engine never writes that table.
+        // THIS ASSERTION USED TO BE ITS OPPOSITE. Under design option (b) HedgeIntent was the one entry a
+        // reader expected and must NOT have found, because the web wrote the intent. The owner moved the
+        // A-book hedge-route decision into the engine (2026-11-14), so the engine writes it now and the
+        // grant is required. Without it the failure is the worst shape there is: the fill commits, the
+        // intent insert raises, the transaction rolls back the fill too -- or, if it were ever written
+        // outside the transaction, the position opens unhedged with nothing to show it.
         assert!(
-            !ORDER_PATH_PRIVILEGES.iter().any(|p| p.table == "HedgeIntent"),
-            "the engine must not need HedgeIntent: option (b) keeps the deal/intent invariant in the web"
+            ORDER_PATH_PRIVILEGES.iter().any(|p| p.table == "HedgeIntent" && p.privilege == "INSERT"),
+            "the engine writes HedgeIntent now: the grant must be checked at start-up, not discovered on the first A-book fill"
+        );
+        assert!(
+            ORDER_PATH_PRIVILEGES.iter().any(|p| p.table == "HedgeResult" && p.privilege == "UPDATE"),
+            "a resent result must be able to update its leg row instead of duplicating it"
         );
         // every entry says why, because the error message is the whole point of checking before granting
         for p in ORDER_PATH_PRIVILEGES {
