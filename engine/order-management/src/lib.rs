@@ -28,6 +28,7 @@ pub mod reconcile;
 pub mod hedge_route;
 pub mod hedge_bridge;
 pub mod hedge_outbox;
+pub mod hedge_socket;
 
 use chrono::Duration as ChronoDuration;
 use crate::calc::{close_price_for, floating_pnl};
