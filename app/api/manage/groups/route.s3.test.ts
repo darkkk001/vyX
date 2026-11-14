@@ -105,6 +105,23 @@ describe("S2: new Book / Dealing groups are client-selectable by themselves", ()
     expect(out).toEqual({ B_BOOK: true, DEALING: true, A_BOOK: false, REVERSAL: false });
   });
 
+  it("owner 2026-11-13: an explicit flag wins on create and edit; REVERSAL / COVERAGE are never offered", async () => {
+    if (!dbReachable) return;
+    const fx = await fixture();
+    const off = await post(fx, form(`OFF-${fx.s}`, { category: "B_BOOK", isClientSelectable: false }));
+    expect(off.status).toBe(201);
+    expect((await prisma.group.findUniqueOrThrow({ where: { id: off.json.id } })).isClientSelectable).toBe(false);
+    const on = await post(fx, form(`ON-${fx.s}`, { category: "A_BOOK", isClientSelectable: true }));
+    expect((await prisma.group.findUniqueOrThrow({ where: { id: on.json.id } })).isClientSelectable).toBe(true);
+    const rev = await post(fx, form(`REV-${fx.s}`, { category: "REVERSAL", isClientSelectable: true }));
+    expect((await prisma.group.findUniqueOrThrow({ where: { id: rev.json.id } })).isClientSelectable).toBe(false);
+    // edit: check, uncheck
+    await patch(fx, off.json.id, form(`OFF-${fx.s}`, { category: "B_BOOK", isClientSelectable: true }));
+    expect((await prisma.group.findUniqueOrThrow({ where: { id: off.json.id } })).isClientSelectable).toBe(true);
+    await patch(fx, off.json.id, form(`OFF-${fx.s}`, { category: "B_BOOK", isClientSelectable: false }));
+    expect((await prisma.group.findUniqueOrThrow({ where: { id: off.json.id } })).isClientSelectable).toBe(false);
+  });
+
   it("an edit that does not send the flag keeps it", async () => {
     if (!dbReachable) return;
     const fx = await fixture();
