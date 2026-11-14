@@ -61,11 +61,16 @@ import { wtColors } from "./wt-colors";
 import { DEMO_SYMBOLS, demoBucketStart, demoCandleOf, gridTime } from "@/lib/demo-prices";
 import { demoTicksAt, noteDemoTick } from "@/lib/demo-client";
 import { isMine, noteEventOrigin } from "@/lib/client-instance";
+import ShareCard, { type ShareMe, type ShareTrade } from "./ShareCard";
+import { lineTimeframe, tradeSeries } from "@/lib/share-card";
+import { LOSS_AVATARS, PROFIT_AVATARS } from "@/lib/avatars";
 // WebTrader colour classes per tone (lib/format.ts): profit blue, loss red, zero neutral (platform colour rule)
 const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
 // inline colour per tone in the WebTrader's own money tokens (webtrader.css); lib/format.ts TONE_COLOR stays on the web
 // backoffice's --buy / --sell, which the admin theme defines
 const WT_TONE_COLOR: Record<Tone, string> = { profit: "var(--profit)", loss: "var(--loss)", neutral: "var(--text-1)" };
+// the share card's avatar lists before /api/trade/avatar answers (or when it cannot): the same presets
+const SHARE_FALLBACK_LISTS = { profit: [...PROFIT_AVATARS], loss: [...LOSS_AVATARS] };
 
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
@@ -364,15 +369,21 @@ export default function WebTrader({
   }, []);
 
   const [account, setAccount] = useState<AccountInfo | null>(null);
-  // the client's Bitmoji from the CRM (GET /api/trade/avatar, owner 2026-11-12); null keeps the badge's digits
+  // the client's avatar from the CRM (GET /api/trade/avatar: the Bitmoji, else the chosen preset); null keeps the
+  // badge's digits. The rest of the answer (presets, referral code + QR) feeds the share card.
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [shareMe, setShareMe] = useState<ShareMe | null>(null);
   const accountIdForAvatar = account?.id ?? null;
   useEffect(() => {
     if (!accountIdForAvatar) return;
     let live = true;
     fetch("/api/trade/avatar", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((b) => { if (live) setAvatarUrl(typeof b?.avatarUrl === "string" ? b.avatarUrl : null); })
+      .then((b) => {
+        if (!live) return;
+        setAvatarUrl(typeof b?.avatarUrl === "string" ? b.avatarUrl : null);
+        setShareMe(b && Array.isArray(b.presets?.profit) && Array.isArray(b.presets?.loss) ? (b as ShareMe) : null);
+      })
       .catch(() => {});
     return () => { live = false; };
   }, [accountIdForAvatar]);
@@ -828,9 +839,9 @@ export default function WebTrader({
   const [fundsDestination, setFundsDestination] = useState("");
 
   const [symbolInfoOpen, setSymbolInfoOpen] = useState(false);
-  const [shareData, setShareData] = useState<null | {
-    symbolLabel: string; pnl: number; pnlPct: number; entryLabel: string; currentLabel: string; rrLabel: string; rrTitle: string;
-  }>(null);
+  // the share card (components/webtrader/ShareCard.tsx): the trade, and its own prices since the open for the line
+  const [shareData, setShareData] = useState<ShareTrade | null>(null);
+  const [shareSeries, setShareSeries] = useState<number[] | null>(null);
 
   const [sltpEdit, setSltpEdit] = useState<null | { posId: string | null; netSymbol: string | null; sl: string; tp: string; unit: SlTpUnit; error: string | null }>(null);
 
@@ -2981,19 +2992,25 @@ export default function WebTrader({
     });
   }
 
+  /** Opens the share card and loads the trade's own prices since the open (the line); without them the line runs from
+   *  the entry to the current price. */
+  function openShare(t: ShareTrade) {
+    setShareData(t);
+    setShareSeries(null);
+    const opened = Date.parse(t.openedAt);
+    const tf = lineTimeframe(opened, Date.now());
+    tradeApi.candles(t.symbol, tf)
+      .then((c) => setShareSeries(tradeSeries({ side: t.side, entry: t.entry, current: t.current, openedAtMs: opened, tf, candles: c })))
+      .catch(() => {});
+  }
+
   function openShareForPosition(id: string) {
     const p = positions.find((x) => x.id === id);
     if (!p) return;
     const mm = market[p.symbol.name];
-    const pnl = positionPnl(p);
-    const pnlPct = account ? (pnl / parseFloat(account.balance)) * 100 : 0;
-    const sl = p.slPrice ? parseFloat(p.slPrice) : null;
-    const tp = p.tpPrice ? parseFloat(p.tpPrice) : null;
-    const rr = sl && tp ? Math.abs((tp - parseFloat(p.openPrice)) / (parseFloat(p.openPrice) - sl)).toFixed(1) : "";
-    setShareData({
-      symbolLabel: p.symbol.name, pnl, pnlPct,
-      entryLabel: fmt(parseFloat(p.openPrice), p.symbol.digits), currentLabel: fmt(mm.bid, p.symbol.digits),
-      rrLabel: rr === "" ? "" : `1 : ${rr}`, rrTitle: "RR",
+    openShare({
+      symbol: p.symbol.name, side: p.side, lots: formatVolume(parseFloat(p.volume)), digits: p.symbol.digits,
+      entry: parseFloat(p.openPrice), current: p.side === "BUY" ? mm.bid : mm.ask, pnl: positionPnl(p), openedAt: p.openedAt,
     });
   }
 
@@ -3011,13 +3028,11 @@ export default function WebTrader({
     const totalLots = buyLots + sellLots;
     const avgEntry = weightedEntry / totalLots;
     const netLots = +(buyLots - sellLots).toFixed(2);
-    const netSide = netLots > 0 ? "Buy" : netLots < 0 ? "Sell" : "Flat";
-    const pnlPct = account ? (totalPnl / parseFloat(account.balance)) * 100 : 0;
-    setShareData({
-      symbolLabel: `${symbolName} · net ${netSide} ${formatVolume(Math.abs(netLots))}`,
-      pnl: totalPnl, pnlPct,
-      entryLabel: fmt(avgEntry, symPositions[0].symbol.digits), currentLabel: fmt(mm.bid, symPositions[0].symbol.digits),
-      rrLabel: `${symPositions.length}`, rrTitle: "Positions",
+    const side = netLots < 0 ? "SELL" : "BUY";
+    const firstOpen = symPositions.reduce((t, p) => (p.openedAt < t ? p.openedAt : t), symPositions[0].openedAt);
+    openShare({
+      symbol: symbolName, side, lots: formatVolume(Math.abs(netLots) || totalLots), digits: symPositions[0].symbol.digits,
+      entry: avgEntry, current: side === "BUY" ? mm.bid : mm.ask, pnl: totalPnl, openedAt: firstOpen,
     });
   }
 
@@ -5683,26 +5698,12 @@ export default function WebTrader({
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setShareData(null); }}>
           <div className="modal-wrap">
             <button className="modal-close" aria-label="Close" onClick={() => setShareData(null)}>✕</button>
-            <div className={`share-card${shareData.pnl < 0 ? " sell-mode" : ""}`}>
-              <div className="share-header">
-                <div className="share-logo">
-                  {/* eslint-disable-next-line @next/next/no-img-element -- the broker's own logo URL (any host), drawn into the share card */}
-                  {brokerLogoUrl ? <img src={brokerLogoUrl} alt={brokerName} className="share-logo-img" /> : brokerName}
-                </div>
-                <div className="share-symbol-tag">{shareData.symbolLabel}</div>
-              </div>
-              <div className="share-pnl-block">
-                <div className="share-pnl-label">Unrealized PnL</div>
-                <div className="share-pnl-value" style={{ color: WT_TONE_COLOR[tone(shareData.pnl)] }}>{formatSigned(shareData.pnl)}</div>
-                <div className="share-pnl-pct" style={{ color: WT_TONE_COLOR[tone(shareData.pnl)] }}>{formatPercent(shareData.pnlPct, 2)}</div>
-              </div>
-              <div className="share-grid">
-                <div className="share-stat"><div className="share-stat-label">Entry</div><div className="share-stat-value">{shareData.entryLabel}</div></div>
-                <div className="share-stat"><div className="share-stat-label">Current</div><div className="share-stat-value">{shareData.currentLabel}</div></div>
-                <div className="share-stat"><div className="share-stat-label">{shareData.rrTitle}</div><div className="share-stat-value">{shareData.rrLabel}</div></div>
-                <div className="share-stat"><div className="share-stat-label">Leverage</div><div className="share-stat-value">1:{account?.leverage ?? 100}</div></div>
-              </div>
-              <div className="share-footer">Trade with {brokerName}</div>
+            <div className="share-modal">
+              <ShareCard
+                trade={shareData} series={shareSeries} currency={moneyCurrencyCode()} me={shareMe} fallbackLists={SHARE_FALLBACK_LISTS}
+                brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} domain={typeof window === "undefined" ? "" : window.location.host}
+                accountNumber={account?.accountNumber ?? ""} accountMode={account?.accountMode ?? "DEMO"} nickname={(account?.fullName ?? "").trim().split(/\s+/)[0] ?? ""}
+              />
             </div>
             <div className="modal-actions">
               <button className="modal-btn secondary" onClick={() => pushToast("Image saved to downloads")}>Save image</button>

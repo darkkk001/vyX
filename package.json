@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "node scripts/gen-expected-migrations.mjs && prisma generate && next build",
+    "build": "node scripts/gen-expected-migrations.mjs && node scripts/gen-avatar-presets.mjs && prisma generate && next build",
+    "avatars": "node scripts/avatars-build.mjs",
     "start": "next start",
     "lint": "eslint && node scripts/check-no-dashes.mjs",
     "test": "vitest run"

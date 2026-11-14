@@ -286,17 +286,17 @@ describe("where it shows", () => {
     expect(sql).toContain('ALTER TABLE "Client" ADD COLUMN "bitmojiAvatarUrl" TEXT;');
     expect(sql).toContain('ALTER TABLE "Client" ADD COLUMN "bitmojiConnectedAt" TIMESTAMPTZ(3);');
   });
-  it("top bar: the Bitmoji when connected, else the initials as before", () => {
+  it("top bar: the Bitmoji when connected, else the chosen preset (2026-11-14), else the initials as before", () => {
     const m = read("components/room/UserMenu.tsx");
     expect(m).toContain('<img className="r-avatar r-avatar-img" src={data.client.avatarUrl} alt="" referrerPolicy="no-referrer" />');
     expect(m).toContain(') : <span className="r-avatar">{initials(data.client.fullName)}</span>}');
-    expect(read("app/api/room/overview/route.ts")).toContain("avatarUrl: shownAvatar(session.broker.subdomain, client.bitmojiAvatarUrl)");
+    expect(read("app/api/room/overview/route.ts")).toContain("avatarUrl: shownAvatarOf(shownAvatar(session.broker.subdomain, client.bitmojiAvatarUrl), client.avatarPreset).url");
   });
   it("Profile: Connect Bitmoji for verified clients, Disconnect once connected, only where the flag is on", () => {
     const pg = read("app/(broker)/room/(shell)/profile/page.tsx");
     expect(pg).toContain('href="/api/bitmoji/start" onClick={(e) => { e.preventDefault(); setBmAsk(true); }}>Connect Bitmoji</a>');
     expect(pg).toContain('{bmBusy ? "Disconnecting…" : "Disconnect"}');
-    expect(pg).toContain("p?.bitmoji && (p.bitmoji.avatarUrl || p.bitmoji.canConnect)");
+    expect(pg).toContain("p.bitmoji && (p.bitmoji.avatarUrl || p.bitmoji.canConnect)");
     // the popup before Snap: the owner's text, Cancel and Continue; Continue opens a new tab, blocked = this page
     expect(pg).toContain('aria-label="Connect your Bitmoji"');
     for (const t of [

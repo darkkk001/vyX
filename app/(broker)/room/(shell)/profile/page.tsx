@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import RoomHeader from "@/components/room/RoomHeader";
 import { useRoom, useRoomEvent } from "@/components/room/RoomData";
 import { day, dayTime, initials } from "@/components/room/format";
+import { ALL_AVATARS, avatarLabel, avatarPath } from "@/lib/avatars";
 
 // Artboard "Profile & security": personal information (locked after KYC), documents, 2FA, password, active sessions.
 type Profile = {
@@ -13,6 +14,7 @@ type Profile = {
   twoFactorEnabled: boolean;
   sessions: { id: string; device: string; ip: string | null; at: string | null; current: boolean }[];
   bitmoji: { canConnect: boolean; avatarUrl: string | null; appName: string } | null; // null = Bitmoji connect is off for this broker
+  avatar: { type: "bitmoji" | "preset" | "none"; preset: string | null; url: string | null }; // what shows (lib/avatars.ts)
 };
 // what /api/bitmoji/callback (or /start) sent back, as ?bitmoji=<result>
 const BITMOJI_RESULT: Record<string, string> = {
@@ -106,6 +108,29 @@ export default function RoomProfile() {
     setBmBusy(false);
   }
 
+  // Choose avatar (owner 2026-11-14): one of the preset pictures, or the initials; saved at once
+  const [pickOpen, setPickOpen] = useState(false);
+  const [pickMsg, setPickMsg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pickOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPickOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pickOpen]);
+  async function pickAvatar(preset: string | null) {
+    setPickMsg(null);
+    try {
+      const res = await fetch("/api/room/avatar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preset }) });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) { setPickMsg(body?.error ?? "Could not save. Try again."); return; }
+      setPickOpen(false);
+      await load();
+      await refresh();
+    } catch {
+      setPickMsg("No connection. Try again.");
+    }
+  }
+
   // password
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
@@ -151,15 +176,37 @@ export default function RoomProfile() {
         <div style={{ flex: "1 1 380px", minWidth: 0, display: "flex", flexDirection: "column", gap: 20 }}>
           <div className="r-card" style={card}>
             <div className="r-label">Personal information</div>
-            {p?.bitmoji && (p.bitmoji.avatarUrl || p.bitmoji.canConnect) ? (
+            {p ? (
               <div className="r-bitmoji-row">
-                {p.bitmoji.avatarUrl ? (
+                {p.avatar.url ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img className="r-avatar r-avatar-img r-avatar-lg" src={p.bitmoji.avatarUrl} alt="Your Bitmoji" referrerPolicy="no-referrer" />
+                  <img className="r-avatar r-avatar-img r-avatar-lg" src={p.avatar.url} alt={p.avatar.type === "bitmoji" ? "Your Bitmoji" : "Your avatar"} referrerPolicy="no-referrer" />
                 ) : <span className="r-avatar r-avatar-lg">{initials(p.personal.fullName)}</span>}
-                {p.bitmoji.avatarUrl ? (
+                <button type="button" className="r-btn-ghost r-btn-sm" onClick={() => { setPickMsg(null); setPickOpen(true); }}>Choose avatar</button>
+                {p.bitmoji && (p.bitmoji.avatarUrl || p.bitmoji.canConnect) ? (p.bitmoji.avatarUrl ? (
                   <button type="button" className="r-btn-ghost r-btn-sm" disabled={bmBusy} onClick={disconnectBitmoji}>{bmBusy ? "Disconnecting…" : "Disconnect"}</button>
-                ) : <a className="r-btn r-btn-sm" href="/api/bitmoji/start" onClick={(e) => { e.preventDefault(); setBmAsk(true); }}>Connect Bitmoji</a>}
+                ) : <a className="r-btn r-btn-sm" href="/api/bitmoji/start" onClick={(e) => { e.preventDefault(); setBmAsk(true); }}>Connect Bitmoji</a>) : null}
+              </div>
+            ) : null}
+            {pickOpen && p ? (
+              <div className="r-modal-back" onPointerDown={(e) => { if (e.target === e.currentTarget) setPickOpen(false); }}>
+                <div className="r-modal" role="dialog" aria-modal="true" aria-label="Choose avatar" style={{ maxWidth: 460 }}>
+                  <div style={{ fontFamily: "var(--r-head)", fontSize: 18, fontWeight: 600 }}>Choose avatar</div>
+                  {p.avatar.type === "bitmoji" ? <div style={small}>Your Bitmoji shows while it is connected.</div> : null}
+                  <div className="r-avatar-grid">
+                    {ALL_AVATARS.map((name) => (
+                      <button key={name} type="button" className="r-avatar-pick" aria-pressed={p.avatar.preset === name} title={avatarLabel(name)} aria-label={avatarLabel(name)} onClick={() => void pickAvatar(name)}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={avatarPath(name, 96)} srcSet={`${avatarPath(name, 96)} 1x, ${avatarPath(name, 256)} 2x`} alt="" loading="lazy" />
+                      </button>
+                    ))}
+                    <button type="button" className="r-avatar-pick r-avatar-pick-none" aria-pressed={!p.avatar.preset} title="Initials" aria-label="Initials" onClick={() => void pickAvatar(null)}>{initials(p.personal.fullName)}</button>
+                  </div>
+                  {pickMsg ? <div role="status" style={{ fontSize: 12, color: "var(--r-loss)" }}>{pickMsg}</div> : null}
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <button type="button" className="r-btn-ghost r-btn-sm" onClick={() => setPickOpen(false)}>Close</button>
+                  </div>
+                </div>
               </div>
             ) : null}
             {bmAsk ? (

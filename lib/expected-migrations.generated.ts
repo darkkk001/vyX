@@ -142,5 +142,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261112120000_broker_wordmark",
   "20261112150000_client_bitmoji",
   "20261113120000_client_instance",
-  "20261113130000_engine_registry"
+  "20261113130000_engine_registry",
+  "20261114120000_client_avatar_preset"
 ];

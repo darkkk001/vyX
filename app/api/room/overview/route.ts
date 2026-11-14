@@ -6,6 +6,7 @@ import { accountFigures } from "@/lib/room/figures";
 import { roomTransactions } from "@/lib/room/transactions";
 import { platformBrand } from "@/lib/room/platform-brand";
 import { shownAvatar } from "@/lib/room/bitmoji";
+import { shownAvatarOf } from "@/lib/avatars";
 
 // Trader's Room Dashboard: the client, every own account with the server's figures, totals over the LIVE accounts
 // (only when they share one currency), the five latest money rows and the verification state.
@@ -17,7 +18,7 @@ export async function GET() {
   const [client, accounts] = await Promise.all([
     prisma.client.findUnique({
       where: { id: session.clientId },
-      select: { fullName: true, email: true, clientNumber: true, prevLoginAt: true, passwordHash: true, bitmojiAvatarUrl: true, kycRecord: { select: { status: true, documentFrontUrl: true, addressProofUrl: true, rejectionReason: true } } },
+      select: { fullName: true, email: true, clientNumber: true, prevLoginAt: true, passwordHash: true, bitmojiAvatarUrl: true, avatarPreset: true, kycRecord: { select: { status: true, documentFrontUrl: true, addressProofUrl: true, rejectionReason: true } } },
     }),
     prisma.account.findMany({
       where: { clientId: session.clientId, brokerId: session.brokerId, status: { not: "CLOSED" }, archivedAt: null },
@@ -72,7 +73,7 @@ export async function GET() {
 
   const kyc = client.kycRecord;
   return NextResponse.json({
-    client: { fullName: client.fullName, email: client.email, clientId: `C-${client.clientNumber}`, lastLoginAt: client.prevLoginAt?.toISOString() ?? null, avatarUrl: shownAvatar(session.broker.subdomain, client.bitmojiAvatarUrl) },
+    client: { fullName: client.fullName, email: client.email, clientId: `C-${client.clientNumber}`, lastLoginAt: client.prevLoginAt?.toISOString() ?? null, avatarUrl: shownAvatarOf(shownAvatar(session.broker.subdomain, client.bitmojiAvatarUrl), client.avatarPreset).url },
     kyc: kyc
       ? { status: kyc.status, identity: Boolean(kyc.documentFrontUrl), address: Boolean(kyc.addressProofUrl), rejectionReason: kyc.rejectionReason ?? null }
       : { status: "NONE", identity: false, address: false, rejectionReason: null },

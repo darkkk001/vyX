@@ -109,7 +109,14 @@
 .r-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--r-avatar); color: var(--r-text); display: inline-flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 600; flex: none; }
 .r-avatar-img { object-fit: cover; }
 .r-avatar-lg { width: 56px; height: 56px; font-size: 16px; }
-.r-bitmoji-row { display: flex; align-items: center; gap: 14px; }
+.r-bitmoji-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* Profile, Choose avatar (owner 2026-11-14): the preset pictures as round tiles, the chosen one ringed in the accent */
+.r-avatar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 10px; }
+.r-avatar-pick { aspect-ratio: 1; width: 100%; padding: 0; border-radius: 50%; border: 2px solid transparent; background: var(--r-avatar); color: var(--r-text); overflow: hidden; cursor: pointer; font: 600 15px var(--r-sans); display: flex; align-items: center; justify-content: center; }
+.r-avatar-pick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.r-avatar-pick:hover { border-color: var(--r-border); }
+.r-avatar-pick[aria-pressed="true"] { border-color: var(--r-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--r-accent) 35%, transparent); }
+.r-avatar-pick:focus-visible { outline: 2px solid var(--r-accent); outline-offset: 2px; }
 /* Profile, Active sessions (owner 2026-11-12): about 5 sessions tall (a row is 64 px apart, the 5th ends at 295 px),
    the rest scroll inside the card; the scrollbar takes the theme's colours */
 .r-sessions { max-height: 296px; overflow-y: auto; overscroll-behavior: contain; padding-right: 10px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--r-muted) 45%, transparent) transparent; }

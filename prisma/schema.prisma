@@ -1524,6 +1524,9 @@ model Client {
   // not connected (the initials show). Snap's tokens are never stored.
   bitmojiAvatarUrl   String?
   bitmojiConnectedAt DateTime? @db.Timestamptz(3)
+  // Preset avatar (owner 2026-11-14, lib/avatars.ts): the picture the client chose in Profile (public/avatars); shown
+  // when no Bitmoji is. null = initials.
+  avatarPreset       String?
   // Partner (IB) portal (CRM 2026-11-03): partnerAccountId = the client's account the broker made an IB (it receives the
   // commissions, IbRelationship.ibAccountId); null = not a partner. referralCode = their link's code; referredByClientId =
   // the partner whose link this client signed up through (their live accounts are attached to that partner).

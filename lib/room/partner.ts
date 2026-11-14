@@ -23,13 +23,22 @@ export async function partnerAccountOf(db: Db, clientId: string): Promise<{ id: 
   return rel?.ibAccount ?? null;
 }
 
-/** The client's referral code, made on first use: initials + 4 characters, unique. */
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I: read off a card
+const randomChars = (n: number) => Array.from({ length: n }, () => CODE_CHARS[crypto.randomInt(CODE_CHARS.length)]).join("");
+
+/** A new referral code (owner 2026-11-14): 8-9 characters, up to 5 letters of the name then 4 random ("JADES7K2Q");
+ *  a name with fewer than 4 letters is filled up to 4 with random ones. Codes made before keep working as they are. */
+export function newReferralCode(fullName: string): string {
+  const letters = fullName.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 5);
+  return `${letters}${randomChars(Math.max(0, 4 - letters.length))}${randomChars(4)}`;
+}
+
+/** The client's referral code, made on first use (every client, owner 2026-11-14), unique. */
 export async function referralCodeOf(clientId: string): Promise<string> {
   const c = await prisma.client.findUniqueOrThrow({ where: { id: clientId }, select: { referralCode: true, fullName: true } });
   if (c.referralCode) return c.referralCode;
-  const initials = (c.fullName.match(/\b[A-Za-z]/g) ?? ["P"]).slice(0, 2).join("").toUpperCase();
   for (let i = 0; i < 8; i++) {
-    const code = `${initials}${crypto.randomBytes(3).toString("hex").slice(0, 4).toUpperCase()}`;
+    const code = newReferralCode(c.fullName);
     const done = await prisma.client.updateMany({ where: { id: clientId, referralCode: null }, data: { referralCode: code } }).catch(() => ({ count: 0 }));
     if (done.count === 1) return code;
     const again = await prisma.client.findUnique({ where: { id: clientId }, select: { referralCode: true } });

@@ -4,6 +4,7 @@ import { roomApiSession } from "@/lib/room/context";
 import { listClientSessions } from "@/lib/client-auth";
 import { identityLocked, dateOnly, type KycState } from "@/lib/client-profile";
 import { bitmojiEnabledFor, shownAvatar, snapClientId } from "@/lib/room/bitmoji";
+import { shownAvatarOf } from "@/lib/avatars";
 
 // Trader's Room Profile & security: personal information (identity fields lock with KYC), document states, 2FA state
 // and the client's live sessions.
@@ -14,7 +15,7 @@ export async function GET() {
   const c = await prisma.client.findUnique({
     where: { id: session.clientId },
     select: {
-      fullName: true, email: true, phone: true, country: true, dateOfBirth: true, clientNumber: true, createdAt: true, twoFactorEnabled: true, bitmojiAvatarUrl: true,
+      fullName: true, email: true, phone: true, country: true, dateOfBirth: true, clientNumber: true, createdAt: true, twoFactorEnabled: true, bitmojiAvatarUrl: true, avatarPreset: true,
       kycRecord: { select: { status: true, documentFrontUrl: true, addressProofUrl: true, reviewedAt: true, rejectionReason: true, updatedAt: true } },
     },
   });
@@ -39,6 +40,8 @@ export async function GET() {
     ],
     rejectionReason: kyc?.status === "REJECTED" ? kyc.rejectionReason ?? null : null,
     twoFactorEnabled: c.twoFactorEnabled,
+    // what shows (Bitmoji, else the chosen preset, else initials) and the chosen preset (lib/avatars.ts)
+    avatar: shownAvatarOf(shownAvatar(ctx.session.broker.subdomain, c.bitmojiAvatarUrl), c.avatarPreset),
     // Bitmoji connect (lib/room/bitmoji.ts): offered only where the flag is on, to verified clients; a connected client
     // can always disconnect
     bitmoji: bitmojiEnabledFor(ctx.session.broker.subdomain) && snapClientId()
