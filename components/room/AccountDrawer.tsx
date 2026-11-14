@@ -183,7 +183,7 @@ export default function AccountDrawer({ account, lev, onClose, onChanged }: { ac
         <Note msg={msg} />
         <Row label="Nickname (optional)">
           <div style={{ display: "flex", gap: 8 }}>
-            <input className="r-input" aria-label="Nickname" style={{ flex: 1, minWidth: 0, padding: "7px 10px", fontSize: 13 }} maxLength={30} value={nick} onChange={(e) => { setNick(e.target.value); setNickMsg(null); }} />
+            <input className="r-input" aria-label="Nickname" style={{ flex: 1, minWidth: 0, padding: "7px 10px", fontSize: 13 }} maxLength={20} value={nick} onChange={(e) => { setNick(e.target.value); setNickMsg(null); }} />
             <button type="button" className="r-btn-ghost r-btn-sm" onClick={saveNick}>Save</button>
           </div>
           <Note msg={nickMsg} />

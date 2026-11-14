@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { avatarBg, avatarPath } from "@/lib/avatars";
-import { heroLines, linePoints, maskedAccount, movePercent, movePoints, shareSlides, shareStart, smoothPath, type ShareMe, type ShareSide, type Slide } from "@/lib/share-card";
+import { heroLines, linePoints, maskedAccount, movePercent, movePips, shareFileName, shareLink, shareSlides, shareStart, shareText, smoothPath, telegramShareUrl, xShareUrl, type ShareMe, type ShareSide, type Slide } from "@/lib/share-card";
 
 export type { ShareMe } from "@/lib/share-card";
 
@@ -10,7 +10,9 @@ export type { ShareMe } from "@/lib/share-card";
 // (C:\vyx\handoff\share-card-prototype.html; the Bitmoji card is share-card-popout-reference.html design A); the CSS is
 // webtrader.css "Share card". Profit: the avatar in its colours, green, the line going up. Loss: the avatar dimmed with
 // a red shade and rain lines, red, the line going down. Swipe (or the arrows) changes the avatar within the list of the
-// card's own mood; a tap switches the hero between money and points.
+// card's own mood; a tap switches the hero between money and pips. The buttons under it (owner 2026-11-14): Download
+// (the card as a PNG), Copy link (the referral register link), Telegram / X / More (a phone: the phone's share menu with
+// the image; a desktop: the share page with the text and the link, the image downloaded beside it).
 
 export type ShareTrade = { symbol: string; side: ShareSide; lots: string; entry: number; current: number; digits: number; pnl: number; openedAt: string };
 
@@ -21,7 +23,8 @@ const slideName = (s: Slide) => (s.kind === "bitmoji" ? "Bitmoji" : s.name.repla
 
 export default function ShareCard(p: {
   trade: ShareTrade; series: number[] | null; currency: string; me: ShareMe | null; fallbackLists: { profit: string[]; loss: string[] };
-  brokerName: string; brokerLogoUrl: string; domain: string; accountNumber: string; accountMode: "LIVE" | "DEMO"; nickname: string;
+  brokerName: string; brokerLogoUrl: string; domain: string; origin: string; accountNumber: string; accountMode: "LIVE" | "DEMO"; nickname: string;
+  onToast: (message: string, ok?: boolean) => void;
 }) {
   const { trade } = p;
   const loss = trade.pnl < 0;
@@ -30,7 +33,7 @@ export default function ShareCard(p: {
   const [shown, setShown] = useState(i);
   const [out, setOut] = useState<0 | 1 | -1>(0);
   useEffect(() => { const s = shareStart(slides, p.me, loss); setI(s); setShown(s); setOut(0); }, [slides, p.me, loss]);
-  const [view, setView] = useState<"money" | "points">("money");
+  const [view, setView] = useState<"money" | "pips">("money");
   const [opt, setOpt] = useState({ nick: true, pnl: true, price: true, graph: true });
   const n = slides.length;
 
@@ -58,9 +61,10 @@ export default function ShareCard(p: {
   const col = loss ? RED : GREEN;
   const bg = loss ? LOSS_BG : slide?.kind === "preset" ? avatarBg(slide.name) : "#16442E";
   const r = rgb(bg);
-  const points = movePoints(trade.entry, trade.current, trade.digits, trade.symbol, trade.side);
+  const pips = movePips(trade.entry, trade.current, trade.digits, trade.side);
   const pct = movePercent(trade.entry, trade.current, trade.side);
-  const hero = heroLines({ pnl: trade.pnl, currency: p.currency, points, pct, showPnl: opt.pnl, view });
+  const hero = heroLines({ pnl: trade.pnl, currency: p.currency, pips, pct, showPnl: opt.pnl, view });
+  const nameTag = p.me?.nameTag || p.nickname;
   const fmt = (v: number) => v.toFixed(trade.digits);
   const sell = trade.side === "SELL";
 
@@ -84,19 +88,103 @@ export default function ShareCard(p: {
   useLayoutEffect(() => { const id = requestAnimationFrame(placeArrow); return () => cancelAnimationFrame(id); }, [placeArrow, d, opt.graph, opt.price, opt.pnl, pop]);
   useEffect(() => { window.addEventListener("resize", placeArrow); return () => window.removeEventListener("resize", placeArrow); }, [placeArrow]);
 
-  // tap = money <-> points (only while the PnL amount shows); a swipe over 40 px = the next / previous avatar
+  // tap = money <-> pips (only while the PnL amount shows); a swipe over 40 px = the next / previous avatar
   const sx = useRef<number | null>(null);
   const moved = useRef(false);
-  const toggle = () => { if (opt.pnl) setView((v) => (v === "money" ? "points" : "money")); };
+  const toggle = () => { if (opt.pnl) setView((v) => (v === "money" ? "pips" : "money")); };
   const when = new Date();
   const stamp = `${when.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })} \u00b7 ${when.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })} ${new Intl.DateTimeFormat("en-GB", { timeZoneName: "short" }).formatToParts(when).find((x) => x.type === "timeZoneName")?.value ?? ""}`.trim();
   const bigSize = `${(9.3 * Math.min(1, 9 / Math.max(1, hero.big.length))).toFixed(2)}cqw`;
 
+  // ---- the buttons: the card as a PNG (html-to-image), made in the background once the card settles, so a phone's
+  // share menu opens straight from the tap (the browser allows it only right after the tap) ----
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const shot = useRef<{ key: string; blob: Blob } | null>(null);
+  const shotKey = JSON.stringify([shown, view, opt, hero.big, hero.sub, d, nameTag, p.me?.referralCode ?? null, loss]);
+  const makeImage = useCallback(async (): Promise<Blob | null> => {
+    if (shot.current?.key === shotKey) return shot.current.blob;
+    const el = stageRef.current, root = rootRef.current;
+    if (!el || !root) return null;
+    const { toBlob } = await import("html-to-image");
+    root.classList.add("wsc-capturing");
+    try {
+      const blob = await toBlob(el, { pixelRatio: 2 });
+      if (blob) shot.current = { key: shotKey, blob };
+      return blob;
+    } catch {
+      return null;
+    } finally {
+      root.classList.remove("wsc-capturing");
+    }
+  }, [shotKey]);
+  useEffect(() => { const t = setTimeout(() => { void makeImage(); }, 1400); return () => clearTimeout(t); }, [makeImage]);
+  const link = shareLink(p.me, p.origin);
+  const text = shareText(p.brokerName);
+  const fileName = shareFileName(p.brokerName, trade.symbol);
+  const [copied, setCopied] = useState(false);
+  const saveImage = (b: Blob) => {
+    const u = URL.createObjectURL(b);
+    const a = document.createElement("a");
+    a.href = u; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(u), 10_000);
+  };
+  const touchFirst = () => window.matchMedia("(pointer: coarse)").matches;
+  const phoneMenu = async (): Promise<boolean> => {
+    // a phone (touch first) whose browser can share files: its share menu with the card image, the text and the link
+    if (!touchFirst() || typeof navigator.canShare !== "function") return false;
+    const b = await makeImage();
+    if (!b) return false;
+    const f = new File([b], fileName, { type: "image/png" });
+    if (!navigator.canShare({ files: [f] })) return false;
+    try { await navigator.share({ files: [f], text: `${text}\n${link}` }); } catch (e) { if ((e as Error)?.name !== "AbortError") p.onToast("Could not open the share menu."); }
+    return true;
+  };
+  async function download() {
+    const b = await makeImage();
+    if (!b) { p.onToast("Could not make the image. Try again."); return; }
+    saveImage(b);
+    p.onToast("Card image saved", true);
+  }
+  async function copyLink(quiet = false) {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      if (!quiet) p.onToast("Link copied", true);
+      return true;
+    } catch {
+      p.onToast("Could not copy the link.");
+      return false;
+    }
+  }
+  async function shareTo(target: "telegram" | "x") {
+    if (touchFirst() && (await phoneMenu())) return;
+    // a desktop: the share page opens at once (from the click itself), the image downloads beside it
+    const w = window.open(target === "telegram" ? telegramShareUrl(text, link) : xShareUrl(text, link), "_blank");
+    if (w) w.opener = null;
+    const b = await makeImage();
+    if (b) saveImage(b);
+  }
+  async function more() {
+    if (await phoneMenu()) return;
+    // a desktop: the system share menu where the browser has one, else the image saved and the link copied
+    const b = await makeImage();
+    if (b && typeof navigator.canShare === "function") {
+      const f = new File([b], fileName, { type: "image/png" });
+      if (navigator.canShare({ files: [f] })) {
+        try { await navigator.share({ files: [f], text: `${text}\n${link}` }); return; } catch (e) { if ((e as Error)?.name === "AbortError") return; }
+      }
+    }
+    if (b) saveImage(b);
+    if (await copyLink(true)) p.onToast(b ? "Image saved and link copied" : "Link copied", true);
+  }
+
   return (
-    <div className="wsc">
-      <div className={`wsc-stage${slides.some((s) => s.kind === "bitmoji") ? " wsc-has-pop" : ""}`}>
+    <div className="wsc" ref={rootRef}>
+      <div ref={stageRef} className={`wsc-stage${slides.some((s) => s.kind === "bitmoji") ? " wsc-has-pop" : ""}`}>
         <div
-          className={`wsc-card${pop ? " wsc-pop" : ""}`} role="button" tabIndex={0} aria-label="Share card, tap to switch money and points"
+          className={`wsc-card${pop ? " wsc-pop" : ""}`} role="button" tabIndex={0} aria-label="Share card, tap to switch money and pips"
           style={{ background: pop && !loss ? POP_BG : bg }}
           onPointerDown={(e) => { sx.current = e.clientX; moved.current = false; }}
           onPointerMove={(e) => { if (sx.current !== null && Math.abs(e.clientX - sx.current) > 12) moved.current = true; }}
@@ -136,9 +224,9 @@ export default function ShareCard(p: {
             <>
               {/* eslint-disable-next-line @next/next/no-img-element -- the client's Bitmoji (Snap's host) */}
               <img className={`wsc-popimg${out ? " out" : ""}`} src={slide.url} alt="" referrerPolicy="no-referrer" style={loss ? { filter: "grayscale(.75) brightness(.6) contrast(1.1)" } : undefined} />
-              {opt.nick && p.nickname ? <div className="wsc-poptag">@{p.nickname}</div> : null}
+              {opt.nick && nameTag ? <div className="wsc-poptag">@{nameTag}</div> : null}
             </>
-          ) : opt.nick && p.nickname ? <div className="wsc-nametag">{p.nickname}</div> : null}
+          ) : opt.nick && nameTag ? <div className="wsc-nametag">{nameTag}</div> : null}
           <div className="wsc-txt">
             <div className="wsc-brand">
               {/* eslint-disable-next-line @next/next/no-img-element -- the broker's own logo */}
@@ -180,6 +268,15 @@ export default function ShareCard(p: {
           ))}
         </div>
       </div>
+      <div className="wsc-actions">
+        <button type="button" className="wsc-act primary" onClick={() => void download()}><Ico d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14" />Download</button>
+        <button type="button" className="wsc-act" onClick={() => void copyLink()}><Ico d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" />{copied ? "Copied" : "Copy link"}</button>
+        <button type="button" className="wsc-act" onClick={() => void shareTo("telegram")}><Ico d="M21 4 3 11l6 2.5M21 4l-3.5 16-8.5-6.5M21 4 9 13.5V19l3-3.5" />Telegram</button>
+        <button type="button" className="wsc-act" onClick={() => void shareTo("x")}><Ico d="M5 5l14 14M19 5 5 19" />X</button>
+        <button type="button" className="wsc-act" onClick={() => void more()}><Ico d="M12 15V4m0 0L8 8m4-4 4 4M6 12v7h12v-7" />More</button>
+      </div>
     </div>
   );
 }
+
+const Ico = ({ d }: { d: string }) => <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>;

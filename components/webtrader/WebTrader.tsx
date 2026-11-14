@@ -5702,12 +5702,9 @@ export default function WebTrader({
               <ShareCard
                 trade={shareData} series={shareSeries} currency={moneyCurrencyCode()} me={shareMe} fallbackLists={SHARE_FALLBACK_LISTS}
                 brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} domain={typeof window === "undefined" ? "" : window.location.host}
+                origin={typeof window === "undefined" ? "" : window.location.origin} onToast={(m) => pushToast(m)}
                 accountNumber={account?.accountNumber ?? ""} accountMode={account?.accountMode ?? "DEMO"} nickname={(account?.fullName ?? "").trim().split(/\s+/)[0] ?? ""}
               />
-            </div>
-            <div className="modal-actions">
-              <button className="modal-btn secondary" onClick={() => pushToast("Image saved to downloads")}>Save image</button>
-              <button className="modal-btn primary" onClick={() => pushToast("Share sheet opened")}>Share</button>
             </div>
           </div>
         </div>

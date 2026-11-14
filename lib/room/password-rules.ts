@@ -12,9 +12,9 @@ export function tradingPasswordRules(p: string): PasswordRule[] {
 
 export const tradingPasswordOk = (p: unknown): p is string => typeof p === "string" && tradingPasswordRules(p).every((r) => r.ok);
 
-/** A client's label: trimmed, control characters out, at most 30 characters; empty means none. */
+/** A client's label: trimmed, control characters out, at most 20 characters (owner 2026-11-14); empty means none. */
 export function cleanNickname(v: unknown): string | null {
   if (typeof v !== "string") return null;
-  const t = v.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 30);
+  const t = v.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 20);
   return t || null;
 }

@@ -16,13 +16,13 @@ import { LOSS_AVATARS, PROFIT_AVATARS, avatarBg, avatarPath, shownAvatarOf } fro
 // first read, lib/room/partner.ts referralCodeOf); its QR opens the broker's register page with the code.
 // Response (URLs absolute):
 // { avatarUrl, type: "bitmoji"|"preset"|"none", preset, imageUrl, referralCode, registerUrl, qr,
-//   presets: { profit: [{ name, imageUrl, bg }], loss: [...] } }
+//   presets: { profit: [{ name, imageUrl, bg }], loss: [...] }, nameTag }
 export async function GET(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   const account = await prisma.account.findUnique({
     where: { id: session.accountId },
-    select: { brokerId: true, broker: { select: { subdomain: true } }, client: { select: { id: true, brokerId: true, bitmojiAvatarUrl: true, avatarPreset: true } } },
+    select: { brokerId: true, nickname: true, fullName: true, broker: { select: { subdomain: true } }, client: { select: { id: true, brokerId: true, bitmojiAvatarUrl: true, avatarPreset: true, fullName: true } } },
   });
   const client = account && account.brokerId === session.brokerId && account.client?.brokerId === session.brokerId ? account.client : null;
   const origin = requestOrigin(request);
@@ -40,5 +40,7 @@ export async function GET(request: NextRequest) {
     registerUrl,
     qr: registerUrl ? await QRCode.toDataURL(registerUrl, { margin: 1, width: 240 }) : null,
     presets: { profit: list(PROFIT_AVATARS), loss: list(LOSS_AVATARS) },
+    // the card's name tag (owner 2026-11-14): the account's nickname (Room > account Settings), else the client's name
+    nameTag: account && account.brokerId === session.brokerId ? (account.nickname?.trim() || client?.fullName || account.fullName || null) : null,
   }, { headers: { "Cache-Control": "private, no-store" } });
 }

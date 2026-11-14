@@ -182,7 +182,7 @@ export default function OpenAccountModal() {
               </div>
               <div className="r-field">
                 <label htmlFor="oa-nick">Nickname (optional)</label>
-                <input id="oa-nick" className="r-input" maxLength={30} value={nickname} onChange={(e) => setNickname(e.target.value)} />
+                <input id="oa-nick" className="r-input" maxLength={20} value={nickname} onChange={(e) => setNickname(e.target.value)} />
               </div>
               {mode === "DEMO" && meta ? (
                 <div className="r-field">

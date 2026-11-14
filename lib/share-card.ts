@@ -7,16 +7,19 @@ export type CandleTf = "M1" | "M5" | "M15" | "H1" | "H4" | "D1";
 const MINUS = "\u2212";
 const sign = (profit: boolean) => (profit ? "+" : MINUS);
 
-// The owner's calculation brief (2026-11-14), the same in the terminal so the two never drift:
-//   points = (exit - entry) / pointSize * (BUY ? 1 : -1); pointSize 0.10 for gold (XAU*, GOLD*), else 10^-digits;
-//   rounded to 1 decimal away from zero, the decimal shown only when there is one;
+// The owner's rule (2026-11-14, the same in the terminal so the two never drift):
+//   pips = (exit - entry) * (BUY ? 1 : -1) / the symbol's pip size; the pip size comes from the symbol's own settings by
+//   the platform's one pip rule (lib/group-pricing.ts pipSize, the engine's pip_size): 10 x the symbol's point, i.e.
+//   10^-(digits - 1): gold (2 digits) 0.10, forex (5) 0.0001, JPY pairs (3) 0.01, 1-digit indices / BTCUSD 1.0.
+//   gold 3888.13 -> 3895.19 = 70.6 pips, 4100 -> 4170 = 700 pips; one decimal, shown only when there is one.
 //   move % = (exit - entry) / entry * 100 * side, 2 decimals; never a return on margin; minus = U+2212.
-const roundAway1 = (v: number) => Math.sign(v) * Math.round(Math.abs(v) * 10 + 1e-9) / 10;
-export const pointSize = (symbol: string, digits: number) => (/^(XAU|GOLD)/i.test(symbol) ? 0.1 : 10 ** -digits);
 
-/** The price move in points, signed by the trade's side: XAUUSD BUY 3888.13 -> 3895.19 = +70.6. */
-export function movePoints(entry: number, current: number, digits: number, symbol: string, side: ShareSide): number {
-  return roundAway1(((current - entry) / pointSize(symbol, digits)) * (side === "BUY" ? 1 : -1));
+/** 1 pip in price units for a symbol with this many digits (the same rule as lib/group-pricing.ts pipSize). */
+export const pipSizeOf = (digits: number) => 10 ** -Math.max(digits - 1, 0);
+
+/** The price move in pips, signed by the trade's side: XAUUSD BUY 3888.13 -> 3895.19 = +70.6. */
+export function movePips(entry: number, current: number, digits: number, side: ShareSide): number {
+  return Number((((current - entry) * (side === "BUY" ? 1 : -1)) / pipSizeOf(digits)).toFixed(1));
 }
 
 /** The price move in percent of the entry price (not of the margin), signed by the side, 2 decimals. */
@@ -32,19 +35,19 @@ export function moneyText(pnl: number, currency: string): string {
   return CCY[currency] ? `${s}${CCY[currency]}${abs}` : `${s}${abs} ${currency}`;
 }
 
-/** "+70.6 pts", "−2,380.3 pts", "+347 pts" */
-export function pointsText(points: number): string {
-  return `${sign(points >= 0)}${Math.abs(points).toLocaleString("en-US", { maximumFractionDigits: 1 })} pts`;
+/** "+70.6 pips", "+700 pips", "−3.5 pips" */
+export function pipsText(pips: number): string {
+  return `${sign(pips >= 0)}${Math.abs(pips).toLocaleString("en-US", { maximumFractionDigits: 1 })} pips`;
 }
 /** "+0.18%" */
 export function percentText(pct: number): string {
   return `${sign(pct >= 0)}${Math.abs(pct).toFixed(2)}%`;
 }
 
-/** The hero and the line under it. view "money" = USD first (the default), "points" after a tap; PnL off = no money
- *  anywhere: points big, the move % under it. */
-export function heroLines(p: { pnl: number; currency: string; points: number; pct: number; showPnl: boolean; view: "money" | "points" }): { big: string; sub: string } {
-  const pts = pointsText(p.points), pct = percentText(p.pct);
+/** The hero and the line under it. view "money" = USD first (the default), "pips" after a tap; PnL off = no money
+ *  anywhere: pips big, the move % under it. */
+export function heroLines(p: { pnl: number; currency: string; pips: number; pct: number; showPnl: boolean; view: "money" | "pips" }): { big: string; sub: string } {
+  const pts = pipsText(p.pips), pct = percentText(p.pct);
   if (!p.showPnl) return { big: pts, sub: pct };
   const money = moneyText(p.pnl, p.currency);
   return p.view === "money" ? { big: money, sub: `${pts} \u00b7 ${pct}` } : { big: pts, sub: `${money} \u00b7 ${pct}` };
@@ -103,6 +106,7 @@ export const maskedAccount = (n: string) => `\u2022\u2022\u2022\u2022${n.slice(-
 export type ShareMe = {
   type: "bitmoji" | "preset" | "none"; preset: string | null; imageUrl: string | null;
   referralCode: string | null; registerUrl: string | null; qr: string | null;
+  nameTag?: string | null; // the account's nickname, else the client's name
   presets: { profit: { name: string }[]; loss: { name: string }[] };
 };
 export type Slide = { kind: "bitmoji"; url: string } | { kind: "preset"; name: string };
@@ -121,3 +125,14 @@ export function shareStart(slides: Slide[], me: ShareMe | null, loss: boolean): 
   return Math.max(0, at(me?.preset));
 }
 
+
+// The card's buttons (owner 2026-11-14): the text and the link a share carries.
+/** "My trade on QoreTrader" */
+export const shareText = (brokerName: string) => `My trade on ${brokerName}`;
+/** The client's referral register link; a client without a code: the broker's register page. */
+export const shareLink = (me: { registerUrl: string | null } | null, origin: string) => me?.registerUrl || `${origin}/register`;
+/** Desktop share pages: Telegram and X with the text and the link. */
+export const telegramShareUrl = (text: string, link: string) => `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`;
+export const xShareUrl = (text: string, link: string) => `https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(link)}`;
+/** "qoretrader-xauusd-trade.png" */
+export const shareFileName = (brokerName: string, symbol: string) => `${brokerName}-${symbol}-trade.png`.toLowerCase().replace(/[^a-z0-9.-]+/g, "-");

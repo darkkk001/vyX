@@ -25,7 +25,7 @@ async function accountFor(brokerId: string, c: { bitmoji?: string | null; preset
   const a = await prisma.account.create({ data: { brokerId, groupId, clientId: client?.id ?? null, accountNumber: `9${Date.now() % 1_000_000}${++n}`, email: `ta-a-${n}-${s}@t.local`, passwordHash: "x", fullName: "Ta", accountMode: "DEMO" } });
   return a.id;
 }
-type Body = { avatarUrl: string | null; type: string; preset: string | null; imageUrl: string | null; referralCode: string | null; registerUrl: string | null; qr: string | null; presets: { profit: { name: string; imageUrl: string; bg: string }[]; loss: { name: string }[] } };
+type Body = { nameTag: string | null; avatarUrl: string | null; type: string; preset: string | null; imageUrl: string | null; referralCode: string | null; registerUrl: string | null; qr: string | null; presets: { profit: { name: string; imageUrl: string; bg: string }[]; loss: { name: string }[] } };
 async function get(accountId: string | null, brokerId = "") {
   const { getAccountSession } = await import("@/lib/account-auth");
   vi.mocked(getAccountSession).mockResolvedValue(accountId ? ({ accountId, brokerId } as never) : null);
@@ -84,6 +84,13 @@ describe("GET /api/trade/avatar", () => {
     const acc = await prisma.account.findUniqueOrThrow({ where: { id: a }, select: { clientId: true } });
     await prisma.client.update({ where: { id: acc.clientId! }, data: { referralCode: `JS${s.slice(0, 4).toUpperCase()}` } });
     expect((await get(a, ids[ON].broker)).body.referralCode).toBe(`JS${s.slice(0, 4).toUpperCase()}`);
+  });
+  it("name tag: the account's nickname, else the client's name", async () => {
+    if (!dbReachable) return;
+    const a = await accountFor(ids[ON].broker, { fullName: "Jade Stevens" });
+    expect((await get(a, ids[ON].broker)).body.nameTag).toBe("Jade Stevens");
+    await prisma.account.update({ where: { id: a }, data: { nickname: "TheBullion" } });
+    expect((await get(a, ids[ON].broker)).body.nameTag).toBe("TheBullion");
   });
   it("an account with no CRM client: no avatar, no referral", async () => {
     if (!dbReachable) return;

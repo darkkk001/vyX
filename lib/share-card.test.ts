@@ -1,27 +1,32 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { heroLines, lineTimeframe, linePoints, moneyText, movePercent, movePoints, percentText, pointsText, shareSlides, shareStart, tradeSeries, type ShareMe } from "@/lib/share-card";
+import { pipSize } from "@/lib/group-pricing";
+import { heroLines, lineTimeframe, linePoints, moneyText, movePercent, movePips, percentText, pipSizeOf, pipsText, shareSlides, shareStart, tradeSeries, type ShareMe } from "@/lib/share-card";
 import { ALL_AVATARS, LOSS_AVATARS, PROFIT_AVATARS, isAvatarPreset, shownAvatarOf } from "@/lib/avatars";
 import { avatarLists } from "@/scripts/gen-avatar-presets.mjs";
 
 // Share card + preset avatars (owner 2026-11-14, share-card-prototype.html).
 describe("share card numbers", () => {
-  it("points: gold point 0.10, else the last digit, signed by the side, 1 decimal only when there is one; % of the entry price", () => {
-    expect(movePoints(3888.13, 3895.19, 2, "XAUUSD", "BUY")).toBe(70.6);
-    expect(pointsText(movePoints(3888.13, 3895.19, 2, "XAUUSD", "BUY"))).toBe("+70.6 pts");
-    expect(pointsText(movePoints(4100, 3861.97, 2, "XAUUSD", "SELL"))).toBe("+2,380.3 pts");
-    expect(pointsText(movePoints(1.0862, 1.08273, 5, "EURUSD", "BUY"))).toBe("−347 pts");
-    expect(movePoints(1.0, 1.00005, 5, "EURUSD", "SELL")).toBe(-5);
+  it("pips = the price difference / the symbol's pip size (10 x its point, the platform's pip rule), signed by the side", () => {
+    expect(movePips(3888.13, 3895.19, 2, "BUY")).toBe(70.6);
+    expect(pipsText(movePips(3888.13, 3895.19, 2, "BUY"))).toBe("+70.6 pips");
+    expect(pipsText(movePips(4100, 4170, 2, "BUY"))).toBe("+700 pips");
+    expect(pipsText(movePips(4100, 3861.97, 2, "SELL"))).toBe("+2,380.3 pips");
+    expect(pipsText(movePips(1.0862, 1.08273, 5, "BUY"))).toBe("−34.7 pips");
+    expect(pipsText(movePips(150.25, 150.1, 3, "SELL"))).toBe("+15 pips");
+    expect(pipsText(movePips(96110, 97250.5, 1, "BUY"))).toBe("+1,140.5 pips");
+    expect([2, 5, 3, 1].map(pipSizeOf)).toEqual([0.1, 0.0001, 0.01, 1]);
+    for (let d = 0; d <= 6; d++) expect(pipSizeOf(d)).toBeCloseTo(pipSize(d).toNumber(), 12); // the same as the pricing's pip
     expect(percentText(movePercent(3888.13, 3895.19, "BUY"))).toBe("+0.18%");
     expect(percentText(movePercent(3881.39, 3880.42, "BUY"))).toBe("−0.02%");
     expect(percentText(movePercent(3881.39, 3880.42, "SELL"))).toBe("+0.02%");
   });
-  it("USD first; a tap = points first; PnL off = no money anywhere", () => {
-    const base = { pnl: 7.06, currency: "USD", points: 70.6, pct: 0.1816 };
-    expect(heroLines({ ...base, showPnl: true, view: "money" })).toEqual({ big: "+$7.06", sub: "+70.6 pts · +0.18%" });
-    expect(heroLines({ ...base, showPnl: true, view: "points" })).toEqual({ big: "+70.6 pts", sub: "+$7.06 · +0.18%" });
-    const off = heroLines({ ...base, pnl: -9.7, points: -9.7, pct: -0.025, showPnl: false, view: "money" });
-    expect(off).toEqual({ big: "−9.7 pts", sub: "−0.03%" });
+  it("USD first; a tap = pips first; PnL off = no money anywhere", () => {
+    const base = { pnl: 7.06, currency: "USD", pips: 70.6, pct: 0.1816 };
+    expect(heroLines({ ...base, showPnl: true, view: "money" })).toEqual({ big: "+$7.06", sub: "+70.6 pips · +0.18%" });
+    expect(heroLines({ ...base, showPnl: true, view: "pips" })).toEqual({ big: "+70.6 pips", sub: "+$7.06 · +0.18%" });
+    const off = heroLines({ ...base, pnl: -9.7, pips: -9.7, pct: -0.025, showPnl: false, view: "money" });
+    expect(off).toEqual({ big: "−9.7 pips", sub: "−0.03%" });
     expect(`${off.big}${off.sub}`).not.toContain("$");
     expect(moneyText(-1234.5, "USD")).toBe("−$1,234.50");
     expect(moneyText(12, "AED")).toBe("+12.00 AED");
@@ -75,5 +80,25 @@ describe("preset avatars", () => {
     const s2 = shareSlides(pr, false, fb);
     expect(s2[shareStart(s2, pr, false)]).toEqual({ kind: "preset", name: "owl" });
     expect(shareStart(shareSlides(null, false, fb), null, false)).toBe(0);
+  });
+});
+
+describe("share card buttons", () => {
+  it("text and link: the referral register link, or the broker's register page without a code", async () => {
+    const { shareText, shareLink, telegramShareUrl, xShareUrl, shareFileName } = await import("@/lib/share-card");
+    expect(shareText("QoreTrader")).toBe("My trade on QoreTrader");
+    expect(shareLink({ registerUrl: "https://my.qoretrader.com/register?ref=JADES79DE" }, "https://my.qoretrader.com")).toBe("https://my.qoretrader.com/register?ref=JADES79DE");
+    expect(shareLink({ registerUrl: null }, "https://my.futurixglobal.com")).toBe("https://my.futurixglobal.com/register");
+    expect(shareLink(null, "https://my.futurixglobal.com")).toBe("https://my.futurixglobal.com/register");
+    expect(telegramShareUrl("My trade on X", "https://a.b/register?ref=C")).toBe("https://t.me/share/url?url=https%3A%2F%2Fa.b%2Fregister%3Fref%3DC&text=My%20trade%20on%20X");
+    expect(xShareUrl("My trade on X", "https://a.b/register")).toBe("https://x.com/intent/post?text=My%20trade%20on%20X&url=https%3A%2F%2Fa.b%2Fregister");
+    expect(shareFileName("Futurix Global", "XAUUSD")).toBe("futurix-global-xauusd-trade.png");
+  });
+  it("account nickname: up to 20 characters, empty = none", async () => {
+    const { cleanNickname } = await import("@/lib/room/password-rules");
+    expect(cleanNickname("  TheBullion  ")).toBe("TheBullion");
+    expect(cleanNickname("x".repeat(30))).toBe("x".repeat(20));
+    expect(cleanNickname("   ")).toBeNull();
+    expect(readFileSync("components/room/AccountDrawer.tsx", "utf8")).toContain('aria-label="Nickname" style={{ flex: 1, minWidth: 0, padding: "7px 10px", fontSize: 13 }} maxLength={20}');
   });
 });

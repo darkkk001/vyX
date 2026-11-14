@@ -24,7 +24,7 @@ export const CONTENT_SECURITY_POLICY = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' https://challenges.cloudflare.com wss://*.vyxtrader.com https://*.vyxtrader.com${gatewayOrigin && gatewayOrigin !== "null" ? ` ${gatewayOrigin}` : ""}${dev ? " ws: http://localhost:* ws://localhost:*" : ""}`,
+  `connect-src 'self' https://challenges.cloudflare.com wss://*.vyxtrader.com https://*.vyxtrader.com https://*.bitmoji.com https://*.snapchat.com https://*.snapkit.com https://bitmoji-sdk-images.s3.amazonaws.com${gatewayOrigin && gatewayOrigin !== "null" ? ` ${gatewayOrigin}` : ""}${dev ? " ws: http://localhost:* ws://localhost:*" : ""}`,
   "frame-src 'self' https://challenges.cloudflare.com",
   "worker-src 'self' blob:",
   "media-src 'self' data: blob:",

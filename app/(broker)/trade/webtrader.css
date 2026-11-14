@@ -1173,3 +1173,11 @@ html[data-mode="light"], html[data-mode="light"] body {
 .wsc-opts .boxes { display: flex; gap: 18px; flex-wrap: wrap; }
 .wsc-opts label { display: flex; align-items: center; gap: 8px; font: 500 14px var(--wsc-sans); cursor: pointer; color: var(--wsc-fg); }
 .wsc-opts input { width: 18px; height: 18px; accent-color: var(--wsc-gold); margin: 0; }
+/* the buttons under the card (owner 2026-11-14) */
+.wsc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.wsc-act { flex: 1 1 0; min-width: 96px; height: 40px; border-radius: 999px; background: var(--wsc-panel); border: 1px solid var(--wsc-line); color: var(--wsc-fg); font: 600 13px var(--wsc-sans); display: inline-flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; }
+.wsc-act:hover { border-color: #3a3a40; }
+.wsc-act.primary { background: var(--wsc-gold); border-color: var(--wsc-gold); color: #16140F; }
+.wsc-act:focus-visible { outline: 2px solid var(--wsc-gold); outline-offset: 2px; }
+/* while the card is drawn into the PNG: the line already drawn, no animation to catch half way */
+.wsc-capturing .wsc-ln { animation: none !important; stroke-dashoffset: 0 !important; }
