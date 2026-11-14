@@ -5526,6 +5526,7 @@ export default function WebTrader({
             onNewOrder={() => setMobileTab("order")}
             onClose={closePositionFull}
             onPartial={openPartialClose}
+            onShare={openShareForPosition}
             onCancelOrder={(id) => tradeApi.cancelOrder(id).then(refreshOrders).catch((err) => { handleOrderError(err); })}
           />
         ) : null}

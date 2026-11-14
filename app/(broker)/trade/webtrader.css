@@ -1106,7 +1106,8 @@ html[data-mode="light"], html[data-mode="light"] body {
 .share-modal { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; background: #141417; border: 1px solid #26262C; border-radius: 16px; padding: 18px; box-sizing: border-box; }
 .wsc { --wsc-panel: #141417; --wsc-line: #26262C; --wsc-fg: #F2F0EA; --wsc-mut: #8D8A82; --wsc-gold: #F5A623; --wsc-green: #3DDC97; --wsc-red: #FF5A5A; --wsc-blue: #3B82F6;
   --wsc-mono: var(--wt-font-mono, 'JetBrains Mono'), ui-monospace, monospace; --wsc-sans: var(--wt-font-sans, Inter), ui-sans-serif, system-ui, sans-serif;
-  color: var(--wsc-fg); font-family: var(--wsc-sans); display: flex; flex-direction: column; color-scheme: dark; }
+  color: var(--wsc-fg); font-family: var(--wsc-sans); display: flex; flex-direction: column; color-scheme: dark;
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%; line-height: normal; } /* the prototype's line height on every layout (the phone screens set 24 px) and no font boosting */
 .wsc *, .wsc *::before, .wsc *::after { box-sizing: border-box; }
 .wsc [hidden] { display: none !important; }
 .wsc-stage { position: relative; user-select: none; -webkit-user-select: none; touch-action: pan-y; }

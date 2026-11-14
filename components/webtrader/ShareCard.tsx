@@ -17,6 +17,7 @@ export type { ShareMe } from "@/lib/share-card";
 export type ShareTrade = { symbol: string; side: ShareSide; lots: string; entry: number; current: number; digits: number; pnl: number; openedAt: string };
 
 const GREEN = "#3DDC97", RED = "#FF5A5A", LOSS_BG = "#0D0707";
+const CARD_W = 560; // the prototype's card width
 const POP_BG = "linear-gradient(120deg,#1E5A3C 0%,#16442E 55%,#0F3322 100%)";
 const rgb = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)).join(",");
 const slideName = (s: Slide) => (s.kind === "bitmoji" ? "Bitmoji" : s.name.replace(/_/g, " "));
@@ -83,9 +84,27 @@ export default function ShareCard(p: {
     const box = sv.parentElement?.getBoundingClientRect();
     if (!M || !box) return;
     const A = new DOMPoint(a.x, a.y).matrixTransform(M), B = new DOMPoint(b.x, b.y).matrixTransform(M);
-    dot.style.left = `${A.x - box.left}px`; dot.style.top = `${A.y - box.top}px`; dot.style.transform = `rotate(${Math.atan2(A.y - B.y, A.x - B.x)}rad)`;
+    // in % of the line box, so the arrow stays put when the card is scaled (narrow screens) or drawn into the PNG
+    dot.style.left = `${((A.x - box.left) / box.width) * 100}%`; dot.style.top = `${((A.y - box.top) / box.height) * 100}%`; dot.style.transform = `rotate(${Math.atan2(A.y - B.y, A.x - B.x)}rad)`;
   }, []);
   useLayoutEffect(() => { const id = requestAnimationFrame(placeArrow); return () => cancelAnimationFrame(id); }, [placeArrow, d, opt.graph, opt.price, opt.pnl, pop]);
+  // narrower than the prototype's 560 px card (a phone): the card is laid out at 560 px and scaled down, so the
+  // smallest text never hits the browser's minimum font size and the card (and its PNG) keep the prototype's proportions
+  const fitRef = useRef<HTMLDivElement | null>(null);
+  const [fit, setFit] = useState({ scale: 1, height: 0 });
+  useLayoutEffect(() => {
+    const el = fitRef.current;
+    if (!el) return;
+    const measure = () => {
+      const scale = Math.min(1, el.clientWidth / CARD_W);
+      setFit((f) => (Math.abs(f.scale - scale) < 0.001 && f.height === (stageRef.current?.offsetHeight ?? 0) ? f : { scale, height: stageRef.current?.offsetHeight ?? 0 }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    if (stageRef.current) ro.observe(stageRef.current);
+    return () => ro.disconnect();
+  }, []);
   useEffect(() => { window.addEventListener("resize", placeArrow); return () => window.removeEventListener("resize", placeArrow); }, [placeArrow]);
 
   // tap = money <-> pips (only while the PnL amount shows); a swipe over 40 px = the next / previous avatar
@@ -182,6 +201,8 @@ export default function ShareCard(p: {
 
   return (
     <div className="wsc" ref={rootRef}>
+      <div className="wsc-fit" ref={fitRef} style={fit.scale < 1 ? { height: fit.height * fit.scale, overflow: "hidden" } : undefined}>
+      <div className="wsc-scale" style={fit.scale < 1 ? { width: CARD_W, transform: `scale(${fit.scale})`, transformOrigin: "0 0" } : undefined}>
       <div ref={stageRef} className={`wsc-stage${slides.some((s) => s.kind === "bitmoji") ? " wsc-has-pop" : ""}`}>
         <div
           className={`wsc-card${pop ? " wsc-pop" : ""}`} role="button" tabIndex={0} aria-label="Share card, tap to switch money and pips"
@@ -253,6 +274,8 @@ export default function ShareCard(p: {
             </div>
           ) : null}
         </div>
+      </div>
+      </div>
       </div>
       <div className="wsc-navs">
         <button className="wsc-nav" type="button" aria-label="Previous avatar" onClick={() => step(-1)}>{"\u2039"}</button>

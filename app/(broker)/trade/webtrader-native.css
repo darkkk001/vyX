@@ -519,6 +519,7 @@
   .m-order-price { font-size: 11px; font-weight: 600; color: var(--m-text-2); }
   .m-link { border: none; background: none; padding: 0; font: inherit; font-size: 8px; font-weight: 700; letter-spacing: 1.2px; cursor: pointer; }
   .m-row-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 16px 10px; }
+  .m-row-actions.m-row-actions-3 { grid-template-columns: 1fr 1fr 1fr; } /* a position: PARTIAL, SHARE, CLOSE */
   .m-row-actions button {
     height: 34px; border-radius: 8px; background: var(--m-surface); border: 1px solid var(--m-border); color: var(--m-text);
     font: inherit; font-size: 9px; font-weight: 700; letter-spacing: 1.6px; cursor: pointer;

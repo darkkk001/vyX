@@ -254,7 +254,7 @@ function AccountCard({ f, brokerName, mode, ccy, leverage, hidden }: { f: MFigur
   );
 }
 
-function PositionRow({ p, child, open, onOpen, onClose, onPartial }: { p: MPosition; child?: boolean; open: boolean; onOpen: () => void; onClose: () => void; onPartial: () => void }) {
+function PositionRow({ p, child, open, onOpen, onClose, onPartial, onShare }: { p: MPosition; child?: boolean; open: boolean; onOpen: () => void; onClose: () => void; onPartial: () => void; onShare: () => void }) {
   return (
     <>
       <button type="button" className={`m-pos${child ? " child" : ""}`} onClick={onOpen} aria-expanded={open}>
@@ -275,8 +275,10 @@ function PositionRow({ p, child, open, onOpen, onClose, onPartial }: { p: MPosit
         <span className="m-pos-l3">{p.label} · {whenShort(p.openedAt)}</span>
       </button>
       {open ? (
-        <div className="m-row-actions">
+        <div className="m-row-actions m-row-actions-3">
           <button type="button" onClick={onPartial}>PARTIAL</button>
+          {/* the share card (owner 2026-11-14): the same card as the desktop's Share, with swipe, tap and its buttons */}
+          <button type="button" onClick={onShare}>SHARE</button>
           <button type="button" className="m-down" onClick={onClose}>CLOSE</button>
         </div>
       ) : null}
@@ -287,7 +289,7 @@ function PositionRow({ p, child, open, onOpen, onClose, onPartial }: { p: MPosit
 export function MTrade(p: {
   logoUrl: string | null; brokerName: string; mode: "DEMO" | "LIVE" | null; ccy: string; leverage: number | null; figures: MFigures | null; hidden: boolean;
   positions: MPosition[]; orders: MOrder[]; viewKey: string; onNewOrder: () => void;
-  onClose: (id: string) => void; onPartial: (id: string) => void; onCancelOrder: (id: string) => void;
+  onClose: (id: string) => void; onPartial: (id: string) => void; onCancelOrder: (id: string) => void; onShare: (id: string) => void;
 }) {
   const storeKey = `vyx-m-positions-view@${p.viewKey}`;
   const [view, setView] = useState<"NET" | "ALL">("NET");
@@ -303,7 +305,7 @@ export function MTrade(p: {
     return [...m.entries()];
   }, [p.positions]);
   const row = (x: MPosition, child?: boolean) => (
-    <PositionRow key={x.id} p={x} child={child} open={openRow === x.id} onOpen={() => setOpenRow((id) => (id === x.id ? null : x.id))} onClose={() => { setOpenRow(null); p.onClose(x.id); }} onPartial={() => { setOpenRow(null); p.onPartial(x.id); }} />
+    <PositionRow key={x.id} p={x} child={child} open={openRow === x.id} onOpen={() => setOpenRow((id) => (id === x.id ? null : x.id))} onClose={() => { setOpenRow(null); p.onClose(x.id); }} onPartial={() => { setOpenRow(null); p.onPartial(x.id); }} onShare={() => { setOpenRow(null); p.onShare(x.id); }} />
   );
   return (
     <div className="m-screen m-trade">
