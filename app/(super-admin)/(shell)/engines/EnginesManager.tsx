@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/Input";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Select } from "@/components/ui/Select";
 import { Table, TableBody, TableCell, TableEmptyState, TableHead, TableHeaderCell, TableRow } from "@/components/ui/Table";
+import EngineActions from "./EngineActions";
 
 // Multi-engine control plane (owner 2026-11-13). Health is the engine's own heartbeat only (no gateway probe). Dormant until the engine step:
 // engines do not read their assignment yet, so a move here changes the record, not what any engine serves today.
@@ -119,6 +120,7 @@ function EngineDetail({ id, engines, onEdit, onChanged }: { id: string; engines:
           ))}
         </TableBody>
       </Table>
+      <EngineActions engineId={data.engine.id} />
       {data.moves.length > 0 ? (
         <div className="text-xs text-[var(--text-3)]">
           <p className="mb-1 font-semibold uppercase tracking-wide">Recent moves</p>

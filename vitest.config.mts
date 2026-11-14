@@ -8,6 +8,8 @@ const rootDir = import.meta.dirname;
 // is needed -- these are plain unit tests against pure functions in
 // lib/*, no Next.js runtime/JSX involved.
 export default defineConfig({
+  // a component test imports .tsx (tsconfig keeps JSX as is for Next): compile it with the automatic React runtime here
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     environment: "node",
     // Hard production guard for every test file, host-based (scripts/lib/db-host-policy.mjs).
