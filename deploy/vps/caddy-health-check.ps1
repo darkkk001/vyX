@@ -90,14 +90,18 @@ $checks.newBindErrors = $newBind
 if ($newBind -gt 0) { $reasons.Add("$newBind new 'bind' / 'address already in use' line(s) in $log since the last check") }
 
 # e) the public health endpoint
+$healthDb = ""
 try {
   $r = Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5
   $checks.healthStatus = [int]$r.StatusCode
 } catch {
-  $code = $null; if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+  $code = $null; if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode; $healthDb = "$($_.Exception.Response.Headers['x-vyx-db'])" }
   $checks.healthStatus = $code
 }
-if ($checks.healthStatus -ne 200) { $reasons.Add("$HealthUrl answered $(if ($checks.healthStatus) { $checks.healthStatus } else { 'nothing within 5 s' })") }
+# 503 with x-vyx-db "down ..." = the engine answered through Caddy but its book database refuses new connections
+# (engine/server/src/db_probe.rs): Caddy itself is fine; that is the "database" check's alert (db-health-check.ps1)
+$checks.healthDb = $healthDb
+if ($checks.healthStatus -ne 200 -and -not ($checks.healthStatus -eq 503 -and $healthDb -like "down*")) { $reasons.Add("$HealthUrl answered $(if ($checks.healthStatus) { $checks.healthStatus } else { 'nothing within 5 s' })") }
 
 $ok = ($reasons.Count -eq 0)
 $result = [ordered]@{ component = "caddy"; ok = $ok; checks = $checks; reasons = @($reasons); checkedAt = (Get-Date).ToUniversalTime().ToString("o"); host = $env:COMPUTERNAME }

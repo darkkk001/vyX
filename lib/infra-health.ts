@@ -10,13 +10,15 @@ import { sendPlatformEmail } from "@/lib/email/adapter";
 
 // qorebridge: the VPS bridge health task (owner 2026-10-26). qorebridge-feed: the VPS FIX feed alert monitor (owner
 // 2026-10-29, deploy/vps/feed-alert-monitor.ps1), which also pushes its alerts itself and says how bad a failure is in
-// checks.severity (CRITICAL / WARNING).
-export const INFRA_COMPONENTS = ["caddy", "qorebridge", "qorebridge-feed"] as const;
+// checks.severity (CRITICAL / WARNING). database: the engine's and the gateway's book-database probe read by
+// deploy/vps/db-health-check.ps1 (incident 2026-10-27: the DB refused new connections for 28 min, all green)
+export const INFRA_COMPONENTS = ["caddy", "qorebridge", "qorebridge-feed", "database"] as const;
 export type InfraComponent = (typeof INFRA_COMPONENTS)[number];
 export const RUNBOOKS: Record<InfraComponent, string> = {
   caddy: "deploy/caddy-service-recovery-runbook.md",
   qorebridge: "deploy/qorebridge-vps-runbook.md",
   "qorebridge-feed": "deploy/qorebridge-feed-alert-runbook.md",
+  database: "deploy/db-health-runbook.md",
 };
 const SEVERITIES = ["CRITICAL", "WARNING"] as const;
 type Severity = (typeof SEVERITIES)[number];
