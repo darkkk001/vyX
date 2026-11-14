@@ -13,9 +13,14 @@
 //! module's queue would be an un-hedged position after a restart, with nothing to show it ever existed.
 //!
 //! WHAT A RECONNECT MEANS ON EACH SIDE:
-//!   - the engine resends every intent it has not seen `accepted` for;
-//!   - the bridge resends every result it has not seen `result_ack` for;
-//!   - both sides dedupe on `intent_id`, so a resend is free.
+//!   - the engine resends every INTENT it has not seen `accepted` for, deduped by `intent_id`;
+//!   - the bridge resends every LEG it has not seen a `result_ack` for, deduped by `leg_id`;
+//!   - so a resend is free in both directions.
+//!
+//! The two keys are different on purpose. An intent is offered once and accepted once, so the intent id is
+//! the whole story there. A result is per leg -- one intent can split across several LPs -- so `accepted`
+//! and `result_ack` cannot share a key: a per-intent ack could not say which of three outstanding legs it
+//! answered. `result_ack` therefore carries `intent_id` AND `leg_id`, mirroring `result`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -34,7 +39,15 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub enum EngineToBridge {
     Hello { v: u32, token: String, broker_id: String },
     Intent(IntentMsg),
-    ResultAck { intent_id: String },
+    /// Acknowledges ONE leg's result, and mirrors `result` exactly: `intent_id` plus the `leg_id` that
+    /// result carried, `null` included.
+    ///
+    /// WHY IT IS PER-LEG (owner 2026-11-14). It used to carry `intent_id` alone. An intent can split across
+    /// several LPs and each leg gets its own `result`, so an ack keyed only on the intent could not say WHICH
+    /// leg it answered: with three legs outstanding the bridge either treated one ack as covering all three
+    /// and dropped two results it had never had confirmed, or kept resending legs that were already stored.
+    /// Keyed by leg, "what the bridge still owes" is exact.
+    ResultAck { intent_id: String, leg_id: Option<String> },
     Ping { ts: String },
 }
 
@@ -268,8 +281,12 @@ impl HedgeLink {
         };
 
         // The ack goes out either way: if we only acked fresh results, a lost ack would make the bridge resend
-        // forever.
-        let ack = Action::Send(EngineToBridge::ResultAck { intent_id: result.intent_id.clone() });
+        // forever. It names the leg it answers, so acking a resend of leg 2 cannot be read as acking legs 1
+        // and 3 as well.
+        let ack = Action::Send(EngineToBridge::ResultAck {
+            intent_id: result.intent_id.clone(),
+            leg_id: result.leg_id.clone(),
+        });
 
         if !fresh {
             return vec![ack];
@@ -437,12 +454,96 @@ mod tests {
     }
 
     #[test]
-    fn a_result_is_persisted_and_acked() {
+    fn a_result_is_persisted_and_acked_by_leg() {
         let mut link = ready_link();
         link.offer(intent("H1"));
         let actions = link.on_message(BridgeToEngine::Result(result("H1", Some("H1_0"), ResultStatus::Filled)));
         assert_eq!(actions[0], Action::PersistResult(result("H1", Some("H1_0"), ResultStatus::Filled)));
-        assert_eq!(actions[1], Action::Send(EngineToBridge::ResultAck { intent_id: "H1".into() }));
+        assert_eq!(
+            actions[1],
+            Action::Send(EngineToBridge::ResultAck { intent_id: "H1".into(), leg_id: Some("H1_0".into()) })
+        );
+    }
+
+    /// Each leg's ack names THAT leg. This is the property the per-leg ack exists for: with an intent-only
+    /// ack these three messages were indistinguishable.
+    #[test]
+    fn each_leg_gets_its_own_ack_naming_that_leg() {
+        let mut link = ready_link();
+        link.offer(intent("H1"));
+        let mut acked = Vec::new();
+        for leg in ["H1_0", "H1_1", "H1_2"] {
+            for action in link.on_message(BridgeToEngine::Result(result("H1", Some(leg), ResultStatus::Partial))) {
+                if let Action::Send(EngineToBridge::ResultAck { intent_id, leg_id }) = action {
+                    assert_eq!(intent_id, "H1");
+                    acked.push(leg_id.expect("a leg result is acked with its leg id"));
+                }
+            }
+        }
+        assert_eq!(acked, vec!["H1_0", "H1_1", "H1_2"], "one ack per leg, each naming its own leg");
+    }
+
+    /// The reconnect case the owner asked for: the bridge resends ONLY the leg whose per-leg ack never
+    /// arrived, and the engine answers that leg -- without rewriting the legs it already stored.
+    #[test]
+    fn only_the_leg_whose_ack_was_lost_is_resent_and_it_is_acked_again_by_leg() {
+        let mut link = ready_link();
+        link.offer(intent("H1"));
+
+        // three legs land; the engine acks all three, but suppose the ack for H1_1 is lost on the way back
+        for leg in ["H1_0", "H1_1", "H1_2"] {
+            link.on_message(BridgeToEngine::Result(result("H1", Some(leg), ResultStatus::Partial)));
+        }
+
+        link.disconnected();
+        link.connect();
+        let greeted = link.on_message(BridgeToEngine::Hello { ok: true, error: None });
+        assert!(
+            !greeted.iter().any(|a| matches!(a, Action::Send(EngineToBridge::Intent(_)))),
+            "the intent is finished -- a reconnect must not offer it again"
+        );
+
+        // the bridge resends H1_1 alone, because that is the only leg it has no ack for
+        let again = link.on_message(BridgeToEngine::Result(result("H1", Some("H1_1"), ResultStatus::Partial)));
+        assert_eq!(
+            again,
+            vec![Action::Send(EngineToBridge::ResultAck { intent_id: "H1".into(), leg_id: Some("H1_1".into()) })],
+            "acked again, by leg, and NOT persisted a second time"
+        );
+        assert!(!again.iter().any(|a| matches!(a, Action::PersistResult(_))));
+    }
+
+    /// A set-aside has no leg, so its ack carries none either -- the ack mirrors the result it answers.
+    #[test]
+    fn a_set_aside_is_acked_with_a_null_leg() {
+        let mut link = ready_link();
+        link.offer(intent("H1"));
+        let mut r = result("H1", None, ResultStatus::Escalated);
+        r.reason = Some(format!("{SET_ASIDE_PREFIX}no route"));
+        let actions = link.on_message(BridgeToEngine::Result(r));
+        assert!(actions.contains(&Action::Send(EngineToBridge::ResultAck {
+            intent_id: "H1".into(),
+            leg_id: None
+        })));
+    }
+
+    /// Two legs of the SAME intent must not ack each other away: storing leg 0 says nothing about leg 1.
+    #[test]
+    fn acking_one_leg_does_not_answer_another_leg_of_the_same_intent() {
+        let mut link = ready_link();
+        link.offer(intent("H1"));
+        link.on_message(BridgeToEngine::Result(result("H1", Some("H1_0"), ResultStatus::Filled)));
+
+        // leg 1 has never been seen: it must still be persisted, not dropped as a duplicate of the intent
+        let leg1 = link.on_message(BridgeToEngine::Result(result("H1", Some("H1_1"), ResultStatus::Filled)));
+        assert!(
+            leg1.iter().any(|a| matches!(a, Action::PersistResult(r) if r.leg_id.as_deref() == Some("H1_1"))),
+            "leg 1 is a different leg and must be stored"
+        );
+        assert!(leg1.contains(&Action::Send(EngineToBridge::ResultAck {
+            intent_id: "H1".into(),
+            leg_id: Some("H1_1".into())
+        })));
     }
 
     /// One intent, several LPs, one result per leg -- all of them stored.
@@ -471,7 +572,10 @@ mod tests {
         assert_eq!(first.len(), 2, "persist + ack");
 
         let again = link.on_message(BridgeToEngine::Result(result("H1", Some("H1_0"), ResultStatus::Filled)));
-        assert_eq!(again, vec![Action::Send(EngineToBridge::ResultAck { intent_id: "H1".into() })]);
+        assert_eq!(
+            again,
+            vec![Action::Send(EngineToBridge::ResultAck { intent_id: "H1".into(), leg_id: Some("H1_0".into()) })]
+        );
         assert!(!again.iter().any(|a| matches!(a, Action::PersistResult(_))), "stored once");
     }
 
@@ -530,8 +634,16 @@ mod tests {
 
         let i = EngineToBridge::Intent(intent("H1"));
         assert!(encode(&i).unwrap().contains(r#""type":"intent""#));
-        let ack = EngineToBridge::ResultAck { intent_id: "H1".into() };
-        assert!(encode(&ack).unwrap().contains(r#""type":"result_ack""#));
+
+        // the ack carries BOTH keys on the wire, mirroring `result`
+        let ack = encode(&EngineToBridge::ResultAck { intent_id: "H1".into(), leg_id: Some("H1_0".into()) }).unwrap();
+        assert!(ack.contains(r#""type":"result_ack""#));
+        assert!(ack.contains(r#""intent_id":"H1""#));
+        assert!(ack.contains(r#""leg_id":"H1_0""#));
+        // and a set-aside ack says so explicitly rather than omitting the field
+        let null_leg = encode(&EngineToBridge::ResultAck { intent_id: "H1".into(), leg_id: None }).unwrap();
+        assert!(null_leg.contains(r#""leg_id":null"#), "an absent leg must be explicit, not missing");
+
         let ping = EngineToBridge::Ping { ts: "t".into() };
         assert!(encode(&ping).unwrap().contains(r#""type":"ping""#));
     }
