@@ -279,6 +279,8 @@ export const tradeApi = {
   // gets this server-side).
   brokerBranding: () => call<ApiBrokerBranding>("/api/trade/broker-branding"),
   me: () => call<AccountInfo>("/api/trade/me"),
+  // owner 2026-11-14: the share card's partner referral (code, link, QR data URL), { code: null } when the trader has none
+  referral: () => call<{ code: string | null; link?: string; qr?: string }>("/api/trade/referral"),
   prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
   // FX batch (docs/contracts/fx-and-market-week.md §2): the same rows plus the conversion quotes and the server's rates
   pricesWithFx: () => call<ApiLivePrice[] | { prices: ApiLivePrice[]; fx?: ApiFx }>("/api/trade/prices?fx=1"),

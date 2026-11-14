@@ -61,6 +61,7 @@ import { wtColors } from "./wt-colors";
 import { DEMO_SYMBOLS, demoBucketStart, demoCandleOf, gridTime } from "@/lib/demo-prices";
 import { demoTicksAt, noteDemoTick } from "@/lib/demo-client";
 import { isMine, noteEventOrigin } from "@/lib/client-instance";
+import ShareCardModal, { type ShareCardInfo, type ShareReferral } from "./ShareCardModal";
 // WebTrader colour classes per tone (lib/format.ts): profit blue, loss red, zero neutral (platform colour rule)
 const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
 // inline colour per tone in the WebTrader's own money tokens (webtrader.css); lib/format.ts TONE_COLOR stays on the web
@@ -828,9 +829,10 @@ export default function WebTrader({
   const [fundsDestination, setFundsDestination] = useState("");
 
   const [symbolInfoOpen, setSymbolInfoOpen] = useState(false);
-  const [shareData, setShareData] = useState<null | {
-    symbolLabel: string; pnl: number; pnlPct: number; entryLabel: string; currentLabel: string; rrLabel: string; rrTitle: string;
-  }>(null);
+  // owner 2026-11-14: the interactive share card (ShareCardModal), the same card as the native terminal
+  const [shareData, setShareData] = useState<ShareCardInfo | null>(null);
+  const [shareReferral, setShareReferral] = useState<ShareReferral>(null);
+  const [shareAccent, setShareAccent] = useState("#F26A1B");
 
   const [sltpEdit, setSltpEdit] = useState<null | { posId: string | null; netSymbol: string | null; sl: string; tp: string; unit: SlTpUnit; error: string | null }>(null);
 
@@ -2981,19 +2983,32 @@ export default function WebTrader({
     });
   }
 
+  // owner 2026-11-14: open the share card on what is known now; the referral (a partner's code + QR) loads once and fills in
+  function openShareCard(info: ShareCardInfo) {
+    try {
+      const root = document.querySelector(".wt-root");
+      const a = root ? getComputedStyle(root).getPropertyValue("--accent").trim() : "";
+      if (/^#[0-9a-f]{6}$/i.test(a)) setShareAccent(a);
+    } catch { /* the default accent */ }
+    setShareData(info);
+    if (shareReferral === null) {
+      tradeApi.referral().then((r) => setShareReferral(r?.code && r.link && r.qr ? { code: r.code, link: r.link, qr: r.qr } : null)).catch(() => { /* no referral on the card */ });
+    }
+  }
+  function shareBase(): Pick<ShareCardInfo, "currency" | "leverage" | "brand" | "logoUrl" | "accountNumber" | "mode" | "trader" | "at" | "exitLabel"> {
+    return {
+      currency: account?.currency ?? "USD", leverage: account?.leverage ?? 100, brand: brokerName, logoUrl: brokerLogoUrl ?? "",
+      accountNumber: account?.accountNumber ?? "", mode: account?.accountMode ?? "", trader: account?.fullName ?? "", at: new Date(), exitLabel: "Current",
+    };
+  }
   function openShareForPosition(id: string) {
     const p = positions.find((x) => x.id === id);
     if (!p) return;
     const mm = market[p.symbol.name];
-    const pnl = positionPnl(p);
-    const pnlPct = account ? (pnl / parseFloat(account.balance)) * 100 : 0;
-    const sl = p.slPrice ? parseFloat(p.slPrice) : null;
-    const tp = p.tpPrice ? parseFloat(p.tpPrice) : null;
-    const rr = sl && tp ? Math.abs((tp - parseFloat(p.openPrice)) / (parseFloat(p.openPrice) - sl)).toFixed(1) : "";
-    setShareData({
-      symbolLabel: p.symbol.name, pnl, pnlPct,
-      entryLabel: fmt(parseFloat(p.openPrice), p.symbol.digits), currentLabel: fmt(mm.bid, p.symbol.digits),
-      rrLabel: rr === "" ? "" : `1 : ${rr}`, rrTitle: "RR",
+    const isBuy = p.side === "BUY";
+    openShareCard({
+      ...shareBase(), symbol: p.symbol.name, isBuy, lots: parseFloat(p.volume), entry: parseFloat(p.openPrice),
+      exit: mm ? (isBuy ? mm.bid : mm.ask) : parseFloat(p.openPrice), digits: p.symbol.digits, pnl: positionPnl(p),
     });
   }
 
@@ -3010,14 +3025,10 @@ export default function WebTrader({
     });
     const totalLots = buyLots + sellLots;
     const avgEntry = weightedEntry / totalLots;
-    const netLots = +(buyLots - sellLots).toFixed(2);
-    const netSide = netLots > 0 ? "Buy" : netLots < 0 ? "Sell" : "Flat";
-    const pnlPct = account ? (totalPnl / parseFloat(account.balance)) * 100 : 0;
-    setShareData({
-      symbolLabel: `${symbolName} · net ${netSide} ${formatVolume(Math.abs(netLots))}`,
-      pnl: totalPnl, pnlPct,
-      entryLabel: fmt(avgEntry, symPositions[0].symbol.digits), currentLabel: fmt(mm.bid, symPositions[0].symbol.digits),
-      rrLabel: `${symPositions.length}`, rrTitle: "Positions",
+    const isBuy = buyLots >= sellLots;   // the net side (a flat book counts as BUY for the move's sign)
+    openShareCard({
+      ...shareBase(), symbol: symbolName, isBuy, lots: Math.abs(+(buyLots - sellLots).toFixed(2)) || totalLots, entry: avgEntry,
+      exit: mm ? (isBuy ? mm.bid : mm.ask) : avgEntry, digits: symPositions[0].symbol.digits, pnl: totalPnl,
     });
   }
 
@@ -5678,39 +5689,8 @@ export default function WebTrader({
         </div>
       ) : null}
 
-      {/* ---------- Share card modal ---------- */}
-      {shareData ? (
-        <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setShareData(null); }}>
-          <div className="modal-wrap">
-            <button className="modal-close" aria-label="Close" onClick={() => setShareData(null)}>✕</button>
-            <div className={`share-card${shareData.pnl < 0 ? " sell-mode" : ""}`}>
-              <div className="share-header">
-                <div className="share-logo">
-                  {/* eslint-disable-next-line @next/next/no-img-element -- the broker's own logo URL (any host), drawn into the share card */}
-                  {brokerLogoUrl ? <img src={brokerLogoUrl} alt={brokerName} className="share-logo-img" /> : brokerName}
-                </div>
-                <div className="share-symbol-tag">{shareData.symbolLabel}</div>
-              </div>
-              <div className="share-pnl-block">
-                <div className="share-pnl-label">Unrealized PnL</div>
-                <div className="share-pnl-value" style={{ color: WT_TONE_COLOR[tone(shareData.pnl)] }}>{formatSigned(shareData.pnl)}</div>
-                <div className="share-pnl-pct" style={{ color: WT_TONE_COLOR[tone(shareData.pnl)] }}>{formatPercent(shareData.pnlPct, 2)}</div>
-              </div>
-              <div className="share-grid">
-                <div className="share-stat"><div className="share-stat-label">Entry</div><div className="share-stat-value">{shareData.entryLabel}</div></div>
-                <div className="share-stat"><div className="share-stat-label">Current</div><div className="share-stat-value">{shareData.currentLabel}</div></div>
-                <div className="share-stat"><div className="share-stat-label">{shareData.rrTitle}</div><div className="share-stat-value">{shareData.rrLabel}</div></div>
-                <div className="share-stat"><div className="share-stat-label">Leverage</div><div className="share-stat-value">1:{account?.leverage ?? 100}</div></div>
-              </div>
-              <div className="share-footer">Trade with {brokerName}</div>
-            </div>
-            <div className="modal-actions">
-              <button className="modal-btn secondary" onClick={() => pushToast("Image saved to downloads")}>Save image</button>
-              <button className="modal-btn primary" onClick={() => pushToast("Share sheet opened")}>Share</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {/* ---------- Share card modal (owner 2026-11-14: interactive; components/webtrader/ShareCardModal.tsx) ---------- */}
+      {shareData ? <ShareCardModal trade={shareData} accent={shareAccent} referral={shareReferral} onClose={() => setShareData(null)} /> : null}
 
       {/* ---------- SL/TP edit modal ---------- */}
       {sltpEdit ? (
